@@ -379,7 +379,10 @@ fn split_components(
         return None;
     };
     let first_root = root(&mut parent, first);
-    if scope.iter().all(|&var| root(&mut parent, var) == first_root) {
+    if scope
+        .iter()
+        .all(|&var| root(&mut parent, var) == first_root)
+    {
         return None;
     }
     let mut groups: BTreeMap<usize, (Vec<usize>, Vec<Clause>)> = BTreeMap::new();

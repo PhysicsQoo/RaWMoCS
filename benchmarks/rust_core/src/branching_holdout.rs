@@ -1,8 +1,8 @@
 //! Fixed research-only irregular branching fixtures and independent exact
 //! complex Full WMC oracles. These synthetic fixtures are NOT general SATLIB
 //! performance evidence and do not change existing cache-admission policies.
-use rawmocs_core::{Gaussian, Problem, Weights};
 use crate::work_proxy_holdout::{independent_wmc, selector_free_cnf, Holdout};
+use rawmocs_core::{Gaussian, Problem, Weights};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BranchingFamily {
@@ -65,7 +65,11 @@ fn exact_gaussian_wmc(clauses: &[Vec<i32>], variables: usize) -> (bool, Gaussian
         let holds = clauses.iter().all(|clause| {
             clause.iter().any(|&lit| {
                 let value = mask & (1usize << (lit.unsigned_abs() as usize - 1)) != 0;
-                if lit > 0 { value } else { !value }
+                if lit > 0 {
+                    value
+                } else {
+                    !value
+                }
             })
         });
         if holds {
@@ -97,9 +101,9 @@ pub fn fixture(family: BranchingFamily, variables: usize) -> (Problem, bool, Gau
     if family == BranchingFamily::Skewed {
         let clauses = skewed_clauses(variables);
         let (sat, count) = exact_gaussian_wmc(&clauses, variables);
-        let weights = (0..variables).map(|_| {
-            Weights::new(Gaussian::integers(2, 1), Gaussian::integers(1, -1))
-        }).collect();
+        let weights = (0..variables)
+            .map(|_| Weights::new(Gaussian::integers(2, 1), Gaussian::integers(1, -1)))
+            .collect();
         (
             Problem::new(variables, clauses, weights).expect("predeclared skewed connected CNF"),
             sat,
@@ -116,7 +120,9 @@ pub fn fixture(family: BranchingFamily, variables: usize) -> (Problem, bool, Gau
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rawmocs_core::{solve_with_limits, solve_with_pivot_policy, Limits, PivotPolicy, SolveError};
+    use rawmocs_core::{
+        solve_with_limits, solve_with_pivot_policy, Limits, PivotPolicy, SolveError,
+    };
 
     #[test]
     fn exact_full_complex_wmc_and_sat_match_all_pivots_and_cache_states() {
@@ -136,7 +142,8 @@ mod tests {
                     let base = solve_with_limits(&problem, limits).unwrap();
                     assert_eq!(base.satisfiable, sat);
                     assert_eq!(base.count, count);
-                    let freq = solve_with_pivot_policy(&problem, limits, PivotPolicy::Frequency).unwrap();
+                    let freq =
+                        solve_with_pivot_policy(&problem, limits, PivotPolicy::Frequency).unwrap();
                     assert_eq!(freq.count, count);
                     assert_eq!(freq.satisfiable, sat);
                     assert_eq!(freq.stats.nodes, base.stats.nodes);
@@ -144,7 +151,10 @@ mod tests {
                     assert_eq!(freq.stats.decompositions, base.stats.decompositions);
                     for policy in [PivotPolicy::ShortClause, PivotPolicy::MinFill] {
                         let answer = solve_with_pivot_policy(&problem, limits, policy).unwrap();
-                        assert_eq!(answer.count, count, "{family:?}/{variables}/{cap}/{policy:?}");
+                        assert_eq!(
+                            answer.count, count,
+                            "{family:?}/{variables}/{cap}/{policy:?}"
+                        );
                         assert_eq!(answer.satisfiable, sat);
                         assert!(answer.stats.pivot_decisions > 0);
                     }
@@ -161,10 +171,14 @@ mod tests {
             PivotPolicy::ShortClause,
             PivotPolicy::MinFill,
         ] {
-            let err = solve_with_pivot_policy(&problem, Limits {
-                nodes: 0,
-                ..Limits::default()
-            }, policy);
+            let err = solve_with_pivot_policy(
+                &problem,
+                Limits {
+                    nodes: 0,
+                    ..Limits::default()
+                },
+                policy,
+            );
             assert_eq!(err, Err(SolveError::NodeBudgetExceeded));
         }
     }

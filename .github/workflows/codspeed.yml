@@ -1,0 +1,80 @@
+name: Rust CodSpeed
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - "crates/rawmocs-core/src/**"
+      - "crates/rawmocs-core/Cargo.toml"
+      - "benchmarks/rust_core/**"
+      - ".github/workflows/codspeed.yml"
+  push:
+    branches: [main]
+    paths:
+      - "crates/rawmocs-core/src/**"
+      - "crates/rawmocs-core/Cargo.toml"
+      - "benchmarks/rust_core/**"
+      - ".github/workflows/codspeed.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codspeed-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bench-smoke:
+    name: Compile and validate Rust benchmarks (not a timing report)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/rust_core -> target
+      - run: cargo fmt --manifest-path benchmarks/rust_core/Cargo.toml --all -- --check
+      - run: cargo clippy --locked --manifest-path benchmarks/rust_core/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --locked --manifest-path benchmarks/rust_core/Cargo.toml
+      - run: cargo bench --locked --manifest-path benchmarks/rust_core/Cargo.toml --bench solver --no-run
+
+  codspeed:
+    name: CodSpeed simulation (opt in after repository connection)
+    needs: bench-smoke
+    if: >-
+      vars.RAWMOCS_CODSPEED_ENABLED == 'true' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    continue-on-error: true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/rust_core -> target
+      - run: cargo install cargo-codspeed --version 6.0.0 --locked
+      - name: Verify committed benchmark lockfile
+        run: cargo metadata --locked --format-version 1 --manifest-path benchmarks/rust_core/Cargo.toml --no-deps > /dev/null
+      - name: Build instrumented solver microbenchmarks
+        working-directory: benchmarks/rust_core
+        run: cargo codspeed build -m simulation --bench solver
+      - name: Confirm instrumented build did not rewrite the lockfile
+        run: git diff --exit-code -- benchmarks/rust_core/Cargo.lock
+      - name: Upload native CodSpeed results
+        uses: CodSpeedHQ/action@v5
+        with:
+          mode: simulation
+          run: cd benchmarks/rust_core && cargo codspeed run --bench solver

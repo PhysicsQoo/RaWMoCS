@@ -74,5 +74,8 @@ fn instrumented_cache_transactions_are_consistent_and_semantics_unchanged() {
     assert_eq!(tight_cost.key_build_calls, tight.stats.nodes);
     assert_eq!(tight_cost.lookup_calls, tight_cost.key_build_calls);
     assert_eq!(tight_cost.insert_calls, 0);
-    assert_eq!(tight_cost.admission_calls, tight.stats.cache_payload_rejections);
+    assert_eq!(
+        tight_cost.admission_calls,
+        tight.stats.cache_payload_rejections
+    );
 }

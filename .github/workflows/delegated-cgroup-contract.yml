@@ -79,6 +79,20 @@ jobs:
           python benchmarks/rust_core/tools/delegated_host_evidence.py --self-test | tee "$RUNNER_TEMP/delegated-evidence-validator.log"
           grep -Fx "DELEGATED_EVIDENCE_SYNTHETIC_NEGATIVE_CONTROLS=PASS" "$RUNNER_TEMP/delegated-evidence-validator.log"
           grep -Fx "DELEGATED_EVIDENCE_REAL_ENFORCEMENT=NOT_RUN" "$RUNNER_TEMP/delegated-evidence-validator.log"
+          grep -Fx "DELEGATED_PREFLIGHT_NEGATIVE_CONTROLS=PASS" "$RUNNER_TEMP/delegated-evidence-validator.log"
+          grep -Fx "DELEGATED_PREFLIGHT_KERNEL_WRITES=NONE" "$RUNNER_TEMP/delegated-evidence-validator.log"
+          python benchmarks/rust_core/tools/delegated_host_evidence.py --preflight /sys/fs/cgroup | tee "$RUNNER_TEMP/delegated-preflight.log"
+          grep -Fx "DELEGATED_PREFLIGHT_KERNEL_WRITES=NONE" "$RUNNER_TEMP/delegated-preflight.log"
+          case "${{ runner.os }}" in
+            Linux)
+              grep -Fx "DELEGATED_PREFLIGHT_STATUS=UNAVAILABLE" "$RUNNER_TEMP/delegated-preflight.log"
+              grep -Fx "DELEGATED_PREFLIGHT_REASON=UNSAFE_MOUNT_ROOT_OR_PATH" "$RUNNER_TEMP/delegated-preflight.log"
+              ;;
+            Windows|macOS)
+              grep -Fx "DELEGATED_PREFLIGHT_STATUS=UNSUPPORTED" "$RUNNER_TEMP/delegated-preflight.log"
+              grep -Fx "DELEGATED_PREFLIGHT_REASON=NON_LINUX" "$RUNNER_TEMP/delegated-preflight.log"
+              ;;
+          esac
       - name: Archive source-linked platform capabilities
         uses: actions/upload-artifact@v4
         with:

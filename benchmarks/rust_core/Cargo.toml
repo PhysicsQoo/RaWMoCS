@@ -1,0 +1,21 @@
+# Independent benchmark workspace; no core release dependency changes.
+[package]
+name = "rawmocs-benchmarks"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[workspace]
+
+[dependencies]
+rawmocs-core = { path = "../../crates/rawmocs-core" }
+num-bigint = "0.4"
+num-rational = "0.4"
+
+[dev-dependencies]
+divan = { package = "codspeed-divan-compat", version = "=6.0.0" }
+
+[[bench]]
+name = "solver"
+harness = false

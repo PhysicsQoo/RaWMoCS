@@ -7,7 +7,7 @@ mod unix {
     use std::env;
     use std::fs;
     use std::os::unix::process::CommandExt;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use std::process::{Child, Command, Stdio};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
@@ -53,12 +53,15 @@ mod unix {
     }
 
     impl GroupOwner {
-        fn new(child: Child) -> Result<Self, String> {
-            let pgid = i32::try_from(child.id())
-                .map_err(|_| "worker PID does not fit POSIX PGID".to_string())?;
-            if pgid <= 1 || pgid == group_id() {
-                return Err("invalid or shared worker process group".into());
-            }
+        fn new(mut child: Child) -> Result<Self, String> {
+            let pgid = match i32::try_from(child.id()) {
+                Ok(id) if id > 1 && id != group_id() => id,
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("invalid or shared worker process group".into());
+                }
+            };
             Ok(Self {
                 child: Some(child),
                 pgid,
@@ -118,7 +121,7 @@ mod unix {
             return Err("dedicated group worker PGID does not match PID".into());
         }
         let exe = env::current_exe().map_err(|e| format!("own binary: {e}"))?;
-        let child = Command::new(exe)
+        let _grandchild = Command::new(exe)
             .arg("--grandchild")
             .arg(heartbeat)
             .arg(pgid.to_string())
@@ -128,7 +131,6 @@ mod unix {
             .map_err(|e| format!("grandchild spawn: {e}"))?;
         // A descendant intentionally remains alive while the direct worker
         // loops. It inherits the isolated PGID, but is not this test's child.
-        drop(child);
         loop {
             thread::sleep(Duration::from_millis(100));
         }

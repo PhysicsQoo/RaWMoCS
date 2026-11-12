@@ -168,6 +168,9 @@ pub struct Stats {
     pub cache_value_bits: u64,
     /// Largest one-entry exact numeric bit-length within retained counts.
     pub max_cached_value_bits: u64,
+    /// Number of cache entries declined by the optional retained logical
+    /// payload budget. Does not include a full entry-count cache.
+    pub cache_payload_rejections: u64,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Report {
@@ -198,6 +201,7 @@ struct Engine<'a> {
     budget: u64,
     depth_budget: usize,
     cache_budget: usize,
+    cache_payload_budget: Option<CachePayloadBudget>,
     stats: Stats,
     cache: HashMap<Key, Outcome>,
 }
@@ -217,12 +221,46 @@ impl Default for Limits {
         }
     }
 }
+/// Cumulative admission quota for logical retained cache payload, NOT bytes.
+///
+/// This excludes HashMap buckets, Vec capacities, transient BigRational
+/// values, input CNF, recursion and all process RSS.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CachePayloadBudget {
+    pub scope_items: usize,
+    pub clause_items: usize,
+    pub literal_items: usize,
+    pub value_bits: u64,
+}
+
+/// Original solver behavior: only cache-entry-count admissions are bounded.
 pub fn solve_with_limits(p: &Problem, limits: Limits) -> Result<Report, SolveError> {
+    solve_with_optional_cache_payload_budget(p, limits, None)
+}
+
+/// Exact Full WMC with an additional optional logical-cache payload quota.
+///
+/// Cache admissions may be declined without changing count, SAT, or errors.
+/// This is not a hard memory, allocation, RSS, or OS resource limit.
+pub fn solve_with_cache_payload_budget(
+    p: &Problem,
+    limits: Limits,
+    budget: CachePayloadBudget,
+) -> Result<Report, SolveError> {
+    solve_with_optional_cache_payload_budget(p, limits, Some(budget))
+}
+
+fn solve_with_optional_cache_payload_budget(
+    p: &Problem,
+    limits: Limits,
+    cache_payload_budget: Option<CachePayloadBudget>,
+) -> Result<Report, SolveError> {
     let mut engine = Engine {
         p,
         budget: limits.nodes,
         depth_budget: limits.depth,
         cache_budget: limits.cache_entries,
+        cache_payload_budget,
         stats: Stats::default(),
         cache: HashMap::new(),
     };
@@ -267,6 +305,33 @@ impl Engine<'_> {
                     .iter()
                     .fold(0usize, |sum, clause| sum.saturating_add(clause.len()));
                 let bits = gaussian_value_bits(&outcome.count);
+                if let Some(budget) = self.cache_payload_budget {
+                    let allowed = self
+                        .stats
+                        .cache_scope_items
+                        .checked_add(scope)
+                        .is_some_and(|n| n <= budget.scope_items)
+                        && self
+                            .stats
+                            .cache_clause_items
+                            .checked_add(clauses)
+                            .is_some_and(|n| n <= budget.clause_items)
+                        && self
+                            .stats
+                            .cache_literal_items
+                            .checked_add(literals)
+                            .is_some_and(|n| n <= budget.literal_items)
+                        && self
+                            .stats
+                            .cache_value_bits
+                            .checked_add(bits)
+                            .is_some_and(|n| n <= budget.value_bits);
+                    if !allowed {
+                        self.stats.cache_payload_rejections =
+                            self.stats.cache_payload_rejections.saturating_add(1);
+                        return outcome;
+                    }
+                }
                 self.cache.insert(key, outcome.clone());
                 self.stats.cache_entries = self.cache.len();
                 self.stats.cache_scope_items = self.stats.cache_scope_items.saturating_add(scope);

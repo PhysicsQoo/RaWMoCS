@@ -127,5 +127,8 @@ fn classic_four_product(a: &Gaussian, b: &Gaussian) -> Gaussian {
 #[divan::bench]
 fn complex_rational_four_product_reference() {
     let (a, b) = operands();
-    divan::black_box(classic_four_product(divan::black_box(a), divan::black_box(b)));
+    divan::black_box(classic_four_product(
+        divan::black_box(a),
+        divan::black_box(b),
+    ));
 }

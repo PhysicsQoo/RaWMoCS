@@ -375,9 +375,7 @@ fn split_components(
     }
     // Most residuals stay connected. Avoid allocating and cloning a full
     // partition when no decomposition can be performed.
-    let Some(&first) = scope.first() else {
-        return None;
-    };
+    let &first = scope.first()?;
     let first_root = root(&mut parent, first);
     if scope
         .iter()

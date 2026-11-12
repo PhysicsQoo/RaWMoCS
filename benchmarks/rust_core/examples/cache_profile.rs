@@ -90,38 +90,102 @@ fn worker(name: &str, n: usize, cap: usize) -> Result<(), String> {
     Ok(())
 }
 
-fn launch(exe: &std::path::Path, name: &str, n: usize, cap: usize) -> Result<(), String> {
-    let n_arg = n.to_string();
-    let cap_arg = cap.to_string();
-    let mut child = Command::new(exe)
-        .args(["--worker", name, &n_arg, &cap_arg])
+// Linux prlimit applies RLIMIT_AS to the worker process. It bounds its
+// virtual address space, NOT its resident memory (RSS). Only this research
+// executable uses these guards; the library solve() API remains unchanged.
+enum GuardedExit {
+    Success,
+    Failed(std::process::ExitStatus),
+    Timeout,
+}
+
+fn launch_guarded(
+    exe: &std::path::Path,
+    args: &[&str],
+    address_space_mib: u64,
+    deadline: Duration,
+) -> Result<GuardedExit, String> {
+    let limit_bytes = address_space_mib
+        .checked_mul(1024 * 1024)
+        .ok_or_else(|| "virtual address-space limit overflow".to_string())?;
+    let mut child = Command::new("prlimit")
+        .arg(format!("--as={limit_bytes}"))
+        .arg("--")
+        .arg(exe)
+        .args(args)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .spawn()
-        .map_err(|e| format!("could not start isolated worker: {e}"))?;
+        .map_err(|e| format!("Linux prlimit/worker launch failure: {e}"))?;
     let started = Instant::now();
     loop {
         match child.try_wait() {
-            Ok(Some(status)) => {
-                if !status.success() {
-                    return Err(format!("{name}/{n}/{cap}: child failed with {status}"));
-                }
-                return Ok(());
-            }
-            Ok(None) if started.elapsed() > Duration::from_secs(5) => {
+            Ok(Some(status)) if status.success() => return Ok(GuardedExit::Success),
+            Ok(Some(status)) => return Ok(GuardedExit::Failed(status)),
+            Ok(None) if started.elapsed() > deadline => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!(
-                    "{name}/{n}/{cap}: bounded profiling worker timeout"
-                ));
+                return Ok(GuardedExit::Timeout);
             }
             Ok(None) => thread::sleep(Duration::from_millis(10)),
             Err(e) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!("{name}/{n}/{cap}: wait failed: {e}"));
+                return Err(format!("guarded child wait failure: {e}"));
             }
         }
+    }
+}
+
+fn launch(exe: &std::path::Path, name: &str, n: usize, cap: usize) -> Result<(), String> {
+    let n_arg = n.to_string();
+    let cap_arg = cap.to_string();
+    match launch_guarded(
+        exe,
+        &["--worker", name, &n_arg, &cap_arg],
+        512,
+        Duration::from_secs(5),
+    )? {
+        GuardedExit::Success => Ok(()),
+        GuardedExit::Failed(status) => Err(format!(
+            "{name}/{n}/{cap}: WORKER_FAILURE (worker exit {status}; reason not inferred); no certified count"
+        )),
+        GuardedExit::Timeout => Err(format!(
+            "{name}/{n}/{cap}: TIMEOUT (worker killed); no certified count"
+        )),
+    }
+}
+
+fn guard_negative_controls(exe: &std::path::Path) -> Result<(), String> {
+    // Under RLIMIT_AS=256 MiB the attempt to reserve 1 GiB must fail
+    // without allocating that amount of physical memory. Only this worker's
+    // explicit allocation-rejection exit 42 proves the negative control;
+    // arbitrary nonzero solver exits remain unclassified WORKER_FAILURE.
+    match launch_guarded(exe, &["--stress-memory"], 256, Duration::from_secs(3))? {
+        GuardedExit::Failed(status) if status.code() == Some(42) => {
+            eprintln!("GUARD_MEMORY_DENIED=PASS STATUS=RESOURCE_FAILURE");
+        }
+        GuardedExit::Failed(status) => {
+            return Err(format!("resource control: unexpected exit {status}"));
+        }
+        GuardedExit::Success => {
+            return Err("resource control: allocation unexpectedly admitted".into());
+        }
+        GuardedExit::Timeout => {
+            return Err("resource control: allocation test timed out".into());
+        }
+    }
+    // The parent must actively terminate a sleeping worker and must never
+    // treat a deadline breach as an exact WMC / UNSAT result.
+    match launch_guarded(exe, &["--stress-sleep"], 256, Duration::from_millis(200))? {
+        GuardedExit::Timeout => {
+            eprintln!("GUARD_TIMEOUT=PASS STATUS=TIMEOUT");
+            Ok(())
+        }
+        GuardedExit::Success => Err("timeout control unexpectedly succeeded".into()),
+        GuardedExit::Failed(status) => Err(format!(
+            "timeout control: worker exited prematurely {status}"
+        )),
     }
 }
 
@@ -130,6 +194,7 @@ fn suite() -> Result<(), String> {
         return Err("RSS profile is supported on Linux only".into());
     }
     let exe = std::env::current_exe().map_err(|e| format!("current executable: {e}"))?;
+    guard_negative_controls(&exe)?;
     println!(
         "family,variables,cache_cap,solve_wall_ns,process_peak_rss_kib,nodes,cache_entries,cache_hits,decompositions,key_scope_items,key_clauses,key_literals,value_bits,max_value_bits"
     );
@@ -151,6 +216,18 @@ fn run() -> Result<(), String> {
     let args: Vec<_> = std::env::args().collect();
     match args.as_slice() {
         [_] => suite(),
+        [_, flag] if flag == "--stress-memory" => {
+            let mut bytes: Vec<u8> = Vec::new();
+            if bytes.try_reserve_exact(1024 * 1024 * 1024).is_err() {
+                eprintln!("GUARD_CHILD_ALLOCATION_DENIED");
+                std::process::exit(42);
+            }
+            Err("1 GiB virtual allocation unexpectedly admitted".into())
+        }
+        [_, flag] if flag == "--stress-sleep" => {
+            thread::sleep(Duration::from_secs(5));
+            Err("sleep control unexpectedly reached its end".into())
+        }
         [_, flag, name, n, cap] if flag == "--worker" => {
             let variables = n.parse::<usize>().map_err(|e| format!("variables: {e}"))?;
             let cache_cap = cap
@@ -158,7 +235,7 @@ fn run() -> Result<(), String> {
                 .map_err(|e| format!("cache cap: {e}"))?;
             worker(name, variables, cache_cap)
         }
-        _ => Err("usage: cache_profile [--worker chain|pairs|cache n cache_cap]".into()),
+        _ => Err("usage: cache_profile [--worker chain|pairs|cache n cache_cap] [--stress-memory|--stress-sleep]".into()),
     }
 }
 

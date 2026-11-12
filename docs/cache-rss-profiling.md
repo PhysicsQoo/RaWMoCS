@@ -11,7 +11,8 @@ Run on Linux:
 cargo run --locked --release --manifest-path benchmarks/rust_core/Cargo.toml --example cache_profile
 ```
 
-The command invokes **28 fresh child processes**: analytical 16/32/64-variable
+The command first executes **two mandatory fail-closed negative controls**
+and then invokes **28 fresh child processes**: analytical 16/32/64-variable
 equality chains and independent forced pairs, each with cache entry limits
 0, 1, 8, and 10,000. Four additional 3-variable cache-hit positive-control
 runs use an exact independently derived count: two variables are forced true
@@ -38,11 +39,27 @@ entries, and can be coarsely page-rounded. Wall-time values are observations
 rather than CodSpeed Simulation estimates, and one trial does not prove a
 statistically significant speedup.
 
-**Safety boundary:** The 5-second parent timer detects/kills a cooperative
-research child when observed, but is **not a guarantee of hard RSS or perfect
-real-time enforcement**. A worker may exceed available memory or be killed by
-the OS before it can report. This profiling harness is not a public API or
-QuPRS production resource supervisor.
+**Resource-guard research controls (Linux only):** Every normal worker now
+runs via the system `prlimit --as=536870912` command. This enforces an OS
+`RLIMIT_AS` **512 MiB virtual-address-space** limit, not an RSS limit.
+The parent separately observes a five-second deadline, terminates the worker
+if breached, and reports a `TIMEOUT` error, never a partial Full WMC answer.
+
+Two explicit negative controls must pass before emitting the CSV: a child
+under a 256 MiB `RLIMIT_AS` tries to reserve 1 GiB of virtual space
+(`RESOURCE_FAILURE` via the child-specific exit 42), and a separate child
+that sleeps beyond its deadline is killed (`TIMEOUT`). The public
+`guard-controls.log` artifact records both. Unexpected exit codes or
+missing `prlimit` fail the workflow. Normal worker nonzero exits are labeled
+`WORKER_FAILURE` with no assumed cause (which could be an oracle mismatch),
+not automatically `RESOURCE_FAILURE` or UNSAT/zero WMC.
+
+**Safety boundary:** Address-space limits cover a different resource than
+physical RAM and are not hard RSS caps, a cgroup policy, or a guarantee of
+perfect real-time enforcement. A child may still encounter other allocation
+failures or be killed externally; nonzero exits and timeouts produce no
+certified count. This Linux-only research profile is **not** a production API
+or cross-platform QuPRS resource supervisor.
 
 Do not add a hard cache byte cap until the measured payload and RSS
 relationship is understood. Subsequent work needs process-level OS-specific

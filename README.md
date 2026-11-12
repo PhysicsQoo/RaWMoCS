@@ -1,0 +1,50 @@
+# RaWMoCS
+
+Rust-based Algebraic Weighted Model Counting Solver.
+
+RaWMoCS is an experimental Rust library for **full complex WMC** over exact
+Gaussian rational weights. The initial reference engine includes original-CNF
+unit propagation, chronological weighted DPLL, component decomposition, and a
+canonical residual cache.
+
+The numerical count and Boolean satisfiability are separate; a satisfiable
+formula can have zero weighted count. All variables have independently defined
+positive and negative literal weights.
+
+## Scientific baseline
+
+The PR science job checks out the existing **source-pinned QuPRS A0 research
+corpus** at commit `abda06877571a32f644451801dccbbb33e8802ac` rather
+than copying fixture data into this repository.
+
+- Original independent oracle: 48 complex fixtures (39 Full WMC; 9 projected).
+- Native Rust differential tests: all 39 Full WMC fixtures.
+- Original 620 mathematical properties include 120 projected checks. These run
+  as reference-only tests, **not** native projected solver certification.
+- Adversarial cache context: 20 original pairs / 40 states; 32 Full WMC states
+  are independently checked against the Rust core.
+- Original 65,536-state two-variable rewrite-safety audit and native Rust
+  counting comparison for that same source-defined universe.
+- Zero and negative weights, SAT-but-zero, rational precision, and bounded
+  node/depth/cache behavior are explicitly tested.
+
+## Development
+
+    cargo fmt --all -- --check
+    cargo clippy --workspace --all-targets -- -D warnings
+    cargo test --workspace
+
+The external A0 integration tests are ignored by default and **fail closed**
+when invoked without their source-pinned fixture directory. CI checks out the
+existing original files and then runs those tests with `QUPRS_A0_DIR`.
+
+This is a research prototype, **not** a production solver or a quantum-circuit
+equivalence checker. The finite node budget and depth limit return an error
+instead of a partial count; the cache uses an entry-count limit, not a memory
+byte limit. OS-level hard RSS caps, wall-clock timeout/cancellation,
+projected WMC, source-exact transcendental phase weights, certified rounding
+and QuPRS adapter integration remain outside this scope.
+
+## License
+
+MIT. See LICENSE.

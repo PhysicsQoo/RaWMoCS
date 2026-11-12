@@ -1,0 +1,77 @@
+name: Rust science checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+  a0-science:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read source-pinned QuPRS A0 test corpus
+        uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/QuPRS
+          ref: abda06877571a32f644451801dccbbb33e8802ac
+          path: .quprs-a0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Locate the unique A0 directory in the pinned source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t manifests < <(find .quprs-a0/research -type f -path '*/rawmocs_a0/complex_count_fixtures.json' -print)
+          test "${#manifests[@]}" -eq 1
+          source_dir="$(dirname "$(realpath "${manifests[0]}")")"
+          for name in exact_complex_oracle.py exact_semantics_properties.mjs exhaustive_weighted_rewrite_safety.mjs cache_context_oracle.py cache_context_fixtures.json quprs_literal_profile_fixtures.json; do
+            test -f "$source_dir/$name"
+          done
+          echo "QUPRS_A0_DIR=$source_dir" >> "$GITHUB_ENV"
+      - name: Independent original A0 reference (48 complex, 620 properties, cache, rewrite safety)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$QUPRS_A0_DIR"
+          python3 exact_complex_oracle.py --fixtures complex_count_fixtures.json
+          python3 exact_complex_oracle.py --fixtures quprs_literal_profile_fixtures.json
+          python3 cache_context_oracle.py --fixtures cache_context_fixtures.json
+          node exact_semantics_properties.mjs
+          node exhaustive_weighted_rewrite_safety.mjs
+      - name: New solver versus source-pinned Full WMC fixtures and exhaustive baseline
+        run: cargo test -p rawmocs-core --test a0_regressions -- --ignored --nocapture
+
+  portability:
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04-arm, windows-latest, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --workspace

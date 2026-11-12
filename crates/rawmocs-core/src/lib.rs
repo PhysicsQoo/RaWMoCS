@@ -51,6 +51,20 @@ impl Gaussian {
                 return self.clone();
             }
         }
+        // Sparse factors avoid multiplying zero rational components.
+        // The four-product expression remains unchanged for general inputs.
+        if self.imag.is_zero() {
+            return Self::new(&self.real * &rhs.real, &self.real * &rhs.imag);
+        }
+        if rhs.imag.is_zero() {
+            return Self::new(&self.real * &rhs.real, &self.imag * &rhs.real);
+        }
+        if self.real.is_zero() {
+            return Self::new(-(&self.imag * &rhs.imag), &self.imag * &rhs.real);
+        }
+        if rhs.real.is_zero() {
+            return Self::new(-(&self.imag * &rhs.imag), &self.real * &rhs.imag);
+        }
         Self::new(
             &self.real * &rhs.real - &self.imag * &rhs.imag,
             &self.real * &rhs.imag + &self.imag * &rhs.real,

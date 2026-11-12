@@ -4,11 +4,13 @@ on:
   pull_request:
     paths:
       - "benchmarks/rust_core/examples/cache_profile.rs"
+      - "benchmarks/rust_core/src/cache_reuse.rs"
       - ".github/workflows/cache-profile.yml"
   push:
     branches: [main]
     paths:
       - "benchmarks/rust_core/examples/cache_profile.rs"
+      - "benchmarks/rust_core/src/cache_reuse.rs"
       - ".github/workflows/cache-profile.yml"
   workflow_dispatch:
 
@@ -55,6 +57,15 @@ jobs:
           test "$(wc -l < "$RUNNER_TEMP/cache-quota-profile.csv")" -eq 22
           head -n 1 "$RUNNER_TEMP/cache-quota-profile.csv" | grep -F 'family,variables,policy,cache_cap,solve_wall_ns,process_peak_rss_kib,nodes,cache_entries,cache_hits,decompositions,key_scope_items,key_clauses,key_literals,value_bits,max_value_bits,cache_payload_rejections'
           awk -F, 'NR>1 { count[$3]++; if ($5 <= 0 || $6 <= 0) exit 1; if ($3 == "tight" && $16 <= 0) exit 1; if ($3 != "tight" && $16 != 0) exit 1; if ($1 == "cache" && $3 != "tight" && $9 <= 0) exit 1 } END { if (count["legacy"] != 7 || count["tight"] != 7 || count["roomy"] != 7) exit 1 }' "$RUNNER_TEMP/cache-quota-profile.csv"
+      - name: Measure repeatable cache-hit CNFs with rotated policy order
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked --release --manifest-path benchmarks/rust_core/Cargo.toml --example cache_profile -- --repeat-suite 2> "$RUNNER_TEMP/repeat-guard-controls.log" | tee "$RUNNER_TEMP/cache-reuse-profile.csv"
+          grep -F "GUARD_MEMORY_DENIED=PASS STATUS=RESOURCE_FAILURE" "$RUNNER_TEMP/repeat-guard-controls.log"
+          grep -F "GUARD_TIMEOUT=PASS STATUS=TIMEOUT" "$RUNNER_TEMP/repeat-guard-controls.log"
+          test "$(wc -l < "$RUNNER_TEMP/cache-reuse-profile.csv")" -eq 37
+          awk -F, 'NR==1 { if (NF!=17 || $1!="gadgets" || $4!="policy") exit 1; next } { if (NF!=17 || $1!=4 && $1!=8 && $1!=16 || $2!=3*$1 || $3<0 || $3>2 || $6<=0 || $7<=0) exit 1; k=$1":"$3":"$4; if (++unique[k]!=1) exit 1; count[$4]++; if ($4=="off" && ($9!=0 || $10!=0 || $17!=0)) exit 1; if ($4=="tight" && ($10<1 || $17<=0)) exit 1; if (($4=="legacy" || $4=="roomy") && ($10<$1 || $17!=0)) exit 1 } END { for (i=1;i<=4;i++) { split("off legacy tight roomy", modes, " "); if (count[modes[i]]!=9) exit 1 } }' "$RUNNER_TEMP/cache-reuse-profile.csv"
       - name: Upload source-scoped CSV evidence
         uses: actions/upload-artifact@v4
         with:
@@ -63,6 +74,8 @@ jobs:
             ${{ runner.temp }}/cache-profile.csv
             ${{ runner.temp }}/cache-quota-profile.csv
             ${{ runner.temp }}/quota-guard-controls.log
+            ${{ runner.temp }}/cache-reuse-profile.csv
+            ${{ runner.temp }}/repeat-guard-controls.log
             ${{ runner.temp }}/guard-controls.log
           if-no-files-found: error
           retention-days: 30

@@ -134,3 +134,40 @@ artifacts; this table permanently records only selected, explicitly scoped
 observations. Run future controlled repetitions before choosing a production
 cache policy. Standalone `--quota-suite` runs must also pass both fail-closed
 negative controls independently.
+
+
+## Analytically exact, cache-reusing residual cohort
+
+The third independent CSV, `cache-reuse-profile.csv`, contains **36
+worker records** plus one header: 4, 8, and 16 independent *repeated
+residual* gadgets (12, 24 and 48 variables), three numbered trials each,
+and four policies (cache disabled, legacy entry-limit, tight logical
+payload quota, roomy logical quota). Policy order is rotated across trials
+before measurement; each worker is a fresh Linux process. The original
+28-case profile and 21-case quota profile retain their established schemas.
+
+Each gadget is the four-clause CNF `(x|y)&(!x|y)&(x|z)&(!x|z)`:
+it forces `y,z` true and leaves `x` free. Its two DPLL branches
+produce an identical residual, creating a genuine cache-hit opportunity.
+The source-pinned independent complex-rational WMC oracle is
+
+`(1/2 + i/3 + 3/5 - i/7)(2+i)(1-i) = 733/210 - 37i/70`.
+
+For `g` gadgets, the exact expected Full WMC is the `g`th power of
+this fixed Gaussian-rational factor; the Boolean formula has `2^g`
+models. Every run verifies SAT, this independent WMC count, positive cache
+reuse when enabled, zero hits with cache disabled, and tight-quota
+rejections. Cache disabled, legacy, tight and roomy variants solve the
+*identical* CNF for each gadget count. No projected WMC or arbitrary phase
+weights are asserted.
+
+Each of the 36 workers is subject to the same five-second deadline and
+Linux `RLIMIT_AS=512 MiB` **virtual address-space** limit, and the
+suite independently requalifies memory-denial and timeout negative controls.
+CSV outputs record trial, Cache hits, payload rejections, solve WallTime,
+and per-process `VmHWM` Peak RSS. These are **three source-scoped trials**,
+not statistically independent runner generations: shared hardware and
+scheduler can bias them. A policy-induced Cache Hit difference is a valid
+algorithmic observation; whether it translates to lower Peak RSS or
+faster WallTime remains an empirical question. No default Cache setting,
+production OS supervisor, or solver core has been modified.

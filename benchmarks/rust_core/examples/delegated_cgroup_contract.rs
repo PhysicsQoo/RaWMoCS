@@ -13,11 +13,72 @@ mod linux {
     use std::process::{Child, Command, ExitStatus, Stdio};
     use std::thread;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+    use rawmocs_core::{solve, Gaussian, Problem, Weights};
 
     const LIMIT_BYTES: u64 = 64 * 1024 * 1024;
     const SMALL_BYTES: usize = 4 * 1024 * 1024;
     const LARGE_BYTES: usize = 192 * 1024 * 1024;
     const WORKER_DEADLINE: Duration = Duration::from_secs(8);
+    const WMC_PROOF: &str = "EXACT_COMPLEX_WMC=24+3i";
+
+    // Independent brute-force oracle: three binary variables, eight
+    // assignments, integer-complex arithmetic with no DPLL/core calls.
+    // Weights are ordered [negative, positive] for each variable.
+    fn complex_mul(a: (i128, i128), b: (i128, i128)) -> (i128, i128) {
+        (a.0 * b.0 - a.1 * b.1, a.0 * b.1 + a.1 * b.0)
+    }
+
+    fn exact_wmc_oracle() -> Result<(), String> {
+        const CLAUSES: [[i32; 2]; 2] = [[1, 2], [-1, 3]];
+        const W: [[(i128, i128); 2]; 3] = [
+            [(2, -1), (1, 1)],
+            [(-1, 1), (2, 1)],
+            [(2, 1), (2, -2)],
+        ];
+        let mut expected = (0_i128, 0_i128);
+        for assignment in 0_u8..8 {
+            let allowed = CLAUSES.iter().all(|clause| {
+                clause.iter().any(|&literal| {
+                    let variable = (literal.unsigned_abs() as usize) - 1;
+                    let chosen = assignment & (1 << variable) != 0;
+                    chosen == (literal > 0)
+                })
+            });
+            if !allowed {
+                continue;
+            }
+            let mut product = (1, 0);
+            for (variable, weights) in W.iter().enumerate() {
+                let chosen = usize::from(assignment & (1 << variable) != 0);
+                product = complex_mul(product, weights[chosen]);
+            }
+            expected.0 += product.0;
+            expected.1 += product.1;
+        }
+        if expected != (24, 3) {
+            return Err(format!("independent Full Complex WMC oracle changed: {expected:?}"));
+        }
+        let problem = Problem::new(
+            3,
+            CLAUSES.iter().map(|clause| clause.to_vec()).collect(),
+            vec![
+                Weights::new(Gaussian::integers(1, 1), Gaussian::integers(2, -1)),
+                Weights::new(Gaussian::integers(2, 1), Gaussian::integers(-1, 1)),
+                Weights::new(Gaussian::integers(2, -2), Gaussian::integers(2, 1)),
+            ],
+        )
+        .map_err(|e| format!("WMC source fixture: {e}"))?;
+        let result = solve(&problem).map_err(|e| format!("exact solver: {e}"))?;
+        if !result.satisfiable
+            || result.count != Gaussian::integers(expected.0 as i64, expected.1 as i64)
+        {
+            return Err(format!(
+                "Full Complex WMC mismatch: expected={expected:?}, result={:?}",
+                result.count
+            ));
+        }
+        Ok(())
+    }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     struct Events {
@@ -126,6 +187,14 @@ mod linux {
         if delta(after, before).is_ok() {
             return Err("accepted regressing kernel counters".into());
         }
+        exact_wmc_oracle()?;
+        println!("DELEGATED_CGROUP_SOURCE_LOCKED_WMC_ORACLE=PASS");
+        if should_signal_owned_group(true, false) || !should_signal_owned_group(false, false)
+            || should_signal_owned_group(false, true)
+        {
+            return Err("reaped-child or removed-group cleanup control regressed".into());
+        }
+        println!("DELEGATED_CGROUP_REAPED_DESCENDANT_CLEANUP_CONTROL=PASS");
         println!("DELEGATED_CGROUP_EVENT_NEGATIVE_CONTROLS=PASS");
         println!("DELEGATED_CGROUP_LOCAL_OOM_CLASSIFICATION=PASS");
         if validate_delegated_path(Path::new("/sys/fs/cgroup")).is_ok() {
@@ -156,6 +225,18 @@ mod linux {
             );
         }
         Ok(root)
+    }
+
+    // The job can still contain surviving descendants after its direct
+    // child has been reaped. Cleanup is keyed to owned-group lifetime,
+    // not Child::is_some(), which was too weak for that error path.
+    fn should_signal_owned_group(removed: bool, _child_present: bool) -> bool {
+        !removed
+    }
+
+    struct WorkerEvidence {
+        status: ExitStatus,
+        stdout: String,
     }
 
     struct OwnedGroup {
@@ -207,7 +288,7 @@ mod linux {
                 .arg("--worker")
                 .arg(mode)
                 .stdin(Stdio::piped())
-                .stdout(Stdio::null())
+                .stdout(Stdio::piped())
                 .stderr(Stdio::null())
                 .spawn()
                 .map_err(|e| format!("gated worker spawn: {e}"))?;
@@ -230,13 +311,20 @@ mod linux {
             Ok(())
         }
 
-        fn wait_direct(&mut self) -> Result<ExitStatus, String> {
+        fn wait_direct(&mut self) -> Result<WorkerEvidence, String> {
             let started = Instant::now();
             loop {
                 let child = self.child.as_mut().ok_or("worker ownership lost")?;
                 if let Some(status) = child.try_wait().map_err(|e| format!("worker wait: {e}"))? {
+                    let mut stdout = String::new();
+                    child
+                        .stdout
+                        .take()
+                        .ok_or("worker stdout not captured")?
+                        .read_to_string(&mut stdout)
+                        .map_err(|e| format!("worker stdout read: {e}"))?;
                     self.child.take();
-                    return Ok(status);
+                    return Ok(WorkerEvidence { status, stdout });
                 }
                 if started.elapsed() > WORKER_DEADLINE {
                     return Err("TIMEOUT: worker was not reaped before deadline".into());
@@ -274,7 +362,10 @@ mod linux {
             }
             // This path was uniquely created by this process. Only that
             // path may be targeted by cgroup.kill; never parent/global root.
-            if self.child.is_some() {
+            // A direct worker that has already exited can leave a live
+            // descendant in this owned leaf. Attempt cgroup.kill regardless
+            // of whether the directly owned Child handle is still present.
+            if should_signal_owned_group(self.removed, self.child.is_some()) {
                 let _ = fs::write(self.path.join("cgroup.kill"), "1");
             }
             if let Some(mut child) = self.child.take() {
@@ -290,15 +381,24 @@ mod linux {
         owned.set_limit()?;
         let baseline = owned.events()?;
         owned.admit(mode)?;
-        let status = owned.wait_direct()?;
+        let evidence = owned.wait_direct()?;
         let observed = owned.events()?;
         let change = delta(baseline, observed)?;
-        let verdict = classify(status.success(), over, change);
+        let worker_wmc_proved = !over && evidence.stdout.trim() == WMC_PROOF;
+        let normal_success = evidence.status.success() && worker_wmc_proved;
+        let verdict = classify(
+            if over { evidence.status.success() } else { normal_success },
+            over,
+            change,
+        );
         println!(
             "DELEGATED_{mode}_COUNTERS=max:{},oom:{},oom_kill:{}",
             change.max, change.oom, change.oom_kill
         );
         owned.finish()?;
+        if !over && normal_success {
+            println!("DELEGATED_UNDER_WORKER_WMC_ORACLE=PASS");
+        }
         let target = if over {
             Verdict::LocalCgroupOomEvidence
         } else {
@@ -306,7 +406,8 @@ mod linux {
         };
         if verdict != target {
             return Err(format!(
-                "{mode}: insufficient evidence: verdict={verdict:?}, exit={status}"
+                "{mode}: insufficient evidence: verdict={verdict:?}, exit={}, proof={:?}",
+                evidence.status, evidence.stdout
             ));
         }
         println!("DELEGATED_{mode}_WORKER_MEMBERSHIP_AND_CLEANUP=PASS");
@@ -330,6 +431,13 @@ mod linux {
             .map_err(|e| format!("worker not admitted: {e}"))?;
         if gate != [1] {
             return Err("invalid worker gate".into());
+        }
+        if mode == "under" {
+            exact_wmc_oracle()?;
+            println!("{WMC_PROOF}");
+            std::io::stdout()
+                .flush()
+                .map_err(|e| format!("worker WMC proof flush: {e}"))?;
         }
         let bytes = match mode {
             "under" => SMALL_BYTES,

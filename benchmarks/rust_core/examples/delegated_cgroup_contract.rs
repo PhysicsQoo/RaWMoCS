@@ -92,7 +92,7 @@ mod linux {
         let before = parse_events("low 0\nmax 1\noom 2\noom_kill 3\n")?;
         let after = parse_events("max 4\noom 5\noom_kill 6\n")?;
         let changed = delta(before, after)?;
-        if changed != Events { max: 3, oom: 3, oom_kill: 3 } {
+        if changed != (Events { max: 3, oom: 3, oom_kill: 3 }) {
             return Err("incorrect event delta".into());
         }
         if classify(false, true, Events { max: 0, oom: 0, oom_kill: 0 })

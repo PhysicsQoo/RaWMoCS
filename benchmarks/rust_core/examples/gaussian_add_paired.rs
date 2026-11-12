@@ -37,7 +37,11 @@ fn run(name: &str, left: &Gaussian, right: &Gaussian, rounds: usize) {
 }
 
 fn main() {
-    assert_eq!(std::env::args().skip(1).collect::<Vec<_>>(), vec!["--paired".to_string()], "only predeclared paired run is supported");
+    assert_eq!(
+        std::env::args().skip(1).collect::<Vec<_>>(),
+        vec!["--paired".to_string()],
+        "only predeclared paired run is supported"
+    );
     let z = Gaussian::zero();
     let a = Gaussian::new(r(-11, 19), r(23, 29));
     let b = Gaussian::new(r(31, 37), r(-41, 43));

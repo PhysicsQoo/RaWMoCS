@@ -1,0 +1,77 @@
+name: Native Windows Job Object scoped descendant research
+
+on:
+  pull_request:
+    paths:
+      - "benchmarks/rust_core/examples/windows_job_contract.rs"
+      - ".github/workflows/windows-job-contract.yml"
+  push:
+    branches: [main]
+    paths:
+      - "benchmarks/rust_core/examples/windows_job_contract.rs"
+      - ".github/workflows/windows-job-contract.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-job-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scoped-job-objects:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-24.04, ubuntu-24.04-arm, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/rust_core -> target
+      - name: Portable source formatting and lint
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path benchmarks/rust_core/Cargo.toml --all -- --check
+          cargo clippy --locked --manifest-path benchmarks/rust_core/Cargo.toml --example windows_job_contract -- -D warnings
+      - name: Native Job Object and unsupported-platform controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked --manifest-path benchmarks/rust_core/Cargo.toml --example windows_job_contract -- --self-test | tee "$RUNNER_TEMP/windows-job-contract.log"
+          case "${{ runner.os }}" in
+            Windows)
+              for reason in TIMEOUT CANCELLED; do
+                grep -Fx "WINDOWS_JOB_${reason}=PASS" "$RUNNER_TEMP/windows-job-contract.log"
+                grep -Fx "WINDOWS_JOB_LIVE_DESCENDANT_${reason}=PASS" "$RUNNER_TEMP/windows-job-contract.log"
+              done
+              grep -Fx "CONTRACT_WINDOWS_JOB_SCOPED_DESCENDANTS=PASS" "$RUNNER_TEMP/windows-job-contract.log"
+              grep -Fx "CONTRACT_WINDOWS_HARD_RSS=UNSUPPORTED" "$RUNNER_TEMP/windows-job-contract.log"
+              grep -Fx "CONTRACT_WINDOWS_ADVERSARIAL_BREAKAWAY=UNSUPPORTED" "$RUNNER_TEMP/windows-job-contract.log"
+              grep -Fx "CONTRACT_LINUX_CGROUP_V2=UNSUPPORTED" "$RUNNER_TEMP/windows-job-contract.log"
+              grep -Fx "WINDOWS_JOB_OBJECT_SCOPED_CONFORMANCE=PASS" "$RUNNER_TEMP/windows-job-contract.log"
+              ;;
+            Linux|macOS)
+              grep -Fx "CONTRACT_WINDOWS_JOB_SCOPED_DESCENDANTS=UNSUPPORTED" "$RUNNER_TEMP/windows-job-contract.log"
+              grep -Fx "WINDOWS_JOB_OBJECT_SCOPED_CONFORMANCE=UNSUPPORTED" "$RUNNER_TEMP/windows-job-contract.log"
+              ;;
+            *)
+              echo "Unknown OS ${{ runner.os }}" >&2; exit 1
+              ;;
+          esac
+      - name: Archive independent platform results
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-job-scoped-${{ matrix.os }}
+          path: ${{ runner.temp }}/windows-job-contract.log
+          retention-days: 30
+          if-no-files-found: error

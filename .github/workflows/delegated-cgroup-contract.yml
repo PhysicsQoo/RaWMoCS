@@ -53,6 +53,9 @@ jobs:
               for field in EVENT_NEGATIVE_CONTROLS LOCAL_OOM_CLASSIFICATION MOUNT_ROOT_REFUSAL NO_KERNEL_WRITES CONTRACT_SELF_TEST; do
                 grep -Fx "DELEGATED_CGROUP_${field}=PASS" "$RUNNER_TEMP/delegated-cgroup-contract.log"
               done
+              grep -Fx "DELEGATED_CGROUP_SOURCE_LOCKED_WMC_ORACLE=PASS" "$RUNNER_TEMP/delegated-cgroup-contract.log"
+              grep -Fx "DELEGATED_CGROUP_GATED_WMC_WORKER_UNCAPPED=PASS" "$RUNNER_TEMP/delegated-cgroup-contract.log"
+              grep -Fx "DELEGATED_CGROUP_REAPED_DESCENDANT_CLEANUP_CONTROL=PASS" "$RUNNER_TEMP/delegated-cgroup-contract.log"
               grep -Fx "DELEGATED_CGROUP_REAL_ENFORCEMENT=NOT_RUN" "$RUNNER_TEMP/delegated-cgroup-contract.log"
               ;;
             Windows|macOS)

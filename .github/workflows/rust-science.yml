@@ -12,17 +12,47 @@ permissions:
 jobs:
   core:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --all-targets
+      - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 
+  a0-science:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read source-pinned QuPRS A0 test corpus
+        uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/QuPRS
+          ref: abda06877571a32f644451801dccbbb33e8802ac
+          path: .quprs-a0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Independent original A0 reference (48 complex, 620 properties, cache, rewrite safety)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd .quprs-a0/research/qoo157_d4/rawmocs_a0
+          python3 exact_complex_oracle.py --fixtures complex_count_fixtures.json
+          python3 exact_complex_oracle.py --fixtures quprs_literal_profile_fixtures.json
+          python3 cache_context_oracle.py --fixtures cache_context_fixtures.json
+          node exact_semantics_properties.mjs
+          node exhaustive_weighted_rewrite_safety.mjs
+      - name: New solver versus source-pinned Full WMC fixtures and exhaustive baseline
+        env:
+          QUPRS_A0_DIR: .quprs-a0/research/qoo157_d4/rawmocs_a0
+        run: cargo test -p rawmocs-core --test a0_regressions -- --ignored --nocapture
+
   portability:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:

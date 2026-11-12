@@ -108,6 +108,8 @@ impl Problem {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SolveError {
+    DepthBudgetExceeded,
+
     NodeBudgetExceeded,
 }
 impl std::fmt::Display for SolveError {
@@ -118,6 +120,7 @@ impl std::fmt::Display for SolveError {
 impl std::error::Error for SolveError {}
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
+    pub cache_entries: usize,
     pub nodes: u64,
     pub cache_hits: u64,
     pub decompositions: u64,
@@ -149,31 +152,52 @@ struct Key {
 struct Engine<'a> {
     p: &'a Problem,
     budget: u64,
+    depth_budget: usize,
+    cache_budget: usize,
     stats: Stats,
     cache: HashMap<Key, Outcome>,
 }
 
-pub fn solve_with_budget(p: &Problem, budget: u64) -> Result<Report, SolveError> {
+#[derive(Clone, Copy, Debug)]
+pub struct Limits {
+    pub nodes: u64,
+    pub depth: usize,
+    pub cache_entries: usize,
+}
+impl Default for Limits {
+    fn default() -> Self {
+        Self { nodes: 100_000, depth: 512, cache_entries: 10_000 }
+    }
+}
+pub fn solve_with_limits(p: &Problem, limits: Limits) -> Result<Report, SolveError> {
     let mut engine = Engine {
         p,
-        budget,
+        budget: limits.nodes,
+        depth_budget: limits.depth,
+        cache_budget: limits.cache_entries,
         stats: Stats::default(),
         cache: HashMap::new(),
     };
-    let answer = engine.count(p.clauses.clone(), (1..=p.variables).collect())?;
+    let answer = engine.count(p.clauses.clone(), (1..=p.variables).collect(), 0)?;
     Ok(Report {
         satisfiable: answer.sat,
         count: answer.count,
         stats: engine.stats,
     })
 }
+pub fn solve_with_budget(p: &Problem, budget: u64) -> Result<Report, SolveError> {
+    solve_with_limits(p, Limits { nodes: budget, ..Limits::default() })
+}
 pub fn solve(p: &Problem) -> Result<Report, SolveError> {
-    solve_with_budget(p, 100_000)
+    solve_with_limits(p, Limits::default())
 }
 
 impl Engine<'_> {
     fn save(&mut self, key: Key, outcome: Outcome) -> Outcome {
-        self.cache.insert(key, outcome.clone());
+        if self.cache.len() < self.cache_budget {
+            self.cache.insert(key, outcome.clone());
+            self.stats.cache_entries = self.cache.len();
+        }
         outcome
     }
     fn weight(&self, var: usize, positive: bool) -> &Gaussian {
@@ -184,7 +208,8 @@ impl Engine<'_> {
             &w.negative
         }
     }
-    fn count(&mut self, clauses: Vec<Clause>, scope: Vec<usize>) -> Result<Outcome, SolveError> {
+    fn count(&mut self, clauses: Vec<Clause>, scope: Vec<usize>, depth: usize) -> Result<Outcome, SolveError> {
+        if depth >= self.depth_budget { return Err(SolveError::DepthBudgetExceeded); }
         if self.stats.nodes >= self.budget {
             return Err(SolveError::NodeBudgetExceeded);
         }
@@ -246,7 +271,7 @@ impl Engine<'_> {
             self.stats.decompositions += 1;
             let mut value = Gaussian::one();
             for (c, s) in pieces {
-                let part = self.count(c, s)?;
+                let part = self.count(c, s, depth + 1)?;
                 if !part.sat {
                     return Ok(self.save(key, Outcome::unsat()));
                 }
@@ -273,8 +298,8 @@ impl Engine<'_> {
             .max_by_key(|&&v| frequency[v])
             .expect("nonempty residual has an active variable");
         let child: Vec<_> = active.into_iter().filter(|&v| v != var).collect();
-        let yes = self.count(assign(&residual, var as i32), child.clone())?;
-        let no = self.count(assign(&residual, -(var as i32)), child)?;
+        let yes = self.count(assign(&residual, var as i32), child.clone(), depth + 1)?;
+        let no = self.count(assign(&residual, -(var as i32)), child, depth + 1)?;
         let sum = self
             .weight(var, true)
             .mul(&yes.count)

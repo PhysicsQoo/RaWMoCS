@@ -47,14 +47,9 @@ fn cache_disabled_counts_equal_bounded_cached_counts() {
 
 #[test]
 fn no_cache_still_distinguishes_sat_zero_and_unsat() {
-    let weights = vec![
-        w((1, 0), (2, 0)),
-        w((1, 0), (-1, 0)),
-    ];
-    let satisfiable_zero =
-        Problem::new(2, vec![vec![1]], weights.clone()).unwrap();
-    let unsatisfiable =
-        Problem::new(2, vec![vec![1], vec![-1]], weights).unwrap();
+    let weights = vec![w((1, 0), (2, 0)), w((1, 0), (-1, 0))];
+    let satisfiable_zero = Problem::new(2, vec![vec![1]], weights.clone()).unwrap();
+    let unsatisfiable = Problem::new(2, vec![vec![1], vec![-1]], weights).unwrap();
     let cap = Limits {
         cache_entries: 0,
         ..Limits::default()

@@ -275,3 +275,47 @@ while continuing to report
 
 Reference: Linux kernel
 [cgroup v2 delegation and migration permissions](https://docs.kernel.org/admin-guide/cgroup-v2.html#delegation).
+
+
+## Phase 2e: independent offline replay of archived evidence
+
+The previously generated **local** JSON archive can now be rechecked
+without a delegated Linux host, network connection, privileged process,
+solver execution or cgroup mutation. Specify the *independently trusted*
+exact commit that was qualified; do not simply copy an untrusted SHA
+from inside the evidence file:
+
+```sh
+python3 benchmarks/rust_core/tools/verify_delegated_evidence.py \
+  --verify /tmp/rawmocs-delegated-memory-evidence.json \
+  --expected-sha <trusted-40-character-commit-sha>
+```
+
+The verifier rejects duplicated JSON keys (including nested ones),
+unknown or missing schema fields, incorrect SHA and source identity,
+nonzero exit, an archived failure, unsafe/ambiguous cgroup path,
+missing time zone, absent scientific caveats, wrong outcome state,
+and mismatches between the JSON `cases` and the **independently
+recomputed** result from the original archived raw stdout.
+
+It also reuses the source-controlled parser to enforce exactly-once
+64 MiB limit/PID membership/positive complex-WMC proof, local
+`max/oom/oom_kill` before/after/delta consistency, under/over
+controls, and `populated 0` plus cgroup removal records. The file
+size is bounded to 8 MiB. A passing check outputs
+`DELEGATED_ARCHIVE_CONSISTENCY=PASS` and
+`DELEGATED_ARCHIVE_KERNEL_OBSERVATION_REPRODUCED=NO`.
+
+**An offline PASS is not cryptographic attestation, a signature,
+an independent re-execution of the Linux kernel, or proof a reporter
+did not fabricate both the archive and its stdout.** The operator
+must obtain trusted provenance of the raw evidence, checkout SHA,
+host identity/permission and protected collection path separately.
+Synthetic positive fixtures only test the verifier. Normal GitHub CI
+runs the verifier's negative controls and explicitly records
+`DELEGATED_ARCHIVE_KERNEL_ENFORCEMENT=NOT_RUN`; it cannot confer
+real delegated-host certification.
+
+No source evidence file is automatically uploaded to GitHub; its
+private cgroup path, kernel information and raw stderr should be
+reviewed before sharing outside the trusted research environment.

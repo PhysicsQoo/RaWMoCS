@@ -99,11 +99,16 @@ mod tests {
                     "{family:?} with {variables} variables"
                 );
                 println!(
-                    "medium-full-wmc {family:?} variables={variables} nodes={} cache_hits={} decompositions={} cache_entries={}",
+                    "medium-full-wmc {family:?} variables={variables} nodes={} cache_hits={} decompositions={} cache_entries={} key_scope={} key_clauses={} key_literals={} value_bits={} max_value_bits={}",
                     report.stats.nodes,
                     report.stats.cache_hits,
                     report.stats.decompositions,
-                    report.stats.cache_entries
+                    report.stats.cache_entries,
+                    report.stats.cache_scope_items,
+                    report.stats.cache_clause_items,
+                    report.stats.cache_literal_items,
+                    report.stats.cache_value_bits,
+                    report.stats.max_cached_value_bits
                 );
             }
         }

@@ -319,3 +319,67 @@ real delegated-host certification.
 No source evidence file is automatically uploaded to GitHub; its
 private cgroup path, kernel information and raw stderr should be
 reviewed before sharing outside the trusted research environment.
+
+## Phase 2d: real kernel limit qualification in GitHub Actions
+
+The repository has a separate workflow,
+`.github/workflows/real-delegated-memory.yml`, which attempts
+**actual Linux cgroup v2 kernel enforcement on a GitHub-hosted
+Ubuntu 24.04 virtual machine**. This is an ephemeral real kernel test,
+not a simulated event fixture and not a physical on-premises host.
+
+**Security gate:** on unmerged pull requests the workflow executes
+only Bash static validation and Python synthetic negative controls.
+It performs **no sudo/systemd/cgroup writes**. A reviewed commit
+merged to `main`, or a manual dispatch targeting `main`, may run
+the actual experiment. A fork PR cannot trigger the privileged path.
+
+On that trusted `main` run, the CI creates a uniquely named,
+short-lived **systemd transient service** using the runner's
+passwordless sudo for **one operation only**:
+`systemd-run` with `User=runner` (the existing non-root account),
+`Delegate=memory`, `DelegateSubgroup=supervisor`, a bounded
+`RuntimeMaxSec` and `TasksMax`, `--wait`, and `--collect`.
+Inside the service, **without sudo**, the test verifies its
+`/proc/self/cgroup` membership and refuses anything other than
+the dedicated service's `supervisor` subgroup. Only within the
+uniquely assigned service cgroup does it enable the `memory`
+subtree controller if necessary. It then runs the existing
+`delegated_host_evidence.py --preflight` and opt-in
+`--delegated-run PRIVATE_SUBTREE --confirm`. No global cgroup
+mounts, parent units, unrelated PIDs, or host-wide limit
+configuration are modified.
+
+The private experiment runs the original **64 MiB** leaf-limit
+positive/negative controls (source-locked exact `24+3i` WMC,
+then 192 MiB page-touch), checks worker PID membership,
+`memory.max` readback, the three local `memory.events.local`
+counter changes, `populated 0` and leaf removal. A success
+requires an actual sanitized `DELEGATED_CI_REAL_ENFORCEMENT=
+QUALIFIED_SCOPED` marker after independently checking the
+underlying local JSON evidence.
+
+**Fail closed:** If the ephemeral Ubuntu runner lacks systemd 254+
+`DelegateSubgroup` support, real cgroup2 permission/delegation,
+process migration capability or expected OOM witnesses, the CI
+reports `UNAVAILABLE` or `NOT_VALIDATED` and **fails the real
+kernel job**. It must never replace the failure with synthetic
+`PASS`. An externally timed-out Cargo/Worker process group is
+terminated best-effort; this does not automatically prove cleanup
+of all cgroup members. The transient service is stopped/collected
+by systemd. A successful local kernel qualification is narrower
+than production-level confinement of an arbitrary noncooperative
+Worker.
+
+The source-locked raw JSON remains **local to the CI VM only** and
+is not automatically uploaded (it contains a private transient
+cgroup path, kernel version, raw stdout/stderr). The public job
+log includes only sanitized pass/fail markers. GitHub Actions
+creates no long-lived service, persistent sudo configuration,
+global systemd override, or server-host dependency.
+
+If runner-image restrictions make systemd delegation unavailable,
+the actual outcome is **NOT_VALIDATED**, and the next choice is
+a dedicated runner image with controllable delegation. Do not
+fall back to executing the WMC workload as root or remounting a
+shared hierarchy.

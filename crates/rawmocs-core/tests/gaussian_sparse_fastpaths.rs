@@ -29,8 +29,16 @@ fn sparse_rational_factors_match_general_formula_in_both_orders() {
             rational((13 * seed) % 43 - 21, seed % 23 + 1),
         );
         for sparse in [&pure_real, &pure_imaginary] {
-            assert_eq!(mixed.mul(sparse), classic(&mixed, sparse), "right seed={seed}");
-            assert_eq!(sparse.mul(&mixed), classic(sparse, &mixed), "left seed={seed}");
+            assert_eq!(
+                mixed.mul(sparse),
+                classic(&mixed, sparse),
+                "right seed={seed}"
+            );
+            assert_eq!(
+                sparse.mul(&mixed),
+                classic(sparse, &mixed),
+                "left seed={seed}"
+            );
         }
         assert_eq!(
             pure_real.mul(&pure_imaginary),

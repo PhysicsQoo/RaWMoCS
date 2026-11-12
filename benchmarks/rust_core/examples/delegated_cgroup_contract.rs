@@ -472,7 +472,11 @@ mod linux {
         );
         println!(
             "DELEGATED_{mode}_DIRECT_EXIT={}",
-            if evidence.status.success() { "SUCCESS" } else { "FAILURE" }
+            if evidence.status.success() {
+                "SUCCESS"
+            } else {
+                "FAILURE"
+            }
         );
         owned.finish(mode)?;
         if !over && normal_success {

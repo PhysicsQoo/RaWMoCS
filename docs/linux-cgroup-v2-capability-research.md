@@ -88,3 +88,35 @@ lifecycle, scoped memory.max, memory.events before/after with
 predeclared attributable worker effects, and permissions/cleanup
 failure injection. This capability probe is not such a test.
 No `rawmocs-core` or QuPRS API changes are made.
+
+
+## First source-pinned runner observations (not an OOM proof)
+
+At source SHA `1c779aa8c004f43bcce0a6b046fa6a06f2c0ecee`,
+[Linux capability run #43203380210](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/43203380210)
+reported the following independently for its Ubuntu x64 and ARM64
+workers:
+
+| Field | Linux x64 | Linux ARM64 |
+| --- | --- | --- |
+| `CGROUP_V2_INTERFACE` | VISIBLE | VISIBLE |
+| `CGROUP_V2_MEMORY_EVENTS` | UNAVAILABLE | UNAVAILABLE |
+| `CGROUP_V2_MEMORY_SUBTREE` | ENABLED | ENABLED |
+| `CGROUP_V2_SUBGROUP_CREATE` | UNAVAILABLE | UNAVAILABLE |
+| `CGROUP_V2_MEMORY_ENFORCEMENT` | NOT_VALIDATED | NOT_VALIDATED |
+| `CGROUP_V2_OOM_KILL_ATTRIBUTION` | NOT_VALIDATED | NOT_VALIDATED |
+| Synthetic parser and event-delta controls | PASS | PASS |
+
+This establishes **negative operational evidence** for the default
+GitHub-hosted runners: a visible cgroup2 mount and memory controller
+status do not provide a usable delegated subgroup or an attributable
+OOM event from the mount root. `UNAVAILABLE` here deliberately
+combines an absent, unreadable, or malformed visible event file; the
+probe does not distinguish those causal conditions. The experiment
+did not attempt `memory.max` writes or worker migration, and
+cannot conclude whether a different, explicitly delegated Linux
+environment would be able to enforce a memory limit.
+
+These results should not be extrapolated to other deployment targets,
+and do not change the unsupported status of production cgroup memory
+enforcement or its fallback to less strict address-space controls.

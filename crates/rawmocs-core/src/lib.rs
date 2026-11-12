@@ -269,16 +269,13 @@ impl Engine<'_> {
                 let bits = gaussian_value_bits(&outcome.count);
                 self.cache.insert(key, outcome.clone());
                 self.stats.cache_entries = self.cache.len();
-                self.stats.cache_scope_items =
-                    self.stats.cache_scope_items.saturating_add(scope);
+                self.stats.cache_scope_items = self.stats.cache_scope_items.saturating_add(scope);
                 self.stats.cache_clause_items =
                     self.stats.cache_clause_items.saturating_add(clauses);
                 self.stats.cache_literal_items =
                     self.stats.cache_literal_items.saturating_add(literals);
-                self.stats.cache_value_bits =
-                    self.stats.cache_value_bits.saturating_add(bits);
-                self.stats.max_cached_value_bits =
-                    self.stats.max_cached_value_bits.max(bits);
+                self.stats.cache_value_bits = self.stats.cache_value_bits.saturating_add(bits);
+                self.stats.max_cached_value_bits = self.stats.max_cached_value_bits.max(bits);
             }
         }
         outcome

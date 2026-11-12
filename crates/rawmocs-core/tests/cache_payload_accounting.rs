@@ -75,7 +75,10 @@ fn rational_bits_track_growth_but_do_not_claim_allocated_bytes() {
     assert_eq!(result.count, exact);
     assert_eq!(result.stats.cache_entries, 1);
     assert!(result.stats.cache_value_bits >= 260);
-    assert_eq!(result.stats.cache_value_bits, result.stats.max_cached_value_bits);
+    assert_eq!(
+        result.stats.cache_value_bits,
+        result.stats.max_cached_value_bits
+    );
 }
 
 #[test]

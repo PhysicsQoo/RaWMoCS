@@ -262,7 +262,6 @@ fn medium_independent_components_payload_quota() {
     );
 }
 
-
 fn repeat_case(gadgets: usize) -> &'static Problem {
     let slot = match gadgets {
         4 => &REUSE4,
@@ -277,9 +276,7 @@ fn repeat_case(gadgets: usize) -> &'static Problem {
 // the same source-locked weighted CNF, prebuilt outside timed spans.
 #[divan::bench(args = [4_usize, 8_usize, 16_usize])]
 fn repeated_residual_cache_enabled(gadgets: usize) {
-    divan::black_box(
-        solve(divan::black_box(repeat_case(gadgets))).expect("bounded gadget CNF"),
-    );
+    divan::black_box(solve(divan::black_box(repeat_case(gadgets))).expect("bounded gadget CNF"));
 }
 
 #[divan::bench(args = [4_usize, 8_usize, 16_usize])]

@@ -360,7 +360,6 @@ fn quota_suite() -> Result<(), String> {
     Ok(())
 }
 
-
 fn repeated_worker(gadgets: usize, policy: &str, trial: usize) -> Result<(), String> {
     if ![4, 8, 16].contains(&gadgets) || trial >= 3 {
         return Err("repeated-residual cohort only accepts 4/8/16 gadgets and trials 0..3".into());
@@ -385,7 +384,9 @@ fn repeated_worker(gadgets: usize, policy: &str, trial: usize) -> Result<(), Str
     .map_err(|e| format!("repeated/{gadgets}/{trial}/{policy}: fail-closed {e}"))?;
     let elapsed_ns = started.elapsed().as_nanos();
     if !result.satisfiable || result.count != oracle {
-        return Err(format!("repeated/{gadgets}/{trial}/{policy}: exact oracle or SAT mismatch"));
+        return Err(format!(
+            "repeated/{gadgets}/{trial}/{policy}: exact oracle or SAT mismatch"
+        ));
     }
     let s = &result.stats;
     if let Some(b) = budget {

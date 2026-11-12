@@ -17,7 +17,10 @@ fn selector_weights() -> Weights {
 }
 
 pub fn repeated_residuals(gadgets: usize) -> Problem {
-    assert!((1..=16).contains(&gadgets), "bounded research family: 1..=16 gadgets");
+    assert!(
+        (1..=16).contains(&gadgets),
+        "bounded research family: 1..=16 gadgets"
+    );
     let mut clauses = Vec::with_capacity(4 * gadgets);
     let mut weights = Vec::with_capacity(3 * gadgets);
     for group in 0..gadgets {

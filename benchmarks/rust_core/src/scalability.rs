@@ -27,7 +27,10 @@ fn weights(variables: usize) -> Vec<Weights> {
 }
 
 fn check_size(family: Family, variables: usize) {
-    assert!((2..=64).contains(&variables), "bounded study: 2 to 64 variables");
+    assert!(
+        (2..=64).contains(&variables),
+        "bounded study: 2 to 64 variables"
+    );
     if matches!(family, Family::IndependentPairs) {
         assert_eq!(variables % 2, 0, "independent pairs require an even width");
     }

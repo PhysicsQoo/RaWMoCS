@@ -9,6 +9,8 @@ static CONNECTED: OnceLock<Problem> = OnceLock::new();
 static DISJOINT: OnceLock<Problem> = OnceLock::new();
 static CACHE: OnceLock<Problem> = OnceLock::new();
 static OPERANDS: OnceLock<(Gaussian, Gaussian)> = OnceLock::new();
+static IDENTITY: OnceLock<Gaussian> = OnceLock::new();
+static ZERO: OnceLock<Gaussian> = OnceLock::new();
 static CHAIN16: OnceLock<Problem> = OnceLock::new();
 static CHAIN32: OnceLock<Problem> = OnceLock::new();
 static CHAIN64: OnceLock<Problem> = OnceLock::new();
@@ -31,9 +33,15 @@ fn cache() -> &'static Problem {
 fn operands() -> &'static (Gaussian, Gaussian) {
     OPERANDS.get_or_init(arithmetic_operands)
 }
+fn identity() -> &'static Gaussian {
+    IDENTITY.get_or_init(Gaussian::one)
+}
+fn zero() -> &'static Gaussian {
+    ZERO.get_or_init(Gaussian::zero)
+}
 
 fn main() {
-    let _ = (forced(), connected(), disjoint(), cache(), operands());
+    let _ = (forced(), connected(), disjoint(), cache(), operands(), identity(), zero());
     for size in [16, 32, 64] {
         let _ = (chain(size), pair_components(size));
     }
@@ -112,4 +120,53 @@ fn medium_independent_components(variables: usize) {
     divan::black_box(
         solve(divan::black_box(pair_components(variables))).expect("bounded medium components"),
     );
+}
+
+// Same-runner, same-operand reference: the established four-product formula.
+// A separately named benchmark keeps existing benchmark identities unchanged.
+fn reference_four_products(a: &Gaussian, b: &Gaussian) -> Gaussian {
+    Gaussian::new(
+        &a.real * &b.real - &a.imag * &b.imag,
+        &a.real * &b.imag + &a.imag * &b.real,
+    )
+}
+
+#[divan::bench]
+fn complex_rational_four_product_reference() {
+    let (a, b) = operands();
+    divan::black_box(reference_four_products(
+        divan::black_box(a),
+        divan::black_box(b),
+    ));
+}
+
+// These measured operations intentionally exclude fixture and identity creation.
+#[divan::bench]
+fn complex_rational_multiply_by_one() {
+    let (a, _) = operands();
+    divan::black_box(divan::black_box(a).mul(divan::black_box(identity())));
+}
+
+#[divan::bench]
+fn complex_rational_four_product_by_one_reference() {
+    let (a, _) = operands();
+    divan::black_box(reference_four_products(
+        divan::black_box(a),
+        divan::black_box(identity()),
+    ));
+}
+
+#[divan::bench]
+fn complex_rational_multiply_by_zero() {
+    let (a, _) = operands();
+    divan::black_box(divan::black_box(a).mul(divan::black_box(zero())));
+}
+
+#[divan::bench]
+fn complex_rational_four_product_by_zero_reference() {
+    let (a, _) = operands();
+    divan::black_box(reference_four_products(
+        divan::black_box(a),
+        divan::black_box(zero()),
+    ));
 }

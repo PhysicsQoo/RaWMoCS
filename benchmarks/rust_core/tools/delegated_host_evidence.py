@@ -170,8 +170,119 @@ def self_test() -> None:
         except EvidenceError:
             continue
         raise EvidenceError(f"negative fixture {index} was incorrectly admitted")
+    preflight_self_test()
     print("DELEGATED_EVIDENCE_SYNTHETIC_NEGATIVE_CONTROLS=PASS")
     print("DELEGATED_EVIDENCE_REAL_ENFORCEMENT=NOT_RUN")
+
+
+
+def preflight_policy(
+    *, private_subtree: bool, non_root: bool, cgroup_v2: bool,
+    mount_writable: bool, memory_enabled: bool, source_inside: bool,
+    directory_writable: bool, ancestor_procs_writable: bool,
+) -> tuple[str, str]:
+    """Advisory checks only. Never claims that kernel PID migration succeeded."""
+    controls = (
+        ("UNSAFE_MOUNT_ROOT_OR_PATH", private_subtree),
+        ("ROOT_EXECUTION_FORBIDDEN", non_root),
+        ("CGROUP_V2_NOT_OBSERVED", cgroup_v2),
+        ("CGROUP_MOUNT_READ_ONLY", mount_writable),
+        ("MEMORY_CONTROLLER_NOT_DELEGATED", memory_enabled),
+        ("WORKER_SOURCE_OUTSIDE_PRIVATE_SUBTREE", source_inside),
+        ("SUBTREE_DIRECTORY_NOT_WRITABLE", directory_writable),
+        ("COMMON_ANCESTOR_PROCS_NOT_WRITABLE", ancestor_procs_writable),
+    )
+    for reason, allowed in controls:
+        if not allowed:
+            return "UNAVAILABLE", reason
+    # File permissions are only prerequisites; no cgroup directory,
+    # process migration, or memory.max write occurs in this preflight.
+    return "CANDIDATE_NOT_PROVEN", "MUST_PERFORM_REAL_SCOPED_RUN"
+
+
+def preflight(subtree: Path) -> tuple[str, str]:
+    """Read-only on the host, including when the mount is writable."""
+    if platform.system() != "Linux":
+        return "UNSUPPORTED", "NON_LINUX"
+    mount = Path("/sys/fs/cgroup")
+    try:
+        canonical_mount = mount.resolve(strict=True)
+        canonical_subtree = subtree.resolve(strict=True)
+    except OSError:
+        return "UNAVAILABLE", "CGROUP_PATH_NOT_ACCESSIBLE"
+    if canonical_subtree == canonical_mount or not canonical_subtree.is_relative_to(canonical_mount):
+        return "UNAVAILABLE", "UNSAFE_MOUNT_ROOT_OR_PATH"
+    if os.geteuid() == 0:
+        return "UNAVAILABLE", "ROOT_EXECUTION_FORBIDDEN"
+
+    try:
+        stat = os.statvfs(canonical_subtree)
+        if stat.f_flag & os.ST_RDONLY:
+            return "UNAVAILABLE", "CGROUP_MOUNT_READ_ONLY"
+        mountinfo = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
+        is_cgroup_v2 = any(
+            before.split()[4] == str(mount)
+            and after.split()[0] == "cgroup2"
+            for line in mountinfo.splitlines()
+            if (parts := line.split(" - ", 1)) and len(parts) == 2
+            for before, after in [parts]
+            if len(before.split()) >= 5 and after.split()
+        )
+        if not is_cgroup_v2:
+            return "UNAVAILABLE", "CGROUP_V2_NOT_OBSERVED"
+        enabled = "memory" in (
+            canonical_subtree / "cgroup.subtree_control"
+        ).read_text(encoding="utf-8").split()
+        if not enabled:
+            return "UNAVAILABLE", "MEMORY_CONTROLLER_NOT_DELEGATED"
+
+        # Writing a PID to a new child cgroup requires access to the
+        # common ancestor of the *source* and *destination* cgroups.
+        # A worker spawned by this supervisor inherits its current cgroup.
+        membership = Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines()
+        unified = [line[3:] for line in membership if line.startswith("0::/")]
+        if len(unified) != 1:
+            return "UNAVAILABLE", "SOURCE_CGROUP_UNKNOWN"
+        # Treat cgroup namespace paths as relative to the observed mount;
+        # ambiguous namespace mappings fail closed before any kernel write.
+        source = (canonical_mount / unified[0].lstrip("/")).resolve(strict=True)
+        if not source.is_relative_to(canonical_subtree):
+            return "UNAVAILABLE", "WORKER_SOURCE_OUTSIDE_PRIVATE_SUBTREE"
+        if not os.access(canonical_subtree, os.W_OK | os.X_OK):
+            return "UNAVAILABLE", "SUBTREE_DIRECTORY_NOT_WRITABLE"
+        if not os.access(canonical_subtree / "cgroup.procs", os.W_OK):
+            return "UNAVAILABLE", "COMMON_ANCESTOR_PROCS_NOT_WRITABLE"
+    except (OSError, ValueError, IndexError):
+        return "UNAVAILABLE", "CGROUP_PREFLIGHT_UNVERIFIABLE"
+    return "CANDIDATE_NOT_PROVEN", "MUST_PERFORM_REAL_SCOPED_RUN"
+
+
+def preflight_self_test() -> None:
+    keys = (
+        "private_subtree", "non_root", "cgroup_v2", "mount_writable",
+        "memory_enabled", "source_inside", "directory_writable",
+        "ancestor_procs_writable",
+    )
+    accepted = dict.fromkeys(keys, True)
+    if preflight_policy(**accepted) != (
+        "CANDIDATE_NOT_PROVEN", "MUST_PERFORM_REAL_SCOPED_RUN"
+    ):
+        raise EvidenceError("all prerequisites incorrectly labeled as enforced or unavailable")
+    for key in keys:
+        controls = accepted.copy()
+        controls[key] = False
+        status, reason = preflight_policy(**controls)
+        if status != "UNAVAILABLE" or not reason:
+            raise EvidenceError(f"preflight negative control accepted: {key}")
+    if platform.system() == "Linux":
+        status, reason = preflight(Path("/sys/fs/cgroup"))
+        if (status, reason) != ("UNAVAILABLE", "UNSAFE_MOUNT_ROOT_OR_PATH"):
+            raise EvidenceError("real mount root was not refused before any kernel mutation")
+    else:
+        if preflight(Path("/sys/fs/cgroup")) != ("UNSUPPORTED", "NON_LINUX"):
+            raise EvidenceError("non-Linux preflight incorrectly supported cgroup v2")
+    print("DELEGATED_PREFLIGHT_NEGATIVE_CONTROLS=PASS")
+    print("DELEGATED_PREFLIGHT_KERNEL_WRITES=NONE")
 
 
 def git(*args: str) -> str:
@@ -179,17 +290,12 @@ def git(*args: str) -> str:
 
 
 def delegated_run(subtree: Path, output: Path, confirm: bool) -> None:
-    if platform.system() != "Linux" or os.geteuid() == 0:
-        raise EvidenceError("requires non-root Linux runner with explicitly delegated cgroup")
     if not confirm:
         raise EvidenceError("explicit --confirm required before real kernel cgroup writes")
-    root = Path("/sys/fs/cgroup").resolve(strict=True)
+    status, reason = preflight(subtree)
+    if status != "CANDIDATE_NOT_PROVEN":
+        raise EvidenceError(f"RESOURCE_LIMIT_UNAVAILABLE: preflight {status}: {reason}")
     subtree = subtree.resolve(strict=True)
-    if subtree == root or not subtree.is_relative_to(root):
-        raise EvidenceError("must choose a private subtree strictly beneath /sys/fs/cgroup")
-    controllers = (subtree / "cgroup.subtree_control").read_text(encoding="utf-8").split()
-    if "memory" not in controllers:
-        raise EvidenceError("memory controller not delegated for child cgroups")
 
     sha = git("rev-parse", "HEAD")
     if re.fullmatch(r"[0-9a-f]{40}", sha) is None:
@@ -277,6 +383,7 @@ def main() -> int:
     action = ap.add_mutually_exclusive_group(required=True)
     action.add_argument("--self-test", action="store_true")
     action.add_argument("--delegated-run", type=Path, metavar="PRIVATE_SUBTREE")
+    action.add_argument("--preflight", type=Path, metavar="PRIVATE_SUBTREE")
     ap.add_argument("--output", type=Path, help="new JSON evidence path outside source checkout")
     ap.add_argument("--confirm", action="store_true", help="authorize this specific kernel-level experiment")
     args = ap.parse_args()
@@ -285,6 +392,13 @@ def main() -> int:
             if args.output is not None or args.confirm:
                 raise EvidenceError("--self-test cannot accept real-run options")
             self_test()
+        elif args.preflight is not None:
+            if args.output is not None or args.confirm:
+                raise EvidenceError("--preflight is read-only and cannot accept run options")
+            status, reason = preflight(args.preflight)
+            print(f"DELEGATED_PREFLIGHT_STATUS={status}")
+            print(f"DELEGATED_PREFLIGHT_REASON={reason}")
+            print("DELEGATED_PREFLIGHT_KERNEL_WRITES=NONE")
         else:
             if args.output is None:
                 raise EvidenceError("--output is mandatory for opt-in execution")

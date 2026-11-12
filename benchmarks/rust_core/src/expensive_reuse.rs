@@ -98,7 +98,11 @@ mod tests {
             let holds = problem.clauses().iter().all(|clause| {
                 clause.iter().any(|&literal| {
                     let is_true = mask & (1usize << (literal.unsigned_abs() as usize - 1)) != 0;
-                    if literal > 0 { is_true } else { !is_true }
+                    if literal > 0 {
+                        is_true
+                    } else {
+                        !is_true
+                    }
                 })
             });
             if !holds {

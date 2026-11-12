@@ -235,10 +235,12 @@ pub fn solve(p: &Problem) -> Result<Report, SolveError> {
 }
 
 impl Engine<'_> {
-    fn save(&mut self, key: Key, outcome: Outcome) -> Outcome {
-        if self.cache.len() < self.cache_budget {
-            self.cache.insert(key, outcome.clone());
-            self.stats.cache_entries = self.cache.len();
+    fn save(&mut self, key: Option<Key>, outcome: Outcome) -> Outcome {
+        if let Some(key) = key {
+            if self.cache.len() < self.cache_budget {
+                self.cache.insert(key, outcome.clone());
+                self.stats.cache_entries = self.cache.len();
+            }
         }
         outcome
     }
@@ -263,16 +265,23 @@ impl Engine<'_> {
             return Err(SolveError::NodeBudgetExceeded);
         }
         self.stats.nodes += 1;
-        let key = Key {
-            scope: scope.clone(),
-            clauses: normalize(clauses),
+        // With caching disabled, do not clone a scope or duplicate residual
+        // clauses into a Key that will never be looked up or stored.
+        let mut residual = normalize(clauses);
+        let key = if self.cache_budget == 0 {
+            None
+        } else {
+            let key = Key {
+                scope: scope.clone(),
+                clauses: residual.clone(),
+            };
+            if let Some(cached) = self.cache.get(&key) {
+                self.stats.cache_hits += 1;
+                return Ok(cached.clone());
+            }
+            Some(key)
         };
-        if let Some(cached) = self.cache.get(&key) {
-            self.stats.cache_hits += 1;
-            return Ok(cached.clone());
-        }
 
-        let mut residual = key.clauses.clone();
         let mut remaining = scope;
         let mut prefix = Gaussian::one();
 

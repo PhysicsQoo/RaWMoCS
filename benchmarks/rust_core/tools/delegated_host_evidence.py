@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import signal
 import subprocess
 import sys
 
@@ -206,17 +207,36 @@ def delegated_run(subtree: Path, output: Path, confirm: bool) -> None:
     failure: str | None = None
     qualified: dict[str, object] | None = None
     try:
-        completed = subprocess.run(
-            command, cwd=REPO, capture_output=True, text=True, timeout=180, check=False
+        # Own a distinct Unix session: if Cargo or its worker hangs, kill the
+        # entire cooperative process group, not only Cargo's direct PID.
+        proc = subprocess.Popen(
+            command,
+            cwd=REPO,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
         )
         try:
-            qualified = qualify(completed.stdout, completed.returncode)
-        except EvidenceError as exc:
-            failure = str(exc)
-    except subprocess.TimeoutExpired as exc:
-        failure = f"delegated test process exceeded external timeout: {exc}"
-    except OSError as exc:
-        failure = f"unable to run locked Rust experiment: {exc}"
+            out, err = proc.communicate(timeout=180)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            out, err = proc.communicate(timeout=10)
+            failure = (
+                "external deadline expired; process-group kill attempted; "
+                "cgroup directory cleanup remains UNVERIFIED"
+            )
+        completed = subprocess.CompletedProcess(command, proc.returncode, out, err)
+        if failure is None:
+            try:
+                qualified = qualify(completed.stdout, completed.returncode)
+            except EvidenceError as exc:
+                failure = str(exc)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        failure = f"delegated experiment or timed process-group cleanup failed: {exc}"
 
     record = {
         "schema_version": 1,

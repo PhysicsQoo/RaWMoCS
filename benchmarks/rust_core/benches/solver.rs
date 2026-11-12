@@ -1,8 +1,8 @@
 //! Six stable native benchmark identities; fixtures are built outside timed spans.
+use num_rational::BigRational;
 use rawmocs_benchmarks::scalability::{fixture as medium_fixture, Family};
 use rawmocs_benchmarks::{arithmetic_operands, fixture, Workload};
 use rawmocs_core::{solve, solve_with_limits, Gaussian, Limits, Problem};
-use num_rational::BigRational;
 use std::sync::OnceLock;
 
 static FORCED: OnceLock<Problem> = OnceLock::new();

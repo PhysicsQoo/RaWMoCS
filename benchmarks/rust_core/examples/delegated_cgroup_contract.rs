@@ -76,11 +76,7 @@ mod linux {
     fn classify(success: bool, over_limit: bool, change: Events) -> Verdict {
         if !over_limit && success && change.oom_kill == 0 {
             Verdict::Completed
-        } else if over_limit
-            && !success
-            && change.max > 0
-            && change.oom > 0
-            && change.oom_kill > 0
+        } else if over_limit && !success && change.max > 0 && change.oom > 0 && change.oom_kill > 0
         {
             Verdict::LocalCgroupOomEvidence
         } else {
@@ -92,14 +88,27 @@ mod linux {
         let before = parse_events("low 0\nmax 1\noom 2\noom_kill 3\n")?;
         let after = parse_events("max 4\noom 5\noom_kill 6\n")?;
         let changed = delta(before, after)?;
-        if changed != (Events { max: 3, oom: 3, oom_kill: 3 }) {
+        let expected_change = Events {
+            max: 3,
+            oom: 3,
+            oom_kill: 3,
+        };
+        if changed != expected_change {
             return Err("incorrect event delta".into());
         }
-        if classify(false, true, Events { max: 0, oom: 0, oom_kill: 0 })
-            != Verdict::Completed
+        let no_event = Events {
+            max: 0,
+            oom: 0,
+            oom_kill: 0,
+        };
+        let ambiguous_exit = Events {
+            max: 1,
+            oom: 1,
+            oom_kill: 0,
+        };
+        if classify(false, true, no_event) != Verdict::Completed
             || classify(true, false, changed) != Verdict::LocalCgroupOomEvidence
-            || classify(true, false, Events { max: 1, oom: 1, oom_kill: 0 })
-                != Verdict::UnknownWorkerFailure
+            || classify(true, false, ambiguous_exit) != Verdict::UnknownWorkerFailure
             || classify(true, true, changed) != Verdict::UnknownWorkerFailure
         {
             return Err("fail-closed worker evidence classification mismatch".into());
@@ -132,15 +141,19 @@ mod linux {
     fn validate_delegated_path(root: &Path) -> Result<PathBuf, String> {
         let mount = fs::canonicalize("/sys/fs/cgroup")
             .map_err(|e| format!("cgroup mount unavailable: {e}"))?;
-        let root = fs::canonicalize(root)
-            .map_err(|e| format!("delegated subtree unavailable: {e}"))?;
+        let root =
+            fs::canonicalize(root).map_err(|e| format!("delegated subtree unavailable: {e}"))?;
         if root == mount || !root.starts_with(&mount) {
-            return Err("RESOURCE_LIMIT_UNAVAILABLE: explicit non-root cgroup subtree required".into());
+            return Err(
+                "RESOURCE_LIMIT_UNAVAILABLE: explicit non-root cgroup subtree required".into(),
+            );
         }
         let subtree = fs::read_to_string(root.join("cgroup.subtree_control"))
             .map_err(|e| format!("RESOURCE_LIMIT_UNAVAILABLE: subtree_control: {e}"))?;
         if !subtree.split_whitespace().any(|s| s == "memory") {
-            return Err("RESOURCE_LIMIT_UNAVAILABLE: memory controller not enabled for children".into());
+            return Err(
+                "RESOURCE_LIMIT_UNAVAILABLE: memory controller not enabled for children".into(),
+            );
         }
         Ok(root)
     }
@@ -161,8 +174,9 @@ mod linux {
                 "rawmocs-memory-{}-{stamp}-{label}",
                 std::process::id()
             ));
-            fs::create_dir(&path)
-                .map_err(|e| format!("RESOURCE_LIMIT_UNAVAILABLE: cannot create owned subgroup: {e}"))?;
+            fs::create_dir(&path).map_err(|e| {
+                format!("RESOURCE_LIMIT_UNAVAILABLE: cannot create owned subgroup: {e}")
+            })?;
             Ok(Self {
                 path,
                 child: None,
@@ -188,8 +202,7 @@ mod linux {
         }
 
         fn admit(&mut self, mode: &str) -> Result<(), String> {
-            let executable = std::env::current_exe()
-                .map_err(|e| format!("current exe: {e}"))?;
+            let executable = std::env::current_exe().map_err(|e| format!("current exe: {e}"))?;
             let child = Command::new(executable)
                 .arg("--worker")
                 .arg(mode)
@@ -211,7 +224,8 @@ mod linux {
             }
             let child = self.child.as_mut().ok_or("worker ownership lost")?;
             let mut stdin = child.stdin.take().ok_or("worker gate missing")?;
-            stdin.write_all(&[1])
+            stdin
+                .write_all(&[1])
                 .map_err(|e| format!("worker gate release: {e}"))?;
             Ok(())
         }
@@ -247,8 +261,7 @@ mod linux {
                 }
                 thread::sleep(Duration::from_millis(20));
             }
-            fs::remove_dir(&self.path)
-                .map_err(|e| format!("owned cgroup removal failed: {e}"))?;
+            fs::remove_dir(&self.path).map_err(|e| format!("owned cgroup removal failed: {e}"))?;
             self.removed = true;
             Ok(())
         }
@@ -336,7 +349,10 @@ mod linux {
             [_, flag] if flag == "--self-test" => contract_self_test(),
             [_, flag, root] if flag == "--delegated-run" => delegated_run(Path::new(root)),
             [_, flag, mode] if flag == "--worker" => worker(mode),
-            _ => Err("usage: delegated_cgroup_contract --self-test | --delegated-run DELEGATED_SUBTREE".into()),
+            _ => Err(
+                "usage: delegated_cgroup_contract --self-test | --delegated-run DELEGATED_SUBTREE"
+                    .into(),
+            ),
         }
     }
 }

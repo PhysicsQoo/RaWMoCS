@@ -13,7 +13,21 @@ cargo run --locked --manifest-path benchmarks/rust_core/Cargo.toml \
   --example delegated_cgroup_contract -- --self-test
 ```
 
-On Linux, this verifies independent parsing of local `max`,
+On Linux, this also runs an **independently oracled, exact Full Complex
+WMC fixture in the actual stdin-gated child executable without a memory
+cgroup cap**: clauses `[1, 2]`, `[-1, 3]`, three pairs of integer
+Gaussian weights, and an independent eight-assignment enumeration
+with expected result `24+3i`. The core solver must report SAT and
+exactly the same Gaussian answer. The child emits a fixed proof token
+which the parent captures and validates together with the child exit.
+This verifies the solver work in the child binary, **not** its
+enforcement under `memory.max`.
+
+The test also verifies that a group owner performs best-effort cleanup
+after its direct child has already been reaped, rather than assuming
+no surviving descendant can exist when `child == None`.
+
+On Linux, this additionally verifies independent parsing of local `max`,
 `oom` and `oom_kill` counters; strictly monotonic deltas;
 counter regression, missing, duplicate and negative values; a
 fail-closed classification which **cannot infer OOM from worker exit
@@ -24,6 +38,9 @@ delegation root. It prints:
 - `DELEGATED_CGROUP_LOCAL_OOM_CLASSIFICATION=PASS`
 - `DELEGATED_CGROUP_MOUNT_ROOT_REFUSAL=PASS`
 - `DELEGATED_CGROUP_NO_KERNEL_WRITES=PASS`
+- `DELEGATED_CGROUP_SOURCE_LOCKED_WMC_ORACLE=PASS`
+- `DELEGATED_CGROUP_GATED_WMC_WORKER_UNCAPPED=PASS`
+- `DELEGATED_CGROUP_REAPED_DESCENDANT_CLEANUP_CONTROL=PASS`
 - `DELEGATED_CGROUP_REAL_ENFORCEMENT=NOT_RUN`
 
 No PID is moved, no real cgroup directory is created, and no
@@ -66,13 +83,18 @@ delegation configuration. For each independent case it:
    case may be classified as **local cgroup OOM evidence** only
    if the worker exits unsuccessfully **and** the private child's
    `max`, `oom` and `oom_kill` local counters all increase.
+   For the positive control, the actual Worker must also emit the
+   exact source-pinned `24+3i` WMC proof, exit successfully,
+   and produce **no** new local `max`, `oom` or `oom_kill` events.
    Exit 137/SIGKILL, nonzero status, or a parent-wide counter
    change are *never* sufficient.
 5. Explicitly waits/reaps the direct worker, checks that the
    child cgroup reports `populated 0`, and removes that temporary
    cgroup. Failure to verify either step fails the run. An RAII
-   owner guard attempts `cgroup.kill`, direct-child kill/wait,
-   and directory removal on abnormal exits.
+   owner guard attempts `cgroup.kill` **even if the direct child
+   was already reaped**, then direct-child kill/wait (if still
+   owned), and directory removal on abnormal exits. The guard
+   remains best effort; failure to confirm cleanup must be reported.
 
 A parent-side monotonic deadline prevents an endlessly running
 worker. A timeout is an error, **not** a verified OOM. The bounded
@@ -96,8 +118,11 @@ not eliminate all external kernel-level confounding.
   stdin gate bounds the workload **after** admission only.
 - No child processes or adversarial fork/breakaway cases here;
   separate Unix PGID and Windows Job Object research exists.
-- No full solver-native API, exact Gaussian-rational WMC oracle
-  run inside this limited worker yet.
+- The full-complex oracle runs inside the **cooperating, gated
+  test worker** and on normal Linux CI without a cgroup cap.
+  It is not an independent verification of WMC correctness for
+  arbitrary user-supplied CNFs, and its run under a genuine
+  `memory.max` limit remains **NOT_RUN**.
 - No production support for hard memory-limit attribution unless
   this opt-in test has been successfully executed and reviewed on
   a genuinely delegated host.

@@ -106,9 +106,9 @@ mod linux {
             oom: 1,
             oom_kill: 0,
         };
-        if classify(false, true, no_event) != Verdict::Completed
-            || classify(true, false, changed) != Verdict::LocalCgroupOomEvidence
-            || classify(true, false, ambiguous_exit) != Verdict::UnknownWorkerFailure
+        if classify(true, false, no_event) != Verdict::Completed
+            || classify(false, true, changed) != Verdict::LocalCgroupOomEvidence
+            || classify(false, true, ambiguous_exit) != Verdict::UnknownWorkerFailure
             || classify(true, true, changed) != Verdict::UnknownWorkerFailure
         {
             return Err("fail-closed worker evidence classification mismatch".into());

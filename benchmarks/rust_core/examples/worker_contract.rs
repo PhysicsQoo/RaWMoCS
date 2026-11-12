@@ -52,8 +52,12 @@ impl OwnedChild {
             .as_mut()
             .ok_or_else(|| "worker already reaped".to_string())?;
         // A failed kill must not silently certify a timeout or cancellation.
-        child.kill().map_err(|e| format!("worker kill failed: {e}"))?;
-        child.wait().map_err(|e| format!("worker reap failed: {e}"))?;
+        child
+            .kill()
+            .map_err(|e| format!("worker kill failed: {e}"))?;
+        child
+            .wait()
+            .map_err(|e| format!("worker reap failed: {e}"))?;
         self.0.take();
         Ok(())
     }
@@ -194,7 +198,9 @@ fn conformance() -> Result<(), String> {
         WorkerVerdict::Cancelled,
         "CANCELLED",
     );
-    trigger.join().map_err(|_| "cancel trigger panicked".to_string())?;
+    trigger
+        .join()
+        .map_err(|_| "cancel trigger panicked".to_string())?;
     result?;
     let pre_cancelled = AtomicBool::new(true);
     check(

@@ -2,7 +2,9 @@
 //! Each cache cap and CNF shape runs in a fresh process; no hard RSS cap is claimed.
 use rawmocs_benchmarks::scalability::{expected, fixture, Family};
 use rawmocs_benchmarks::{fixture as synthetic_fixture, Workload};
-use rawmocs_core::{solve_with_cache_payload_budget, solve_with_limits, CachePayloadBudget, Limits};
+use rawmocs_core::{
+    solve_with_cache_payload_budget, solve_with_limits, CachePayloadBudget, Limits,
+};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -212,7 +214,6 @@ fn suite() -> Result<(), String> {
     Ok(())
 }
 
-
 fn quota_policy(name: &str) -> Result<Option<CachePayloadBudget>, String> {
     match name {
         "legacy" => Ok(None),
@@ -266,7 +267,9 @@ fn quota_worker(name: &str, n: usize, policy: &str) -> Result<(), String> {
     .map_err(|e| format!("{name}/{n}/{policy}: solver failed closed: {e}"))?;
     let elapsed_ns = started.elapsed().as_nanos();
     if !report.satisfiable || report.count != oracle {
-        return Err(format!("{name}/{n}/{policy}: exact analytical WMC or SAT mismatch"));
+        return Err(format!(
+            "{name}/{n}/{policy}: exact analytical WMC or SAT mismatch"
+        ));
     }
     let stats = &report.stats;
     if let Some(b) = budget {
@@ -275,19 +278,27 @@ fn quota_worker(name: &str, n: usize, policy: &str) -> Result<(), String> {
             || stats.cache_literal_items > b.literal_items
             || stats.cache_value_bits > b.value_bits
         {
-            return Err(format!("{name}/{n}/{policy}: retained logical quota exceeded"));
+            return Err(format!(
+                "{name}/{n}/{policy}: retained logical quota exceeded"
+            ));
         }
         if policy == "tight" && stats.cache_payload_rejections == 0 {
-            return Err(format!("{name}/{n}/{policy}: tight quota did not reject an insertion"));
+            return Err(format!(
+                "{name}/{n}/{policy}: tight quota did not reject an insertion"
+            ));
         }
         if policy == "roomy" && stats.cache_payload_rejections != 0 {
-            return Err(format!("{name}/{n}/{policy}: roomy quota unexpectedly rejected an insertion"));
+            return Err(format!(
+                "{name}/{n}/{policy}: roomy quota unexpectedly rejected an insertion"
+            ));
         }
     } else if stats.cache_payload_rejections != 0 {
         return Err("legacy policy unexpectedly counted quota rejection".into());
     }
     if name == "cache" && policy != "tight" && stats.cache_hits == 0 {
-        return Err(format!("{policy}: cache-hit positive control was not exercised"));
+        return Err(format!(
+            "{policy}: cache-hit positive control was not exercised"
+        ));
     }
     let rss = peak_rss_kib()?;
     println!(

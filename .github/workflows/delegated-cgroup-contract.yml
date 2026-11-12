@@ -5,11 +5,13 @@ on:
     paths:
       - "benchmarks/rust_core/examples/delegated_cgroup_contract.rs"
       - ".github/workflows/delegated-cgroup-contract.yml"
+      - "benchmarks/rust_core/tools/delegated_host_evidence.py"
   push:
     branches: [main]
     paths:
       - "benchmarks/rust_core/examples/delegated_cgroup_contract.rs"
       - ".github/workflows/delegated-cgroup-contract.yml"
+      - "benchmarks/rust_core/tools/delegated_host_evidence.py"
   workflow_dispatch:
 
 permissions:
@@ -67,6 +69,16 @@ jobs:
               exit 1
               ;;
           esac
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Independently reject incomplete or synthetic memory-limit evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python benchmarks/rust_core/tools/delegated_host_evidence.py --self-test | tee "$RUNNER_TEMP/delegated-evidence-validator.log"
+          grep -Fx "DELEGATED_EVIDENCE_SYNTHETIC_NEGATIVE_CONTROLS=PASS" "$RUNNER_TEMP/delegated-evidence-validator.log"
+          grep -Fx "DELEGATED_EVIDENCE_REAL_ENFORCEMENT=NOT_RUN" "$RUNNER_TEMP/delegated-evidence-validator.log"
       - name: Archive source-linked platform capabilities
         uses: actions/upload-artifact@v4
         with:

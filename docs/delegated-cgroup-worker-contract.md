@@ -146,3 +146,83 @@ before/after private local events, observed termination and
 oracle fixture. Then investigate atomic worker startup,
 process-tree cleanup and permission/cleanup fault injection. No
 unobserved Linux/macOS/Windows capability may be marked supported.
+
+
+## Phase 2c: independently checked delegated-host evidence bundle
+
+The opt-in command now emits source-checkable per-case kernel evidence
+**only** after corresponding operations succeed. For each `under` and
+`over` experiment it reports:
+
+- Exactly read-back `memory.max=67108864` (64 MiB), and verified
+  directly owned Worker PID membership in `cgroup.procs`.
+- Raw private `memory.events.local` `max/oom/oom_kill` counters
+  **before** and **after**, plus the computed delta.
+- The direct worker's success/failure status and the positive
+  `24+3i` Full Complex WMC oracle proof.
+- The owned cgroup's `populated 0` and **successful removal**
+  acknowledgement. These are distinct observations, not assumptions
+  derived from direct-worker exit alone.
+
+A separate stdlib-only Python verifier
+(`benchmarks/rust_core/tools/delegated_host_evidence.py`) checks the
+exact schema, uniqueness and consistency of every required marker,
+zero counter increases for the positive case, strict positive local
+`max`/`oom`/`oom_kill` increases plus unsuccessful exit for
+the negative case, both cleanup witnesses, and the final real
+enforcement verdict. A missing, duplicate, contradictory, regressing,
+or `NOT_RUN` marker **fails** qualification. An accepted record
+is a limited kernel-observation witness on a controlled private leaf,
+not a universal OOM-causality proof.
+
+The ordinary five-OS CI runs `--self-test` **only**, rejecting
+synthetic counterexamples. It must print
+`DELEGATED_EVIDENCE_REAL_ENFORCEMENT=NOT_RUN`.
+Its passing status cannot be called a delegated-host OOM experiment.
+
+### Privileged-host admission (manual and opt-in)
+
+Run **only** on an already delegated, non-root Linux host with
+a clean source checkout, a private non-root subtree below
+`/sys/fs/cgroup` and the `memory` controller enabled in that
+subtree's `cgroup.subtree_control`. Do **not** configure an
+untrusted shared subtree, use `sudo`, modify a host-wide controller,
+or ask the GitHub-hosted runner to fabricate delegation.
+
+```sh
+python3 benchmarks/rust_core/tools/delegated_host_evidence.py \
+  --delegated-run /sys/fs/cgroup/YOUR_PRIVATE_DELEGATED_SUBTREE \
+  --output /tmp/rawmocs-delegated-memory-evidence.json \
+  --confirm
+```
+
+The wrapper requires the explicit `--confirm` opt-in, checks that
+the Git tree is clean, records the exact Git commit and kernel
+release, and runs the existing fixed 4 MiB / 192 MiB workloads
+in their uniquely owned **64 MiB** capped child cgroups.
+It captures both stdout and stderr and writes a new JSON bundle
+outside the source checkout; it refuses to overwrite existing
+evidence. For an external deadline failure it attempts to kill the
+**whole cooperative Cargo/Worker process group** rather than just
+the Cargo PID, but cgroup directory teardown remains **UNVERIFIED**
+unless the underlying bounded Rust test completed its own cleanup
+checks. An administrator must separately inspect any residual
+private cgroup on an interrupted host; no automatic global cleanup
+or privilege escalation is attempted. It emits
+`DELEGATED_EVIDENCE_REAL_ENFORCEMENT=QUALIFIED_SCOPED` **only**
+after both cases pass the independent evidence gate. Otherwise it
+exits nonzero and records `NOT_VALIDATED`; if the subprocess never
+started it records the blocker where possible.
+
+The evidence file can include a private cgroup path, host kernel
+details and captured stderr. Review/redact host-identifying paths
+before publishing. No automatic upload to the public repository,
+Actions artifact store or Linear is performed.
+
+This source-only research contract still does **not** prove
+full-lifetime memory isolation (the cooperative Worker starts before
+its PID is assigned), that all descendants are contained, or that
+`oom_kill` could never result from unrelated global memory
+pressure. True production qualification requires corresponding
+isolated-host admission and failure injection; macOS and Windows
+have separate resource semantics.

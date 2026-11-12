@@ -6,12 +6,14 @@ on:
       - "benchmarks/rust_core/examples/delegated_cgroup_contract.rs"
       - ".github/workflows/delegated-cgroup-contract.yml"
       - "benchmarks/rust_core/tools/delegated_host_evidence.py"
+      - "benchmarks/rust_core/tools/verify_delegated_evidence.py"
   push:
     branches: [main]
     paths:
       - "benchmarks/rust_core/examples/delegated_cgroup_contract.rs"
       - ".github/workflows/delegated-cgroup-contract.yml"
       - "benchmarks/rust_core/tools/delegated_host_evidence.py"
+      - "benchmarks/rust_core/tools/verify_delegated_evidence.py"
   workflow_dispatch:
 
 permissions:
@@ -93,6 +95,13 @@ jobs:
               grep -Fx "DELEGATED_PREFLIGHT_REASON=NON_LINUX" "$RUNNER_TEMP/delegated-preflight.log"
               ;;
           esac
+      - name: Verify archived evidence consistency without kernel access
+        shell: bash
+        run: |
+          set -euo pipefail
+          python benchmarks/rust_core/tools/verify_delegated_evidence.py --self-test | tee "$RUNNER_TEMP/delegated-archive-replay.log"
+          grep -Fx "DELEGATED_ARCHIVE_REPLAY_NEGATIVE_CONTROLS=PASS" "$RUNNER_TEMP/delegated-archive-replay.log"
+          grep -Fx "DELEGATED_ARCHIVE_KERNEL_ENFORCEMENT=NOT_RUN" "$RUNNER_TEMP/delegated-archive-replay.log"
       - name: Archive source-linked platform capabilities
         uses: actions/upload-artifact@v4
         with:

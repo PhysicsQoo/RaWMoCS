@@ -324,7 +324,7 @@ mod linux {
             })
         }
 
-        fn set_limit(&self) -> Result<(), String> {
+        fn set_limit(&self, mode: &str) -> Result<(), String> {
             fs::write(self.path.join("memory.max"), LIMIT_BYTES.to_string())
                 .map_err(|e| format!("RESOURCE_LIMIT_UNAVAILABLE: memory.max write: {e}"))?;
             let actual = fs::read_to_string(self.path.join("memory.max"))
@@ -332,6 +332,7 @@ mod linux {
             if actual.trim() != LIMIT_BYTES.to_string() {
                 return Err("RESOURCE_LIMIT_UNAVAILABLE: memory.max readback mismatch".into());
             }
+            println!("DELEGATED_{mode}_MEMORY_MAX_READBACK={LIMIT_BYTES}");
             Ok(())
         }
 
@@ -362,6 +363,7 @@ mod linux {
             if !membership.lines().any(|s| s.trim() == pid.to_string()) {
                 return Err("RESOURCE_LIMIT_UNAVAILABLE: worker PID membership unverified".into());
             }
+            println!("DELEGATED_{mode}_WORKER_PID_MEMBERSHIP=PASS");
             let child = self.child.as_mut().ok_or("worker ownership lost")?;
             let mut stdin = child.stdin.take().ok_or("worker gate missing")?;
             stdin
@@ -392,7 +394,7 @@ mod linux {
             }
         }
 
-        fn finish(&mut self) -> Result<(), String> {
+        fn finish(&mut self, mode: &str) -> Result<(), String> {
             if self.child.is_some() {
                 return Err("worker still owned at cgroup cleanup".into());
             }
@@ -401,6 +403,7 @@ mod linux {
                 let state = fs::read_to_string(self.path.join("cgroup.events"))
                     .map_err(|e| format!("cgroup.events verification: {e}"))?;
                 if state.lines().any(|line| line.trim() == "populated 0") {
+                    println!("DELEGATED_{mode}_POPULATED_ZERO=PASS");
                     break;
                 }
                 if since.elapsed() > Duration::from_secs(3) {
@@ -410,6 +413,7 @@ mod linux {
             }
             fs::remove_dir(&self.path).map_err(|e| format!("owned cgroup removal failed: {e}"))?;
             self.removed = true;
+            println!("DELEGATED_{mode}_CGROUP_REMOVED=PASS");
             Ok(())
         }
     }
@@ -437,12 +441,20 @@ mod linux {
 
     fn run_case(parent: &Path, mode: &str, over: bool) -> Result<(), String> {
         let mut owned = OwnedGroup::create(parent, mode)?;
-        owned.set_limit()?;
+        owned.set_limit(mode)?;
         let baseline = owned.events()?;
+        println!(
+            "DELEGATED_{mode}_EVENTS_BEFORE=max:{},oom:{},oom_kill:{}",
+            baseline.max, baseline.oom, baseline.oom_kill
+        );
         owned.admit(mode)?;
         let evidence = owned.wait_direct()?;
         let observed = owned.events()?;
         let change = delta(baseline, observed)?;
+        println!(
+            "DELEGATED_{mode}_EVENTS_AFTER=max:{},oom:{},oom_kill:{}",
+            observed.max, observed.oom, observed.oom_kill
+        );
         let worker_wmc_proved = !over && evidence.stdout.trim() == WMC_PROOF;
         let normal_success = evidence.status.success() && worker_wmc_proved;
         let verdict = classify(
@@ -458,7 +470,11 @@ mod linux {
             "DELEGATED_{mode}_COUNTERS=max:{},oom:{},oom_kill:{}",
             change.max, change.oom, change.oom_kill
         );
-        owned.finish()?;
+        println!(
+            "DELEGATED_{mode}_DIRECT_EXIT={}",
+            if evidence.status.success() { "SUCCESS" } else { "FAILURE" }
+        );
+        owned.finish(mode)?;
         if !over && normal_success {
             println!("DELEGATED_UNDER_WORKER_WMC_ORACLE=PASS");
         }

@@ -33,10 +33,14 @@ impl Gaussian {
         Self::new(&self.real + &rhs.real, &self.imag + &rhs.imag)
     }
     pub fn mul(&self, rhs: &Self) -> Self {
-        Self::new(
-            &self.real * &rhs.real - &self.imag * &rhs.imag,
-            &self.real * &rhs.imag + &self.imag * &rhs.real,
-        )
+        // Three exact rational products instead of the four in the direct formula.
+        // The extra rational sums must be evaluated against normalization costs.
+        let ac = &self.real * &rhs.real;
+        let bd = &self.imag * &rhs.imag;
+        let a_sum = &self.real + &self.imag;
+        let b_sum = &rhs.real + &rhs.imag;
+        let cross = &a_sum * &b_sum;
+        Self::new(&ac - &bd, (&cross - &ac) - &bd)
     }
 }
 

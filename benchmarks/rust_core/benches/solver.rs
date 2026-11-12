@@ -113,3 +113,19 @@ fn medium_independent_components(variables: usize) {
         solve(divan::black_box(pair_components(variables))).expect("bounded medium components"),
     );
 }
+
+fn classic_four_product(a: &Gaussian, b: &Gaussian) -> Gaussian {
+    Gaussian::new(
+        &a.real * &b.real - &a.imag * &b.imag,
+        &a.real * &b.imag + &a.imag * &b.real,
+    )
+}
+
+// Same source-pinned arithmetic operands as the stable complex_rational_multiply
+// benchmark, with the previous four-rational-products formula. This paired
+// native Simulation benchmark isolates arithmetic from runner differences.
+#[divan::bench]
+fn complex_rational_four_product_reference() {
+    let (a, b) = operands();
+    divan::black_box(classic_four_product(divan::black_box(a), divan::black_box(b)));
+}

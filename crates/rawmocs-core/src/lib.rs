@@ -283,8 +283,7 @@ impl Engine<'_> {
             ));
         }
 
-        let pieces = components(&residual, &active, self.p.variables);
-        if pieces.len() > 1 {
+        if let Some(pieces) = split_components(&residual, &active, self.p.variables) {
             self.stats.decompositions += 1;
             let mut value = Gaussian::one();
             for (c, s) in pieces {
@@ -360,11 +359,11 @@ fn root(parent: &mut [usize], mut x: usize) -> usize {
     }
     x
 }
-fn components(
+fn split_components(
     clauses: &[Clause],
     scope: &[usize],
     variables: usize,
-) -> Vec<(Vec<Clause>, Vec<usize>)> {
+) -> Option<Vec<(Vec<Clause>, Vec<usize>)>> {
     let mut parent: Vec<_> = (0..=variables).collect();
     for c in clauses {
         let first = c[0].unsigned_abs() as usize;
@@ -373,6 +372,15 @@ fn components(
             let b = root(&mut parent, lit.unsigned_abs() as usize);
             parent[b] = a;
         }
+    }
+    // Most residuals stay connected. Avoid allocating and cloning a full
+    // partition when no decomposition can be performed.
+    let Some(&first) = scope.first() else {
+        return None;
+    };
+    let first_root = root(&mut parent, first);
+    if scope.iter().all(|&var| root(&mut parent, var) == first_root) {
+        return None;
     }
     let mut groups: BTreeMap<usize, (Vec<usize>, Vec<Clause>)> = BTreeMap::new();
     for &var in scope {
@@ -390,8 +398,10 @@ fn components(
             .1
             .push(c.clone());
     }
-    groups
-        .into_values()
-        .map(|(vars, cls)| (cls, vars))
-        .collect()
+    Some(
+        groups
+            .into_values()
+            .map(|(vars, cls)| (cls, vars))
+            .collect(),
+    )
 }

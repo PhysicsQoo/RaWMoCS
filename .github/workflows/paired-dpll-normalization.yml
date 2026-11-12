@@ -1,0 +1,67 @@
+name: Paired DPLL normalization research (Linux)
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/paired-dpll-normalization.yml"
+      - "benchmarks/rust_core/tools/paired_dpll_normalization.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: paired-dpll-normalization-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Checkout fixed baseline (not a moving branch)
+        uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/RaWMoCS
+          ref: 9984e9c6cc9b3f9d24896946c0826b1974a493b7
+          path: baseline
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build source-locked release binaries with the same compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C baseline rev-parse HEAD)" = 9984e9c6cc9b3f9d24896946c0826b1974a493b7
+          cargo build --locked --release --manifest-path baseline/benchmarks/rust_core/Cargo.toml --example cache_profile
+          cargo build --locked --release --manifest-path benchmarks/rust_core/Cargo.toml --example cache_profile
+      - name: Alternate independent full complex WMC workers on one runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/dpll-paired"
+          for round in 0 1 2; do
+            if (( round % 2 == 0 )); then order="baseline candidate"; else order="candidate baseline"; fi
+            for kind in $order; do
+              if [[ "$kind" = baseline ]]; then
+                binary=baseline/benchmarks/rust_core/target/release/examples/cache_profile
+              else
+                binary=benchmarks/rust_core/target/release/examples/cache_profile
+              fi
+              "$binary" --cycle-suite > "$RUNNER_TEMP/dpll-paired/$kind-$round.csv" 2> "$RUNNER_TEMP/dpll-paired/$kind-$round.stderr"
+              test "$(wc -l < "$RUNNER_TEMP/dpll-paired/$kind-$round.csv")" -eq 19
+              grep -qF 'GUARD_MEMORY_DENIED=PASS STATUS=RESOURCE_FAILURE' "$RUNNER_TEMP/dpll-paired/$kind-$round.stderr"
+              grep -qF 'GUARD_TIMEOUT=PASS STATUS=TIMEOUT' "$RUNNER_TEMP/dpll-paired/$kind-$round.stderr"
+            done
+          done
+          python3 benchmarks/rust_core/tools/paired_dpll_normalization.py "$RUNNER_TEMP/dpll-paired" | tee "$RUNNER_TEMP/dpll-paired/summary.txt"
+      - name: Archive paired same-host measurements (not a speedup certificate)
+        uses: actions/upload-artifact@v4
+        with:
+          name: dpll-normalization-paired-linux
+          path: ${{ runner.temp }}/dpll-paired/
+          retention-days: 30
+          if-no-files-found: error

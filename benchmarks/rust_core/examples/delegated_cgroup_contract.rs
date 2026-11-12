@@ -190,7 +190,7 @@ mod linux {
     }
 
     fn classify(success: bool, over_limit: bool, change: Events) -> Verdict {
-        if !over_limit && success && change.oom_kill == 0 {
+        if !over_limit && success && change.max == 0 && change.oom == 0 && change.oom_kill == 0 {
             Verdict::Completed
         } else if over_limit && !success && change.max > 0 && change.oom > 0 && change.oom_kill > 0
         {
@@ -223,6 +223,10 @@ mod linux {
             oom_kill: 0,
         };
         if classify(true, false, no_event) != Verdict::Completed
+            || classify(true, false, ambiguous_exit) != Verdict::UnknownWorkerFailure
+            || classify(true, false, changed) != Verdict::UnknownWorkerFailure
+            || classify(false, false, no_event) != Verdict::UnknownWorkerFailure
+            || classify(false, true, no_event) != Verdict::UnknownWorkerFailure
             || classify(false, true, changed) != Verdict::LocalCgroupOomEvidence
             || classify(false, true, ambiguous_exit) != Verdict::UnknownWorkerFailure
             || classify(true, true, changed) != Verdict::UnknownWorkerFailure

@@ -182,9 +182,9 @@ fn guard_negative_controls(exe: &std::path::Path) -> Result<(), String> {
             Ok(())
         }
         GuardedExit::Success => Err("timeout control unexpectedly succeeded".into()),
-        GuardedExit::ResourceFailure(status) => {
-            Err(format!("timeout control: worker exited prematurely {status}"))
-        }
+        GuardedExit::ResourceFailure(status) => Err(format!(
+            "timeout control: worker exited prematurely {status}"
+        )),
     }
 }
 

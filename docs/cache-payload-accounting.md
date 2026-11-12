@@ -43,3 +43,31 @@ isolated worker, define a cache byte-admission policy with precisely
 specified accounting, then implement process-level memory/time cancellation
 that fails closed. A `HashMap` payload counter by itself cannot isolate an
 out-of-memory solver.
+
+
+## Optional logical cache-admission quota
+
+The opt-in API solve_with_cache_payload_budget(problem, limits, budget)
+declines to store an otherwise valid memoization entry whenever any
+cumulative retained logical payload would exceed a CachePayloadBudget:
+
+- scope_items, clause_items and literal_items count elements stored in keys.
+- value_bits counts numerator and denominator significant bits of stored
+  exact Gaussian-rational counts.
+
+The existing cache_entries limit and the logical payload quota both apply.
+Rejected insertions increment stats.cache_payload_rejections but **do not**
+fail a solve, round a value, return an unknown, or change SAT semantics. The
+original solve() and solve_with_limits() continue to use their prior
+entry-count-only behavior.
+
+All admission checks use checked arithmetic and reject overflows. These
+quotas are **logical items and significant bits**, not bytes, physical RSS,
+HashMap allocation, transient rational normalization, a true OOM guard, or
+an OS process limit. For OS resource-denial/timeout experiments see the
+separate isolated Linux research profile; do not claim production safety
+from cache admission alone.
+
+An additive CodSpeed Simulation benchmark evaluates a 64-variable
+independent-component Full WMC fixture under the quota; the original native
+benchmark IDs and test fixtures are not modified.

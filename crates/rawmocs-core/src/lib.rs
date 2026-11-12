@@ -203,6 +203,12 @@ pub struct Stats {
     /// Entries rejected by the experimental observed-first-solve work proxy.
     #[cfg(feature = "cache-admission-research")]
     pub cache_work_proxy_rejections: u64,
+    /// Number of decisions where an actual non-unit pivot was selected.
+    #[cfg(feature = "branching-research")]
+    pub pivot_decisions: u64,
+    /// Min-fill deliberately falls back to frequency on oversized residuals.
+    #[cfg(feature = "branching-research")]
+    pub pivot_fallbacks: u64,
     #[cfg(feature = "cache-cost-profile")]
     pub cache_cost: CacheCostProfile,
 }
@@ -240,6 +246,8 @@ struct Engine<'a> {
     min_cache_clauses: usize,
     #[cfg(feature = "cache-admission-research")]
     work_proxy_ratio: Option<u64>,
+    #[cfg(feature = "branching-research")]
+    pivot_policy: PivotPolicy,
     stats: Stats,
     cache: HashMap<Key, Outcome>,
 }
@@ -250,6 +258,26 @@ pub struct Limits {
     pub depth: usize,
     pub cache_entries: usize,
 }
+
+/// Independent *research-only* DPLL variable order choices. No alternate
+/// choice affects default solver builds unless explicitly requested.
+#[cfg(feature = "branching-research")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PivotPolicy {
+    Frequency,
+    ShortClause,
+    MinFill,
+}
+
+#[cfg(feature = "branching-research")]
+pub fn solve_with_pivot_policy(
+    p: &Problem,
+    limits: Limits,
+    policy: PivotPolicy,
+) -> Result<Report, SolveError> {
+    solve_with_solver_policy(p, limits, None, 0, None, policy)
+}
+
 impl Default for Limits {
     fn default() -> Self {
         Self {
@@ -331,6 +359,25 @@ fn solve_with_research_cache_threshold(
     min_cache_clauses: usize,
     work_proxy_ratio: Option<u64>,
 ) -> Result<Report, SolveError> {
+    solve_with_solver_policy(
+        p,
+        limits,
+        cache_payload_budget,
+        min_cache_clauses,
+        work_proxy_ratio,
+        #[cfg(feature = "branching-research")]
+        PivotPolicy::Frequency,
+    )
+}
+
+fn solve_with_solver_policy(
+    p: &Problem,
+    limits: Limits,
+    cache_payload_budget: Option<CachePayloadBudget>,
+    min_cache_clauses: usize,
+    work_proxy_ratio: Option<u64>,
+    #[cfg(feature = "branching-research")] pivot_policy: PivotPolicy,
+) -> Result<Report, SolveError> {
     #[cfg(not(feature = "cache-admission-research"))]
     let _ = (min_cache_clauses, work_proxy_ratio);
     let mut engine = Engine {
@@ -343,6 +390,8 @@ fn solve_with_research_cache_threshold(
         min_cache_clauses,
         #[cfg(feature = "cache-admission-research")]
         work_proxy_ratio,
+        #[cfg(feature = "branching-research")]
+        pivot_policy,
         stats: Stats::default(),
         cache: HashMap::new(),
     };
@@ -624,6 +673,23 @@ impl Engine<'_> {
 
         // Chronological DPLL uses the frequency table from the single
         // residual scan. Do not divide by weights or assume zero => UNSAT.
+        #[cfg(feature = "branching-research")]
+        let var = {
+            self.stats.pivot_decisions += 1;
+            match self.pivot_policy {
+                PivotPolicy::Frequency => frequency_pivot(&active, &frequency),
+                PivotPolicy::ShortClause => short_clause_pivot(&residual, &active, &frequency),
+                PivotPolicy::MinFill => {
+                    if active.len() > 64 || residual.iter().any(|c| c.len() > 16) {
+                        self.stats.pivot_fallbacks += 1;
+                        frequency_pivot(&active, &frequency)
+                    } else {
+                        min_fill_pivot(&residual, &active, &frequency)
+                    }
+                }
+            }
+        };
+        #[cfg(not(feature = "branching-research"))]
         let var = *active
             .iter()
             .max_by_key(|&&v| frequency[v])
@@ -645,6 +711,78 @@ impl Engine<'_> {
             start_nodes,
         ))
     }
+}
+
+/// Preserve the original last-variable tie break of Iterator::max_by_key.
+#[cfg(feature = "branching-research")]
+fn frequency_pivot(active: &[usize], frequency: &[usize]) -> usize {
+    *active
+        .iter()
+        .max_by_key(|&&v| frequency[v])
+        .expect("nonempty residual has an active variable")
+}
+
+/// Integer Jeroslow-Wang-style short-clause preference, with ordinary
+/// frequency as a deterministic second key and original last-tie semantics.
+#[cfg(feature = "branching-research")]
+fn short_clause_pivot(residual: &[Clause], active: &[usize], frequency: &[usize]) -> usize {
+    let mut scores = vec![0u64; frequency.len()];
+    for clause in residual {
+        let weight = 1u64 << (8usize.saturating_sub(clause.len().min(8)));
+        for &lit in clause {
+            let var = lit.unsigned_abs() as usize;
+            scores[var] = scores[var].saturating_add(weight);
+        }
+    }
+    *active
+        .iter()
+        .max_by_key(|&&v| (scores[v], frequency[v]))
+        .expect("nonempty residual has an active variable")
+}
+
+/// A deliberately bounded, explicitly expensive primal-graph min-fill
+/// heuristic. Call only for <=64 active vars and clauses of length <=16.
+/// Among equal missing edges use frequency and the original tie break.
+#[cfg(feature = "branching-research")]
+fn min_fill_pivot(residual: &[Clause], active: &[usize], frequency: &[usize]) -> usize {
+    let size = active.len();
+    let mut edges = vec![vec![false; size]; size];
+    for clause in residual {
+        let positions: Vec<_> = clause
+            .iter()
+            .map(|lit| {
+                active
+                    .iter()
+                    .position(|&v| v == lit.unsigned_abs() as usize)
+                    .expect("every non-free literal has an active variable")
+            })
+            .collect();
+        for (index, &a) in positions.iter().enumerate() {
+            for &b in positions.iter().skip(index + 1) {
+                edges[a][b] = true;
+                edges[b][a] = true;
+            }
+        }
+    }
+    let mut best = 0usize;
+    let mut best_score = (std::cmp::Reverse(usize::MAX), 0usize);
+    for (index, &var) in active.iter().enumerate() {
+        let neighbors: Vec<_> = (0..size).filter(|&j| edges[index][j]).collect();
+        let mut missing = 0usize;
+        for (position, &a) in neighbors.iter().enumerate() {
+            for &b in neighbors.iter().skip(position + 1) {
+                if !edges[a][b] {
+                    missing += 1;
+                }
+            }
+        }
+        let score = (std::cmp::Reverse(missing), frequency[var]);
+        if score >= best_score {
+            best = var;
+            best_score = score;
+        }
+    }
+    best
 }
 
 fn normalize(clauses: Vec<Clause>) -> Vec<Clause> {

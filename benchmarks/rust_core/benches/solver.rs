@@ -103,7 +103,10 @@ fn main() {
                 oracle = reference_four_products(&oracle, &expected_block);
             }
             assert!(result.satisfiable, "SAT control must remain SAT");
-            assert_eq!(result.count, oracle, "exact independent block-product oracle");
+            assert_eq!(
+                result.count, oracle,
+                "exact independent block-product oracle"
+            );
         }
     }
     divan::main();

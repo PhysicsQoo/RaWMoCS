@@ -202,7 +202,13 @@ release, and runs the existing fixed 4 MiB / 192 MiB workloads
 in their uniquely owned **64 MiB** capped child cgroups.
 It captures both stdout and stderr and writes a new JSON bundle
 outside the source checkout; it refuses to overwrite existing
-evidence. It emits
+evidence. For an external deadline failure it attempts to kill the
+**whole cooperative Cargo/Worker process group** rather than just
+the Cargo PID, but cgroup directory teardown remains **UNVERIFIED**
+unless the underlying bounded Rust test completed its own cleanup
+checks. An administrator must separately inspect any residual
+private cgroup on an interrupted host; no automatic global cleanup
+or privilege escalation is attempted. It emits
 `DELEGATED_EVIDENCE_REAL_ENFORCEMENT=QUALIFIED_SCOPED` **only**
 after both cases pass the independent evidence gate. Otherwise it
 exits nonzero and records `NOT_VALIDATED`; if the subprocess never

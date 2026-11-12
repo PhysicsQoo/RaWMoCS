@@ -4,6 +4,8 @@
 use rawmocs_benchmarks::admission_holdout::{
     guarded_graph, independent_exact_wmc as graph_oracle, Graph,
 };
+#[cfg(feature = "branching-research")]
+use rawmocs_benchmarks::branching_holdout::{fixture as branching_fixture, BranchingFamily};
 use rawmocs_benchmarks::cache_reuse::{independent_exact_wmc, repeated_residuals};
 use rawmocs_benchmarks::expensive_reuse::{guarded_cycle_residual, independent_cycle_wmc};
 use rawmocs_benchmarks::scalability::{expected, fixture, Family};
@@ -15,6 +17,8 @@ use rawmocs_core::{
 };
 #[cfg(feature = "cache-admission-research")]
 use rawmocs_core::{solve_with_min_cache_clauses, solve_with_observed_work_ratio};
+#[cfg(feature = "branching-research")]
+use rawmocs_core::{solve_with_pivot_policy, PivotPolicy};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -950,6 +954,126 @@ fn work_proxy_suite() -> Result<(), String> {
     Ok(())
 }
 
+// Branch-order ablation uses a distinct feature and the unaltered cache
+// admission contract: either disabled or exactly the normal legacy policy.
+#[cfg(feature = "branching-research")]
+fn branching_worker(
+    family: &str,
+    variables: usize,
+    trial: usize,
+    cache: &str,
+    pivot: &str,
+) -> Result<(), String> {
+    if ![8, 10, 12].contains(&variables) || trial >= 3 {
+        return Err("branching holdouts require n=8/10/12 and trials 0..3".into());
+    }
+    let kind = BranchingFamily::parse(family)
+        .ok_or_else(|| "unknown source-pinned branching family".to_string())?;
+    let pivot_policy = match pivot {
+        "frequency" => PivotPolicy::Frequency,
+        "short" => PivotPolicy::ShortClause,
+        "minfill" => PivotPolicy::MinFill,
+        _ => return Err("pivot must be frequency|short|minfill".into()),
+    };
+    let cache_entries = match cache {
+        "off" => 0,
+        "legacy" => Limits::default().cache_entries,
+        _ => return Err("cache must be off|legacy".into()),
+    };
+    let (problem, expected_sat, expected_count) = branching_fixture(kind, variables);
+    let limits = Limits {
+        cache_entries,
+        ..Limits::default()
+    };
+    let started = Instant::now();
+    let answer = solve_with_pivot_policy(&problem, limits, pivot_policy)
+        .map_err(|e| format!("{family}/{variables}/{trial}/{cache}/{pivot}: {e}"))?;
+    let elapsed_ns = started.elapsed().as_nanos();
+    if answer.satisfiable != expected_sat || answer.count != expected_count {
+        return Err("independent full Gaussian WMC / SAT oracle disagreed".into());
+    }
+    let stats = &answer.stats;
+    if stats.pivot_decisions == 0 {
+        return Err("branching experiment never selected a nontrivial pivot".into());
+    }
+    if pivot != "minfill" && stats.pivot_fallbacks != 0 {
+        return Err("non-minfill pivot unexpectedly recorded fallback".into());
+    }
+    if cache == "off" && (stats.cache_hits != 0 || stats.cache_entries != 0) {
+        return Err("cache-off pivot worker performed cached work".into());
+    }
+    if stats.cache_min_clause_rejections != 0
+        || stats.cache_work_proxy_rejections != 0
+        || stats.cache_payload_rejections != 0
+    {
+        return Err("cache admission policy confounded branching experiment".into());
+    }
+    let peak = peak_rss_kib()?;
+    println!(
+        "{family},{variables},{trial},{cache},{pivot},{elapsed_ns},{peak},{},{},{},{},{},{}",
+        stats.nodes,
+        stats.cache_hits,
+        stats.cache_entries,
+        stats.decompositions,
+        stats.pivot_decisions,
+        stats.pivot_fallbacks,
+    );
+    Ok(())
+}
+
+#[cfg(feature = "branching-research")]
+fn launch_branching(
+    exe: &std::path::Path,
+    family: &str,
+    variables: usize,
+    trial: usize,
+    cache: &str,
+    pivot: &str,
+) -> Result<(), String> {
+    let n = variables.to_string();
+    let t = trial.to_string();
+    match launch_guarded(
+        exe,
+        &["--branch-worker", family, &n, cache, pivot, &t],
+        512,
+        Duration::from_secs(5),
+    )? {
+        GuardedExit::Success => Ok(()),
+        GuardedExit::Failed(status) => Err(format!(
+            "{family}/{variables}/{trial}/{cache}/{pivot}: WORKER_FAILURE {status}"
+        )),
+        GuardedExit::Timeout => Err(format!(
+            "{family}/{variables}/{trial}/{cache}/{pivot}: TIMEOUT; no certified result"
+        )),
+    }
+}
+
+#[cfg(feature = "branching-research")]
+fn branching_suite() -> Result<(), String> {
+    if !cfg!(target_os = "linux") {
+        return Err("branching VmHWM study requires Linux".into());
+    }
+    let exe = std::env::current_exe().map_err(|e| format!("executable path: {e}"))?;
+    guard_negative_controls(&exe)?;
+    println!(
+        "family,variables,trial,cache,pivot,solve_wall_ns,process_peak_rss_kib,nodes,cache_hits,cache_entries,decompositions,pivot_decisions,pivot_fallbacks"
+    );
+    const PIVOTS: [&str; 3] = ["frequency", "short", "minfill"];
+    for family in ["ring", "chorded", "mixed", "skewed"] {
+        for variables in [8, 10, 12] {
+            for trial in 0..3 {
+                for cache in ["off", "legacy"] {
+                    for offset in 0..PIVOTS.len() {
+                        let pivot = PIVOTS[(trial + offset) % PIVOTS.len()];
+                        launch_branching(&exe, family, variables, trial, cache, pivot)?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn run() -> Result<(), String> {
     let args: Vec<_> = std::env::args().collect();
     match args.as_slice() {
@@ -963,6 +1087,8 @@ fn run() -> Result<(), String> {
         [_, flag] if flag == "--admission-suite" => admission_suite(),
         #[cfg(feature = "cache-admission-research")]
         [_, flag] if flag == "--work-suite" => work_proxy_suite(),
+        #[cfg(feature = "branching-research")]
+        [_, flag] if flag == "--branch-suite" => branching_suite(),
         [_, flag] if flag == "--stress-memory" => {
             let mut bytes: Vec<u8> = Vec::new();
             if bytes.try_reserve_exact(1024 * 1024 * 1024).is_err() {
@@ -1002,6 +1128,12 @@ fn run() -> Result<(), String> {
             let trial = trial.parse::<usize>().map_err(|e| format!("trial: {e}"))?;
             work_proxy_worker(family, variables, trial, policy)
         }
+        #[cfg(feature = "branching-research")]
+        [_, flag, family, variables, cache, pivot, trial] if flag == "--branch-worker" => {
+            let variables = variables.parse::<usize>().map_err(|e| format!("variables: {e}"))?;
+            let trial = trial.parse::<usize>().map_err(|e| format!("trial: {e}"))?;
+            branching_worker(family, variables, trial, cache, pivot)
+        }
         [_, flag, vertices, policy, trial] if flag == "--cycle-worker" => {
             let vertices = vertices.parse::<usize>().map_err(|e| format!("vertices: {e}"))?;
             let trial = trial.parse::<usize>().map_err(|e| format!("trial: {e}"))?;
@@ -1014,7 +1146,7 @@ fn run() -> Result<(), String> {
                 .map_err(|e| format!("cache cap: {e}"))?;
             worker(name, variables, cache_cap)
         }
-        _ => Err("usage: cache_profile [--work-suite (requires cache-admission-research)|--work-worker family variables off|legacy|proxy1|proxy4 trial|--admission-suite (requires cache-admission-research)|--admission-worker family vertices off|legacy|min4|min12 trial|--cost-suite (requires cache-cost-profile feature)|--cost-worker vertices off|on|tight trial|--cycle-suite|--cycle-worker vertices off|on trial|--repeat-suite|--repeat-worker gadgets off|legacy|tight|roomy trial|--quota-suite|--quota-worker chain|pairs|cache n legacy|tight|roomy] [--worker chain|pairs|cache n cache_cap] [--stress-memory|--stress-sleep]".into()),
+        _ => Err("usage: cache_profile [--branch-suite (requires branching-research)|--branch-worker family variables off|legacy frequency|short|minfill trial|--work-suite (requires cache-admission-research)|--work-worker family variables off|legacy|proxy1|proxy4 trial|--admission-suite (requires cache-admission-research)|--admission-worker family vertices off|legacy|min4|min12 trial|--cost-suite (requires cache-cost-profile feature)|--cost-worker vertices off|on|tight trial|--cycle-suite|--cycle-worker vertices off|on trial|--repeat-suite|--repeat-worker gadgets off|legacy|tight|roomy trial|--quota-suite|--quota-worker chain|pairs|cache n legacy|tight|roomy] [--worker chain|pairs|cache n cache_cap] [--stress-memory|--stress-sleep]".into()),
     }
 }
 

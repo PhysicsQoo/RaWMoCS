@@ -550,7 +550,15 @@ impl Engine<'_> {
         self.stats.nodes += 1;
         // With caching disabled, do not clone a scope or duplicate residual
         // clauses into a Key that will never be looked up or stored.
-        let mut residual = normalize(clauses);
+        // The root may contain arbitrary, unsorted input clauses. Every recursive
+        // call receives either an assigned canonical residual or a component
+        // partition of one. Both preserve each clause's sorted, tautology-free
+        // form; only the outer clause ordering and duplicates can change.
+        let mut residual = if depth == 0 {
+            normalize(clauses)
+        } else {
+            normalize_child(clauses)
+        };
         let key = if self.cache_budget == 0 {
             None
         } else {
@@ -795,9 +803,18 @@ fn normalize(clauses: Vec<Clause>) -> Vec<Clause> {
         }
         result.push(c);
     }
-    result.sort();
-    result.dedup();
-    result
+    normalize_child(result)
+}
+
+// Only called with clauses derived from normalize(), assign(), or a
+// split_components() partition. Assignment removes literals but never changes
+// their relative order or introduces a tautology; partitions copy whole clauses.
+// Do not repeat per-clause sorting, de-duplication, and tautology checks on
+// every DPLL node. Re-canonicalize the clause collection for exact cache keys.
+fn normalize_child(mut clauses: Vec<Clause>) -> Vec<Clause> {
+    clauses.sort();
+    clauses.dedup();
+    clauses
 }
 fn assign(clauses: &[Clause], literal: i32) -> Vec<Clause> {
     clauses
@@ -860,4 +877,52 @@ fn split_components(
             .map(|(vars, cls)| (cls, vars))
             .collect(),
     )
+}
+
+#[cfg(test)]
+mod residual_canonicalization_tests {
+    use super::{assign, normalize, normalize_child, split_components, Clause};
+
+    #[test]
+    fn recursive_residuals_match_full_normalization_under_all_binary_assignments() {
+        // Includes a tautology, duplicate literals, repeated clauses,
+        // mixed signs, and branches producing empty/duplicate clauses.
+        let raw: Vec<Clause> = vec![
+            vec![1, 2], vec![1, 3], vec![-1, 3], vec![-1, -3],
+            vec![2, -3], vec![2, 3], vec![-2, 3], vec![-2, -3],
+            vec![1, -1, 4], vec![4, 4], vec![-4], vec![3, 4],
+            vec![4, 3], vec![-1, 2, 4],
+        ];
+        let mut level = vec![normalize(raw)];
+        for var in 1_i32..=4 {
+            let mut next = Vec::new();
+            for parent in level {
+                for literal in [var, -var] {
+                    let assigned = assign(&parent, literal);
+                    assert!(assigned.iter().all(|clause| {
+                        clause.windows(2).all(|pair| pair[0] < pair[1])
+                    }));
+                    let reference = normalize(assigned.clone());
+                    let fast = normalize_child(assigned);
+                    assert_eq!(fast, reference, "failed for assignment {literal}");
+                    next.push(fast);
+                }
+            }
+            level = next;
+        }
+    }
+
+    #[test]
+    fn partitioned_residuals_match_full_normalization() {
+        let clauses = normalize(vec![
+            vec![1, 2], vec![-1, 2], vec![3, 4], vec![-3, 4],
+            vec![5, 6], vec![-5, -6], vec![3, 4],
+        ]);
+        let parts = split_components(&clauses, &[1, 2, 3, 4, 5, 6], 6)
+            .expect("fixture must split into three connected components");
+        assert_eq!(parts.len(), 3);
+        for (component, _) in parts {
+            assert_eq!(normalize_child(component.clone()), normalize(component));
+        }
+    }
 }

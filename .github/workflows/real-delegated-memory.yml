@@ -1,0 +1,79 @@
+name: Linux delegated cgroup real memory qualification
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/real-delegated-memory.yml"
+      - "benchmarks/rust_core/tools/ci_delegated_memory.sh"
+      - "benchmarks/rust_core/tools/delegated_host_evidence.py"
+      - "benchmarks/rust_core/examples/delegated_cgroup_contract.rs"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/real-delegated-memory.yml"
+      - "benchmarks/rust_core/tools/ci_delegated_memory.sh"
+      - "benchmarks/rust_core/tools/delegated_host_evidence.py"
+      - "benchmarks/rust_core/examples/delegated_cgroup_contract.rs"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: real-cgroup-memory-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  read-only-safety-gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Static Bash and source-level admission tests only
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n benchmarks/rust_core/tools/ci_delegated_memory.sh
+          bash benchmarks/rust_core/tools/ci_delegated_memory.sh --check
+          python benchmarks/rust_core/tools/delegated_host_evidence.py --self-test
+      - name: Refuse global cgroup mount as a delegation root
+        shell: bash
+        run: |
+          set -euo pipefail
+          python benchmarks/rust_core/tools/delegated_host_evidence.py --preflight /sys/fs/cgroup | tee "$RUNNER_TEMP/preflight-root.log"
+          grep -Fx "DELEGATED_PREFLIGHT_STATUS=UNAVAILABLE" "$RUNNER_TEMP/preflight-root.log"
+          grep -Fx "DELEGATED_PREFLIGHT_REASON=UNSAFE_MOUNT_ROOT_OR_PATH" "$RUNNER_TEMP/preflight-root.log"
+  real-memory-kernel-witness:
+    # Never run sudo/systemd delegation on pull_request code, even with a
+    # trusted-looking branch name. Only a reviewed main SHA can start this.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: read-only-safety-gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/rust_core -> target
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Qualify real memory.max and local OOM on private systemd-delegated subtree
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash benchmarks/rust_core/tools/ci_delegated_memory.sh --run
+      - name: No synthetic-to-kernel promotion
+        if: failure()
+        shell: bash
+        run: |
+          echo "DELEGATED_CI_REAL_ENFORCEMENT=NOT_VALIDATED"
+          echo "Private service delegation or kernel evidence failed. No OOM certification."

@@ -1,5 +1,6 @@
 //! Deterministic synthetic Rust performance fixtures, not QuPRS end-to-end CNFs.
 pub mod cache_reuse;
+pub mod expensive_reuse;
 pub mod scalability;
 use num_bigint::BigInt;
 use num_rational::BigRational;

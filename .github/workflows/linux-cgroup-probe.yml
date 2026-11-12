@@ -1,0 +1,79 @@
+name: Linux cgroup v2 source-only capability research
+
+on:
+  pull_request:
+    paths:
+      - "benchmarks/rust_core/examples/linux_cgroup_probe.rs"
+      - ".github/workflows/linux-cgroup-probe.yml"
+  push:
+    branches: [main]
+    paths:
+      - "benchmarks/rust_core/examples/linux_cgroup_probe.rs"
+      - ".github/workflows/linux-cgroup-probe.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cgroup-capability-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cgroup-capabilities:
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, windows-latest, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/rust_core -> target
+      - name: Check portable code formatting and warnings
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path benchmarks/rust_core/Cargo.toml --all -- --check
+          cargo clippy --locked --manifest-path benchmarks/rust_core/Cargo.toml --example linux_cgroup_probe -- -D warnings
+      - name: Discover without moving a process or setting memory.max
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked --manifest-path benchmarks/rust_core/Cargo.toml --example linux_cgroup_probe -- --self-test | tee "$RUNNER_TEMP/cgroup-v2-probe.log"
+          case "${{ runner.os }}" in
+            Linux)
+              grep -Eq '^CGROUP_V2_INTERFACE=(VISIBLE|UNAVAILABLE)$' "$RUNNER_TEMP/cgroup-v2-probe.log"
+              grep -Eq '^CGROUP_V2_MEMORY_EVENTS=(READABLE|UNAVAILABLE)$' "$RUNNER_TEMP/cgroup-v2-probe.log"
+              grep -Eq '^CGROUP_V2_MEMORY_SUBTREE=(ENABLED|NOT_ENABLED|UNAVAILABLE)$' "$RUNNER_TEMP/cgroup-v2-probe.log"
+              grep -Eq '^CGROUP_V2_SUBGROUP_CREATE=(AVAILABLE|UNAVAILABLE)$' "$RUNNER_TEMP/cgroup-v2-probe.log"
+              grep -Fx "CGROUP_V2_EVENT_PARSER_NEGATIVE_CONTROLS=PASS" "$RUNNER_TEMP/cgroup-v2-probe.log"
+              grep -Fx "CGROUP_V2_EVENT_DELTA_FIXTURE=PASS" "$RUNNER_TEMP/cgroup-v2-probe.log"
+              grep -Fx "CGROUP_V2_MEMORY_ENFORCEMENT=NOT_VALIDATED" "$RUNNER_TEMP/cgroup-v2-probe.log"
+              grep -Fx "CGROUP_V2_OOM_KILL_ATTRIBUTION=NOT_VALIDATED" "$RUNNER_TEMP/cgroup-v2-probe.log"
+              grep -Fx "CGROUP_V2_NO_PROCS_MOVED=PASS" "$RUNNER_TEMP/cgroup-v2-probe.log"
+              grep -Fx "CGROUP_V2_CAPABILITY_PROBE_CONFORMANCE=PASS" "$RUNNER_TEMP/cgroup-v2-probe.log"
+              ;;
+            Windows|macOS)
+              grep -Fx "CGROUP_V2_INTERFACE=UNSUPPORTED" "$RUNNER_TEMP/cgroup-v2-probe.log"
+              grep -Fx "CGROUP_V2_MEMORY_EVENTS=UNSUPPORTED" "$RUNNER_TEMP/cgroup-v2-probe.log"
+              grep -Fx "CGROUP_V2_CAPABILITY_PROBE_CONFORMANCE=UNSUPPORTED" "$RUNNER_TEMP/cgroup-v2-probe.log"
+              ;;
+            *)
+              echo "Unexpected OS ${{ runner.os }}" >&2; exit 1
+              ;;
+          esac
+      - name: Upload per-platform capability record
+        uses: actions/upload-artifact@v4
+        with:
+          name: cgroup-v2-probe-${{ matrix.os }}
+          path: ${{ runner.temp }}/cgroup-v2-probe.log
+          retention-days: 30
+          if-no-files-found: error

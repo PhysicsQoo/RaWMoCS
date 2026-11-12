@@ -1,0 +1,108 @@
+name: Source-locked DPLL branching policy research
+
+on:
+  pull_request:
+    paths:
+      - "crates/rawmocs-core/src/**"
+      - "crates/rawmocs-core/Cargo.toml"
+      - "benchmarks/rust_core/Cargo.toml"
+      - "benchmarks/rust_core/src/branching_holdout.rs"
+      - "benchmarks/rust_core/src/lib.rs"
+      - "benchmarks/rust_core/examples/cache_profile.rs"
+      - ".github/workflows/branching-research.yml"
+  push:
+    branches: [main]
+    paths:
+      - "crates/rawmocs-core/src/**"
+      - "crates/rawmocs-core/Cargo.toml"
+      - "benchmarks/rust_core/Cargo.toml"
+      - "benchmarks/rust_core/src/branching_holdout.rs"
+      - "benchmarks/rust_core/src/lib.rs"
+      - "benchmarks/rust_core/examples/cache_profile.rs"
+      - ".github/workflows/branching-research.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: branching-research-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  branching-oracle:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/rust_core -> target
+      - name: Rust format and feature-separated lint
+        run: |
+          cargo fmt --all -- --check
+          cargo fmt --manifest-path benchmarks/rust_core/Cargo.toml --all -- --check
+          cargo clippy --workspace --all-targets --features branching-research -- -D warnings
+          cargo clippy --locked --manifest-path benchmarks/rust_core/Cargo.toml --all-targets --features branching-research -- -D warnings
+      - name: Independent exact WMC and fail-closed limits under each pivot
+        run: |
+          cargo test --workspace
+          cargo test --workspace --features branching-research
+          cargo test --locked --manifest-path benchmarks/rust_core/Cargo.toml
+          cargo test --locked --manifest-path benchmarks/rust_core/Cargo.toml --features branching-research
+      - name: 216 bounded, exact oracle-checked branching workers
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v prlimit
+          cargo run --locked --release --manifest-path benchmarks/rust_core/Cargo.toml --features branching-research --example cache_profile -- --branch-suite 2> "$RUNNER_TEMP/branching-guards.log" | tee "$RUNNER_TEMP/branching-profile.csv"
+          grep -F "GUARD_MEMORY_DENIED=PASS STATUS=RESOURCE_FAILURE" "$RUNNER_TEMP/branching-guards.log"
+          grep -F "GUARD_TIMEOUT=PASS STATUS=TIMEOUT" "$RUNNER_TEMP/branching-guards.log"
+          python3 - "$RUNNER_TEMP/branching-profile.csv" <<'PY'
+          import csv
+          import sys
+          from collections import defaultdict
+
+          with open(sys.argv[1], newline="", encoding="utf-8") as fh:
+              rows = list(csv.DictReader(fh))
+          expected = {
+              (family, str(n), str(trial), cache, pivot)
+              for family in ("ring", "chorded", "mixed", "skewed")
+              for n in (8, 10, 12)
+              for trial in range(3)
+              for cache in ("off", "legacy")
+              for pivot in ("frequency", "short", "minfill")
+          }
+          observed = {(r["family"], r["variables"], r["trial"], r["cache"], r["pivot"])
+                      for r in rows}
+          assert len(rows) == 216 and observed == expected, "missing/duplicate branching workers"
+          grouped = defaultdict(dict)
+          for r in rows:
+              n = lambda key: int(r[key])
+              assert n("solve_wall_ns") > 0 and n("process_peak_rss_kib") > 0
+              assert n("nodes") > 0 and n("pivot_decisions") > 0
+              assert n("cache_hits") <= n("nodes")
+              assert n("pivot_fallbacks") <= n("pivot_decisions")
+              if r["pivot"] != "minfill":
+                  assert n("pivot_fallbacks") == 0
+              if r["cache"] == "off":
+                  assert n("cache_hits") == n("cache_entries") == 0
+              grouped[(r["family"], r["variables"], r["trial"], r["cache"])][r["pivot"]] = r
+          for grp in grouped.values():
+              assert set(grp) == {"frequency", "short", "minfill"}
+          print("BRANCHING_216_INDEPENDENT_COMPLEX_WMC_SAT_GUARDS=PASS")
+          PY
+      - name: Upload isolated branching results
+        uses: actions/upload-artifact@v4
+        with:
+          name: branching-research-216
+          path: |
+            ${{ runner.temp }}/branching-profile.csv
+            ${{ runner.temp }}/branching-guards.log
+          retention-days: 30
+          if-no-files-found: error

@@ -11,9 +11,11 @@ Run on Linux:
 cargo run --locked --release --manifest-path benchmarks/rust_core/Cargo.toml --example cache_profile
 ```
 
-The command invokes **24 fresh child processes**: analytical 16/32/64-variable
+The command invokes **28 fresh child processes**: analytical 16/32/64-variable
 equality chains and independent forced pairs, each with cache entry limits
-0, 1, 8, and 10,000. Every child verifies SAT and the independent exact
+0, 1, 8, and 10,000. Four additional 3-variable cache-hit positive-control
+runs use an exact independently derived count: two variables are forced true
+while a third remains free. Every child verifies SAT and the independent exact
 Gaussian-rational closed-form WMC answer. A parent checks the child exit code,
 and terminates it if it exceeds its research-only 5-second timeout; a failure
 prevents a successful evidence report.
@@ -29,7 +31,7 @@ Each process emits one CSV row with these columns:
   `max_value_bits`: the separate logical cache payload diagnostic counters
 
 The independently archived GitHub Actions CSV comprises one header and exactly
-24 records. GitHub-hosted machines can change CPU, memory allocator and
+28 records. GitHub-hosted machines can change CPU, memory allocator and
 kernel settings; compare caps and formulas **within a single run first**.
 Absolute RSS includes the binary and input, is not equal to the size of cache
 entries, and can be coarsely page-rounded. Wall-time values are observations

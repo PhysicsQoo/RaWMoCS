@@ -41,7 +41,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo run --locked --release --manifest-path benchmarks/rust_core/Cargo.toml --example cache_profile | tee "$RUNNER_TEMP/cache-profile.csv"
-          test "$(wc -l < "$RUNNER_TEMP/cache-profile.csv")" -eq 25
+          test "$(wc -l < "$RUNNER_TEMP/cache-profile.csv")" -eq 29
       - name: Upload source-scoped CSV evidence
         uses: actions/upload-artifact@v4
         with:

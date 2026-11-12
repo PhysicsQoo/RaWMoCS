@@ -1,6 +1,7 @@
 //! Experimental Linux process-isolated cache RSS and elapsed-time cohort.
 //! Each cache cap and CNF shape runs in a fresh process; no hard RSS cap is claimed.
 use rawmocs_benchmarks::scalability::{expected, fixture, Family};
+use rawmocs_benchmarks::{fixture as synthetic_fixture, Workload};
 use rawmocs_core::{solve_with_limits, Limits};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -34,12 +35,26 @@ fn family(name: &str) -> Result<Family, String> {
 }
 
 fn worker(name: &str, n: usize, cap: usize) -> Result<(), String> {
-    if ![16, 32, 64].contains(&n) || ![0, 1, 8, 10_000].contains(&cap) {
-        return Err("profile accepts only the predeclared sizes and cache caps".into());
+    if ![0, 1, 8, 10_000].contains(&cap) {
+        return Err("profile accepts only the predeclared cache caps".into());
     }
-    let family = family(name)?;
-    let input = fixture(family, n);
-    let oracle = expected(family, n);
+    let (input, oracle) = if name == "cache" && n == 3 {
+        // Independently simplify the cache-hit fixture:
+        // (x|y)&(!x|y)&(x|z)&(!x|z) forces y and z true, x free.
+        let input = synthetic_fixture(Workload::Cache);
+        let w = input.weights();
+        let oracle = w[0]
+            .positive
+            .add(&w[0].negative)
+            .mul(&w[1].positive)
+            .mul(&w[2].positive);
+        (input, oracle)
+    } else if [16, 32, 64].contains(&n) {
+        let family = family(name)?;
+        (fixture(family, n), expected(family, n))
+    } else {
+        return Err("profile accepts only the declared CNF shapes and widths".into());
+    };
     let started = Instant::now();
     let result = solve_with_limits(
         &input,
@@ -57,6 +72,9 @@ fn worker(name: &str, n: usize, cap: usize) -> Result<(), String> {
     }
     let hwm_kib = peak_rss_kib()?;
     let s = &result.stats;
+    if name == "cache" && cap == 10_000 && s.cache_hits == 0 {
+        return Err("expected source-locked repeated residual cache hits".into());
+    }
     println!(
         "{name},{n},{cap},{wall_ns},{hwm_kib},{},{},{},{},{},{},{},{},{}",
         s.nodes,
@@ -72,6 +90,39 @@ fn worker(name: &str, n: usize, cap: usize) -> Result<(), String> {
     Ok(())
 }
 
+fn launch(exe: &std::path::Path, name: &str, n: usize, cap: usize) -> Result<(), String> {
+    let n_arg = n.to_string();
+    let cap_arg = cap.to_string();
+    let mut child = Command::new(exe)
+        .args(["--worker", name, &n_arg, &cap_arg])
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|e| format!("could not start isolated worker: {e}"))?;
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    return Err(format!("{name}/{n}/{cap}: child failed with {status}"));
+                }
+                return Ok(());
+            }
+            Ok(None) if started.elapsed() > Duration::from_secs(5) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("{name}/{n}/{cap}: bounded profiling worker timeout"));
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(10)),
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("{name}/{n}/{cap}: wait failed: {e}"));
+            }
+        }
+    }
+}
+
 fn suite() -> Result<(), String> {
     if !cfg!(target_os = "linux") {
         return Err("RSS profile is supported on Linux only".into());
@@ -83,42 +134,13 @@ fn suite() -> Result<(), String> {
     for name in ["chain", "pairs"] {
         for n in [16, 32, 64] {
             for cap in [0, 1, 8, 10_000] {
-                let n_arg = n.to_string();
-                let cap_arg = cap.to_string();
-                let mut child = Command::new(&exe)
-                    .args(["--worker", name, &n_arg, &cap_arg])
-                    .stdout(Stdio::inherit())
-                    .stderr(Stdio::inherit())
-                    .spawn()
-                    .map_err(|e| format!("could not start isolated worker: {e}"))?;
-                let started = Instant::now();
-                loop {
-                    match child.try_wait() {
-                        Ok(Some(status)) => {
-                            if !status.success() {
-                                return Err(format!(
-                                    "{name}/{n}/{cap}: child failed with {status}"
-                                ));
-                            }
-                            break;
-                        }
-                        Ok(None) if started.elapsed() > Duration::from_secs(5) => {
-                            let _ = child.kill();
-                            let _ = child.wait();
-                            return Err(format!(
-                                "{name}/{n}/{cap}: bounded profiling worker timeout"
-                            ));
-                        }
-                        Ok(None) => thread::sleep(Duration::from_millis(10)),
-                        Err(e) => {
-                            let _ = child.kill();
-                            let _ = child.wait();
-                            return Err(format!("{name}/{n}/{cap}: wait failed: {e}"));
-                        }
-                    }
-                }
+                launch(&exe, name, n, cap)?;
             }
         }
+    }
+    // Essential positive control: the medium chain/pair families have no hits.
+    for cap in [0, 1, 8, 10_000] {
+        launch(&exe, "cache", 3, cap)?;
     }
     Ok(())
 }
@@ -134,7 +156,7 @@ fn run() -> Result<(), String> {
                 .map_err(|e| format!("cache cap: {e}"))?;
             worker(name, variables, cache_cap)
         }
-        _ => Err("usage: cache_profile [--worker chain|pairs n cache_cap]".into()),
+        _ => Err("usage: cache_profile [--worker chain|pairs|cache n cache_cap]".into()),
     }
 }
 

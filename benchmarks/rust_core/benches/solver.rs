@@ -2,7 +2,10 @@
 use num_rational::BigRational;
 use rawmocs_benchmarks::scalability::{fixture as medium_fixture, Family};
 use rawmocs_benchmarks::{arithmetic_operands, fixture, Workload};
-use rawmocs_core::{solve, solve_with_limits, Gaussian, Limits, Problem};
+use rawmocs_core::{
+    solve, solve_with_cache_payload_budget, solve_with_limits, CachePayloadBudget, Gaussian,
+    Limits, Problem,
+};
 use std::sync::OnceLock;
 
 static FORCED: OnceLock<Problem> = OnceLock::new();
@@ -230,4 +233,24 @@ fn complex_rational_four_product_pure_imaginary_reference() {
         divan::black_box(b),
         divan::black_box(pure_imaginary()),
     ));
+}
+
+// New additive benchmark: same source CNF, weights, and solver implementation
+// as medium_independent_components[64], but with a retained logical-payload
+// cache admission quota. No actual RSS constraint is enforced.
+#[divan::bench]
+fn medium_independent_components_payload_quota() {
+    divan::black_box(
+        solve_with_cache_payload_budget(
+            divan::black_box(pair_components(64)),
+            Limits::default(),
+            CachePayloadBudget {
+                scope_items: 32,
+                clause_items: 32,
+                literal_items: 64,
+                value_bits: 128,
+            },
+        )
+        .expect("medium CNF with bounded retained logical cache payload"),
+    );
 }

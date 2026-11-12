@@ -92,7 +92,19 @@ fn main() {
         let _ = connected_cycle_case(vertices);
     }
     for blocks in [8, 16, 32] {
-        let _ = (sat_branch_fixture(blocks, true), sat_branch_fixture(blocks, false));
+        for (one_assignment, expected_block) in [
+            (true, Gaussian::integers(4, -3)),
+            (false, Gaussian::integers(16, 18)),
+        ] {
+            let p = sat_branch_fixture(blocks, one_assignment);
+            let result = solve(p).expect("bounded source-locked SAT branch control");
+            let mut oracle = Gaussian::one();
+            for _ in 0..blocks {
+                oracle = reference_four_products(&oracle, &expected_block);
+            }
+            assert!(result.satisfiable, "SAT control must remain SAT");
+            assert_eq!(result.count, oracle, "exact independent block-product oracle");
+        }
     }
     divan::main();
 }

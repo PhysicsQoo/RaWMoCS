@@ -80,8 +80,14 @@ fn mixed_residuals_match_independent_full_wmc_for_multiple_cache_caps() {
                 },
             )
             .unwrap();
-            assert_eq!(result.satisfiable, expected_sat, "family={i} cap={cache_entries}");
-            assert_eq!(result.count, expected_count, "family={i} cap={cache_entries}");
+            assert_eq!(
+                result.satisfiable, expected_sat,
+                "family={i} cap={cache_entries}"
+            );
+            assert_eq!(
+                result.count, expected_count,
+                "family={i} cap={cache_entries}"
+            );
             assert!(result.stats.cache_entries <= cache_entries);
             if cache_entries == 0 {
                 assert_eq!(result.stats.cache_hits, 0);

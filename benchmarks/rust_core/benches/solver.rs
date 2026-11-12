@@ -91,6 +91,9 @@ fn main() {
     for vertices in [6, 10, 14] {
         let _ = connected_cycle_case(vertices);
     }
+    for blocks in [8, 16, 32] {
+        let _ = (sat_branch_fixture(blocks, true), sat_branch_fixture(blocks, false));
+    }
     divan::main();
 }
 
@@ -184,6 +187,67 @@ fn complex_rational_four_product_reference() {
         divan::black_box(a),
         divan::black_box(b),
     ));
+}
+
+// SAT-guided DPLL research fixtures. Each independent two-variable block
+// contains either one satisfying assignment or three satisfying assignments.
+// The source-locked weight pair is identical across both families; neither
+// case relies on SAT being inferable from the weighted count.
+static ONE_SAT8: OnceLock<Problem> = OnceLock::new();
+static ONE_SAT16: OnceLock<Problem> = OnceLock::new();
+static ONE_SAT32: OnceLock<Problem> = OnceLock::new();
+static THREE_SAT8: OnceLock<Problem> = OnceLock::new();
+static THREE_SAT16: OnceLock<Problem> = OnceLock::new();
+static THREE_SAT32: OnceLock<Problem> = OnceLock::new();
+
+fn sat_branch_fixture(blocks: usize, one_assignment: bool) -> &'static Problem {
+    let slot = match (blocks, one_assignment) {
+        (8, true) => &ONE_SAT8,
+        (16, true) => &ONE_SAT16,
+        (32, true) => &ONE_SAT32,
+        (8, false) => &THREE_SAT8,
+        (16, false) => &THREE_SAT16,
+        (32, false) => &THREE_SAT32,
+        _ => panic!("only predeclared SAT branch shapes"),
+    };
+    slot.get_or_init(|| {
+        let mut clauses = Vec::with_capacity(blocks * 3);
+        let mut weights = Vec::with_capacity(blocks * 2);
+        for i in 0..blocks {
+            let x = (i * 2 + 1) as i32;
+            let y = x + 1;
+            clauses.push(vec![x, y]);
+            if one_assignment {
+                clauses.push(vec![x, -y]);
+                clauses.push(vec![-x, y]);
+            }
+            weights.push(rawmocs_core::Weights::new(
+                Gaussian::integers(2, 1),
+                Gaussian::integers(-3, 4),
+            ));
+            weights.push(rawmocs_core::Weights::new(
+                Gaussian::integers(1, -2),
+                Gaussian::integers(5, 3),
+            ));
+        }
+        Problem::new(blocks * 2, clauses, weights).expect("predeclared SAT branch fixture")
+    })
+}
+
+#[divan::bench(args = [8_usize, 16, 32])]
+fn full_wmc_one_sat_branch(blocks: usize) {
+    divan::black_box(
+        solve(divan::black_box(sat_branch_fixture(blocks, true)))
+            .expect("bounded one-satisfiable-branch fixture"),
+    );
+}
+
+#[divan::bench(args = [8_usize, 16, 32])]
+fn full_wmc_three_sat_branches(blocks: usize) {
+    divan::black_box(
+        solve(divan::black_box(sat_branch_fixture(blocks, false)))
+            .expect("bounded three-satisfiable-assignment fixture"),
+    );
 }
 
 // Additive research identities; retain all existing benchmark names.

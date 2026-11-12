@@ -5,6 +5,9 @@ on:
     paths:
       - "crates/rawmocs-core/src/lib.rs"
       - "benchmarks/rust_core/examples/gaussian_add_paired.rs"
+      - "benchmarks/rust_core/examples/branch_sat_paired.rs"
+      - "benchmarks/rust_core/tools/paired_branch_sat.py"
+      - "benchmarks/rust_core/benches/solver.rs"
       - "benchmarks/rust_core/tools/paired_gaussian_add.py"
       - ".github/workflows/paired-gaussian-add.yml"
   workflow_dispatch:
@@ -40,8 +43,14 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git -C baseline rev-parse HEAD)" = "$BASELINE_SHA"
-          cargo build --locked --release --manifest-path baseline/benchmarks/rust_core/Cargo.toml --example cache_profile
-          cargo build --locked --release --manifest-path benchmarks/rust_core/Cargo.toml --example cache_profile --example gaussian_add_paired
+          # Only the research fixture executable is overlaid; baseline core
+          # remains pinned and unchanged, and both builds share identical
+          # fixture bytes and the same compiler/runner.
+          cp benchmarks/rust_core/examples/branch_sat_paired.rs baseline/benchmarks/rust_core/examples/branch_sat_paired.rs
+          cmp benchmarks/rust_core/examples/branch_sat_paired.rs baseline/benchmarks/rust_core/examples/branch_sat_paired.rs
+          git -C baseline diff --exit-code -- crates/rawmocs-core
+          cargo build --locked --release --manifest-path baseline/benchmarks/rust_core/Cargo.toml --example cache_profile --example branch_sat_paired
+          cargo build --locked --release --manifest-path benchmarks/rust_core/Cargo.toml --example cache_profile --example gaussian_add_paired --example branch_sat_paired
       - name: Same-process paired arithmetic with independent exact formula
         shell: bash
         run: |
@@ -69,6 +78,32 @@ jobs:
             done
           done
           python3 benchmarks/rust_core/tools/paired_dpll_normalization.py "$RUNNER_TEMP/gaussian-paired" | tee "$RUNNER_TEMP/gaussian-paired/full-wmc-summary.txt"
+      - name: Same-runner paired SAT branch holdouts with exact complex WMC oracles
+        shell: bash
+        run: |
+          set -euo pipefail
+          file="$RUNNER_TEMP/gaussian-paired/branch-sat.csv"
+          echo "variant,round,family,blocks,cache_cap,wall_ns,satisfiable,count_real,count_imag,nodes,cache_entries,cache_hits,decompositions" > "$file"
+          for round in 0 1 2; do
+            if (( round % 2 == 0 )); then order="baseline candidate"; else order="candidate baseline"; fi
+            for family in one three cancel unsat; do
+              for blocks in 8 16 32; do
+                for cap in 0 10000; do
+                  for kind in $order; do
+                    if [[ "$kind" = baseline ]]; then
+                      binary=baseline/benchmarks/rust_core/target/release/examples/branch_sat_paired
+                    else
+                      binary=benchmarks/rust_core/target/release/examples/branch_sat_paired
+                    fi
+                    timeout 10s "$binary" --case "$family" "$blocks" "$cap" > "$RUNNER_TEMP/gaussian-paired/current.txt"
+                    test "$(wc -l < "$RUNNER_TEMP/gaussian-paired/current.txt")" -eq 1
+                    sed "s/^/$kind,$round,/" "$RUNNER_TEMP/gaussian-paired/current.txt" >> "$file"
+                  done
+                done
+              done
+            done
+          done
+          python3 benchmarks/rust_core/tools/paired_branch_sat.py "$file" | tee "$RUNNER_TEMP/gaussian-paired/branch-sat-summary.txt"
       - name: Archive exact-paired witness without speedup claim
         uses: actions/upload-artifact@v4
         if: always()

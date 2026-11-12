@@ -34,10 +34,7 @@ fn input(family: &str, blocks: usize) -> (Problem, bool, Gaussian) {
                 Gaussian::integers(1, 0),
                 Gaussian::integers(-1, 0),
             ));
-            weights.push(Weights::new(
-                Gaussian::integers(1, 0),
-                Gaussian::zero(),
-            ));
+            weights.push(Weights::new(Gaussian::integers(1, 0), Gaussian::zero()));
         } else {
             weights.push(Weights::new(
                 Gaussian::integers(2, 1),
@@ -85,7 +82,10 @@ fn main() {
     let elapsed_ns = started.elapsed().as_nanos();
     assert!(elapsed_ns > 0);
     assert_eq!(result.satisfiable, sat, "independent boolean SAT control");
-    assert_eq!(result.count, oracle, "independent exact complex WMC control");
+    assert_eq!(
+        result.count, oracle,
+        "independent exact complex WMC control"
+    );
     println!(
         "{family},{blocks},{cache_cap},{elapsed_ns},{sat},{},{},{},{},{},{}",
         result.count.real,

@@ -147,7 +147,10 @@ mod windows {
         fn start(&mut self) -> Result<(), String> {
             // Assign BEFORE unblocking the child. The child cannot create
             // its grandchild before receiving the one-byte start token.
-            self.job.as_ref().unwrap().assign(self.child.as_ref().unwrap())?;
+            self.job
+                .as_ref()
+                .unwrap()
+                .assign(self.child.as_ref().unwrap())?;
             let mut stdin = self
                 .child
                 .as_mut()
@@ -162,8 +165,16 @@ mod windows {
         }
 
         fn running(&mut self) -> Result<(), String> {
-            if let Some(status) = self.child.as_mut().unwrap().try_wait().map_err(|e| e.to_string())? {
-                return Err(format!("direct worker exited before explicit stop: {status}"));
+            if let Some(status) = self
+                .child
+                .as_mut()
+                .unwrap()
+                .try_wait()
+                .map_err(|e| e.to_string())?
+            {
+                return Err(format!(
+                    "direct worker exited before explicit stop: {status}"
+                ));
             }
             Ok(())
         }
@@ -179,7 +190,14 @@ mod windows {
             }
             let started = Instant::now();
             loop {
-                if self.child.as_mut().unwrap().try_wait().map_err(|e| e.to_string())?.is_some() {
+                if self
+                    .child
+                    .as_mut()
+                    .unwrap()
+                    .try_wait()
+                    .map_err(|e| e.to_string())?
+                    .is_some()
+                {
                     self.child.take();
                     return Ok(());
                 }
@@ -293,7 +311,9 @@ mod windows {
             thread::sleep(Duration::from_millis(5));
         };
         if let Some(thread) = signal {
-            thread.join().map_err(|_| "cancel flag thread panic".to_string())?;
+            thread
+                .join()
+                .map_err(|_| "cancel flag thread panic".to_string())?;
         }
         if verdict != label {
             return Err(format!("unexpected {verdict} for {label}"));
@@ -301,14 +321,15 @@ mod windows {
         owner.stop(verdict)?;
         // Allow any in-flight write to settle before checking stability.
         thread::sleep(Duration::from_millis(50));
-        let before = fs::read_to_string(&path)
-            .map_err(|e| format!("post Job-stop heartbeat: {e}"))?;
+        let before =
+            fs::read_to_string(&path).map_err(|e| format!("post Job-stop heartbeat: {e}"))?;
         thread::sleep(Duration::from_millis(230));
-        let after = fs::read_to_string(&path)
-            .map_err(|e| format!("heartbeat recheck: {e}"))?;
+        let after = fs::read_to_string(&path).map_err(|e| format!("heartbeat recheck: {e}"))?;
         let _ = fs::remove_file(&path);
         if before != after {
-            return Err(format!("{label}: descendant continued after Job termination"));
+            return Err(format!(
+                "{label}: descendant continued after Job termination"
+            ));
         }
         println!("WINDOWS_JOB_{label}=PASS");
         println!("WINDOWS_JOB_LIVE_DESCENDANT_{label}=PASS");

@@ -14,7 +14,7 @@ positive and negative literal weights.
 ## Scientific baseline
 
 The PR science job checks out the existing **source-pinned QuPRS A0 research
-corpus** at commit \`abda06877571a32f644451801dccbbb33e8802ac\` rather
+corpus** at commit `abda06877571a32f644451801dccbbb33e8802ac` rather
 than copying fixture data into this repository.
 
 - Original independent oracle: 48 complex fixtures (39 Full WMC; 9 projected).
@@ -36,7 +36,7 @@ than copying fixture data into this repository.
 
 The external A0 integration tests are ignored by default and **fail closed**
 when invoked without their source-pinned fixture directory. CI checks out the
-existing original files and then runs those tests with \`QUPRS_A0_DIR\`.
+existing original files and then runs those tests with `QUPRS_A0_DIR`.
 
 This is a research prototype, **not** a production solver or a quantum-circuit
 equivalence checker. The finite node budget and depth limit return an error

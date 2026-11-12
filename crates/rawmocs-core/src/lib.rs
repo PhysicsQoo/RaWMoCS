@@ -166,7 +166,11 @@ pub struct Limits {
 }
 impl Default for Limits {
     fn default() -> Self {
-        Self { nodes: 100_000, depth: 512, cache_entries: 10_000 }
+        Self {
+            nodes: 100_000,
+            depth: 512,
+            cache_entries: 10_000,
+        }
     }
 }
 pub fn solve_with_limits(p: &Problem, limits: Limits) -> Result<Report, SolveError> {
@@ -186,7 +190,13 @@ pub fn solve_with_limits(p: &Problem, limits: Limits) -> Result<Report, SolveErr
     })
 }
 pub fn solve_with_budget(p: &Problem, budget: u64) -> Result<Report, SolveError> {
-    solve_with_limits(p, Limits { nodes: budget, ..Limits::default() })
+    solve_with_limits(
+        p,
+        Limits {
+            nodes: budget,
+            ..Limits::default()
+        },
+    )
 }
 pub fn solve(p: &Problem) -> Result<Report, SolveError> {
     solve_with_limits(p, Limits::default())
@@ -208,8 +218,15 @@ impl Engine<'_> {
             &w.negative
         }
     }
-    fn count(&mut self, clauses: Vec<Clause>, scope: Vec<usize>, depth: usize) -> Result<Outcome, SolveError> {
-        if depth >= self.depth_budget { return Err(SolveError::DepthBudgetExceeded); }
+    fn count(
+        &mut self,
+        clauses: Vec<Clause>,
+        scope: Vec<usize>,
+        depth: usize,
+    ) -> Result<Outcome, SolveError> {
+        if depth >= self.depth_budget {
+            return Err(SolveError::DepthBudgetExceeded);
+        }
         if self.stats.nodes >= self.budget {
             return Err(SolveError::NodeBudgetExceeded);
         }

@@ -47,7 +47,7 @@ jobs:
           node exhaustive_weighted_rewrite_safety.mjs
       - name: New solver versus source-pinned Full WMC fixtures and exhaustive baseline
         env:
-          QUPRS_A0_DIR: .quprs-a0/research/qoo157_d4/rawmocs_a0
+          QUPRS_A0_DIR: ${{ github.workspace }}/.quprs-a0/research/qoo157_d4/rawmocs_a0
         run: cargo test -p rawmocs-core --test a0_regressions -- --ignored --nocapture
 
   portability:

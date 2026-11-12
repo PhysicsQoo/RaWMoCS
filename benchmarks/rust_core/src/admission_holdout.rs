@@ -101,7 +101,10 @@ pub fn independent_exact_wmc(graph: Graph, n: usize) -> Gaussian {
     let edges = edges(graph, n);
     let mut coeff = vec![0i64; n + 1];
     for mask in 0usize..(1usize << n) {
-        if edges.iter().all(|&(a, b)| mask & (1 << a) == 0 || mask & (1 << b) == 0) {
+        if edges
+            .iter()
+            .all(|&(a, b)| mask & (1 << a) == 0 || mask & (1 << b) == 0)
+        {
             coeff[mask.count_ones() as usize] += 1;
         }
     }
@@ -149,8 +152,12 @@ mod tests {
                 let legacy = solve_with_limits(&p, Limits::default()).unwrap();
                 let off = solve_with_limits(
                     &p,
-                    Limits { cache_entries: 0, ..Limits::default() },
-                ).unwrap();
+                    Limits {
+                        cache_entries: 0,
+                        ..Limits::default()
+                    },
+                )
+                .unwrap();
                 assert_eq!(legacy.count, expected, "{} {n}", graph.label());
                 assert!(legacy.satisfiable && off.satisfiable);
                 assert_eq!(off.count, expected);
@@ -159,9 +166,15 @@ mod tests {
                 assert_eq!(same.stats.nodes, legacy.stats.nodes);
                 assert_eq!(same.stats.cache_hits, legacy.stats.cache_hits);
                 for threshold in [4, 12] {
-                    let got = solve_with_min_cache_clauses(&p, Limits::default(), threshold).unwrap();
+                    let got =
+                        solve_with_min_cache_clauses(&p, Limits::default(), threshold).unwrap();
                     assert!(got.satisfiable);
-                    assert_eq!(got.count, expected, "{} {n} threshold {threshold}", graph.label());
+                    assert_eq!(
+                        got.count,
+                        expected,
+                        "{} {n} threshold {threshold}",
+                        graph.label()
+                    );
                     assert!(got.stats.cache_min_clause_rejections > 0);
                     assert_eq!(got.stats.cache_payload_rejections, 0);
                 }
@@ -175,7 +188,10 @@ mod tests {
         assert_eq!(
             solve_with_min_cache_clauses(
                 &p,
-                Limits { nodes: 0, ..Limits::default() },
+                Limits {
+                    nodes: 0,
+                    ..Limits::default()
+                },
                 12
             ),
             Err(SolveError::NodeBudgetExceeded)

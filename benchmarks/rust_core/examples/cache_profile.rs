@@ -129,7 +129,9 @@ fn run() -> Result<(), String> {
         [_] => suite(),
         [_, flag, name, n, cap] if flag == "--worker" => {
             let variables = n.parse::<usize>().map_err(|e| format!("variables: {e}"))?;
-            let cache_cap = cap.parse::<usize>().map_err(|e| format!("cache cap: {e}"))?;
+            let cache_cap = cap
+                .parse::<usize>()
+                .map_err(|e| format!("cache cap: {e}"))?;
             worker(name, variables, cache_cap)
         }
         _ => Err("usage: cache_profile [--worker chain|pairs n cache_cap]".into()),

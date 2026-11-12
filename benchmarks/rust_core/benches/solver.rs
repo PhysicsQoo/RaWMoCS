@@ -1,6 +1,7 @@
 //! Six stable native benchmark identities; fixtures are built outside timed spans.
 use num_rational::BigRational;
 use rawmocs_benchmarks::cache_reuse::repeated_residuals;
+use rawmocs_benchmarks::expensive_reuse::guarded_cycle_residual;
 use rawmocs_benchmarks::scalability::{fixture as medium_fixture, Family};
 use rawmocs_benchmarks::{arithmetic_operands, fixture, Workload};
 use rawmocs_core::{
@@ -27,6 +28,9 @@ static PAIRS64: OnceLock<Problem> = OnceLock::new();
 static REUSE4: OnceLock<Problem> = OnceLock::new();
 static REUSE8: OnceLock<Problem> = OnceLock::new();
 static REUSE16: OnceLock<Problem> = OnceLock::new();
+static CYCLE6: OnceLock<Problem> = OnceLock::new();
+static CYCLE10: OnceLock<Problem> = OnceLock::new();
+static CYCLE14: OnceLock<Problem> = OnceLock::new();
 
 fn forced() -> &'static Problem {
     FORCED.get_or_init(|| fixture(Workload::ForcedFree))
@@ -83,6 +87,9 @@ fn main() {
     }
     for size in [4, 8, 16] {
         let _ = repeat_case(size);
+    }
+    for vertices in [6, 10, 14] {
+        let _ = connected_cycle_case(vertices);
     }
     divan::main();
 }
@@ -307,5 +314,38 @@ fn repeated_residual_cache_tight(gadgets: usize) {
             },
         )
         .expect("bounded gadget CNF"),
+    );
+}
+
+fn connected_cycle_case(vertices: usize) -> &'static Problem {
+    let slot = match vertices {
+        6 => &CYCLE6,
+        10 => &CYCLE10,
+        14 => &CYCLE14,
+        _ => panic!("only source-pinned connected cycle sizes"),
+    };
+    slot.get_or_init(|| guarded_cycle_residual(vertices))
+}
+
+// Research-only addition: all 31 pre-existing benchmark identities remain.
+// Both variants solve the same independently oracled, connected CNF.
+#[divan::bench(args = [6_usize, 10_usize, 14_usize])]
+fn connected_cycle_residual_cache_enabled(vertices: usize) {
+    divan::black_box(
+        solve(divan::black_box(connected_cycle_case(vertices))).expect("bounded connected cycle"),
+    );
+}
+
+#[divan::bench(args = [6_usize, 10_usize, 14_usize])]
+fn connected_cycle_residual_cache_disabled(vertices: usize) {
+    divan::black_box(
+        solve_with_limits(
+            divan::black_box(connected_cycle_case(vertices)),
+            Limits {
+                cache_entries: 0,
+                ..Limits::default()
+            },
+        )
+        .expect("bounded connected cycle"),
     );
 }

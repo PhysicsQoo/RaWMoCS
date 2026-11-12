@@ -74,7 +74,7 @@ pub fn expected(family: Family, variables: usize) -> Gaussian {
                 .fold(Gaussian::one(), |acc, pair| acc.mul(&pair.negative));
             positives.add(&negatives)
         }
-        Family::IndependentPairs => w.chunks_exact(2).fold(Gaussian::one(), |acc, pair| {
+        Family::IndependentPairs => w.chunks(2).fold(Gaussian::one(), |acc, pair| {
             let free = pair[0].positive.add(&pair[0].negative);
             acc.mul(&free.mul(&pair[1].positive))
         }),

@@ -1,13 +1,15 @@
 //! Experimental Linux process-isolated cache RSS and elapsed-time cohort.
 //! Each cache cap and CNF shape runs in a fresh process; no hard RSS cap is claimed.
+#[cfg(feature = "cache-admission-research")]
+use rawmocs_benchmarks::admission_holdout::{
+    guarded_graph, independent_exact_wmc as graph_oracle, Graph,
+};
 use rawmocs_benchmarks::cache_reuse::{independent_exact_wmc, repeated_residuals};
-#[cfg(feature = "cache-admission-research")]
-use rawmocs_benchmarks::admission_holdout::{guarded_graph, independent_exact_wmc as graph_oracle, Graph};
-#[cfg(feature = "cache-admission-research")]
-use rawmocs_core::solve_with_min_cache_clauses;
 use rawmocs_benchmarks::expensive_reuse::{guarded_cycle_residual, independent_cycle_wmc};
 use rawmocs_benchmarks::scalability::{expected, fixture, Family};
 use rawmocs_benchmarks::{fixture as synthetic_fixture, Workload};
+#[cfg(feature = "cache-admission-research")]
+use rawmocs_core::solve_with_min_cache_clauses;
 use rawmocs_core::{
     solve_with_cache_payload_budget, solve_with_limits, CachePayloadBudget, Limits,
 };
@@ -713,9 +715,13 @@ fn cost_suite() -> Result<(), String> {
     Ok(())
 }
 
-
 #[cfg(feature = "cache-admission-research")]
-fn admission_worker(graph_label: &str, vertices: usize, trial: usize, policy: &str) -> Result<(), String> {
+fn admission_worker(
+    graph_label: &str,
+    vertices: usize,
+    trial: usize,
+    policy: &str,
+) -> Result<(), String> {
     if ![6, 10, 14].contains(&vertices) || trial >= 3 {
         return Err("admission sizes must be 6/10/14 and trials 0..3".into());
     }
@@ -746,7 +752,10 @@ fn admission_worker(graph_label: &str, vertices: usize, trial: usize, policy: &s
     }
     let stats = &answer.stats;
     if policy == "off" {
-        if stats.cache_entries != 0 || stats.cache_hits != 0 || stats.cache_min_clause_rejections != 0 {
+        if stats.cache_entries != 0
+            || stats.cache_hits != 0
+            || stats.cache_min_clause_rejections != 0
+        {
             return Err("disabled cache retained an entry or rejection".into());
         }
     } else if policy == "legacy" {

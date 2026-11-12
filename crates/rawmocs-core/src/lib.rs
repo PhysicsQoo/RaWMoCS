@@ -33,6 +33,24 @@ impl Gaussian {
         Self::new(&self.real + &rhs.real, &self.imag + &rhs.imag)
     }
     pub fn mul(&self, rhs: &Self) -> Self {
+        // Common multiplicative identities need no BigRational products or GCDs.
+        // Keep the established four-product formula for general complex inputs.
+        if self.imag.is_zero() {
+            if self.real.is_zero() {
+                return Self::zero();
+            }
+            if self.real.is_one() {
+                return rhs.clone();
+            }
+        }
+        if rhs.imag.is_zero() {
+            if rhs.real.is_zero() {
+                return Self::zero();
+            }
+            if rhs.real.is_one() {
+                return self.clone();
+            }
+        }
         Self::new(
             &self.real * &rhs.real - &self.imag * &rhs.imag,
             &self.real * &rhs.imag + &self.imag * &rhs.real,

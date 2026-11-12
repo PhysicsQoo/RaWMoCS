@@ -71,7 +71,7 @@ tests and platform qualification.
 
 After the default 28-row cache-entry-cap cohort, the same research workflow
 now generates an **independent second CSV** named
-\`cache-quota-profile.csv\` with exactly **21 rows** plus its header.
+`cache-quota-profile.csv` with exactly **21 rows** plus its header.
 This preserves the old source-scoped CSV and its accepted schema.
 
 For equality chains and independent forced pairs at 16, 32 and 64 variables,
@@ -81,23 +81,56 @@ fixed logical-payload admission policies:
 
 | Policy | scope items | clause items | literal items | exact value bits |
 | --- | ---: | ---: | ---: | ---: |
-| \`legacy\` | no payload quota | no quota | no quota | no quota |
-| \`tight\` | 2 | 2 | 2 | 32 |
-| \`roomy\` | 1,024 | 1,024 | 2,048 | 16,384 |
+| `legacy` | no payload quota | no quota | no quota | no quota |
+| `tight` | 2 | 2 | 2 | 32 |
+| `roomy` | 1,024 | 1,024 | 2,048 | 16,384 |
 
-The \`tight\` case must reject at least one would-be cache insertion, the
-\`roomy\` case must reject none, and all cases must match independently derived
+The `tight` case must reject at least one would-be cache insertion, the
+`roomy` case must reject none, and all cases must match independently derived
 Gaussian-rational Full WMC oracles and remain SAT. The 3-variable
-\`legacy\` and \`roomy\` cases must exercise actual cache hits.
-Every row records \`cache_payload_rejections\`, cumulative logical payload
+`legacy` and `roomy` cases must exercise actual cache hits.
+Every row records `cache_payload_rejections`, cumulative logical payload
 and counters alongside elapsed solve time and Linux process VmHWM.
-The parent launches each case with the existing Linux \`prlimit\` 512 MiB
-virtual-address-space limit and 5-second deadline. Missing \`prlimit\`,
+The parent launches each case with the existing Linux `prlimit` 512 MiB
+virtual-address-space limit and 5-second deadline. Missing `prlimit`,
 worker failures, or timeouts are not accepted as valid data.
 
 The two CSVs measure different policies: their numbers are directly
 comparable **only within their own controlled cohort**. VmHWM is process
 resident-memory high-water, not retained cache size, and the Linux
-\`RLIMIT_AS\` is virtual-memory address-space enforcement, not an RSS cap.
+`RLIMIT_AS` is virtual-memory address-space enforcement, not an RSS cap.
 Small or mixed RSS differences on these synthetic cases do not certify
 lower memory use in general or establish a production supervisor.
+
+
+### First qualifying source-pinned measurement
+
+The first completed 49-case Linux profile at GitHub Actions
+[run 43176065711](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/43176065711),
+source commit `6b9b75e659293947ea4e748d36829d21a9a38677`, produced
+the following **single-trial** values for 64-variable analytical fixtures:
+
+| CNF | policy | retained entries | payload rejections | cache hits | VmHWM KiB | solve WallTime ms |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| chain64 | legacy | 3 | 0 | 0 | 2,476 | 1.780 |
+| chain64 | tight | 0 | 3 | 0 | 2,468 | 1.109 |
+| chain64 | roomy | 3 | 0 | 0 | 2,472 | 1.136 |
+| pairs64 | legacy | 97 | 0 | 0 | 2,480 | 1.233 |
+| pairs64 | tight | 2 | 95 | 0 | 2,448 | 1.231 |
+| pairs64 | roomy | 97 | 0 | 0 | 2,520 | 1.222 |
+
+The 3-variable cache-hit control retained one actual hit under **all three
+policies**, while tight declined one insertion. Exact SAT and Gaussian-rational
+WMC oracle checks passed in every case. Existing 28 legacy rows and the two
+negative controls also passed.
+
+These synthetic 64-variable cases have **zero cache hits**, so they do not
+establish whether logical quotas help memory in realistic CNFs with repeated
+subproblems. Peak RSS differences here are small, sometimes reversed, and
+subject to page rounding, allocator state and scheduler variability. No
+statistical runtime gain or reliable physical memory saving is inferred.
+The research workflow keeps both old and new CSVs as short-retention Actions
+artifacts; this table permanently records only selected, explicitly scoped
+observations. Run future controlled repetitions before choosing a production
+cache policy. Standalone `--quota-suite` runs must also pass both fail-closed
+negative controls independently.

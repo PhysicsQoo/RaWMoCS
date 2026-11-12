@@ -340,6 +340,9 @@ fn quota_suite() -> Result<(), String> {
         return Err("isolated quota RSS profile supports Linux only".into());
     }
     let exe = std::env::current_exe().map_err(|e| format!("executable path: {e}"))?;
+    // Standalone quota runs must independently qualify both OS research
+    // negative controls, not rely on the legacy suite running first.
+    guard_negative_controls(&exe)?;
     println!(
         "family,variables,policy,cache_cap,solve_wall_ns,process_peak_rss_kib,nodes,cache_entries,cache_hits,decompositions,key_scope_items,key_clauses,key_literals,value_bits,max_value_bits,cache_payload_rejections"
     );

@@ -713,10 +713,18 @@ impl Engine<'_> {
         let child: Vec<_> = active.into_iter().filter(|&v| v != var).collect();
         let yes = self.count(assign(&residual, var as i32), child.clone(), depth + 1)?;
         let no = self.count(assign(&residual, -(var as i32)), child, depth + 1)?;
-        let sum = self
-            .weight(var, true)
-            .mul(&yes.count)
-            .add(&self.weight(var, false).mul(&no.count));
+        // SAT and weighted count are separate: a satisfiable branch may
+        // cancel to an exact zero. Skip arithmetic only for proven UNSAT
+        // children, whose count is zero by the Outcome invariant.
+        let sum = match (yes.sat, no.sat) {
+            (true, true) => self
+                .weight(var, true)
+                .mul(&yes.count)
+                .add(&self.weight(var, false).mul(&no.count)),
+            (true, false) => self.weight(var, true).mul(&yes.count),
+            (false, true) => self.weight(var, false).mul(&no.count),
+            (false, false) => Gaussian::zero(),
+        };
         Ok(self.save(
             key,
             Outcome {

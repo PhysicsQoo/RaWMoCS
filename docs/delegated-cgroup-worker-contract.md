@@ -383,3 +383,32 @@ the actual outcome is **NOT_VALIDATED**, and the next choice is
 a dedicated runner image with controllable delegation. Do not
 fall back to executing the WMC workload as root or remounting a
 shared hierarchy.
+
+
+## Hosted CI first kernel attempt: failure is not an OOM certificate
+
+The first trusted-main Ubuntu real-kernel attempt on commit
+`9984e9c6cc9b3f9d24896946c0826b1974a493b7`
+([GitHub Actions run #43233588564](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/43233588564))
+successfully compiled the Rust example and launched the dedicated
+systemd transient service. That service exited nonzero after about
+122 milliseconds. The job accurately reported
+`DELEGATED_CI_REAL_ENFORCEMENT=NOT_VALIDATED`. No successful
+`memory.max` hard-limit or local OOM evidence was shown.
+
+Because this initial CI intentionally kept raw service stderr and
+JSON private, its public log did **not** distinguish the reason for
+the failure. **Do not label the failed run as a verified OOM, nor
+assume it proves that GitHub-hosted runners cannot delegate cgroups.**
+
+The subsequent dedicated
+`benchmarks/rust_core/tools/ci_delegated_diagnostics.py`
+performs a privacy-preserving classification of those *local* failure
+artifacts. It prints only a fixed stage/category pair, such as
+`WORKER_PID_MIGRATION_FAILED`, `LOCAL_MEMORY_EVENTS_UNAVAILABLE`,
+or `SCOPED_WORKER_FAILED`. It never publishes raw paths, stderr,
+commands, PID lists, or the saved private JSON bundle. On untrusted
+PRs its synthetic negative test must pass, with no cgroup writes.
+The fix is diagnostic only; it cannot itself certify actual memory
+enforcement, and the next trusted-main real-kernel attempt must
+independently satisfy the same positive/negative controls.

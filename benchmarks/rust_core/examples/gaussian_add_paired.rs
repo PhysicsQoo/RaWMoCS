@@ -15,31 +15,29 @@ fn reference_add(a: &Gaussian, b: &Gaussian) -> Gaussian {
 }
 fn run(name: &str, left: &Gaussian, right: &Gaussian, rounds: usize) {
     let expected = reference_add(left, right);
+    assert_eq!(left.add(right), expected, "exact oracle mismatch: {name}");
     let count = 4096_u64;
     for round in 0..rounds {
         for trial in 0..2 {
             let candidate = (round + trial) % 2 == 0;
             let label = if candidate { "candidate" } else { "reference" };
             let started = Instant::now();
-            let mut last = Gaussian::zero();
             for _ in 0..count {
-                last = if candidate {
-                    black_box(black_box(left).add(black_box(right)))
+                if candidate {
+                    black_box(black_box(left).add(black_box(right)));
                 } else {
-                    black_box(reference_add(black_box(left), black_box(right)))
-                };
+                    black_box(reference_add(black_box(left), black_box(right)));
+                }
             }
             let total_ns = started.elapsed().as_nanos();
-            assert_eq!(last, expected, "exact result mismatch: {name}/{label}/{round}");
             assert!(total_ns > 0, "clock gave zero nanoseconds");
-            black_box(last);
             println!("{name},{round},{label},{count},{total_ns}");
         }
     }
 }
 
 fn main() {
-    assert_eq!(std::env::args().collect::<Vec<_>>().as_slice(), ["gaussian_add_paired", "--paired"], "only predeclared paired run is supported");
+    assert_eq!(std::env::args().skip(1).collect::<Vec<_>>(), vec!["--paired".to_string()], "only predeclared paired run is supported");
     let z = Gaussian::zero();
     let a = Gaussian::new(r(-11, 19), r(23, 29));
     let b = Gaussian::new(r(31, 37), r(-41, 43));

@@ -1,0 +1,79 @@
+name: Unix process-group descendant cleanup research
+
+on:
+  pull_request:
+    paths:
+      - "benchmarks/rust_core/examples/process_group_contract.rs"
+      - ".github/workflows/process-group-contract.yml"
+  push:
+    branches: [main]
+    paths:
+      - "benchmarks/rust_core/examples/process_group_contract.rs"
+      - ".github/workflows/process-group-contract.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unix-group-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scoped-descendants:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, windows-latest, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/rust_core -> target
+      - name: Format and lint isolated group contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path benchmarks/rust_core/Cargo.toml --all -- --check
+          cargo clippy --locked --manifest-path benchmarks/rust_core/Cargo.toml --example process_group_contract -- -D warnings
+      - name: Self-test and classify platform capabilities
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked --manifest-path benchmarks/rust_core/Cargo.toml --example process_group_contract -- --self-test | tee "$RUNNER_TEMP/process-group-contract.log"
+          case "${{ runner.os }}" in
+            Linux|macOS)
+              for label in TIMEOUT CANCELLED; do
+                grep -Fx "GROUP_${label}=PASS" "$RUNNER_TEMP/process-group-contract.log"
+                grep -Fx "GROUP_DESCENDANT_WITNESS_${label}=PASS" "$RUNNER_TEMP/process-group-contract.log"
+              done
+              grep -Fx "CONTRACT_UNIX_ISOLATED_PROCESS_GROUP=PASS" "$RUNNER_TEMP/process-group-contract.log"
+              grep -Fx "UNIX_PROCESS_GROUP_SCOPED_CONFORMANCE=PASS" "$RUNNER_TEMP/process-group-contract.log"
+              for cap in ESCAPED_PROCESS_GROUP GRANDCHILD_WAIT_REAP HARD_RSS LINUX_CGROUP_V2 WINDOWS_JOB_OBJECT; do
+                grep -Fx "CONTRACT_${cap}=UNSUPPORTED" "$RUNNER_TEMP/process-group-contract.log"
+              done
+              ;;
+            Windows)
+              for cap in UNIX_ISOLATED_PROCESS_GROUP WINDOWS_JOB_OBJECT ESCAPED_PROCESS_GROUP HARD_RSS; do
+                grep -Fx "CONTRACT_${cap}=UNSUPPORTED" "$RUNNER_TEMP/process-group-contract.log"
+              done
+              grep -Fx "UNIX_PROCESS_GROUP_SCOPED_CONFORMANCE=UNSUPPORTED" "$RUNNER_TEMP/process-group-contract.log"
+              ;;
+            *)
+              echo "Unexpected OS: ${{ runner.os }}" >&2; exit 1
+              ;;
+          esac
+      - name: Archive source-pinned OS status
+        uses: actions/upload-artifact@v4
+        with:
+          name: unix-group-${{ matrix.os }}
+          path: ${{ runner.temp }}/process-group-contract.log
+          retention-days: 30
+          if-no-files-found: error

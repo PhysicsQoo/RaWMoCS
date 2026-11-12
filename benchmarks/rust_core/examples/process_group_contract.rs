@@ -83,7 +83,9 @@ mod unix {
             // calling Child::kill (which leaves ordinary descendants alive).
             kill_group(self.pgid)?;
             let child = self.child.as_mut().ok_or("direct child already reaped")?;
-            child.wait().map_err(|e| format!("direct child reap: {e}"))?;
+            child
+                .wait()
+                .map_err(|e| format!("direct child reap: {e}"))?;
             self.child.take();
             Ok(())
         }
@@ -109,8 +111,7 @@ mod unix {
         let mut tick = 0u64;
         loop {
             tick = tick.saturating_add(1);
-            fs::write(heartbeat, tick.to_string())
-                .map_err(|e| format!("heartbeat write: {e}"))?;
+            fs::write(heartbeat, tick.to_string()).map_err(|e| format!("heartbeat write: {e}"))?;
             thread::sleep(Duration::from_millis(25));
         }
     }
@@ -208,11 +209,11 @@ mod unix {
         if verdict != expected {
             return Err(format!("{label}: expected {expected}, got {verdict}"));
         }
-        let end = fs::read_to_string(&heartbeat)
-            .map_err(|e| format!("post-kill heartbeat read: {e}"))?;
+        let end =
+            fs::read_to_string(&heartbeat).map_err(|e| format!("post-kill heartbeat read: {e}"))?;
         thread::sleep(Duration::from_millis(200));
-        let stable = fs::read_to_string(&heartbeat)
-            .map_err(|e| format!("stable heartbeat read: {e}"))?;
+        let stable =
+            fs::read_to_string(&heartbeat).map_err(|e| format!("stable heartbeat read: {e}"))?;
         let _ = fs::remove_file(&heartbeat);
         if stable != end {
             return Err(format!(

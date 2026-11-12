@@ -4,17 +4,17 @@
 use rawmocs_benchmarks::admission_holdout::{
     guarded_graph, independent_exact_wmc as graph_oracle, Graph,
 };
-#[cfg(feature = "cache-admission-research")]
-use rawmocs_benchmarks::work_proxy_holdout::{independent_wmc, selector_free_cnf, Holdout};
 use rawmocs_benchmarks::cache_reuse::{independent_exact_wmc, repeated_residuals};
 use rawmocs_benchmarks::expensive_reuse::{guarded_cycle_residual, independent_cycle_wmc};
 use rawmocs_benchmarks::scalability::{expected, fixture, Family};
-use rawmocs_benchmarks::{fixture as synthetic_fixture, Workload};
 #[cfg(feature = "cache-admission-research")]
-use rawmocs_core::{solve_with_min_cache_clauses, solve_with_observed_work_ratio};
+use rawmocs_benchmarks::work_proxy_holdout::{independent_wmc, selector_free_cnf, Holdout};
+use rawmocs_benchmarks::{fixture as synthetic_fixture, Workload};
 use rawmocs_core::{
     solve_with_cache_payload_budget, solve_with_limits, CachePayloadBudget, Limits,
 };
+#[cfg(feature = "cache-admission-research")]
+use rawmocs_core::{solve_with_min_cache_clauses, solve_with_observed_work_ratio};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};

@@ -7,12 +7,14 @@ use rawmocs_benchmarks::admission_holdout::{
 use rawmocs_benchmarks::cache_reuse::{independent_exact_wmc, repeated_residuals};
 use rawmocs_benchmarks::expensive_reuse::{guarded_cycle_residual, independent_cycle_wmc};
 use rawmocs_benchmarks::scalability::{expected, fixture, Family};
-use rawmocs_benchmarks::{fixture as synthetic_fixture, Workload};
 #[cfg(feature = "cache-admission-research")]
-use rawmocs_core::solve_with_min_cache_clauses;
+use rawmocs_benchmarks::work_proxy_holdout::{independent_wmc, selector_free_cnf, Holdout};
+use rawmocs_benchmarks::{fixture as synthetic_fixture, Workload};
 use rawmocs_core::{
     solve_with_cache_payload_budget, solve_with_limits, CachePayloadBudget, Limits,
 };
+#[cfg(feature = "cache-admission-research")]
+use rawmocs_core::{solve_with_min_cache_clauses, solve_with_observed_work_ratio};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -832,6 +834,122 @@ fn admission_suite() -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(feature = "cache-admission-research")]
+fn work_proxy_worker(
+    family: &str,
+    variables: usize,
+    trial: usize,
+    policy: &str,
+) -> Result<(), String> {
+    if ![8, 10, 12].contains(&variables) || trial >= 3 {
+        return Err("work proxy requires source-pinned n=8/10/12 and trials 0..3".into());
+    }
+    let holdout = Holdout::parse(family).ok_or_else(|| "unknown holdout family".to_string())?;
+    let input = selector_free_cnf(holdout, variables);
+    let (expected_sat, expected_wmc) = independent_wmc(holdout, variables);
+    let mut limits = Limits::default();
+    let ratio = match policy {
+        "off" => {
+            limits.cache_entries = 0;
+            None
+        }
+        "legacy" => None,
+        "proxy1" => Some(1),
+        "proxy4" => Some(4),
+        _ => return Err("unknown source-pinned work proxy policy".into()),
+    };
+    let started = Instant::now();
+    let result = match ratio {
+        Some(ratio) => solve_with_observed_work_ratio(&input, limits, ratio),
+        None => solve_with_limits(&input, limits),
+    }
+    .map_err(|e| format!("work/{family}/{variables}/{trial}/{policy}: {e}"))?;
+    let elapsed_ns = started.elapsed().as_nanos();
+    if result.satisfiable != expected_sat || result.count != expected_wmc {
+        return Err("selector-free independent Full Complex WMC / SAT mismatch".into());
+    }
+    let stats = &result.stats;
+    if policy == "off"
+        && (stats.cache_hits != 0
+            || stats.cache_entries != 0
+            || stats.cache_work_proxy_rejections != 0)
+    {
+        return Err("disabled cache exercised research admission or retained entries".into());
+    }
+    if policy == "legacy" && stats.cache_work_proxy_rejections != 0 {
+        return Err("default cache unexpectedly used work proxy filter".into());
+    }
+    if policy.starts_with("proxy") && stats.cache_work_proxy_rejections == 0 {
+        return Err("research proxy was not exercised on selector-free CNF".into());
+    }
+    if stats.cache_payload_rejections != 0 || stats.cache_min_clause_rejections != 0 {
+        return Err("other research admission policies unexpectedly active".into());
+    }
+    let rss = peak_rss_kib()?;
+    println!(
+        "{family},{variables},{trial},{policy},{elapsed_ns},{rss},{},{},{},{},{},{},{},{}",
+        stats.nodes,
+        stats.cache_hits,
+        stats.cache_entries,
+        stats.cache_work_proxy_rejections,
+        stats.cache_scope_items,
+        stats.cache_clause_items,
+        stats.cache_literal_items,
+        stats.cache_value_bits
+    );
+    Ok(())
+}
+
+#[cfg(feature = "cache-admission-research")]
+fn launch_work_proxy(
+    exe: &std::path::Path,
+    family: &str,
+    variables: usize,
+    trial: usize,
+    policy: &str,
+) -> Result<(), String> {
+    let variables_arg = variables.to_string();
+    let trial_arg = trial.to_string();
+    match launch_guarded(
+        exe,
+        &["--work-worker", family, &variables_arg, policy, &trial_arg],
+        512,
+        Duration::from_secs(5),
+    )? {
+        GuardedExit::Success => Ok(()),
+        GuardedExit::Failed(status) => Err(format!(
+            "work/{family}/{variables}/{trial}/{policy}: WORKER_FAILURE ({status})"
+        )),
+        GuardedExit::Timeout => Err(format!(
+            "work/{family}/{variables}/{trial}/{policy}: TIMEOUT"
+        )),
+    }
+}
+
+#[cfg(feature = "cache-admission-research")]
+fn work_proxy_suite() -> Result<(), String> {
+    if !cfg!(target_os = "linux") {
+        return Err("selector-free work-proxy VmHWM research requires Linux".into());
+    }
+    let exe = std::env::current_exe().map_err(|e| format!("executable path: {e}"))?;
+    guard_negative_controls(&exe)?;
+    println!(
+        "family,variables,trial,policy,solve_wall_ns,process_peak_rss_kib,nodes,cache_hits,cache_entries,work_proxy_rejections,key_scope_items,key_clauses,key_literals,value_bits"
+    );
+    const POLICIES: [&str; 4] = ["off", "legacy", "proxy1", "proxy4"];
+    for family in ["ring", "chorded", "mixed"] {
+        for variables in [8, 10, 12] {
+            for trial in 0..3 {
+                for offset in 0..POLICIES.len() {
+                    let policy = POLICIES[(trial + offset) % POLICIES.len()];
+                    launch_work_proxy(&exe, family, variables, trial, policy)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn run() -> Result<(), String> {
     let args: Vec<_> = std::env::args().collect();
     match args.as_slice() {
@@ -843,6 +961,8 @@ fn run() -> Result<(), String> {
         [_, flag] if flag == "--cost-suite" => cost_suite(),
         #[cfg(feature = "cache-admission-research")]
         [_, flag] if flag == "--admission-suite" => admission_suite(),
+        #[cfg(feature = "cache-admission-research")]
+        [_, flag] if flag == "--work-suite" => work_proxy_suite(),
         [_, flag] if flag == "--stress-memory" => {
             let mut bytes: Vec<u8> = Vec::new();
             if bytes.try_reserve_exact(1024 * 1024 * 1024).is_err() {
@@ -876,6 +996,12 @@ fn run() -> Result<(), String> {
             let trial = trial.parse::<usize>().map_err(|e| format!("trial: {e}"))?;
             admission_worker(graph, vertices, trial, policy)
         }
+        #[cfg(feature = "cache-admission-research")]
+        [_, flag, family, variables, policy, trial] if flag == "--work-worker" => {
+            let variables = variables.parse::<usize>().map_err(|e| format!("variables: {e}"))?;
+            let trial = trial.parse::<usize>().map_err(|e| format!("trial: {e}"))?;
+            work_proxy_worker(family, variables, trial, policy)
+        }
         [_, flag, vertices, policy, trial] if flag == "--cycle-worker" => {
             let vertices = vertices.parse::<usize>().map_err(|e| format!("vertices: {e}"))?;
             let trial = trial.parse::<usize>().map_err(|e| format!("trial: {e}"))?;
@@ -888,7 +1014,7 @@ fn run() -> Result<(), String> {
                 .map_err(|e| format!("cache cap: {e}"))?;
             worker(name, variables, cache_cap)
         }
-        _ => Err("usage: cache_profile [--admission-suite (requires cache-admission-research)|--admission-worker family vertices off|legacy|min4|min12 trial|--cost-suite (requires cache-cost-profile feature)|--cost-worker vertices off|on|tight trial|--cycle-suite|--cycle-worker vertices off|on trial|--repeat-suite|--repeat-worker gadgets off|legacy|tight|roomy trial|--quota-suite|--quota-worker chain|pairs|cache n legacy|tight|roomy] [--worker chain|pairs|cache n cache_cap] [--stress-memory|--stress-sleep]".into()),
+        _ => Err("usage: cache_profile [--work-suite (requires cache-admission-research)|--work-worker family variables off|legacy|proxy1|proxy4 trial|--admission-suite (requires cache-admission-research)|--admission-worker family vertices off|legacy|min4|min12 trial|--cost-suite (requires cache-cost-profile feature)|--cost-worker vertices off|on|tight trial|--cycle-suite|--cycle-worker vertices off|on trial|--repeat-suite|--repeat-worker gadgets off|legacy|tight|roomy trial|--quota-suite|--quota-worker chain|pairs|cache n legacy|tight|roomy] [--worker chain|pairs|cache n cache_cap] [--stress-memory|--stress-sleep]".into()),
     }
 }
 

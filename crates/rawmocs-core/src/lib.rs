@@ -200,6 +200,9 @@ pub struct Stats {
     /// Research-only rejections based on predeclared normalized key clauses.
     #[cfg(feature = "cache-admission-research")]
     pub cache_min_clause_rejections: u64,
+    /// Entries rejected by the experimental observed-first-solve work proxy.
+    #[cfg(feature = "cache-admission-research")]
+    pub cache_work_proxy_rejections: u64,
     #[cfg(feature = "cache-cost-profile")]
     pub cache_cost: CacheCostProfile,
 }
@@ -235,6 +238,8 @@ struct Engine<'a> {
     cache_payload_budget: Option<CachePayloadBudget>,
     #[cfg(feature = "cache-admission-research")]
     min_cache_clauses: usize,
+    #[cfg(feature = "cache-admission-research")]
+    work_proxy_ratio: Option<u64>,
     stats: Stats,
     cache: HashMap<Key, Outcome>,
 }
@@ -294,7 +299,21 @@ pub fn solve_with_min_cache_clauses(
     limits: Limits,
     min_clauses: usize,
 ) -> Result<Report, SolveError> {
-    solve_with_research_cache_threshold(p, limits, None, min_clauses)
+    solve_with_research_cache_threshold(p, limits, None, min_clauses, None)
+}
+
+/// Experimental first-solve effort admission, available only with the
+/// cache-admission-research feature. The node count is observed AFTER a
+/// residual has been solved; it cannot forecast future re-use.
+/// This fixed ratio is a research hypothesis, not a calibrated cost model.
+#[cfg(feature = "cache-admission-research")]
+pub fn solve_with_observed_work_ratio(
+    p: &Problem,
+    limits: Limits,
+    ratio: u64,
+) -> Result<Report, SolveError> {
+    assert!(ratio > 0, "research work proxy ratio must be positive");
+    solve_with_research_cache_threshold(p, limits, None, 0, Some(ratio))
 }
 
 fn solve_with_optional_cache_payload_budget(
@@ -302,7 +321,7 @@ fn solve_with_optional_cache_payload_budget(
     limits: Limits,
     cache_payload_budget: Option<CachePayloadBudget>,
 ) -> Result<Report, SolveError> {
-    solve_with_research_cache_threshold(p, limits, cache_payload_budget, 0)
+    solve_with_research_cache_threshold(p, limits, cache_payload_budget, 0, None)
 }
 
 fn solve_with_research_cache_threshold(
@@ -310,9 +329,10 @@ fn solve_with_research_cache_threshold(
     limits: Limits,
     cache_payload_budget: Option<CachePayloadBudget>,
     min_cache_clauses: usize,
+    work_proxy_ratio: Option<u64>,
 ) -> Result<Report, SolveError> {
     #[cfg(not(feature = "cache-admission-research"))]
-    let _ = min_cache_clauses;
+    let _ = (min_cache_clauses, work_proxy_ratio);
     let mut engine = Engine {
         p,
         budget: limits.nodes,
@@ -321,6 +341,8 @@ fn solve_with_research_cache_threshold(
         cache_payload_budget,
         #[cfg(feature = "cache-admission-research")]
         min_cache_clauses,
+        #[cfg(feature = "cache-admission-research")]
+        work_proxy_ratio,
         stats: Stats::default(),
         cache: HashMap::new(),
     };
@@ -353,7 +375,12 @@ fn gaussian_value_bits(value: &Gaussian) -> u64 {
 }
 
 impl Engine<'_> {
-    fn save(&mut self, key: Option<Key>, outcome: Outcome) -> Outcome {
+    fn save(
+        &mut self,
+        key: Option<Key>,
+        outcome: Outcome,
+        #[cfg(feature = "cache-admission-research")] start_nodes: u64,
+    ) -> Outcome {
         if let Some(key) = key {
             if self.cache.len() < self.cache_budget {
                 #[cfg(feature = "cache-admission-research")]
@@ -373,6 +400,24 @@ impl Engine<'_> {
                     .iter()
                     .fold(0usize, |sum, clause| sum.saturating_add(clause.len()));
                 let bits = gaussian_value_bits(&outcome.count);
+                #[cfg(feature = "cache-admission-research")]
+                if let Some(ratio) = self.work_proxy_ratio {
+                    // These are observed first-solve node visits, not
+                    // predicted future hits or machine-level CPU cycles.
+                    let observed_nodes = self.stats.nodes.saturating_sub(start_nodes);
+                    let value_words = bits.saturating_add(63) / 64;
+                    let key_units = (scope as u64)
+                        .saturating_add(clauses as u64)
+                        .saturating_add(literals as u64)
+                        .saturating_add(value_words);
+                    let admissible = observed_nodes > 1
+                        && observed_nodes.saturating_mul(8) >= key_units.saturating_mul(ratio);
+                    if !admissible {
+                        self.stats.cache_work_proxy_rejections =
+                            self.stats.cache_work_proxy_rejections.saturating_add(1);
+                        return outcome;
+                    }
+                }
                 if let Some(budget) = self.cache_payload_budget {
                     let allowed = self
                         .stats
@@ -451,6 +496,8 @@ impl Engine<'_> {
         if self.stats.nodes >= self.budget {
             return Err(SolveError::NodeBudgetExceeded);
         }
+        #[cfg(feature = "cache-admission-research")]
+        let start_nodes = self.stats.nodes;
         self.stats.nodes += 1;
         // With caching disabled, do not clone a scope or duplicate residual
         // clauses into a Key that will never be looked up or stored.
@@ -497,7 +544,12 @@ impl Engine<'_> {
 
         loop {
             if residual.iter().any(Vec::is_empty) {
-                return Ok(self.save(key, Outcome::unsat()));
+                return Ok(self.save(
+                    key,
+                    Outcome::unsat(),
+                    #[cfg(feature = "cache-admission-research")]
+                    start_nodes,
+                ));
             }
             let Some(lit) = residual.iter().find(|c| c.len() == 1).map(|c| c[0]) else {
                 break;
@@ -521,6 +573,8 @@ impl Engine<'_> {
                     sat: true,
                     count: prefix,
                 },
+                #[cfg(feature = "cache-admission-research")]
+                start_nodes,
             ));
         }
 
@@ -548,7 +602,12 @@ impl Engine<'_> {
             for (c, s) in pieces {
                 let part = self.count(c, s, depth + 1)?;
                 if !part.sat {
-                    return Ok(self.save(key, Outcome::unsat()));
+                    return Ok(self.save(
+                        key,
+                        Outcome::unsat(),
+                        #[cfg(feature = "cache-admission-research")]
+                        start_nodes,
+                    ));
                 }
                 value = value.mul(&part.count);
             }
@@ -558,6 +617,8 @@ impl Engine<'_> {
                     sat: true,
                     count: prefix.mul(&value),
                 },
+                #[cfg(feature = "cache-admission-research")]
+                start_nodes,
             ));
         }
 
@@ -580,6 +641,8 @@ impl Engine<'_> {
                 sat: yes.sat || no.sat,
                 count: prefix.mul(&sum),
             },
+            #[cfg(feature = "cache-admission-research")]
+            start_nodes,
         ))
     }
 }

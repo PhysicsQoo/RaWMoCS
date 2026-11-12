@@ -4,6 +4,8 @@ pub mod admission_holdout;
 pub mod cache_reuse;
 pub mod expensive_reuse;
 pub mod scalability;
+#[cfg(feature = "cache-admission-research")]
+pub mod work_proxy_holdout;
 use num_bigint::BigInt;
 use num_rational::BigRational;
 use rawmocs_core::{Gaussian, Problem, Weights};

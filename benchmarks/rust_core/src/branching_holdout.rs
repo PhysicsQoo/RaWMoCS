@@ -182,4 +182,63 @@ mod tests {
             assert_eq!(err, Err(SolveError::NodeBudgetExceeded));
         }
     }
+    /// The feature must not allocate O(n²) primal matrices on large CNFs.
+    /// Both fallback cases have analytic independent exact Gaussian oracles.
+    #[test]
+    fn bounded_min_fill_falls_back_without_changing_exact_full_wmc() {
+        fn pow(base: &Gaussian, exponent: usize) -> Gaussian {
+            let mut product = Gaussian::one();
+            for _ in 0..exponent {
+                product = product.mul(base);
+            }
+            product
+        }
+        let positive = Gaussian::integers(2, 1);
+        let negative = Gaussian::integers(1, -1);
+        let three = positive.add(&negative);
+
+        // 65-variable connected star, every clause has just two literals.
+        // Root fallback is caused by active count, not by clause length.
+        let star_clauses = (2..=65).map(|i| vec![1, i]).collect();
+        let star = Problem::new(
+            65,
+            star_clauses,
+            (0..65)
+                .map(|_| Weights::new(positive.clone(), negative.clone()))
+                .collect(),
+        )
+        .unwrap();
+        let star_expected = positive
+            .mul(&pow(&three, 64))
+            .add(&negative.mul(&pow(&positive, 64)));
+        let limits = Limits {
+            cache_entries: 0,
+            ..Limits::default()
+        };
+        let freq = solve_with_pivot_policy(&star, limits, PivotPolicy::Frequency).unwrap();
+        let fill = solve_with_pivot_policy(&star, limits, PivotPolicy::MinFill).unwrap();
+        assert!(fill.satisfiable);
+        assert_eq!(fill.count, star_expected);
+        assert_eq!(fill.count, freq.count);
+        assert!(fill.stats.pivot_fallbacks > 0);
+
+        // A 17-literal clause reaches the *other* fallback condition,
+        // independently of large active-variable count.
+        let long_clause = Problem::new(
+            17,
+            vec![(1..=17).collect()],
+            (0..17)
+                .map(|_| Weights::new(positive.clone(), negative.clone()))
+                .collect(),
+        )
+        .unwrap();
+        let long_expected = pow(&three, 17)
+            .add(&Gaussian::integers(-1, 0).mul(&pow(&negative, 17)));
+        let result =
+            solve_with_pivot_policy(&long_clause, limits, PivotPolicy::MinFill).unwrap();
+        assert!(result.satisfiable);
+        assert_eq!(result.count, long_expected);
+        assert!(result.stats.pivot_fallbacks > 0);
+    }
+
 }

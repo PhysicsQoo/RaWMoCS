@@ -65,3 +65,39 @@ Do not add a hard cache byte cap until the measured payload and RSS
 relationship is understood. Subsequent work needs process-level OS-specific
 resource enforcement, explicit unknown/error results, adversarial stress
 tests and platform qualification.
+
+
+## Optional logical cache quota: independent cohort
+
+After the default 28-row cache-entry-cap cohort, the same research workflow
+now generates an **independent second CSV** named
+\`cache-quota-profile.csv\` with exactly **21 rows** plus its header.
+This preserves the old source-scoped CSV and its accepted schema.
+
+For equality chains and independent forced pairs at 16, 32 and 64 variables,
+and for the 3-variable cache-hit positive control, each fresh child process
+uses the same exact CNF and weights with cache-entry cap 10,000 under three
+fixed logical-payload admission policies:
+
+| Policy | scope items | clause items | literal items | exact value bits |
+| --- | ---: | ---: | ---: | ---: |
+| \`legacy\` | no payload quota | no quota | no quota | no quota |
+| \`tight\` | 2 | 2 | 2 | 32 |
+| \`roomy\` | 1,024 | 1,024 | 2,048 | 16,384 |
+
+The \`tight\` case must reject at least one would-be cache insertion, the
+\`roomy\` case must reject none, and all cases must match independently derived
+Gaussian-rational Full WMC oracles and remain SAT. The 3-variable
+\`legacy\` and \`roomy\` cases must exercise actual cache hits.
+Every row records \`cache_payload_rejections\`, cumulative logical payload
+and counters alongside elapsed solve time and Linux process VmHWM.
+The parent launches each case with the existing Linux \`prlimit\` 512 MiB
+virtual-address-space limit and 5-second deadline. Missing \`prlimit\`,
+worker failures, or timeouts are not accepted as valid data.
+
+The two CSVs measure different policies: their numbers are directly
+comparable **only within their own controlled cohort**. VmHWM is process
+resident-memory high-water, not retained cache size, and the Linux
+\`RLIMIT_AS\` is virtual-memory address-space enforcement, not an RSS cap.
+Small or mixed RSS differences on these synthetic cases do not certify
+lower memory use in general or establish a production supervisor.

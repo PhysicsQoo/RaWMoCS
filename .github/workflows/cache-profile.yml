@@ -45,12 +45,21 @@ jobs:
           test "$(wc -l < "$RUNNER_TEMP/cache-profile.csv")" -eq 29
           grep -F "GUARD_MEMORY_DENIED=PASS STATUS=RESOURCE_FAILURE" "$RUNNER_TEMP/guard-controls.log"
           grep -F "GUARD_TIMEOUT=PASS STATUS=TIMEOUT" "$RUNNER_TEMP/guard-controls.log"
+      - name: Compare optional logical cache quotas in fresh Linux workers
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked --release --manifest-path benchmarks/rust_core/Cargo.toml --example cache_profile -- --quota-suite | tee "$RUNNER_TEMP/cache-quota-profile.csv"
+          test "$(wc -l < "$RUNNER_TEMP/cache-quota-profile.csv")" -eq 22
+          head -n 1 "$RUNNER_TEMP/cache-quota-profile.csv" | grep -F 'family,variables,policy,cache_cap,solve_wall_ns,process_peak_rss_kib,nodes,cache_entries,cache_hits,decompositions,key_scope_items,key_clauses,key_literals,value_bits,max_value_bits,cache_payload_rejections'
+          awk -F, 'NR>1 { count[$3]++; if ($5 <= 0 || $6 <= 0) exit 1; if ($3 == "tight" && $16 <= 0) exit 1; if ($3 != "tight" && $16 != 0) exit 1; if ($1 == "cache" && $3 != "tight" && $9 <= 0) exit 1 } END { if (count["legacy"] != 7 || count["tight"] != 7 || count["roomy"] != 7) exit 1 }' "$RUNNER_TEMP/cache-quota-profile.csv"
       - name: Upload source-scoped CSV evidence
         uses: actions/upload-artifact@v4
         with:
           name: cache-rss-profile
           path: |
             ${{ runner.temp }}/cache-profile.csv
+            ${{ runner.temp }}/cache-quota-profile.csv
             ${{ runner.temp }}/guard-controls.log
           if-no-files-found: error
           retention-days: 30

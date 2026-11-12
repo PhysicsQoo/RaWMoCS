@@ -1,6 +1,7 @@
 //! Experimental Linux process-isolated cache RSS and elapsed-time cohort.
 //! Each cache cap and CNF shape runs in a fresh process; no hard RSS cap is claimed.
 use rawmocs_benchmarks::cache_reuse::{independent_exact_wmc, repeated_residuals};
+use rawmocs_benchmarks::expensive_reuse::{guarded_cycle_residual, independent_cycle_wmc};
 use rawmocs_benchmarks::scalability::{expected, fixture, Family};
 use rawmocs_benchmarks::{fixture as synthetic_fixture, Workload};
 use rawmocs_core::{
@@ -476,12 +477,110 @@ fn repeated_suite() -> Result<(), String> {
     Ok(())
 }
 
+// A separate source-locked high-cost connected residual cohort.
+// Avoid collapsing this study into the 3-variable repeated-gadget CSV.
+fn cycle_worker(vertices: usize, policy: &str, trial: usize) -> Result<(), String> {
+    if ![6, 10, 14].contains(&vertices) || trial >= 3 {
+        return Err("cycle cohort only accepts 6/10/14 vertices and trials 0..3".into());
+    }
+    let cap = match policy {
+        "off" => 0,
+        "on" => 10_000,
+        _ => return Err("cycle policy must be off or on".into()),
+    };
+    let input = guarded_cycle_residual(vertices);
+    let oracle = independent_cycle_wmc(vertices);
+    let limits = Limits {
+        cache_entries: cap,
+        ..Limits::default()
+    };
+    let started = Instant::now();
+    let result = solve_with_limits(&input, limits)
+        .map_err(|e| format!("cycle/{vertices}/{trial}/{policy}: fail-closed {e}"))?;
+    let elapsed_ns = started.elapsed().as_nanos();
+    if !result.satisfiable || result.count != oracle {
+        return Err(format!(
+            "cycle/{vertices}/{trial}/{policy}: exact Full WMC oracle or SAT mismatch"
+        ));
+    }
+    let stats = &result.stats;
+    if policy == "off" && (stats.cache_hits != 0 || stats.cache_entries != 0) {
+        return Err("cycle off unexpectedly retained or reused a residual".into());
+    }
+    if policy == "on" && stats.cache_hits == 0 {
+        return Err("cycle on failed to reuse any nontrivial residual".into());
+    }
+    let peak = peak_rss_kib()?;
+    println!(
+        "{vertices},{},{trial},{policy},{elapsed_ns},{peak},{},{},{},{},{},{}",
+        vertices + 1,
+        stats.nodes,
+        stats.cache_entries,
+        stats.cache_hits,
+        stats.decompositions,
+        stats.cache_clause_items,
+        stats.cache_literal_items,
+    );
+    Ok(())
+}
+
+fn launch_cycle(
+    exe: &std::path::Path,
+    vertices: usize,
+    trial: usize,
+    policy: &str,
+) -> Result<(), String> {
+    let vertex_arg = vertices.to_string();
+    let trial_arg = trial.to_string();
+    match launch_guarded(
+        exe,
+        &["--cycle-worker", &vertex_arg, policy, &trial_arg],
+        512,
+        Duration::from_secs(5),
+    )? {
+        GuardedExit::Success => Ok(()),
+        GuardedExit::Failed(status) => Err(format!(
+            "cycle/{vertices}/{trial}/{policy}: WORKER_FAILURE ({status}); no certified count"
+        )),
+        GuardedExit::Timeout => Err(format!(
+            "cycle/{vertices}/{trial}/{policy}: TIMEOUT; no certified count"
+        )),
+    }
+}
+
+fn cycle_suite() -> Result<(), String> {
+    if !cfg!(target_os = "linux") {
+        return Err("connected-cycle VmHWM research requires Linux".into());
+    }
+    let exe = std::env::current_exe().map_err(|e| format!("executable path: {e}"))?;
+    guard_negative_controls(&exe)?;
+    println!(
+        "vertices,variables,trial,policy,solve_wall_ns,process_peak_rss_kib,nodes,cache_entries,cache_hits,decompositions,key_clauses,key_literals"
+    );
+    for vertices in [6, 10, 14] {
+        for trial in 0..3 {
+            // Deterministically alternate first policy across independent
+            // process pairs to reduce drift; never reuse an in-process cache.
+            let policies = if trial % 2 == 0 {
+                ["off", "on"]
+            } else {
+                ["on", "off"]
+            };
+            for policy in policies {
+                launch_cycle(&exe, vertices, trial, policy)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn run() -> Result<(), String> {
     let args: Vec<_> = std::env::args().collect();
     match args.as_slice() {
         [_] => suite(),
         [_, flag] if flag == "--quota-suite" => quota_suite(),
         [_, flag] if flag == "--repeat-suite" => repeated_suite(),
+        [_, flag] if flag == "--cycle-suite" => cycle_suite(),
         [_, flag] if flag == "--stress-memory" => {
             let mut bytes: Vec<u8> = Vec::new();
             if bytes.try_reserve_exact(1024 * 1024 * 1024).is_err() {
@@ -503,6 +602,11 @@ fn run() -> Result<(), String> {
             let trial = trial.parse::<usize>().map_err(|e| format!("trial: {e}"))?;
             repeated_worker(gadgets, policy, trial)
         }
+        [_, flag, vertices, policy, trial] if flag == "--cycle-worker" => {
+            let vertices = vertices.parse::<usize>().map_err(|e| format!("vertices: {e}"))?;
+            let trial = trial.parse::<usize>().map_err(|e| format!("trial: {e}"))?;
+            cycle_worker(vertices, policy, trial)
+        }
         [_, flag, name, n, cap] if flag == "--worker" => {
             let variables = n.parse::<usize>().map_err(|e| format!("variables: {e}"))?;
             let cache_cap = cap
@@ -510,7 +614,7 @@ fn run() -> Result<(), String> {
                 .map_err(|e| format!("cache cap: {e}"))?;
             worker(name, variables, cache_cap)
         }
-        _ => Err("usage: cache_profile [--repeat-suite|--repeat-worker gadgets off|legacy|tight|roomy trial|--quota-suite|--quota-worker chain|pairs|cache n legacy|tight|roomy] [--worker chain|pairs|cache n cache_cap] [--stress-memory|--stress-sleep]".into()),
+        _ => Err("usage: cache_profile [--cycle-suite|--cycle-worker vertices off|on trial|--repeat-suite|--repeat-worker gadgets off|legacy|tight|roomy trial|--quota-suite|--quota-worker chain|pairs|cache n legacy|tight|roomy] [--worker chain|pairs|cache n cache_cap] [--stress-memory|--stress-sleep]".into()),
     }
 }
 

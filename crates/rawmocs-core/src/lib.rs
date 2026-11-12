@@ -14,31 +14,53 @@ pub struct Gaussian {
 }
 
 impl Gaussian {
-    pub fn new(real: BigRational, imag: BigRational) -> Self { Self { real, imag } }
-    pub fn integers(real: i64, imag: i64) -> Self {
-        Self::new(BigRational::from_integer(real.into()), BigRational::from_integer(imag.into()))
+    pub fn new(real: BigRational, imag: BigRational) -> Self {
+        Self { real, imag }
     }
-    pub fn zero() -> Self { Self::new(BigRational::zero(), BigRational::zero()) }
-    pub fn one() -> Self { Self::new(BigRational::one(), BigRational::zero()) }
+    pub fn integers(real: i64, imag: i64) -> Self {
+        Self::new(
+            BigRational::from_integer(real.into()),
+            BigRational::from_integer(imag.into()),
+        )
+    }
+    pub fn zero() -> Self {
+        Self::new(BigRational::zero(), BigRational::zero())
+    }
+    pub fn one() -> Self {
+        Self::new(BigRational::one(), BigRational::zero())
+    }
     pub fn add(&self, rhs: &Self) -> Self {
         Self::new(&self.real + &rhs.real, &self.imag + &rhs.imag)
     }
     pub fn mul(&self, rhs: &Self) -> Self {
-        Self::new(&self.real * &rhs.real - &self.imag * &rhs.imag,
-                  &self.real * &rhs.imag + &self.imag * &rhs.real)
+        Self::new(
+            &self.real * &rhs.real - &self.imag * &rhs.imag,
+            &self.real * &rhs.imag + &self.imag * &rhs.real,
+        )
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Weights { pub positive: Gaussian, pub negative: Gaussian }
+pub struct Weights {
+    pub positive: Gaussian,
+    pub negative: Gaussian,
+}
 impl Weights {
-    pub fn new(positive: Gaussian, negative: Gaussian) -> Self { Self { positive, negative } }
+    pub fn new(positive: Gaussian, negative: Gaussian) -> Self {
+        Self { positive, negative }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ProblemError { InvalidVariableCount, IncorrectWeightCount, InvalidLiteral(i32) }
+pub enum ProblemError {
+    InvalidVariableCount,
+    IncorrectWeightCount,
+    InvalidLiteral(i32),
+}
 impl std::fmt::Display for ProblemError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "{self:?}") }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
 }
 impl std::error::Error for ProblemError {}
 
@@ -49,11 +71,17 @@ pub struct Problem {
     weights: Vec<Weights>,
 }
 impl Problem {
-    pub fn new(variables: usize, clauses: Vec<Clause>, weights: Vec<Weights>)
-        -> Result<Self, ProblemError>
-    {
-        if variables > i32::MAX as usize { return Err(ProblemError::InvalidVariableCount); }
-        if weights.len() != variables { return Err(ProblemError::IncorrectWeightCount); }
+    pub fn new(
+        variables: usize,
+        clauses: Vec<Clause>,
+        weights: Vec<Weights>,
+    ) -> Result<Self, ProblemError> {
+        if variables > i32::MAX as usize {
+            return Err(ProblemError::InvalidVariableCount);
+        }
+        if weights.len() != variables {
+            return Err(ProblemError::IncorrectWeightCount);
+        }
         for clause in &clauses {
             for &lit in clause {
                 if lit == 0 || i64::from(lit).abs() as usize > variables {
@@ -61,40 +89,87 @@ impl Problem {
                 }
             }
         }
-        Ok(Self { variables, clauses, weights })
+        Ok(Self {
+            variables,
+            clauses,
+            weights,
+        })
     }
-    pub fn variables(&self) -> usize { self.variables }
-    pub fn clauses(&self) -> &[Vec<i32>] { &self.clauses }
-    pub fn weights(&self) -> &[Weights] { &self.weights }
+    pub fn variables(&self) -> usize {
+        self.variables
+    }
+    pub fn clauses(&self) -> &[Vec<i32>] {
+        &self.clauses
+    }
+    pub fn weights(&self) -> &[Weights] {
+        &self.weights
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SolveError { NodeBudgetExceeded }
+pub enum SolveError {
+    NodeBudgetExceeded,
+}
 impl std::fmt::Display for SolveError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "{self:?}") }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
 }
 impl std::error::Error for SolveError {}
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Stats { pub nodes: u64, pub cache_hits: u64, pub decompositions: u64 }
+pub struct Stats {
+    pub nodes: u64,
+    pub cache_hits: u64,
+    pub decompositions: u64,
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Report { pub satisfiable: bool, pub count: Gaussian, pub stats: Stats }
+pub struct Report {
+    pub satisfiable: bool,
+    pub count: Gaussian,
+    pub stats: Stats,
+}
 #[derive(Clone)]
-struct Outcome { sat: bool, count: Gaussian }
+struct Outcome {
+    sat: bool,
+    count: Gaussian,
+}
 impl Outcome {
-    fn unsat() -> Self { Self { sat: false, count: Gaussian::zero() } }
+    fn unsat() -> Self {
+        Self {
+            sat: false,
+            count: Gaussian::zero(),
+        }
+    }
 }
 #[derive(Hash, PartialEq, Eq)]
-struct Key { scope: Vec<usize>, clauses: Vec<Clause> }
+struct Key {
+    scope: Vec<usize>,
+    clauses: Vec<Clause>,
+}
 struct Engine<'a> {
-    p: &'a Problem, budget: u64, stats: Stats, cache: HashMap<Key, Outcome>,
+    p: &'a Problem,
+    budget: u64,
+    stats: Stats,
+    cache: HashMap<Key, Outcome>,
 }
 
 pub fn solve_with_budget(p: &Problem, budget: u64) -> Result<Report, SolveError> {
-    let mut engine = Engine { p, budget, stats: Stats::default(), cache: HashMap::new() };
+    let mut engine = Engine {
+        p,
+        budget,
+        stats: Stats::default(),
+        cache: HashMap::new(),
+    };
     let answer = engine.count(p.clauses.clone(), (1..=p.variables).collect())?;
-    Ok(Report { satisfiable: answer.sat, count: answer.count, stats: engine.stats })
+    Ok(Report {
+        satisfiable: answer.sat,
+        count: answer.count,
+        stats: engine.stats,
+    })
 }
-pub fn solve(p: &Problem) -> Result<Report, SolveError> { solve_with_budget(p, 100_000) }
+pub fn solve(p: &Problem) -> Result<Report, SolveError> {
+    solve_with_budget(p, 100_000)
+}
 
 impl Engine<'_> {
     fn save(&mut self, key: Key, outcome: Outcome) -> Outcome {
@@ -103,14 +178,21 @@ impl Engine<'_> {
     }
     fn weight(&self, var: usize, positive: bool) -> &Gaussian {
         let w = &self.p.weights[var - 1];
-        if positive { &w.positive } else { &w.negative }
+        if positive {
+            &w.positive
+        } else {
+            &w.negative
+        }
     }
-    fn count(&mut self, clauses: Vec<Clause>, scope: Vec<usize>)
-        -> Result<Outcome, SolveError>
-    {
-        if self.stats.nodes >= self.budget { return Err(SolveError::NodeBudgetExceeded); }
+    fn count(&mut self, clauses: Vec<Clause>, scope: Vec<usize>) -> Result<Outcome, SolveError> {
+        if self.stats.nodes >= self.budget {
+            return Err(SolveError::NodeBudgetExceeded);
+        }
         self.stats.nodes += 1;
-        let key = Key { scope: scope.clone(), clauses: normalize(clauses) };
+        let key = Key {
+            scope: scope.clone(),
+            clauses: normalize(clauses),
+        };
         if let Some(cached) = self.cache.get(&key) {
             self.stats.cache_hits += 1;
             return Ok(cached.clone());
@@ -124,7 +206,9 @@ impl Engine<'_> {
             if residual.iter().any(Vec::is_empty) {
                 return Ok(self.save(key, Outcome::unsat()));
             }
-            let Some(lit) = residual.iter().find(|c| c.len() == 1).map(|c| c[0]) else { break };
+            let Some(lit) = residual.iter().find(|c| c.len() == 1).map(|c| c[0]) else {
+                break;
+            };
             let var = lit.unsigned_abs() as usize;
             prefix = prefix.mul(self.weight(var, lit > 0));
             remaining.retain(|&v| v != var);
@@ -134,18 +218,27 @@ impl Engine<'_> {
         // Each free variable contributes w(x) + w(!x) exactly once.
         let mut appears = vec![false; self.p.variables + 1];
         for c in &residual {
-            for &lit in c { appears[lit.unsigned_abs() as usize] = true; }
+            for &lit in c {
+                appears[lit.unsigned_abs() as usize] = true;
+            }
         }
         let mut active = Vec::new();
         for var in remaining {
-            if appears[var] { active.push(var); }
-            else {
+            if appears[var] {
+                active.push(var);
+            } else {
                 let w = &self.p.weights[var - 1];
                 prefix = prefix.mul(&w.positive.add(&w.negative));
             }
         }
         if residual.is_empty() {
-            return Ok(self.save(key, Outcome { sat: true, count: prefix }));
+            return Ok(self.save(
+                key,
+                Outcome {
+                    sat: true,
+                    count: prefix,
+                },
+            ));
         }
 
         let pieces = components(&residual, &active, self.p.variables);
@@ -154,28 +247,45 @@ impl Engine<'_> {
             let mut value = Gaussian::one();
             for (c, s) in pieces {
                 let part = self.count(c, s)?;
-                if !part.sat { return Ok(self.save(key, Outcome::unsat())); }
+                if !part.sat {
+                    return Ok(self.save(key, Outcome::unsat()));
+                }
                 value = value.mul(&part.count);
             }
-            return Ok(self.save(key, Outcome { sat: true, count: prefix.mul(&value) }));
+            return Ok(self.save(
+                key,
+                Outcome {
+                    sat: true,
+                    count: prefix.mul(&value),
+                },
+            ));
         }
 
         // Chronological DPLL. Do not divide by weights or assume zero => UNSAT.
         let mut frequency = vec![0usize; self.p.variables + 1];
         for c in &residual {
-            for &lit in c { frequency[lit.unsigned_abs() as usize] += 1; }
+            for &lit in c {
+                frequency[lit.unsigned_abs() as usize] += 1;
+            }
         }
-        let var = *active.iter().max_by_key(|&&v| frequency[v])
+        let var = *active
+            .iter()
+            .max_by_key(|&&v| frequency[v])
             .expect("nonempty residual has an active variable");
         let child: Vec<_> = active.into_iter().filter(|&v| v != var).collect();
         let yes = self.count(assign(&residual, var as i32), child.clone())?;
         let no = self.count(assign(&residual, -(var as i32)), child)?;
-        let sum = self.weight(var, true).mul(&yes.count)
+        let sum = self
+            .weight(var, true)
+            .mul(&yes.count)
             .add(&self.weight(var, false).mul(&no.count));
-        Ok(self.save(key, Outcome {
-            sat: yes.sat || no.sat,
-            count: prefix.mul(&sum),
-        }))
+        Ok(self.save(
+            key,
+            Outcome {
+                sat: yes.sat || no.sat,
+                count: prefix.mul(&sum),
+            },
+        ))
     }
 }
 
@@ -184,7 +294,9 @@ fn normalize(clauses: Vec<Clause>) -> Vec<Clause> {
     for mut c in clauses {
         c.sort_unstable();
         c.dedup();
-        if c.iter().any(|&lit| c.binary_search(&-lit).is_ok()) { continue; }
+        if c.iter().any(|&lit| c.binary_search(&-lit).is_ok()) {
+            continue;
+        }
         result.push(c);
     }
     result.sort();
@@ -192,7 +304,9 @@ fn normalize(clauses: Vec<Clause>) -> Vec<Clause> {
     result
 }
 fn assign(clauses: &[Clause], literal: i32) -> Vec<Clause> {
-    clauses.iter().filter(|c| !c.contains(&literal))
+    clauses
+        .iter()
+        .filter(|c| !c.contains(&literal))
         .map(|c| c.iter().copied().filter(|&lit| lit != -literal).collect())
         .collect()
 }
@@ -204,9 +318,11 @@ fn root(parent: &mut [usize], mut x: usize) -> usize {
     }
     x
 }
-fn components(clauses: &[Clause], scope: &[usize], variables: usize)
-    -> Vec<(Vec<Clause>, Vec<usize>)>
-{
+fn components(
+    clauses: &[Clause],
+    scope: &[usize],
+    variables: usize,
+) -> Vec<(Vec<Clause>, Vec<usize>)> {
     let mut parent: Vec<_> = (0..=variables).collect();
     for c in clauses {
         let first = c[0].unsigned_abs() as usize;
@@ -217,10 +333,23 @@ fn components(clauses: &[Clause], scope: &[usize], variables: usize)
         }
     }
     let mut groups: BTreeMap<usize, (Vec<usize>, Vec<Clause>)> = BTreeMap::new();
-    for &var in scope { groups.entry(root(&mut parent, var)).or_default().0.push(var); }
+    for &var in scope {
+        groups
+            .entry(root(&mut parent, var))
+            .or_default()
+            .0
+            .push(var);
+    }
     for c in clauses {
         let r = root(&mut parent, c[0].unsigned_abs() as usize);
-        groups.get_mut(&r).expect("residual variable belongs to scope").1.push(c.clone());
+        groups
+            .get_mut(&r)
+            .expect("residual variable belongs to scope")
+            .1
+            .push(c.clone());
     }
-    groups.into_values().map(|(vars, cls)| (cls, vars)).collect()
+    groups
+        .into_values()
+        .map(|(vars, cls)| (cls, vars))
+        .collect()
 }

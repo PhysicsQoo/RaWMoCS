@@ -56,8 +56,8 @@ fn three_products_are_exact_for_signed_and_cancelling_factors() {
 
 #[test]
 fn three_products_are_exact_for_large_numerators_and_denominators() {
-    let large = (num_bigint::BigInt::from(1_u8) << 521) + 12345;
-    let larger = (num_bigint::BigInt::from(1_u8) << 607) + 98765;
+    let large: num_bigint::BigInt = (num_bigint::BigInt::from(1_u8) << 521_usize) + 12345;
+    let larger: num_bigint::BigInt = (num_bigint::BigInt::from(1_u8) << 607_usize) + 98765;
     let a = Gaussian::new(
         BigRational::new(large.clone(), larger.clone()),
         BigRational::new(-larger.clone(), large.clone()),

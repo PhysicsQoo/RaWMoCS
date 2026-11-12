@@ -197,6 +197,9 @@ pub struct Stats {
     /// Number of cache entries declined by the optional retained logical
     /// payload budget. Does not include a full entry-count cache.
     pub cache_payload_rejections: u64,
+    /// Research-only rejections based on predeclared normalized key clauses.
+    #[cfg(feature = "cache-admission-research")]
+    pub cache_min_clause_rejections: u64,
     #[cfg(feature = "cache-cost-profile")]
     pub cache_cost: CacheCostProfile,
 }
@@ -230,6 +233,8 @@ struct Engine<'a> {
     depth_budget: usize,
     cache_budget: usize,
     cache_payload_budget: Option<CachePayloadBudget>,
+    #[cfg(feature = "cache-admission-research")]
+    min_cache_clauses: usize,
     stats: Stats,
     cache: HashMap<Key, Outcome>,
 }
@@ -278,17 +283,44 @@ pub fn solve_with_cache_payload_budget(
     solve_with_optional_cache_payload_budget(p, limits, Some(budget))
 }
 
+/// Research-only structural admission: retain a cache entry only when its
+/// normalized residual key has at least `min_clauses` distinct clauses.
+/// Lookup still operates on every non-disabled cache key. Does not change
+/// Full WMC, SAT, cancellation, node/depth budgets or default policies.
+/// This fixed threshold is NOT a measured cost estimate.
+#[cfg(feature = "cache-admission-research")]
+pub fn solve_with_min_cache_clauses(
+    p: &Problem,
+    limits: Limits,
+    min_clauses: usize,
+) -> Result<Report, SolveError> {
+    solve_with_research_cache_threshold(p, limits, None, min_clauses)
+}
+
 fn solve_with_optional_cache_payload_budget(
     p: &Problem,
     limits: Limits,
     cache_payload_budget: Option<CachePayloadBudget>,
 ) -> Result<Report, SolveError> {
+    solve_with_research_cache_threshold(p, limits, cache_payload_budget, 0)
+}
+
+fn solve_with_research_cache_threshold(
+    p: &Problem,
+    limits: Limits,
+    cache_payload_budget: Option<CachePayloadBudget>,
+    min_cache_clauses: usize,
+) -> Result<Report, SolveError> {
+    #[cfg(not(feature = "cache-admission-research"))]
+    let _ = min_cache_clauses;
     let mut engine = Engine {
         p,
         budget: limits.nodes,
         depth_budget: limits.depth,
         cache_budget: limits.cache_entries,
         cache_payload_budget,
+        #[cfg(feature = "cache-admission-research")]
+        min_cache_clauses,
         stats: Stats::default(),
         cache: HashMap::new(),
     };
@@ -324,6 +356,12 @@ impl Engine<'_> {
     fn save(&mut self, key: Option<Key>, outcome: Outcome) -> Outcome {
         if let Some(key) = key {
             if self.cache.len() < self.cache_budget {
+                #[cfg(feature = "cache-admission-research")]
+                if key.clauses.len() < self.min_cache_clauses {
+                    self.stats.cache_min_clause_rejections =
+                        self.stats.cache_min_clause_rejections.saturating_add(1);
+                    return outcome;
+                }
                 #[cfg(feature = "cache-cost-profile")]
                 let admission_start = Instant::now();
                 // These count stored logical payloads, NOT total allocated

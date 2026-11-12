@@ -1,9 +1,15 @@
 //! Experimental Linux process-isolated cache RSS and elapsed-time cohort.
 //! Each cache cap and CNF shape runs in a fresh process; no hard RSS cap is claimed.
+#[cfg(feature = "cache-admission-research")]
+use rawmocs_benchmarks::admission_holdout::{
+    guarded_graph, independent_exact_wmc as graph_oracle, Graph,
+};
 use rawmocs_benchmarks::cache_reuse::{independent_exact_wmc, repeated_residuals};
 use rawmocs_benchmarks::expensive_reuse::{guarded_cycle_residual, independent_cycle_wmc};
 use rawmocs_benchmarks::scalability::{expected, fixture, Family};
 use rawmocs_benchmarks::{fixture as synthetic_fixture, Workload};
+#[cfg(feature = "cache-admission-research")]
+use rawmocs_core::solve_with_min_cache_clauses;
 use rawmocs_core::{
     solve_with_cache_payload_budget, solve_with_limits, CachePayloadBudget, Limits,
 };
@@ -709,6 +715,123 @@ fn cost_suite() -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(feature = "cache-admission-research")]
+fn admission_worker(
+    graph_label: &str,
+    vertices: usize,
+    trial: usize,
+    policy: &str,
+) -> Result<(), String> {
+    if ![6, 10, 14].contains(&vertices) || trial >= 3 {
+        return Err("admission sizes must be 6/10/14 and trials 0..3".into());
+    }
+    let graph = Graph::from_label(graph_label)
+        .ok_or_else(|| "unknown predeclared graph family".to_string())?;
+    let input = guarded_graph(graph, vertices);
+    let expected = graph_oracle(graph, vertices);
+    let mut limits = Limits::default();
+    let threshold = match policy {
+        "off" => {
+            limits.cache_entries = 0;
+            None
+        }
+        "legacy" => None,
+        "min4" => Some(4),
+        "min12" => Some(12),
+        _ => return Err("admission policy must be off/legacy/min4/min12".into()),
+    };
+    let started = Instant::now();
+    let answer = match threshold {
+        Some(n) => solve_with_min_cache_clauses(&input, limits, n),
+        None => solve_with_limits(&input, limits),
+    }
+    .map_err(|e| format!("admission/{graph_label}/{vertices}/{trial}/{policy}: {e}"))?;
+    let elapsed_ns = started.elapsed().as_nanos();
+    if !answer.satisfiable || answer.count != expected {
+        return Err("admission independent Full Complex WMC / SAT mismatch".into());
+    }
+    let stats = &answer.stats;
+    if policy == "off" {
+        if stats.cache_entries != 0
+            || stats.cache_hits != 0
+            || stats.cache_min_clause_rejections != 0
+        {
+            return Err("disabled cache retained an entry or rejection".into());
+        }
+    } else if policy == "legacy" {
+        if stats.cache_hits == 0 || stats.cache_min_clause_rejections != 0 {
+            return Err("unmodified legacy cache did not reuse the guaranteed residual".into());
+        }
+    } else if stats.cache_min_clause_rejections == 0 {
+        return Err("structural admission policy never rejected a candidate".into());
+    }
+    if stats.cache_payload_rejections != 0 {
+        return Err("structural admission cohort unexpectedly applied a payload budget".into());
+    }
+    let rss = peak_rss_kib()?;
+    println!(
+        "{graph_label},{vertices},{trial},{policy},{elapsed_ns},{rss},{},{},{},{},{},{},{}",
+        stats.nodes,
+        stats.cache_hits,
+        stats.cache_entries,
+        stats.cache_min_clause_rejections,
+        stats.cache_scope_items,
+        stats.cache_clause_items,
+        stats.cache_literal_items
+    );
+    Ok(())
+}
+
+#[cfg(feature = "cache-admission-research")]
+fn launch_admission(
+    exe: &std::path::Path,
+    graph: &str,
+    vertices: usize,
+    trial: usize,
+    policy: &str,
+) -> Result<(), String> {
+    let n_arg = vertices.to_string();
+    let trial_arg = trial.to_string();
+    match launch_guarded(
+        exe,
+        &["--admission-worker", graph, &n_arg, policy, &trial_arg],
+        512,
+        Duration::from_secs(5),
+    )? {
+        GuardedExit::Success => Ok(()),
+        GuardedExit::Failed(status) => Err(format!(
+            "admission/{graph}/{vertices}/{trial}/{policy}: WORKER_FAILURE ({status}); no certified result"
+        )),
+        GuardedExit::Timeout => Err(format!(
+            "admission/{graph}/{vertices}/{trial}/{policy}: TIMEOUT; no certified result"
+        )),
+    }
+}
+
+#[cfg(feature = "cache-admission-research")]
+fn admission_suite() -> Result<(), String> {
+    if !cfg!(target_os = "linux") {
+        return Err("admission VmHWM study requires Linux".into());
+    }
+    let exe = std::env::current_exe().map_err(|e| format!("executable path: {e}"))?;
+    guard_negative_controls(&exe)?;
+    println!(
+        "family,vertices,trial,policy,solve_wall_ns,process_peak_rss_kib,nodes,cache_hits,cache_entries,threshold_rejections,cache_scope_items,cache_clause_items,cache_literal_items"
+    );
+    const POLICIES: [&str; 4] = ["off", "legacy", "min4", "min12"];
+    for graph in ["cycle", "rungs", "spokes"] {
+        for vertices in [6, 10, 14] {
+            for trial in 0..3 {
+                for offset in 0..POLICIES.len() {
+                    let policy = POLICIES[(trial + offset) % POLICIES.len()];
+                    launch_admission(&exe, graph, vertices, trial, policy)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn run() -> Result<(), String> {
     let args: Vec<_> = std::env::args().collect();
     match args.as_slice() {
@@ -718,6 +841,8 @@ fn run() -> Result<(), String> {
         [_, flag] if flag == "--cycle-suite" => cycle_suite(),
         #[cfg(feature = "cache-cost-profile")]
         [_, flag] if flag == "--cost-suite" => cost_suite(),
+        #[cfg(feature = "cache-admission-research")]
+        [_, flag] if flag == "--admission-suite" => admission_suite(),
         [_, flag] if flag == "--stress-memory" => {
             let mut bytes: Vec<u8> = Vec::new();
             if bytes.try_reserve_exact(1024 * 1024 * 1024).is_err() {
@@ -745,6 +870,12 @@ fn run() -> Result<(), String> {
             let trial = trial.parse::<usize>().map_err(|e| format!("trial: {e}"))?;
             cost_worker(vertices, policy, trial)
         }
+        #[cfg(feature = "cache-admission-research")]
+        [_, flag, graph, vertices, policy, trial] if flag == "--admission-worker" => {
+            let vertices = vertices.parse::<usize>().map_err(|e| format!("vertices: {e}"))?;
+            let trial = trial.parse::<usize>().map_err(|e| format!("trial: {e}"))?;
+            admission_worker(graph, vertices, trial, policy)
+        }
         [_, flag, vertices, policy, trial] if flag == "--cycle-worker" => {
             let vertices = vertices.parse::<usize>().map_err(|e| format!("vertices: {e}"))?;
             let trial = trial.parse::<usize>().map_err(|e| format!("trial: {e}"))?;
@@ -757,7 +888,7 @@ fn run() -> Result<(), String> {
                 .map_err(|e| format!("cache cap: {e}"))?;
             worker(name, variables, cache_cap)
         }
-        _ => Err("usage: cache_profile [--cost-suite (requires cache-cost-profile feature)|--cost-worker vertices off|on|tight trial|--cycle-suite|--cycle-worker vertices off|on trial|--repeat-suite|--repeat-worker gadgets off|legacy|tight|roomy trial|--quota-suite|--quota-worker chain|pairs|cache n legacy|tight|roomy] [--worker chain|pairs|cache n cache_cap] [--stress-memory|--stress-sleep]".into()),
+        _ => Err("usage: cache_profile [--admission-suite (requires cache-admission-research)|--admission-worker family vertices off|legacy|min4|min12 trial|--cost-suite (requires cache-cost-profile feature)|--cost-worker vertices off|on|tight trial|--cycle-suite|--cycle-worker vertices off|on trial|--repeat-suite|--repeat-worker gadgets off|legacy|tight|roomy trial|--quota-suite|--quota-worker chain|pairs|cache n legacy|tight|roomy] [--worker chain|pairs|cache n cache_cap] [--stress-memory|--stress-sleep]".into()),
     }
 }
 

@@ -1,0 +1,107 @@
+name: Source-pinned structural cache admission research
+
+on:
+  pull_request:
+    paths:
+      - "crates/rawmocs-core/src/**"
+      - "crates/rawmocs-core/Cargo.toml"
+      - "benchmarks/rust_core/src/admission_holdout.rs"
+      - "benchmarks/rust_core/src/lib.rs"
+      - "benchmarks/rust_core/examples/cache_profile.rs"
+      - "benchmarks/rust_core/Cargo.toml"
+      - ".github/workflows/cache-admission.yml"
+  push:
+    branches: [main]
+    paths:
+      - "crates/rawmocs-core/src/**"
+      - "crates/rawmocs-core/Cargo.toml"
+      - "benchmarks/rust_core/src/admission_holdout.rs"
+      - "benchmarks/rust_core/src/lib.rs"
+      - "benchmarks/rust_core/examples/cache_profile.rs"
+      - "benchmarks/rust_core/Cargo.toml"
+      - ".github/workflows/cache-admission.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: structural-admission-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  structural-admission:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/rust_core -> target
+      - name: Format and lint opt-in policy
+        run: |
+          cargo fmt --all -- --check
+          cargo fmt --manifest-path benchmarks/rust_core/Cargo.toml --all -- --check
+          cargo clippy --workspace --all-targets --features cache-admission-research -- -D warnings
+          cargo clippy --locked --manifest-path benchmarks/rust_core/Cargo.toml --all-targets --features cache-admission-research -- -D warnings
+      - name: Verify independent oracles, fail-closed budgets, default equivalence
+        run: |
+          cargo test --workspace
+          cargo test --workspace --features cache-admission-research
+          cargo test --locked --manifest-path benchmarks/rust_core/Cargo.toml
+          cargo test --locked --manifest-path benchmarks/rust_core/Cargo.toml --features cache-admission-research
+      - name: Compare structural policies in independent bounded Linux processes
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v prlimit
+          cargo run --locked --release --manifest-path benchmarks/rust_core/Cargo.toml --features cache-admission-research --example cache_profile -- --admission-suite 2> "$RUNNER_TEMP/admission-guards.log" | tee "$RUNNER_TEMP/admission-profile.csv"
+          grep -F "GUARD_MEMORY_DENIED=PASS STATUS=RESOURCE_FAILURE" "$RUNNER_TEMP/admission-guards.log"
+          grep -F "GUARD_TIMEOUT=PASS STATUS=TIMEOUT" "$RUNNER_TEMP/admission-guards.log"
+          python3 - "$RUNNER_TEMP/admission-profile.csv" <<'PY'
+          import csv
+          import sys
+          from collections import defaultdict
+          with open(sys.argv[1], newline="", encoding="utf-8") as source:
+              rows = list(csv.DictReader(source))
+          expected = {
+              (family, str(n), str(trial), policy)
+              for family in ("cycle", "rungs", "spokes")
+              for n in (6, 10, 14)
+              for trial in range(3)
+              for policy in ("off", "legacy", "min4", "min12")
+          }
+          actual = {(r["family"], r["vertices"], r["trial"], r["policy"]) for r in rows}
+          assert len(rows) == 108 and actual == expected, "missing/duplicate worker"
+          groups = defaultdict(dict)
+          for row in rows:
+              i = lambda field: int(row[field])
+              assert i("solve_wall_ns") > 0 and i("process_peak_rss_kib") > 0
+              assert i("nodes") > 0
+              groups[(row["family"], row["vertices"], row["trial"])][row["policy"]] = row
+              if row["policy"] == "off":
+                  assert i("cache_hits") == i("cache_entries") == i("threshold_rejections") == 0
+              elif row["policy"] == "legacy":
+                  assert i("cache_hits") > 0 and i("threshold_rejections") == 0
+              else:
+                  assert i("threshold_rejections") > 0
+          for group in groups.values():
+              off_nodes = int(group["off"]["nodes"])
+              for policy in ("legacy", "min4", "min12"):
+                  assert int(group[policy]["nodes"]) <= off_nodes
+          print("STRUCTURAL_ADMISSION_108_EXACT_ORACLE_AND_RESOURCE_ROWS=PASS")
+          PY
+      - name: Upload source-locked evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: structural-admission-profile
+          path: |
+            ${{ runner.temp }}/admission-profile.csv
+            ${{ runner.temp }}/admission-guards.log
+          if-no-files-found: error
+          retention-days: 30

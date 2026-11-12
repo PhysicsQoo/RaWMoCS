@@ -35,8 +35,10 @@ CATEGORIES = (
 
 
 def classify(evidence: dict | None, internal_log: str) -> tuple[str, str]:
+    # This classifier is invoked only after a real-run command failed.
+    # Even a purportedly qualified JSON cannot override the failed exit.
     if evidence is not None and evidence.get("classification") == "SCOPED_DELEGATED_MEMORY_OBSERVED":
-        return "COMPLETE", "QUALIFIED_SCOPED"
+        return "RECORD_PRESENT", "CONTRADICTORY_QUALIFIED_RECORD_AFTER_FAILURE"
     # The record's stderr/stdout/failure are not trustworthy for publication:
     # reduce all observed strings to an explicitly enumerated category.
     parts = []
@@ -76,6 +78,8 @@ def report(record_path: Path, log_path: Path) -> None:
 
 def self_test() -> None:
     cases = [
+        ({"classification": "SCOPED_DELEGATED_MEMORY_OBSERVED"}, "",
+         "RECORD_PRESENT", "CONTRADICTORY_QUALIFIED_RECORD_AFTER_FAILURE"),
         (None, "DELEGATED_EVIDENCE_FAIL: worktree must be clean", "NO_RECORD", "SOURCE_NOT_CLEAN"),
         ({"classification": "NOT_VALIDATED", "failure": "real delegated evidence rejected",
           "stdout": "", "stderr": "DELEGATED_CGROUP_FAIL: RESOURCE_LIMIT_UNAVAILABLE: cgroup.procs admission: Permission denied"},

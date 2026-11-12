@@ -1,0 +1,104 @@
+name: Observed-work cache admission holdout research
+
+on:
+  pull_request:
+    paths:
+      - "crates/rawmocs-core/src/**"
+      - "benchmarks/rust_core/src/work_proxy_holdout.rs"
+      - "benchmarks/rust_core/src/lib.rs"
+      - "benchmarks/rust_core/examples/cache_profile.rs"
+      - ".github/workflows/cache-work.yml"
+  push:
+    branches: [main]
+    paths:
+      - "crates/rawmocs-core/src/**"
+      - "benchmarks/rust_core/src/work_proxy_holdout.rs"
+      - "benchmarks/rust_core/src/lib.rs"
+      - "benchmarks/rust_core/examples/cache_profile.rs"
+      - ".github/workflows/cache-work.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: observed-work-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  holdout:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/rust_core -> target
+      - name: Check Rust formatting
+        run: |
+          cargo fmt --all -- --check
+          cargo fmt --manifest-path benchmarks/rust_core/Cargo.toml --all -- --check
+      - name: Lint and exact-science tests
+        run: |
+          cargo clippy --workspace --all-targets --features cache-admission-research -- -D warnings
+          cargo test --workspace
+          cargo test --workspace --features cache-admission-research
+          cargo clippy --locked --manifest-path benchmarks/rust_core/Cargo.toml --all-targets --features cache-admission-research -- -D warnings
+          cargo test --locked --manifest-path benchmarks/rust_core/Cargo.toml
+          cargo test --locked --manifest-path benchmarks/rust_core/Cargo.toml --features cache-admission-research
+          cargo test --locked --manifest-path benchmarks/rust_core/Cargo.toml --features cache-admission-research,cache-cost-profile
+      - name: Source-locked selector-free observed-work policy holdouts
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v prlimit
+          cargo run --locked --release --manifest-path benchmarks/rust_core/Cargo.toml --features cache-admission-research --example cache_profile -- --work-suite 2> "$RUNNER_TEMP/work-guards.log" | tee "$RUNNER_TEMP/work-proxy.csv"
+          grep -F "GUARD_MEMORY_DENIED=PASS STATUS=RESOURCE_FAILURE" "$RUNNER_TEMP/work-guards.log"
+          grep -F "GUARD_TIMEOUT=PASS STATUS=TIMEOUT" "$RUNNER_TEMP/work-guards.log"
+          python3 - "$RUNNER_TEMP/work-proxy.csv" <<'PY'
+          import csv
+          import sys
+          from collections import defaultdict
+          with open(sys.argv[1], newline="", encoding="utf-8") as fh:
+              rows = list(csv.DictReader(fh))
+          expected = {
+              (family, str(n), str(trial), policy)
+              for family in ("ring", "chorded", "mixed")
+              for n in (8, 10, 12)
+              for trial in range(3)
+              for policy in ("off", "legacy", "proxy1", "proxy4")
+          }
+          observed = {(r["family"], r["variables"], r["trial"], r["policy"]) for r in rows}
+          assert len(rows) == 108 and observed == expected, "missing/duplicate work-proxy worker"
+          groups = defaultdict(dict)
+          for row in rows:
+              num = lambda k: int(row[k])
+              assert num("solve_wall_ns") > 0 and num("process_peak_rss_kib") > 0
+              assert num("nodes") > 0
+              assert num("key_scope_items") >= 0 and num("key_literals") >= 0
+              groups[(row["family"], row["variables"], row["trial"])][row["policy"]] = row
+              if row["policy"] == "off":
+                  assert num("cache_hits") == num("cache_entries") == num("work_proxy_rejections") == 0
+              elif row["policy"] == "legacy":
+                  assert num("work_proxy_rejections") == 0
+              else:
+                  assert num("work_proxy_rejections") > 0
+          for group in groups.values():
+              for policy in ("legacy", "proxy1", "proxy4"):
+                  assert int(group[policy]["nodes"]) <= int(group["off"]["nodes"])
+          print("SELECTOR_FREE_WORK_108_EXACT_COMPLEX_WMC_AND_RESOURCE_ROWS=PASS")
+          PY
+      - name: Upload pinned Linux evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: observed-work-holdout
+          path: |
+            ${{ runner.temp }}/work-proxy.csv
+            ${{ runner.temp }}/work-guards.log
+          retention-days: 30
+          if-no-files-found: error

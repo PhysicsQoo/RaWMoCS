@@ -111,7 +111,9 @@ fn launch(exe: &std::path::Path, name: &str, n: usize, cap: usize) -> Result<(),
             Ok(None) if started.elapsed() > Duration::from_secs(5) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!("{name}/{n}/{cap}: bounded profiling worker timeout"));
+                return Err(format!(
+                    "{name}/{n}/{cap}: bounded profiling worker timeout"
+                ));
             }
             Ok(None) => thread::sleep(Duration::from_millis(10)),
             Err(e) => {

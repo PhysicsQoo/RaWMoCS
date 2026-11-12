@@ -1,5 +1,6 @@
 //! Six stable native benchmark identities; fixtures are built outside timed spans.
 use num_rational::BigRational;
+use rawmocs_benchmarks::cache_reuse::repeated_residuals;
 use rawmocs_benchmarks::scalability::{fixture as medium_fixture, Family};
 use rawmocs_benchmarks::{arithmetic_operands, fixture, Workload};
 use rawmocs_core::{
@@ -23,6 +24,9 @@ static CHAIN64: OnceLock<Problem> = OnceLock::new();
 static PAIRS16: OnceLock<Problem> = OnceLock::new();
 static PAIRS32: OnceLock<Problem> = OnceLock::new();
 static PAIRS64: OnceLock<Problem> = OnceLock::new();
+static REUSE4: OnceLock<Problem> = OnceLock::new();
+static REUSE8: OnceLock<Problem> = OnceLock::new();
+static REUSE16: OnceLock<Problem> = OnceLock::new();
 
 fn forced() -> &'static Problem {
     FORCED.get_or_init(|| fixture(Workload::ForcedFree))
@@ -76,6 +80,9 @@ fn main() {
     );
     for size in [16, 32, 64] {
         let _ = (chain(size), pair_components(size));
+    }
+    for size in [4, 8, 16] {
+        let _ = repeat_case(size);
     }
     divan::main();
 }
@@ -252,5 +259,56 @@ fn medium_independent_components_payload_quota() {
             },
         )
         .expect("medium CNF with bounded retained logical cache payload"),
+    );
+}
+
+
+fn repeat_case(gadgets: usize) -> &'static Problem {
+    let slot = match gadgets {
+        4 => &REUSE4,
+        8 => &REUSE8,
+        16 => &REUSE16,
+        _ => panic!("only fixed gadget counts"),
+    };
+    slot.get_or_init(|| repeated_residuals(gadgets))
+}
+
+// Additive series: all 22 existing identities preserved. Every variant uses
+// the same source-locked weighted CNF, prebuilt outside timed spans.
+#[divan::bench(args = [4_usize, 8_usize, 16_usize])]
+fn repeated_residual_cache_enabled(gadgets: usize) {
+    divan::black_box(
+        solve(divan::black_box(repeat_case(gadgets))).expect("bounded gadget CNF"),
+    );
+}
+
+#[divan::bench(args = [4_usize, 8_usize, 16_usize])]
+fn repeated_residual_cache_disabled(gadgets: usize) {
+    divan::black_box(
+        solve_with_limits(
+            divan::black_box(repeat_case(gadgets)),
+            Limits {
+                cache_entries: 0,
+                ..Limits::default()
+            },
+        )
+        .expect("bounded gadget CNF"),
+    );
+}
+
+#[divan::bench(args = [4_usize, 8_usize, 16_usize])]
+fn repeated_residual_cache_tight(gadgets: usize) {
+    divan::black_box(
+        solve_with_cache_payload_budget(
+            divan::black_box(repeat_case(gadgets)),
+            Limits::default(),
+            CachePayloadBudget {
+                scope_items: 2,
+                clause_items: 2,
+                literal_items: 2,
+                value_bits: 32,
+            },
+        )
+        .expect("bounded gadget CNF"),
     );
 }

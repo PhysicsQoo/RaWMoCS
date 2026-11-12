@@ -477,7 +477,6 @@ fn repeated_suite() -> Result<(), String> {
     Ok(())
 }
 
-
 // A separate source-locked high-cost connected residual cohort.
 // Avoid collapsing this study into the 3-variable repeated-gadget CSV.
 fn cycle_worker(vertices: usize, policy: &str, trial: usize) -> Result<(), String> {

@@ -2,7 +2,9 @@
 //! Each cache cap and CNF shape runs in a fresh process; no hard RSS cap is claimed.
 use rawmocs_benchmarks::scalability::{expected, fixture, Family};
 use rawmocs_benchmarks::{fixture as synthetic_fixture, Workload};
-use rawmocs_core::{solve_with_limits, Limits};
+use rawmocs_core::{
+    solve_with_cache_payload_budget, solve_with_limits, CachePayloadBudget, Limits,
+};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -212,10 +214,156 @@ fn suite() -> Result<(), String> {
     Ok(())
 }
 
+fn quota_policy(name: &str) -> Result<Option<CachePayloadBudget>, String> {
+    match name {
+        "legacy" => Ok(None),
+        "tight" => Ok(Some(CachePayloadBudget {
+            scope_items: 2,
+            clause_items: 2,
+            literal_items: 2,
+            value_bits: 32,
+        })),
+        "roomy" => Ok(Some(CachePayloadBudget {
+            scope_items: 1_024,
+            clause_items: 1_024,
+            literal_items: 2_048,
+            value_bits: 16_384,
+        })),
+        _ => Err(format!("unknown source-pinned quota policy: {name}")),
+    }
+}
+
+// Research-only, source-locked quota-vs-cache comparison. The existing
+// 28-record cache-cap suite and its CSV format are intentionally unchanged.
+fn quota_worker(name: &str, n: usize, policy: &str) -> Result<(), String> {
+    let budget = quota_policy(policy)?;
+    let (problem, oracle) = if name == "cache" && n == 3 {
+        let input = synthetic_fixture(Workload::Cache);
+        // Derivation: y and z are forced true, x is free. The expected
+        // Gaussian-rational count does not come from a solver invocation.
+        let w = input.weights();
+        let expected = w[0]
+            .positive
+            .add(&w[0].negative)
+            .mul(&w[1].positive)
+            .mul(&w[2].positive);
+        (input, expected)
+    } else if [16, 32, 64].contains(&n) {
+        let shape = family(name)?;
+        (fixture(shape, n), expected(shape, n))
+    } else {
+        return Err("quota profile accepts only source-locked families and widths".into());
+    };
+
+    let limits = Limits {
+        cache_entries: 10_000,
+        ..Limits::default()
+    };
+    let started = Instant::now();
+    let report = match budget {
+        None => solve_with_limits(&problem, limits),
+        Some(budget) => solve_with_cache_payload_budget(&problem, limits, budget),
+    }
+    .map_err(|e| format!("{name}/{n}/{policy}: solver failed closed: {e}"))?;
+    let elapsed_ns = started.elapsed().as_nanos();
+    if !report.satisfiable || report.count != oracle {
+        return Err(format!(
+            "{name}/{n}/{policy}: exact analytical WMC or SAT mismatch"
+        ));
+    }
+    let stats = &report.stats;
+    if let Some(b) = budget {
+        if stats.cache_scope_items > b.scope_items
+            || stats.cache_clause_items > b.clause_items
+            || stats.cache_literal_items > b.literal_items
+            || stats.cache_value_bits > b.value_bits
+        {
+            return Err(format!(
+                "{name}/{n}/{policy}: retained logical quota exceeded"
+            ));
+        }
+        if policy == "tight" && stats.cache_payload_rejections == 0 {
+            return Err(format!(
+                "{name}/{n}/{policy}: tight quota did not reject an insertion"
+            ));
+        }
+        if policy == "roomy" && stats.cache_payload_rejections != 0 {
+            return Err(format!(
+                "{name}/{n}/{policy}: roomy quota unexpectedly rejected an insertion"
+            ));
+        }
+    } else if stats.cache_payload_rejections != 0 {
+        return Err("legacy policy unexpectedly counted quota rejection".into());
+    }
+    if name == "cache" && policy != "tight" && stats.cache_hits == 0 {
+        return Err(format!(
+            "{policy}: cache-hit positive control was not exercised"
+        ));
+    }
+    let rss = peak_rss_kib()?;
+    println!(
+        "{name},{n},{policy},10000,{elapsed_ns},{rss},{},{},{},{},{},{},{},{},{},{}",
+        stats.nodes,
+        stats.cache_entries,
+        stats.cache_hits,
+        stats.decompositions,
+        stats.cache_scope_items,
+        stats.cache_clause_items,
+        stats.cache_literal_items,
+        stats.cache_value_bits,
+        stats.max_cached_value_bits,
+        stats.cache_payload_rejections
+    );
+    Ok(())
+}
+
+fn launch_quota(exe: &std::path::Path, name: &str, n: usize, policy: &str) -> Result<(), String> {
+    let width = n.to_string();
+    match launch_guarded(
+        exe,
+        &["--quota-worker", name, &width, policy],
+        512,
+        Duration::from_secs(5),
+    )? {
+        GuardedExit::Success => Ok(()),
+        GuardedExit::Failed(status) => Err(format!(
+            "{name}/{n}/{policy}: WORKER_FAILURE ({status}); no certified WMC result"
+        )),
+        GuardedExit::Timeout => Err(format!(
+            "{name}/{n}/{policy}: TIMEOUT (terminated); no certified WMC result"
+        )),
+    }
+}
+
+fn quota_suite() -> Result<(), String> {
+    if !cfg!(target_os = "linux") {
+        return Err("isolated quota RSS profile supports Linux only".into());
+    }
+    let exe = std::env::current_exe().map_err(|e| format!("executable path: {e}"))?;
+    // Standalone quota runs must independently qualify both OS research
+    // negative controls, not rely on the legacy suite running first.
+    guard_negative_controls(&exe)?;
+    println!(
+        "family,variables,policy,cache_cap,solve_wall_ns,process_peak_rss_kib,nodes,cache_entries,cache_hits,decompositions,key_scope_items,key_clauses,key_literals,value_bits,max_value_bits,cache_payload_rejections"
+    );
+    for name in ["chain", "pairs"] {
+        for n in [16, 32, 64] {
+            for policy in ["legacy", "tight", "roomy"] {
+                launch_quota(&exe, name, n, policy)?;
+            }
+        }
+    }
+    for policy in ["legacy", "tight", "roomy"] {
+        launch_quota(&exe, "cache", 3, policy)?;
+    }
+    Ok(())
+}
+
 fn run() -> Result<(), String> {
     let args: Vec<_> = std::env::args().collect();
     match args.as_slice() {
         [_] => suite(),
+        [_, flag] if flag == "--quota-suite" => quota_suite(),
         [_, flag] if flag == "--stress-memory" => {
             let mut bytes: Vec<u8> = Vec::new();
             if bytes.try_reserve_exact(1024 * 1024 * 1024).is_err() {
@@ -228,6 +376,10 @@ fn run() -> Result<(), String> {
             thread::sleep(Duration::from_secs(5));
             Err("sleep control unexpectedly reached its end".into())
         }
+        [_, flag, name, n, policy] if flag == "--quota-worker" => {
+            let variables = n.parse::<usize>().map_err(|e| format!("variables: {e}"))?;
+            quota_worker(name, variables, policy)
+        }
         [_, flag, name, n, cap] if flag == "--worker" => {
             let variables = n.parse::<usize>().map_err(|e| format!("variables: {e}"))?;
             let cache_cap = cap
@@ -235,7 +387,7 @@ fn run() -> Result<(), String> {
                 .map_err(|e| format!("cache cap: {e}"))?;
             worker(name, variables, cache_cap)
         }
-        _ => Err("usage: cache_profile [--worker chain|pairs|cache n cache_cap] [--stress-memory|--stress-sleep]".into()),
+        _ => Err("usage: cache_profile [--quota-suite|--quota-worker chain|pairs|cache n legacy|tight|roomy] [--worker chain|pairs|cache n cache_cap] [--stress-memory|--stress-sleep]".into()),
     }
 }
 

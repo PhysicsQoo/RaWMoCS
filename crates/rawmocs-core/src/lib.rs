@@ -888,10 +888,20 @@ mod residual_canonicalization_tests {
         // Includes a tautology, duplicate literals, repeated clauses,
         // mixed signs, and branches producing empty/duplicate clauses.
         let raw: Vec<Clause> = vec![
-            vec![1, 2], vec![1, 3], vec![-1, 3], vec![-1, -3],
-            vec![2, -3], vec![2, 3], vec![-2, 3], vec![-2, -3],
-            vec![1, -1, 4], vec![4, 4], vec![-4], vec![3, 4],
-            vec![4, 3], vec![-1, 2, 4],
+            vec![1, 2],
+            vec![1, 3],
+            vec![-1, 3],
+            vec![-1, -3],
+            vec![2, -3],
+            vec![2, 3],
+            vec![-2, 3],
+            vec![-2, -3],
+            vec![1, -1, 4],
+            vec![4, 4],
+            vec![-4],
+            vec![3, 4],
+            vec![4, 3],
+            vec![-1, 2, 4],
         ];
         let mut level = vec![normalize(raw)];
         for var in 1_i32..=4 {
@@ -899,9 +909,9 @@ mod residual_canonicalization_tests {
             for parent in level {
                 for literal in [var, -var] {
                     let assigned = assign(&parent, literal);
-                    assert!(assigned.iter().all(|clause| {
-                        clause.windows(2).all(|pair| pair[0] < pair[1])
-                    }));
+                    assert!(assigned
+                        .iter()
+                        .all(|clause| { clause.windows(2).all(|pair| pair[0] < pair[1]) }));
                     let reference = normalize(assigned.clone());
                     let fast = normalize_child(assigned);
                     assert_eq!(fast, reference, "failed for assignment {literal}");
@@ -915,8 +925,13 @@ mod residual_canonicalization_tests {
     #[test]
     fn partitioned_residuals_match_full_normalization() {
         let clauses = normalize(vec![
-            vec![1, 2], vec![-1, 2], vec![3, 4], vec![-3, 4],
-            vec![5, 6], vec![-5, -6], vec![3, 4],
+            vec![1, 2],
+            vec![-1, 2],
+            vec![3, 4],
+            vec![-3, 4],
+            vec![5, 6],
+            vec![-5, -6],
+            vec![3, 4],
         ]);
         let parts = split_components(&clauses, &[1, 2, 3, 4, 5, 6], 6)
             .expect("fixture must split into three connected components");

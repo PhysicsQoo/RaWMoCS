@@ -249,3 +249,35 @@ unchanged. Six new native CodSpeed Simulation identities supplement the
 previous 31. An exact-source successful GitHub Actions run and a
 comparable runner analysis are required before reporting numeric
 WallTime/RSS or changing the default cache policy.
+
+
+### First source-qualified connected-cycle observation
+
+Source SHA `c70f166f1837f831f52753de52a0453fca97de9d` passed
+[Linux profile run 43181375405](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/43181375405):
+all 18 source-locked connected-cycle workers, historical 28/21/36
+workers and all suite-specific memory-denial/timeout negative controls
+completed successfully. The CSV `connected-cycle-profile.csv` and
+`cycle-guard-controls.log` are retained as short-lived Actions artifacts.
+
+Median in-child solve WallTime over **three fresh processes per policy
+on one GitHub-hosted Linux runner**, with paired exact input and
+alternating policy order:
+
+| Cycle vertices (total variables) | Cache OFF median ms | Cache ON median ms | OFF nodes | ON nodes | ON cache hits |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 6 (7) | 0.152425 | 0.082715 | 23 | 13 | 1 |
+| 10 (11) | 0.398046 | 0.260749 | 75 | 37 | 9 |
+| 14 (15) | 1.266434 | 0.483446 | 231 | 69 | 25 |
+
+At 14 cycle vertices, the OFF/ON elapsed-time median ratio is about
+**2.62x**, and ON visits about **70% fewer search nodes**. This is a
+meaningful synthetic positive control for expensive repeated residuals,
+unlike the cheap 3-variable control with mixed/non-improving WallTime.
+For the 14-vertex family, median process `VmHWM` is **2352 KiB OFF
+versus 2368 KiB ON**, so the experiment **does not** demonstrate lower
+physical peak RSS. Results are from a shared runner with only three
+trials per policy; they cannot establish a robust real-world speedup,
+projected WMC benefit, QuPRS end-to-end improvement or a change to the
+default cache policy. Additional controlled hardware and representative
+CNF families remain necessary.

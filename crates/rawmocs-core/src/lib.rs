@@ -84,7 +84,7 @@ impl Problem {
         }
         for clause in &clauses {
             for &lit in clause {
-                if lit == 0 || i64::from(lit).abs() as usize > variables {
+                if lit == 0 || lit.unsigned_abs() as usize > variables {
                     return Err(ProblemError::InvalidLiteral(lit));
                 }
             }

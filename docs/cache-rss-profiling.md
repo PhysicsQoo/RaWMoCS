@@ -203,3 +203,49 @@ can dominate. Repeated CPU scheduling and page-quantized VmHWM further limit
 inference. Next research should use bounded, source-pinned nontrivial
 shared-residual graphs and compare bigger cached computations; do **not**
 change the default Cache policy from these measurements alone.
+
+
+## Connected shared-residual cycle study (source-pinned; pending measurement)
+
+A separate **research-only** fourth CSV, `connected-cycle-profile.csv`,
+tests more costly identical residual subproblems than the original
+three-variable gadget. For an undirected cycle of `n` positive `y` variables,
+each edge `(y_i | y_(i+1))` is guarded by two selector clauses:
+
+```text
+(x | y_i | y_(i+1)) & (!x | y_i | y_(i+1))
+```
+
+The pair is logically equivalent to the original edge, with selector `x`
+free. On either value of `x`, the first DPLL decision reaches the same
+connected, non-unit cycle CNF with `n` vertices. The selector appears in
+`2n` literals and each cycle variable appears four times, so the existing
+frequency heuristic selects `x`. This construction deliberately supplies
+one nontrivial reuse opportunity, not a claim of realistic QuPRS inputs.
+
+Both selector and cycle literals use exact Gaussian-rational weights.
+An independent two-state transfer recurrence computes the exact Full
+Complex WMC by conditioning on the first cycle variable and forbidding
+adjacent false literals, including the closing edge. Small cases also
+compare the recurrence against an independent exhaustive Boolean
+assignment enumeration. No projected WMC or independent cancellation
+safety theorem is inferred from this family.
+
+The new cohort compares the **identical input CNF** with cache on/off at
+6, 10 and 14 cycle vertices. Each policy × size has three fresh Linux
+child-process trials; policy order alternates by trial. The existing
+five-second parent watchdog, Linux `RLIMIT_AS=512 MiB` **virtual-address-space**
+restriction, and memory-denial/timeout negative controls are run again
+for this standalone suite. Every worker verifies SAT and exact WMC
+before writing its CSV row. The gate also requires cache reuse under
+the enabled policy, no reuse/entries when disabled, and fewer deterministic
+search nodes with caching enabled. Rows record process VmHWM and elapsed
+solve time, which are **observations**, not proof of speedup or reduced
+memory consumption.
+
+The `--cycle-suite` command is separate from the historical 28-, 21-
+and 36-row studies; their schemas and old benchmark identities stay
+unchanged. Six new native CodSpeed Simulation identities supplement the
+previous 31. An exact-source successful GitHub Actions run and a
+comparable runner analysis are required before reporting numeric
+WallTime/RSS or changing the default cache policy.

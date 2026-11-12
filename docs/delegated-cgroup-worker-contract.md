@@ -226,3 +226,52 @@ its PID is assigned), that all descendants are contained, or that
 pressure. True production qualification requires corresponding
 isolated-host admission and failure injection; macOS and Windows
 have separate resource semantics.
+
+
+## Phase 2d: mutation-free private delegation preflight
+
+Before invoking any real `--delegated-run` kernel mutation, operators
+may inspect a proposed **existing private** Linux cgroup v2 subtree:
+
+```sh
+python3 benchmarks/rust_core/tools/delegated_host_evidence.py \
+  --preflight /sys/fs/cgroup/YOUR_PRIVATE_DELEGATED_SUBTREE
+```
+
+This operation makes **no kernel cgroup writes** and never runs Cargo
+or Worker. It reports `DELEGATED_PREFLIGHT_STATUS=UNAVAILABLE` and a
+specific reason for unsafe paths, root execution, missing cgroup2,
+read-only mount, disabled memory controller, the current source
+process **outside** the private subtree, unwritable directory, or
+unwritable `cgroup.procs`. On non-Linux it reports
+`UNSUPPORTED`. The preflight rejects `/sys/fs/cgroup` itself
+and paths outside this mount without trying to create a cgroup.
+
+The source-membership check is important: cgroup v2 delegation
+checks permissions at the common ancestor of a process's source
+and destination. This research Worker inherits the supervisor's
+source cgroup before its cooperative gate releases. Requiring the
+supervisor to be **already inside** the proposed delegated subtree
+is a conservative fail-closed restriction; an operator cannot
+satisfy it merely by pointing at an unrelated writable directory.
+This check will exclude some configurations that might otherwise
+be migratable with broader grants, intentionally avoiding accidental
+cross-delegation writes.
+
+If all observable prerequisites pass, the only possible preflight
+status is `CANDIDATE_NOT_PROVEN`, **not** `READY`,
+`MEMORY_LIMIT_SUPPORTED` or `QUALIFIED_SCOPED`.
+Even correct apparent file permissions do not prove that a
+unique sub-cgroup can be created, the Worker can be migrated,
+`memory.max` can be written or OOM attribution is valid.
+The actual opt-in test must still produce accepted private-leaf
+memory events and verified cleanup. The real `--delegated-run`
+path uses this same non-mutating preflight as an admission check.
+
+All five standard GitHub CI platforms require the preflight's
+independent negative controls and an actual mount-root refusal,
+while continuing to report
+`DELEGATED_EVIDENCE_REAL_ENFORCEMENT=NOT_RUN`.
+
+Reference: Linux kernel
+[cgroup v2 delegation and migration permissions](https://docs.kernel.org/admin-guide/cgroup-v2.html#delegation).

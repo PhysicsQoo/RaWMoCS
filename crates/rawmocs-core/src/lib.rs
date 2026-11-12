@@ -156,6 +156,18 @@ pub struct Stats {
     pub nodes: u64,
     pub cache_hits: u64,
     pub decompositions: u64,
+    /// Sum of variable IDs stored in retained cache keys (not bytes).
+    pub cache_scope_items: usize,
+    /// Sum of clause vectors stored in retained cache keys (not bytes).
+    pub cache_clause_items: usize,
+    /// Sum of literals stored in retained cache key clauses (not bytes).
+    pub cache_literal_items: usize,
+    /// Sum of exact numeric bit lengths of the four BigInt components of
+    /// cached Gaussian counts (numerator/denominator for real/imaginary).
+    /// Excludes allocations, capacities, HashMap overhead, and temporaries.
+    pub cache_value_bits: u64,
+    /// Largest one-entry exact numeric bit-length within retained counts.
+    pub max_cached_value_bits: u64,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Report {
@@ -234,12 +246,36 @@ pub fn solve(p: &Problem) -> Result<Report, SolveError> {
     solve_with_limits(p, Limits::default())
 }
 
+fn rational_value_bits(r: &BigRational) -> u64 {
+    r.numer().bits().saturating_add(r.denom().bits())
+}
+
+fn gaussian_value_bits(value: &Gaussian) -> u64 {
+    rational_value_bits(&value.real).saturating_add(rational_value_bits(&value.imag))
+}
+
 impl Engine<'_> {
     fn save(&mut self, key: Option<Key>, outcome: Outcome) -> Outcome {
         if let Some(key) = key {
             if self.cache.len() < self.cache_budget {
+                // These count stored logical payloads, NOT total allocated
+                // memory or a bound on the process RSS.
+                let scope = key.scope.len();
+                let clauses = key.clauses.len();
+                let literals = key
+                    .clauses
+                    .iter()
+                    .fold(0usize, |sum, clause| sum.saturating_add(clause.len()));
+                let bits = gaussian_value_bits(&outcome.count);
                 self.cache.insert(key, outcome.clone());
                 self.stats.cache_entries = self.cache.len();
+                self.stats.cache_scope_items = self.stats.cache_scope_items.saturating_add(scope);
+                self.stats.cache_clause_items =
+                    self.stats.cache_clause_items.saturating_add(clauses);
+                self.stats.cache_literal_items =
+                    self.stats.cache_literal_items.saturating_add(literals);
+                self.stats.cache_value_bits = self.stats.cache_value_bits.saturating_add(bits);
+                self.stats.max_cached_value_bits = self.stats.max_cached_value_bits.max(bits);
             }
         }
         outcome

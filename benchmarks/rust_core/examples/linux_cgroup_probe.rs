@@ -151,7 +151,11 @@ mod linux {
         };
         println!(
             "CGROUP_V2_SUBGROUP_CREATE={}",
-            if can_create { "AVAILABLE" } else { "UNAVAILABLE" }
+            if can_create {
+                "AVAILABLE"
+            } else {
+                "UNAVAILABLE"
+            }
         );
         // Readable events or a creatable empty directory do not prove that
         // a worker can be migrated, capped or that OOM was caused by it.

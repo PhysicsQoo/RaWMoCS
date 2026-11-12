@@ -26,7 +26,11 @@ fn exhaustive(p: &Problem) -> (bool, Gaussian) {
             clause.iter().any(|lit| {
                 let var = lit.unsigned_abs() as usize - 1;
                 let assigned = mask & (1_usize << var) != 0;
-                if *lit > 0 { assigned } else { !assigned }
+                if *lit > 0 {
+                    assigned
+                } else {
+                    !assigned
+                }
             })
         }) {
             continue;
@@ -84,12 +88,7 @@ fn logical_unsat_child_contributes_zero_without_weighted_arithmetic() {
 #[test]
 fn zero_weight_does_not_prove_unsat() {
     // Both x branches are logically SAT; signed weights cancel the count.
-    let p = Problem::new(
-        2,
-        vec![vec![1, 2]],
-        vec![w(1, 0, -1, 0), w(1, 0, 0, 0)],
-    )
-    .unwrap();
+    let p = Problem::new(2, vec![vec![1, 2]], vec![w(1, 0, -1, 0), w(1, 0, 0, 0)]).unwrap();
     let got = solve(&p).unwrap();
     assert!(got.satisfiable);
     assert_eq!(got.count, Gaussian::zero());
@@ -101,24 +100,12 @@ fn all_branches_unsat_and_two_sat_branches_are_distinct() {
     check(
         Problem::new(
             2,
-            vec![
-                vec![1, 2],
-                vec![1, -2],
-                vec![-1, 2],
-                vec![-1, -2],
-            ],
+            vec![vec![1, 2], vec![1, -2], vec![-1, 2], vec![-1, -2]],
             vec![w(1, 1, 2, 0), w(-1, 0, 0, 3)],
         )
         .unwrap(),
     );
-    check(
-        Problem::new(
-            2,
-            vec![vec![1, 2]],
-            vec![w(2, -1, -3, 5), w(1, 4, -2, 3)],
-        )
-        .unwrap(),
-    );
+    check(Problem::new(2, vec![vec![1, 2]], vec![w(2, -1, -3, 5), w(1, 4, -2, 3)]).unwrap());
 }
 
 fn next(seed: &mut u64) -> u64 {

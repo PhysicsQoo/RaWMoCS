@@ -30,7 +30,10 @@ impl Holdout {
 }
 
 fn clauses(kind: Holdout, n: usize) -> Vec<Vec<i32>> {
-    assert!([8, 10, 12].contains(&n), "fixed selector-free holdout sizes");
+    assert!(
+        [8, 10, 12].contains(&n),
+        "fixed selector-free holdout sizes"
+    );
     let v = |index: usize| (index % n + 1) as i32;
     let mut clauses: Vec<Vec<i32>> = (0..n).map(|i| vec![v(i), v(i + 1)]).collect();
     if kind != Holdout::Ring {
@@ -74,7 +77,8 @@ pub fn independent_wmc(kind: Holdout, n: usize) -> (bool, Gaussian) {
     for assignment in 0usize..(1usize << n) {
         let holds = formula.iter().all(|clause| {
             clause.iter().any(|&literal| {
-                let true_bit = (assignment & (1usize << (literal.unsigned_abs() as usize - 1))) != 0;
+                let true_bit =
+                    (assignment & (1usize << (literal.unsigned_abs() as usize - 1))) != 0;
                 if literal > 0 {
                     true_bit
                 } else {
@@ -109,9 +113,7 @@ pub fn independent_wmc(kind: Holdout, n: usize) -> (bool, Gaussian) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rawmocs_core::{
-        solve_with_limits, solve_with_observed_work_ratio, Limits, SolveError,
-    };
+    use rawmocs_core::{solve_with_limits, solve_with_observed_work_ratio, Limits, SolveError};
 
     #[test]
     fn selector_free_holdouts_match_independent_exact_complex_wmc() {
@@ -161,10 +163,8 @@ mod tests {
 
     #[test]
     fn guarded_positive_control_keeps_reuse_available() {
-        let input = crate::admission_holdout::guarded_graph(
-            crate::admission_holdout::Graph::Cycle,
-            14,
-        );
+        let input =
+            crate::admission_holdout::guarded_graph(crate::admission_holdout::Graph::Cycle, 14);
         let expected = crate::admission_holdout::independent_exact_wmc(
             crate::admission_holdout::Graph::Cycle,
             14,

@@ -102,8 +102,8 @@ exact-rational value clone/insert and memory pressure, plus the
 reduced recomputation on each specific family. Require several
 non-synthetic, independently oracled holdouts, stable controlled
 hardware comparisons, and combined fast/slow cases before considering
-any production change. Keep QOO-207 branching-policy variation outside
-this experiment, with the same frequency heuristic throughout.
+any production change. Keep branching-policy changes outside this admission study,
+with the same frequency heuristic throughout.
 
 
 ## First independent selector-free cohort (preliminary)

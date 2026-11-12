@@ -1,0 +1,10 @@
+[package]
+name = "rawmocs-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[dependencies]
+num-rational = "0.4"
+num-traits = "0.2"

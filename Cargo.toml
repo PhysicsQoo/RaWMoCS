@@ -1,0 +1,3 @@
+[workspace]
+members = ["crates/rawmocs-core"]
+resolver = "2"

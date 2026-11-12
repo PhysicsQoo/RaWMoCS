@@ -1,0 +1,73 @@
+name: Delegated cgroup v2 worker-memory contract research
+
+on:
+  pull_request:
+    paths:
+      - "benchmarks/rust_core/examples/delegated_cgroup_contract.rs"
+      - ".github/workflows/delegated-cgroup-contract.yml"
+  push:
+    branches: [main]
+    paths:
+      - "benchmarks/rust_core/examples/delegated_cgroup_contract.rs"
+      - ".github/workflows/delegated-cgroup-contract.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: delegated-cgroup-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fail-closed-contract:
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, windows-latest, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/rust_core -> target
+      - name: Format and lint opt-in worker-memory contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path benchmarks/rust_core/Cargo.toml --all -- --check
+          cargo clippy --locked --manifest-path benchmarks/rust_core/Cargo.toml --example delegated_cgroup_contract -- -D warnings
+      - name: Run read-only parser and refusal contract (no cgroup writes)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked --manifest-path benchmarks/rust_core/Cargo.toml --example delegated_cgroup_contract -- --self-test | tee "$RUNNER_TEMP/delegated-cgroup-contract.log"
+          case "${{ runner.os }}" in
+            Linux)
+              for field in EVENT_NEGATIVE_CONTROLS LOCAL_OOM_CLASSIFICATION MOUNT_ROOT_REFUSAL NO_KERNEL_WRITES CONTRACT_SELF_TEST; do
+                grep -Fx "DELEGATED_CGROUP_${field}=PASS" "$RUNNER_TEMP/delegated-cgroup-contract.log"
+              done
+              grep -Fx "DELEGATED_CGROUP_REAL_ENFORCEMENT=NOT_RUN" "$RUNNER_TEMP/delegated-cgroup-contract.log"
+              ;;
+            Windows|macOS)
+              grep -Fx "DELEGATED_CGROUP_CONTRACT_SELF_TEST=UNSUPPORTED" "$RUNNER_TEMP/delegated-cgroup-contract.log"
+              grep -Fx "DELEGATED_CGROUP_REAL_ENFORCEMENT=UNSUPPORTED" "$RUNNER_TEMP/delegated-cgroup-contract.log"
+              ;;
+            *)
+              echo "Unknown OS: ${{ runner.os }}" >&2
+              exit 1
+              ;;
+          esac
+      - name: Archive source-linked platform capabilities
+        uses: actions/upload-artifact@v4
+        with:
+          name: delegated-cgroup-contract-${{ matrix.os }}
+          path: ${{ runner.temp }}/delegated-cgroup-contract.log
+          retention-days: 30
+          if-no-files-found: error

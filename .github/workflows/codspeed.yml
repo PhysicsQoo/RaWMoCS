@@ -43,6 +43,15 @@ jobs:
       - run: cargo clippy --manifest-path benchmarks/rust_core/Cargo.toml --all-targets -- -D warnings
       - run: cargo test --manifest-path benchmarks/rust_core/Cargo.toml
       - run: cargo bench --manifest-path benchmarks/rust_core/Cargo.toml --bench solver --no-run
+      - name: Export Cargo.lock from the known-good GitHub runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s benchmarks/rust_core/Cargo.lock
+          echo RAWMOCS_BENCH_CARGO_LOCK_BEGIN
+          base64 -w0 benchmarks/rust_core/Cargo.lock
+          echo
+          echo RAWMOCS_BENCH_CARGO_LOCK_END
 
   codspeed:
     name: CodSpeed simulation (opt in after repository connection)

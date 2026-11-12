@@ -84,7 +84,10 @@ pub fn expected(family: Family, variables: usize) -> Gaussian {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rawmocs_core::{solve, solve_with_limits, Limits, SolveError};
+    use rawmocs_core::{
+        solve, solve_with_cache_payload_budget, solve_with_limits, CachePayloadBudget, Limits,
+        SolveError,
+    };
 
     #[test]
     fn medium_exact_full_wmc_matches_independent_closed_form() {
@@ -140,6 +143,36 @@ mod tests {
             assert_eq!(no_cache.stats.cache_entries, 0);
             assert!(capped.stats.cache_entries <= 8);
             assert!(capped.stats.decompositions > 0);
+        }
+    }
+
+    #[test]
+    fn medium_logical_cache_quota_matches_independent_closed_form() {
+        for family in [Family::EqualityChain, Family::IndependentPairs] {
+            let variables = 64;
+            let problem = fixture(family, variables);
+            let baseline = solve(&problem).unwrap();
+            let bounded = solve_with_cache_payload_budget(
+                &problem,
+                Limits::default(),
+                CachePayloadBudget {
+                    scope_items: 32,
+                    clause_items: 32,
+                    literal_items: 64,
+                    value_bits: 128,
+                },
+            )
+            .unwrap();
+            let oracle = expected(family, variables);
+            assert!(bounded.satisfiable);
+            assert_eq!(bounded.count, oracle);
+            assert_eq!(bounded.count, baseline.count);
+            assert_eq!(bounded.satisfiable, baseline.satisfiable);
+            assert!(bounded.stats.cache_scope_items <= 32);
+            assert!(bounded.stats.cache_clause_items <= 32);
+            assert!(bounded.stats.cache_literal_items <= 64);
+            assert!(bounded.stats.cache_value_bits <= 128);
+            assert!(bounded.stats.cache_payload_rejections > 0);
         }
     }
 

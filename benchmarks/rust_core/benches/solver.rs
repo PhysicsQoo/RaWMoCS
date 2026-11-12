@@ -3,8 +3,8 @@ use num_rational::BigRational;
 use rawmocs_benchmarks::scalability::{fixture as medium_fixture, Family};
 use rawmocs_benchmarks::{arithmetic_operands, fixture, Workload};
 use rawmocs_core::{
-    solve, solve_with_cache_payload_budget, solve_with_limits, CachePayloadBudget, Gaussian, Limits,
-    Problem,
+    solve, solve_with_cache_payload_budget, solve_with_limits, CachePayloadBudget, Gaussian,
+    Limits, Problem,
 };
 use std::sync::OnceLock;
 
@@ -234,7 +234,6 @@ fn complex_rational_four_product_pure_imaginary_reference() {
         divan::black_box(pure_imaginary()),
     ));
 }
-
 
 // New additive benchmark: same source CNF, weights, and solver implementation
 // as medium_independent_components[64], but with a retained logical-payload

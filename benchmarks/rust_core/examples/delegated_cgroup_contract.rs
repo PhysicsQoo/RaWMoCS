@@ -5,6 +5,7 @@
 
 #[cfg(target_os = "linux")]
 mod linux {
+    use rawmocs_core::{solve, Gaussian, Problem, Weights};
     use std::collections::HashSet;
     use std::fs;
     use std::hint::black_box;
@@ -13,7 +14,6 @@ mod linux {
     use std::process::{Child, Command, ExitStatus, Stdio};
     use std::thread;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-    use rawmocs_core::{solve, Gaussian, Problem, Weights};
 
     const LIMIT_BYTES: u64 = 64 * 1024 * 1024;
     const SMALL_BYTES: usize = 4 * 1024 * 1024;
@@ -30,11 +30,7 @@ mod linux {
 
     fn exact_wmc_oracle() -> Result<(), String> {
         const CLAUSES: [[i32; 2]; 2] = [[1, 2], [-1, 3]];
-        const W: [[(i128, i128); 2]; 3] = [
-            [(2, -1), (1, 1)],
-            [(-1, 1), (2, 1)],
-            [(2, 1), (2, -2)],
-        ];
+        const W: [[(i128, i128); 2]; 3] = [[(2, -1), (1, 1)], [(-1, 1), (2, 1)], [(2, 1), (2, -2)]];
         let mut expected = (0_i128, 0_i128);
         for assignment in 0_u8..8 {
             let allowed = CLAUSES.iter().all(|clause| {
@@ -56,7 +52,9 @@ mod linux {
             expected.1 += product.1;
         }
         if expected != (24, 3) {
-            return Err(format!("independent Full Complex WMC oracle changed: {expected:?}"));
+            return Err(format!(
+                "independent Full Complex WMC oracle changed: {expected:?}"
+            ));
         }
         let problem = Problem::new(
             3,
@@ -249,8 +247,9 @@ mod linux {
         exact_wmc_oracle()?;
         println!("DELEGATED_CGROUP_SOURCE_LOCKED_WMC_ORACLE=PASS");
         gated_worker_oracle_self_test()?;
-        if should_signal_owned_group(true, false) || !should_signal_owned_group(false, false)
-            || should_signal_owned_group(false, true)
+        if should_signal_owned_group(true, false)
+            || !should_signal_owned_group(false, false)
+            || !should_signal_owned_group(false, true)
         {
             return Err("reaped-child or removed-group cleanup control regressed".into());
         }
@@ -447,7 +446,11 @@ mod linux {
         let worker_wmc_proved = !over && evidence.stdout.trim() == WMC_PROOF;
         let normal_success = evidence.status.success() && worker_wmc_proved;
         let verdict = classify(
-            if over { evidence.status.success() } else { normal_success },
+            if over {
+                evidence.status.success()
+            } else {
+                normal_success
+            },
             over,
             change,
         );

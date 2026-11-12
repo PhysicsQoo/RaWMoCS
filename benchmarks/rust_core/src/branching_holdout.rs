@@ -232,13 +232,11 @@ mod tests {
                 .collect(),
         )
         .unwrap();
-        let long_expected = pow(&three, 17)
-            .add(&Gaussian::integers(-1, 0).mul(&pow(&negative, 17)));
-        let result =
-            solve_with_pivot_policy(&long_clause, limits, PivotPolicy::MinFill).unwrap();
+        let long_expected =
+            pow(&three, 17).add(&Gaussian::integers(-1, 0).mul(&pow(&negative, 17)));
+        let result = solve_with_pivot_policy(&long_clause, limits, PivotPolicy::MinFill).unwrap();
         assert!(result.satisfiable);
         assert_eq!(result.count, long_expected);
         assert!(result.stats.pivot_fallbacks > 0);
     }
-
 }

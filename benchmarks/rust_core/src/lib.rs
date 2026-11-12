@@ -1,4 +1,6 @@
 //! Deterministic synthetic Rust performance fixtures, not QuPRS end-to-end CNFs.
+#[cfg(feature = "cache-admission-research")]
+pub mod admission_holdout;
 pub mod cache_reuse;
 pub mod expensive_reuse;
 pub mod scalability;

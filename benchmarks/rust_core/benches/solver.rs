@@ -186,6 +186,35 @@ fn complex_rational_four_product_reference() {
     ));
 }
 
+// Additive research identities; retain all existing benchmark names.
+fn reference_add(a: &Gaussian, b: &Gaussian) -> Gaussian {
+    Gaussian::new(&a.real + &b.real, &a.imag + &b.imag)
+}
+
+#[divan::bench]
+fn complex_rational_add_zero_fastpath() {
+    let (a, _) = operands();
+    divan::black_box(divan::black_box(a).add(divan::black_box(zero())));
+}
+
+#[divan::bench]
+fn complex_rational_add_zero_reference() {
+    let (a, _) = operands();
+    divan::black_box(reference_add(divan::black_box(a), divan::black_box(zero())));
+}
+
+#[divan::bench]
+fn complex_rational_add_dense() {
+    let (a, b) = operands();
+    divan::black_box(divan::black_box(a).add(divan::black_box(b)));
+}
+
+#[divan::bench]
+fn complex_rational_add_dense_reference() {
+    let (a, b) = operands();
+    divan::black_box(reference_add(divan::black_box(a), divan::black_box(b)));
+}
+
 // These measured operations intentionally exclude fixture and identity creation.
 #[divan::bench]
 fn complex_rational_multiply_by_one() {

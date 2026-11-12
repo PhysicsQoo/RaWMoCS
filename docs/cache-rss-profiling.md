@@ -171,3 +171,35 @@ scheduler can bias them. A policy-induced Cache Hit difference is a valid
 algorithmic observation; whether it translates to lower Peak RSS or
 faster WallTime remains an empirical question. No default Cache setting,
 production OS supervisor, or solver core has been modified.
+
+### First controlled cache-reuse trial: observational result
+
+The first [source-scoped Linux qualification run](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/43177804973)
+on branch commit `e31119b34626b91fcf70b89225b85cf017b97256`
+completed the **28 original + 21 quota + 36 repeated-residual cases** and
+all three pairs of resource negative controls. The 36 new worker rows each
+passed SAT and an independently derived exact Full WMC oracle.
+
+The following **median in-child solve WallTime** values summarize three
+independent child processes per policy, but only one shared CI runner:
+
+| Gadgets (variables) | Cache off | Legacy | Tight quota | Roomy quota |
+| --- | ---: | ---: | ---: | ---: |
+| 4 (12) | 0.096 ms | 0.100 ms | 0.089 ms | 0.089 ms |
+| 8 (24) | 0.221 ms | 0.245 ms | 0.215 ms | 0.206 ms |
+| 16 (48) | 0.554 ms | 0.558 ms | 0.558 ms | 0.585 ms |
+
+For the 16-gadget family, Cache Hits per worker were **0 off, 16 legacy,
+1 tight, 16 roomy**. Retained cache entries were **0, 33, 1, 33**
+respectively. Yet no consistent WallTime benefit appears. The 48-variable
+median process VmHWM values were **2,288 / 2,340 / 2,292 / 2,308 KiB**
+for off / legacy / tight / roomy, without a reproducible advantage.
+
+This result establishes that the cache-hit instrument and admission policies
+actually discriminate workloads, **not** that memoization is helpful or
+harmful for realistic weighted CNFs. A trivial residual is cheap to
+recompute; cache-key construction, lookup and source-exact rational arithmetic
+can dominate. Repeated CPU scheduling and page-quantized VmHWM further limit
+inference. Next research should use bounded, source-pinned nontrivial
+shared-residual graphs and compare bigger cached computations; do **not**
+change the default Cache policy from these measurements alone.

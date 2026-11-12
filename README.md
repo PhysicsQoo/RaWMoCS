@@ -74,6 +74,12 @@ wall-clock solver-inclusive or QuPRS end-to-end time. Compare only matched
 benchmark IDs, compatible instrumentation, and controlled SHA/runner inputs.
 Do not infer performance superiority over GPMC or Ganak from this suite.
 
+## Scalability study
+
+See [Exact Full WMC scalability research](docs/scalability-study.md) for
+analytical medium-CNF contracts, controlled benchmark series, and resource
+safety boundaries.
+
 ## License
 
 MIT. See LICENSE.

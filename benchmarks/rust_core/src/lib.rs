@@ -1,3 +1,5 @@
+pub mod scalability;
+
 //! Deterministic synthetic Rust performance fixtures, not QuPRS end-to-end CNFs.
 use num_bigint::BigInt;
 use num_rational::BigRational;

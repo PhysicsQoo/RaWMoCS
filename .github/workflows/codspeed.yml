@@ -40,18 +40,9 @@ jobs:
         with:
           workspaces: benchmarks/rust_core -> target
       - run: cargo fmt --manifest-path benchmarks/rust_core/Cargo.toml --all -- --check
-      - run: cargo clippy --manifest-path benchmarks/rust_core/Cargo.toml --all-targets -- -D warnings
-      - run: cargo test --manifest-path benchmarks/rust_core/Cargo.toml
-      - run: cargo bench --manifest-path benchmarks/rust_core/Cargo.toml --bench solver --no-run
-      - name: Export Cargo.lock from the known-good GitHub runner
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -s benchmarks/rust_core/Cargo.lock
-          echo RAWMOCS_BENCH_CARGO_LOCK_BEGIN
-          base64 -w0 benchmarks/rust_core/Cargo.lock
-          echo
-          echo RAWMOCS_BENCH_CARGO_LOCK_END
+      - run: cargo clippy --locked --manifest-path benchmarks/rust_core/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --locked --manifest-path benchmarks/rust_core/Cargo.toml
+      - run: cargo bench --locked --manifest-path benchmarks/rust_core/Cargo.toml --bench solver --no-run
 
   codspeed:
     name: CodSpeed simulation (opt in after repository connection)
@@ -75,9 +66,13 @@ jobs:
         with:
           workspaces: benchmarks/rust_core -> target
       - run: cargo install cargo-codspeed --version 6.0.0 --locked
+      - name: Verify committed benchmark lockfile
+        run: cargo metadata --locked --format-version 1 --manifest-path benchmarks/rust_core/Cargo.toml --no-deps > /dev/null
       - name: Build instrumented solver microbenchmarks
         working-directory: benchmarks/rust_core
         run: cargo codspeed build -m simulation --bench solver
+      - name: Confirm instrumented build did not rewrite the lockfile
+        run: git diff --exit-code -- benchmarks/rust_core/Cargo.lock
       - name: Upload native CodSpeed results
         uses: CodSpeedHQ/action@v5
         with:

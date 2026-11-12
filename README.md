@@ -58,8 +58,8 @@ but **not** QuPRS parsing, external solver startup or end-to-end verification.
 Validate the benchmark source without claiming a speedup:
 
 ```sh
-cargo test --manifest-path benchmarks/rust_core/Cargo.toml
-cargo bench --manifest-path benchmarks/rust_core/Cargo.toml --bench solver --no-run
+cargo test --locked --manifest-path benchmarks/rust_core/Cargo.toml
+cargo bench --locked --manifest-path benchmarks/rust_core/Cargo.toml --bench solver --no-run
 ```
 
 Until the repository is enabled in CodSpeed, actual measurement uploads are

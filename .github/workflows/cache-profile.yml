@@ -66,6 +66,15 @@ jobs:
           grep -F "GUARD_TIMEOUT=PASS STATUS=TIMEOUT" "$RUNNER_TEMP/repeat-guard-controls.log"
           test "$(wc -l < "$RUNNER_TEMP/cache-reuse-profile.csv")" -eq 37
           awk -F, 'NR==1 { if (NF!=17 || $1!="gadgets" || $4!="policy") exit 1; next } { if (NF!=17 || $1!=4 && $1!=8 && $1!=16 || $2!=3*$1 || $3<0 || $3>2 || $6<=0 || $7<=0) exit 1; k=$1":"$3":"$4; if (++unique[k]!=1) exit 1; count[$4]++; if ($4=="off" && ($9!=0 || $10!=0 || $17!=0)) exit 1; if ($4=="tight" && ($10<1 || $17<=0)) exit 1; if (($4=="legacy" || $4=="roomy") && ($10<$1 || $17!=0)) exit 1 } END { for (i=1;i<=4;i++) { split("off legacy tight roomy", modes, " "); if (count[modes[i]]!=9) exit 1 } }' "$RUNNER_TEMP/cache-reuse-profile.csv"
+      - name: Profile expensive shared connected cycles in isolated Linux workers
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked --release --manifest-path benchmarks/rust_core/Cargo.toml --example cache_profile -- --cycle-suite 2> "$RUNNER_TEMP/cycle-guard-controls.log" | tee "$RUNNER_TEMP/connected-cycle-profile.csv"
+          grep -F "GUARD_MEMORY_DENIED=PASS STATUS=RESOURCE_FAILURE" "$RUNNER_TEMP/cycle-guard-controls.log"
+          grep -F "GUARD_TIMEOUT=PASS STATUS=TIMEOUT" "$RUNNER_TEMP/cycle-guard-controls.log"
+          test "$(wc -l < "$RUNNER_TEMP/connected-cycle-profile.csv")" -eq 19
+          awk -F, 'NR==1 {if (NF!=12 || $1!="vertices" || $4!="policy") exit 1; next} {if (NF!=12 || ($1!=6 && $1!=10 && $1!=14) || $2!=$1+1 || $3<0 || $3>2 || $5<=0 || $6<=0) exit 1; key=$1":"$3":"$4; if (++unique[key]!=1) exit 1; count[$4]++; nodes[key]=$7; if ($4=="off" && ($8!=0 || $9!=0)) exit 1; if ($4=="on" && $9<=0) exit 1} END {if (count["on"]!=9 || count["off"]!=9) exit 1; for (v=6;v<=14;v+=4) for (t=0;t<3;t++) if (nodes[v":"t":"on"]>=nodes[v":"t":"off"]) exit 1}' "$RUNNER_TEMP/connected-cycle-profile.csv"
       - name: Upload source-scoped CSV evidence
         uses: actions/upload-artifact@v4
         with:
@@ -75,6 +84,8 @@ jobs:
             ${{ runner.temp }}/cache-quota-profile.csv
             ${{ runner.temp }}/quota-guard-controls.log
             ${{ runner.temp }}/cache-reuse-profile.csv
+            ${{ runner.temp }}/connected-cycle-profile.csv
+            ${{ runner.temp }}/cycle-guard-controls.log
             ${{ runner.temp }}/repeat-guard-controls.log
             ${{ runner.temp }}/guard-controls.log
           if-no-files-found: error

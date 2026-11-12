@@ -1,4 +1,5 @@
 //! Six stable native benchmark identities; fixtures are built outside timed spans.
+use num_rational::BigRational;
 use rawmocs_benchmarks::scalability::{fixture as medium_fixture, Family};
 use rawmocs_benchmarks::{arithmetic_operands, fixture, Workload};
 use rawmocs_core::{solve, solve_with_limits, Gaussian, Limits, Problem};
@@ -11,6 +12,8 @@ static CACHE: OnceLock<Problem> = OnceLock::new();
 static OPERANDS: OnceLock<(Gaussian, Gaussian)> = OnceLock::new();
 static IDENTITY: OnceLock<Gaussian> = OnceLock::new();
 static ZERO: OnceLock<Gaussian> = OnceLock::new();
+static PURE_REAL: OnceLock<Gaussian> = OnceLock::new();
+static PURE_IMAGINARY: OnceLock<Gaussian> = OnceLock::new();
 static CHAIN16: OnceLock<Problem> = OnceLock::new();
 static CHAIN32: OnceLock<Problem> = OnceLock::new();
 static CHAIN64: OnceLock<Problem> = OnceLock::new();
@@ -39,6 +42,22 @@ fn identity() -> &'static Gaussian {
 fn zero() -> &'static Gaussian {
     ZERO.get_or_init(Gaussian::zero)
 }
+fn pure_real() -> &'static Gaussian {
+    PURE_REAL.get_or_init(|| {
+        Gaussian::new(
+            operands().0.real.clone(),
+            BigRational::from_integer(0.into()),
+        )
+    })
+}
+fn pure_imaginary() -> &'static Gaussian {
+    PURE_IMAGINARY.get_or_init(|| {
+        Gaussian::new(
+            BigRational::from_integer(0.into()),
+            operands().0.imag.clone(),
+        )
+    })
+}
 
 fn main() {
     let _ = (
@@ -49,6 +68,8 @@ fn main() {
         operands(),
         identity(),
         zero(),
+        pure_real(),
+        pure_imaginary(),
     );
     for size in [16, 32, 64] {
         let _ = (chain(size), pair_components(size));
@@ -176,5 +197,37 @@ fn complex_rational_four_product_by_zero_reference() {
     divan::black_box(reference_four_products(
         divan::black_box(a),
         divan::black_box(zero()),
+    ));
+}
+
+// Paired same-runner reference-versus-optimized sparse arithmetic.
+// Fixed BigRational operands are constructed once outside all timed spans.
+#[divan::bench]
+fn complex_rational_multiply_pure_real() {
+    let (_, b) = operands();
+    divan::black_box(divan::black_box(b).mul(divan::black_box(pure_real())));
+}
+
+#[divan::bench]
+fn complex_rational_four_product_pure_real_reference() {
+    let (_, b) = operands();
+    divan::black_box(reference_four_products(
+        divan::black_box(b),
+        divan::black_box(pure_real()),
+    ));
+}
+
+#[divan::bench]
+fn complex_rational_multiply_pure_imaginary() {
+    let (_, b) = operands();
+    divan::black_box(divan::black_box(b).mul(divan::black_box(pure_imaginary())));
+}
+
+#[divan::bench]
+fn complex_rational_four_product_pure_imaginary_reference() {
+    let (_, b) = operands();
+    divan::black_box(reference_four_products(
+        divan::black_box(b),
+        divan::black_box(pure_imaginary()),
     ));
 }

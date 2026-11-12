@@ -80,6 +80,61 @@ mod linux {
         Ok(())
     }
 
+    // Uncapped process-level witness: verifies the *actual child binary*
+    // performs exact Full WMC after receiving the cooperative stdin gate.
+    // This never writes a kernel cgroup file and is not a memory-limit test.
+    fn gated_worker_oracle_self_test() -> Result<(), String> {
+        let exe = std::env::current_exe().map_err(|e| format!("worker binary: {e}"))?;
+        let mut child = Command::new(exe)
+            .arg("--worker")
+            .arg("under")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("oracle worker spawn: {e}"))?;
+        let result = (|| -> Result<(), String> {
+            child
+                .stdin
+                .take()
+                .ok_or("oracle worker gate missing")?
+                .write_all(&[1])
+                .map_err(|e| format!("oracle worker gate release: {e}"))?;
+            let start = Instant::now();
+            loop {
+                if let Some(status) = child
+                    .try_wait()
+                    .map_err(|e| format!("oracle worker poll: {e}"))?
+                {
+                    let mut proof = String::new();
+                    child
+                        .stdout
+                        .take()
+                        .ok_or("oracle worker proof stdout missing")?
+                        .read_to_string(&mut proof)
+                        .map_err(|e| format!("oracle worker proof read: {e}"))?;
+                    if !status.success() || proof.trim() != WMC_PROOF {
+                        return Err(format!(
+                            "uncapped gated WMC worker rejected: status={status}, proof={proof:?}"
+                        ));
+                    }
+                    return Ok(());
+                }
+                if start.elapsed() > WORKER_DEADLINE {
+                    return Err("uncapped oracle worker exceeded timeout".into());
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        })();
+        if result.is_err() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        result?;
+        println!("DELEGATED_CGROUP_GATED_WMC_WORKER_UNCAPPED=PASS");
+        Ok(())
+    }
+
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     struct Events {
         max: u64,
@@ -189,6 +244,7 @@ mod linux {
         }
         exact_wmc_oracle()?;
         println!("DELEGATED_CGROUP_SOURCE_LOCKED_WMC_ORACLE=PASS");
+        gated_worker_oracle_self_test()?;
         if should_signal_owned_group(true, false) || !should_signal_owned_group(false, false)
             || should_signal_owned_group(false, true)
         {

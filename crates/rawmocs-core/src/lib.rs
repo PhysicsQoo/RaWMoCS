@@ -32,6 +32,14 @@ impl Gaussian {
         Self::new(BigRational::one(), BigRational::zero())
     }
     pub fn add(&self, rhs: &Self) -> Self {
+        // Exact zero is the additive identity. Skip two BigRational
+        // additions (and their normalization) when an operand vanishes.
+        if self.real.is_zero() && self.imag.is_zero() {
+            return rhs.clone();
+        }
+        if rhs.real.is_zero() && rhs.imag.is_zero() {
+            return self.clone();
+        }
         Self::new(&self.real + &rhs.real, &self.imag + &rhs.imag)
     }
     pub fn mul(&self, rhs: &Self) -> Self {

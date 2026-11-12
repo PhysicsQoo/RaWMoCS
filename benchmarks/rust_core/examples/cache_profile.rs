@@ -95,7 +95,7 @@ fn worker(name: &str, n: usize, cap: usize) -> Result<(), String> {
 // executable uses these guards; the library solve() API remains unchanged.
 enum GuardedExit {
     Success,
-    ResourceFailure(std::process::ExitStatus),
+    Failed(std::process::ExitStatus),
     Timeout,
 }
 
@@ -121,7 +121,7 @@ fn launch_guarded(
     loop {
         match child.try_wait() {
             Ok(Some(status)) if status.success() => return Ok(GuardedExit::Success),
-            Ok(Some(status)) => return Ok(GuardedExit::ResourceFailure(status)),
+            Ok(Some(status)) => return Ok(GuardedExit::Failed(status)),
             Ok(None) if started.elapsed() > deadline => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -147,8 +147,8 @@ fn launch(exe: &std::path::Path, name: &str, n: usize, cap: usize) -> Result<(),
         Duration::from_secs(5),
     )? {
         GuardedExit::Success => Ok(()),
-        GuardedExit::ResourceFailure(status) => Err(format!(
-            "{name}/{n}/{cap}: RESOURCE_FAILURE (worker exit {status}); no certified count"
+        GuardedExit::Failed(status) => Err(format!(
+            "{name}/{n}/{cap}: WORKER_FAILURE (worker exit {status}; reason not inferred); no certified count"
         )),
         GuardedExit::Timeout => Err(format!(
             "{name}/{n}/{cap}: TIMEOUT (worker killed); no certified count"
@@ -158,13 +158,14 @@ fn launch(exe: &std::path::Path, name: &str, n: usize, cap: usize) -> Result<(),
 
 fn guard_negative_controls(exe: &std::path::Path) -> Result<(), String> {
     // Under RLIMIT_AS=256 MiB the attempt to reserve 1 GiB must fail
-    // without allocating that amount of physical memory. Only the worker's
-    // explicit allocation-rejection exit code is accepted as evidence.
+    // without allocating that amount of physical memory. Only this worker's
+    // explicit allocation-rejection exit 42 proves the negative control;
+    // arbitrary nonzero solver exits remain unclassified WORKER_FAILURE.
     match launch_guarded(exe, &["--stress-memory"], 256, Duration::from_secs(3))? {
-        GuardedExit::ResourceFailure(status) if status.code() == Some(42) => {
+        GuardedExit::Failed(status) if status.code() == Some(42) => {
             eprintln!("GUARD_MEMORY_DENIED=PASS STATUS=RESOURCE_FAILURE");
         }
-        GuardedExit::ResourceFailure(status) => {
+        GuardedExit::Failed(status) => {
             return Err(format!("resource control: unexpected exit {status}"));
         }
         GuardedExit::Success => {
@@ -182,7 +183,7 @@ fn guard_negative_controls(exe: &std::path::Path) -> Result<(), String> {
             Ok(())
         }
         GuardedExit::Success => Err("timeout control unexpectedly succeeded".into()),
-        GuardedExit::ResourceFailure(status) => Err(format!(
+        GuardedExit::Failed(status) => Err(format!(
             "timeout control: worker exited prematurely {status}"
         )),
     }

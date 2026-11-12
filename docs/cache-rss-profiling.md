@@ -50,8 +50,9 @@ under a 256 MiB `RLIMIT_AS` tries to reserve 1 GiB of virtual space
 (`RESOURCE_FAILURE` via the child-specific exit 42), and a separate child
 that sleeps beyond its deadline is killed (`TIMEOUT`). The public
 `guard-controls.log` artifact records both. Unexpected exit codes or
-missing `prlimit` fail the workflow rather than being interpreted as UNSAT
-or zero WMC.
+missing `prlimit` fail the workflow. Normal worker nonzero exits are labeled
+`WORKER_FAILURE` with no assumed cause (which could be an oracle mismatch),
+not automatically `RESOURCE_FAILURE` or UNSAT/zero WMC.
 
 **Safety boundary:** Address-space limits cover a different resource than
 physical RAM and are not hard RSS caps, a cgroup policy, or a guarantee of

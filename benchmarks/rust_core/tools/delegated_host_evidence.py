@@ -142,22 +142,27 @@ def self_test() -> None:
     result = qualify(valid, 0)
     assert result["under"]["local_events_delta"] == dict.fromkeys(EVENTS, 0)
     assert result["over"]["local_events_delta"] == {"max": 2, "oom": 1, "oom_kill": 1}
+    def mutate_exact(old: str, new: str) -> str:
+        if valid.count(old) != 1:
+            raise EvidenceError(f"negative fixture mutation anchor missing or ambiguous: {old}")
+        return valid.replace(old, new)
+
     rejected = [
         (valid, 1),
-        (valid.replace("REAL_ENFORCEMENT=OBSERVED", "REAL_ENFORCEMENT=NOT_RUN"), 0),
-        (valid.replace("DELEGATED_OVER_DIRECT_EXIT=FAILURE", "DELEGATED_OVER_DIRECT_EXIT=SUCCESS"), 0),
-        (valid.replace("DELEGATED_OVER_COUNTERS=max:2,oom:1,oom_kill:1",
-                       "DELEGATED_OVER_COUNTERS=max:2,oom:1,oom_kill:0"), 0),
-        (valid.replace("DELEGATED_UNDER_COUNTERS=max:0,oom:0,oom_kill:0",
-                       "DELEGATED_UNDER_COUNTERS=max:1,oom:0,oom_kill:0"), 0),
-        (valid.replace("DELEGATED_UNDER_WORKER_PID_MEMBERSHIP=PASS", ""), 0),
-        (valid.replace("DELEGATED_OVER_CGROUP_REMOVED=PASS", ""), 0),
-        (valid.replace("DELEGATED_UNDER_WORKER_WMC_ORACLE=PASS", ""), 0),
+        (mutate_exact("REAL_ENFORCEMENT=OBSERVED", "REAL_ENFORCEMENT=NOT_RUN"), 0),
+        (mutate_exact("DELEGATED_over_DIRECT_EXIT=FAILURE", "DELEGATED_over_DIRECT_EXIT=SUCCESS"), 0),
+        (mutate_exact("DELEGATED_over_COUNTERS=max:2,oom:1,oom_kill:1",
+                       "DELEGATED_over_COUNTERS=max:2,oom:1,oom_kill:0"), 0),
+        (mutate_exact("DELEGATED_under_COUNTERS=max:0,oom:0,oom_kill:0",
+                       "DELEGATED_under_COUNTERS=max:1,oom:0,oom_kill:0"), 0),
+        (mutate_exact("DELEGATED_under_WORKER_PID_MEMBERSHIP=PASS", ""), 0),
+        (mutate_exact("DELEGATED_over_CGROUP_REMOVED=PASS", ""), 0),
+        (mutate_exact("DELEGATED_UNDER_WORKER_WMC_ORACLE=PASS", ""), 0),
         (valid + "DELEGATED_CGROUP_REAL_ENFORCEMENT=OBSERVED\n", 0),
-        (valid.replace("DELEGATED_OVER_MEMORY_MAX_READBACK=67108864",
-                       "DELEGATED_OVER_MEMORY_MAX_READBACK=33554432"), 0),
-        (valid.replace("DELEGATED_OVER_EVENTS_AFTER=max:12,oom:21,oom_kill:31",
-                       "DELEGATED_OVER_EVENTS_AFTER=max:12,oom:21,oom_kill:29"), 0),
+        (mutate_exact("DELEGATED_over_MEMORY_MAX_READBACK=67108864",
+                       "DELEGATED_over_MEMORY_MAX_READBACK=33554432"), 0),
+        (mutate_exact("DELEGATED_over_EVENTS_AFTER=max:12,oom:21,oom_kill:31",
+                       "DELEGATED_over_EVENTS_AFTER=max:12,oom:21,oom_kill:29"), 0),
     ]
     for index, (record, code) in enumerate(rejected):
         try:

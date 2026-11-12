@@ -411,8 +411,7 @@ impl Engine<'_> {
                         .saturating_add(literals as u64)
                         .saturating_add(value_words);
                     let admissible = observed_nodes > 1
-                        && observed_nodes.saturating_mul(8)
-                            >= key_units.saturating_mul(ratio);
+                        && observed_nodes.saturating_mul(8) >= key_units.saturating_mul(ratio);
                     if !admissible {
                         self.stats.cache_work_proxy_rejections =
                             self.stats.cache_work_proxy_rejections.saturating_add(1);
@@ -604,11 +603,11 @@ impl Engine<'_> {
                 let part = self.count(c, s, depth + 1)?;
                 if !part.sat {
                     return Ok(self.save(
-                    key,
-                    Outcome::unsat(),
-                    #[cfg(feature = "cache-admission-research")]
-                    start_nodes,
-                ));
+                        key,
+                        Outcome::unsat(),
+                        #[cfg(feature = "cache-admission-research")]
+                        start_nodes,
+                    ));
                 }
                 value = value.mul(&part.count);
             }

@@ -574,6 +574,141 @@ fn cycle_suite() -> Result<(), String> {
     Ok(())
 }
 
+// Only compiled when explicitly profiling cache transactions. This suite
+// uses the same independent oracle and parent-supervised children as cycle-suite,
+// but timers perturb the solver and MUST NOT be compared as an uninstrumented
+// performance benchmark or interpreted as a statistically reliable cost model.
+#[cfg(feature = "cache-cost-profile")]
+fn cost_worker(vertices: usize, policy: &str, trial: usize) -> Result<(), String> {
+    if ![6, 10, 14].contains(&vertices) || trial >= 3 {
+        return Err("cost cohort only accepts 6/10/14 vertices and trials 0..3".into());
+    }
+    let mut limits = Limits::default();
+    if policy == "off" {
+        limits.cache_entries = 0;
+    } else if policy != "on" && policy != "tight" {
+        return Err("cost policy must be off, on or tight".into());
+    }
+    let input = guarded_cycle_residual(vertices);
+    let expected = independent_cycle_wmc(vertices);
+    let started = Instant::now();
+    let answer = if policy == "tight" {
+        solve_with_cache_payload_budget(
+            &input,
+            limits,
+            CachePayloadBudget {
+                scope_items: 2,
+                clause_items: 2,
+                literal_items: 2,
+                value_bits: 32,
+            },
+        )
+    } else {
+        solve_with_limits(&input, limits)
+    }
+    .map_err(|e| format!("cost/{vertices}/{trial}/{policy}: fail-closed {e}"))?;
+    let elapsed_ns = started.elapsed().as_nanos();
+    if !answer.satisfiable || answer.count != expected {
+        return Err("instrumented exact Full WMC or SAT oracle mismatch".into());
+    }
+    let stats = &answer.stats;
+    let c = &stats.cache_cost;
+    if policy == "off" {
+        if stats.cache_hits != 0
+            || stats.cache_entries != 0
+            || c.key_build_calls != 0
+            || c.lookup_calls != 0
+            || c.admission_calls != 0
+            || c.insert_calls != 0
+        {
+            return Err("disabled cache still performed an instrumented transaction".into());
+        }
+    } else {
+        if c.key_build_calls != stats.nodes
+            || c.lookup_calls != c.key_build_calls
+            || c.hit_clone_calls != stats.cache_hits
+            || c.insert_calls != stats.cache_entries as u64
+            || c.admission_calls != c.insert_calls + stats.cache_payload_rejections
+        {
+            return Err("cache transaction accounting mismatch".into());
+        }
+        if policy == "on" && stats.cache_hits == 0 {
+            return Err("unbounded cache did not reuse a residual".into());
+        }
+        if policy == "tight" && stats.cache_payload_rejections == 0 {
+            return Err("tight quota did not reject any cache entries".into());
+        }
+    }
+    let peak_rss = peak_rss_kib()?;
+    println!(
+        "{vertices},{},{trial},{policy},{elapsed_ns},{peak_rss},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+        vertices + 1,
+        stats.nodes,
+        stats.cache_hits,
+        stats.cache_entries,
+        stats.cache_payload_rejections,
+        c.key_build_calls,
+        c.key_build_ns,
+        c.lookup_calls,
+        c.lookup_ns,
+        c.hit_clone_calls,
+        c.hit_clone_ns,
+        c.admission_calls,
+        c.admission_ns,
+        c.insert_calls,
+        c.insert_ns,
+    );
+    Ok(())
+}
+
+#[cfg(feature = "cache-cost-profile")]
+fn launch_cost(
+    exe: &std::path::Path,
+    vertices: usize,
+    trial: usize,
+    policy: &str,
+) -> Result<(), String> {
+    let vertices_arg = vertices.to_string();
+    let trial_arg = trial.to_string();
+    match launch_guarded(
+        exe,
+        &["--cost-worker", &vertices_arg, policy, &trial_arg],
+        512,
+        Duration::from_secs(5),
+    )? {
+        GuardedExit::Success => Ok(()),
+        GuardedExit::Failed(status) => Err(format!(
+            "cost/{vertices}/{trial}/{policy}: WORKER_FAILURE ({status}); no certified count"
+        )),
+        GuardedExit::Timeout => Err(format!(
+            "cost/{vertices}/{trial}/{policy}: TIMEOUT; no certified count"
+        )),
+    }
+}
+
+#[cfg(feature = "cache-cost-profile")]
+fn cost_suite() -> Result<(), String> {
+    if !cfg!(target_os = "linux") {
+        return Err("cache transaction profiler requires Linux VmHWM".into());
+    }
+    let exe = std::env::current_exe().map_err(|e| format!("executable path: {e}"))?;
+    guard_negative_controls(&exe)?;
+    println!(
+        "vertices,variables,trial,policy,solve_wall_ns,process_peak_rss_kib,nodes,cache_hits,cache_entries,cache_payload_rejections,key_build_calls,key_build_ns,lookup_calls,lookup_ns,hit_clone_calls,hit_clone_ns,admission_calls,admission_ns,insert_calls,insert_ns"
+    );
+    const POLICIES: [&str; 3] = ["off", "on", "tight"];
+    for vertices in [6, 10, 14] {
+        for trial in 0..3 {
+            for position in 0..POLICIES.len() {
+                // Rotate policy order; one fresh bounded process per row.
+                let policy = POLICIES[(trial + position) % POLICIES.len()];
+                launch_cost(&exe, vertices, trial, policy)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn run() -> Result<(), String> {
     let args: Vec<_> = std::env::args().collect();
     match args.as_slice() {
@@ -581,6 +716,8 @@ fn run() -> Result<(), String> {
         [_, flag] if flag == "--quota-suite" => quota_suite(),
         [_, flag] if flag == "--repeat-suite" => repeated_suite(),
         [_, flag] if flag == "--cycle-suite" => cycle_suite(),
+        #[cfg(feature = "cache-cost-profile")]
+        [_, flag] if flag == "--cost-suite" => cost_suite(),
         [_, flag] if flag == "--stress-memory" => {
             let mut bytes: Vec<u8> = Vec::new();
             if bytes.try_reserve_exact(1024 * 1024 * 1024).is_err() {
@@ -602,6 +739,12 @@ fn run() -> Result<(), String> {
             let trial = trial.parse::<usize>().map_err(|e| format!("trial: {e}"))?;
             repeated_worker(gadgets, policy, trial)
         }
+        #[cfg(feature = "cache-cost-profile")]
+        [_, flag, vertices, policy, trial] if flag == "--cost-worker" => {
+            let vertices = vertices.parse::<usize>().map_err(|e| format!("vertices: {e}"))?;
+            let trial = trial.parse::<usize>().map_err(|e| format!("trial: {e}"))?;
+            cost_worker(vertices, policy, trial)
+        }
         [_, flag, vertices, policy, trial] if flag == "--cycle-worker" => {
             let vertices = vertices.parse::<usize>().map_err(|e| format!("vertices: {e}"))?;
             let trial = trial.parse::<usize>().map_err(|e| format!("trial: {e}"))?;
@@ -614,7 +757,7 @@ fn run() -> Result<(), String> {
                 .map_err(|e| format!("cache cap: {e}"))?;
             worker(name, variables, cache_cap)
         }
-        _ => Err("usage: cache_profile [--cycle-suite|--cycle-worker vertices off|on trial|--repeat-suite|--repeat-worker gadgets off|legacy|tight|roomy trial|--quota-suite|--quota-worker chain|pairs|cache n legacy|tight|roomy] [--worker chain|pairs|cache n cache_cap] [--stress-memory|--stress-sleep]".into()),
+        _ => Err("usage: cache_profile [--cost-suite (requires cache-cost-profile feature)|--cost-worker vertices off|on|tight trial|--cycle-suite|--cycle-worker vertices off|on trial|--repeat-suite|--repeat-worker gadgets off|legacy|tight|roomy trial|--quota-suite|--quota-worker chain|pairs|cache n legacy|tight|roomy] [--worker chain|pairs|cache n cache_cap] [--stress-memory|--stress-sleep]".into()),
     }
 }
 

@@ -4,6 +4,8 @@
 use num_rational::BigRational;
 use num_traits::{One, Zero};
 use std::collections::{BTreeMap, HashMap};
+#[cfg(feature = "cache-cost-profile")]
+use std::time::Instant;
 
 type Clause = Vec<i32>;
 
@@ -150,6 +152,30 @@ impl std::fmt::Display for SolveError {
     }
 }
 impl std::error::Error for SolveError {}
+/// Instrumented *self-time* for cache transactions, enabled only by the
+/// research-only cache-cost-profile feature. Timer and accounting overhead
+/// perturb solve time; these counters must not be used as production timings.
+#[cfg(feature = "cache-cost-profile")]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CacheCostProfile {
+    /// Copies the already-normalized residual and scope to construct a key.
+    /// Excludes CNF normalization itself.
+    pub key_build_calls: u64,
+    pub key_build_ns: u128,
+    /// Hashing and equality comparison inside HashMap::get only.
+    pub lookup_calls: u64,
+    pub lookup_ns: u128,
+    /// Cloning a cached Outcome after a successful lookup.
+    pub hit_clone_calls: u64,
+    pub hit_clone_ns: u128,
+    /// Logical payload bookkeeping, quota evaluation, and rejection.
+    pub admission_calls: u64,
+    pub admission_ns: u128,
+    /// Outcome clone plus HashMap insertion and potential reallocation.
+    pub insert_calls: u64,
+    pub insert_ns: u128,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
     pub cache_entries: usize,
@@ -171,6 +197,8 @@ pub struct Stats {
     /// Number of cache entries declined by the optional retained logical
     /// payload budget. Does not include a full entry-count cache.
     pub cache_payload_rejections: u64,
+    #[cfg(feature = "cache-cost-profile")]
+    pub cache_cost: CacheCostProfile,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Report {
@@ -296,6 +324,8 @@ impl Engine<'_> {
     fn save(&mut self, key: Option<Key>, outcome: Outcome) -> Outcome {
         if let Some(key) = key {
             if self.cache.len() < self.cache_budget {
+                #[cfg(feature = "cache-cost-profile")]
+                let admission_start = Instant::now();
                 // These count stored logical payloads, NOT total allocated
                 // memory or a bound on the process RSS.
                 let scope = key.scope.len();
@@ -327,12 +357,30 @@ impl Engine<'_> {
                             .checked_add(bits)
                             .is_some_and(|n| n <= budget.value_bits);
                     if !allowed {
+                        #[cfg(feature = "cache-cost-profile")]
+                        {
+                            self.stats.cache_cost.admission_calls += 1;
+                            self.stats.cache_cost.admission_ns +=
+                                admission_start.elapsed().as_nanos();
+                        }
                         self.stats.cache_payload_rejections =
                             self.stats.cache_payload_rejections.saturating_add(1);
                         return outcome;
                     }
                 }
+                #[cfg(feature = "cache-cost-profile")]
+                {
+                    self.stats.cache_cost.admission_calls += 1;
+                    self.stats.cache_cost.admission_ns += admission_start.elapsed().as_nanos();
+                }
+                #[cfg(feature = "cache-cost-profile")]
+                let insert_start = Instant::now();
                 self.cache.insert(key, outcome.clone());
+                #[cfg(feature = "cache-cost-profile")]
+                {
+                    self.stats.cache_cost.insert_calls += 1;
+                    self.stats.cache_cost.insert_ns += insert_start.elapsed().as_nanos();
+                }
                 self.stats.cache_entries = self.cache.len();
                 self.stats.cache_scope_items = self.stats.cache_scope_items.saturating_add(scope);
                 self.stats.cache_clause_items =
@@ -372,13 +420,36 @@ impl Engine<'_> {
         let key = if self.cache_budget == 0 {
             None
         } else {
+            #[cfg(feature = "cache-cost-profile")]
+            let key_start = Instant::now();
             let key = Key {
                 scope: scope.clone(),
                 clauses: residual.clone(),
             };
-            if let Some(cached) = self.cache.get(&key) {
+            #[cfg(feature = "cache-cost-profile")]
+            {
+                self.stats.cache_cost.key_build_calls += 1;
+                self.stats.cache_cost.key_build_ns += key_start.elapsed().as_nanos();
+            }
+            #[cfg(feature = "cache-cost-profile")]
+            let lookup_start = Instant::now();
+            let cached = self.cache.get(&key);
+            #[cfg(feature = "cache-cost-profile")]
+            {
+                self.stats.cache_cost.lookup_calls += 1;
+                self.stats.cache_cost.lookup_ns += lookup_start.elapsed().as_nanos();
+            }
+            if let Some(cached) = cached {
                 self.stats.cache_hits += 1;
-                return Ok(cached.clone());
+                #[cfg(feature = "cache-cost-profile")]
+                let clone_start = Instant::now();
+                let result = cached.clone();
+                #[cfg(feature = "cache-cost-profile")]
+                {
+                    self.stats.cache_cost.hit_clone_calls += 1;
+                    self.stats.cache_cost.hit_clone_ns += clone_start.elapsed().as_nanos();
+                }
+                return Ok(result);
             }
             Some(key)
         };

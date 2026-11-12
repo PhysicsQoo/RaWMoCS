@@ -5,6 +5,10 @@ edition = "2021"
 license = "MIT"
 publish = false
 
+# Explicitly opt-in research profiling; never enabled for the default solver.
+[features]
+cache-cost-profile = []
+
 [dependencies]
 num-rational = "0.4"
 num-traits = "0.2"

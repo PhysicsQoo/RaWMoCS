@@ -104,3 +104,72 @@ non-synthetic, independently oracled holdouts, stable controlled
 hardware comparisons, and combined fast/slow cases before considering
 any production change. Keep QOO-207 branching-policy variation outside
 this experiment, with the same frequency heuristic throughout.
+
+
+## First independent selector-free cohort (preliminary)
+
+[Feature-gated Linux study #43189151826](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/43189151826)
+at exact feature source SHA `a23d83826466444ca002f79cfb7d97c55e60e373`
+completed the source-locked **108/108** worker cases. Each row was
+accepted only after an independent exact Gaussian-integer Full WMC/SAT
+oracle; the source-locked timeout and memory-denial negative controls
+reported success. The CSV and control logs are saved in the GitHub
+Actions artifact. This cohort uses only **one** Linux GitHub-hosted
+runner, three fresh workers per policy/case. The results are
+exploratory and are not a statistically significant speedup claim.
+
+Median in-child solve WallTime (ms):
+
+| Selector-free CNF | Variables | OFF | Legacy | Proxy1 | Proxy4 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Ring | 8 | 0.090 | 0.108 | 0.101 | 0.095 |
+| Ring | 10 | 0.172 | 0.179 | 0.183 | 0.172 |
+| Ring | 12 | 0.293 | 0.283 | 0.281 | 0.309 |
+| Chorded | 8 | 0.089 | 0.108 | 0.098 | 0.095 |
+| Chorded | 10 | 0.155 | 0.188 | 0.178 | 0.178 |
+| Chorded | 12 | 0.266 | 0.291 | 0.280 | 0.263 |
+| Mixed | 8 | 0.105 | 0.125 | 0.119 | 0.113 |
+| Mixed | 10 | 0.142 | 0.168 | 0.156 | 0.153 |
+| Mixed | 12 | 0.285 | 0.329 | 0.338 | 0.312 |
+
+At 12 variables, deterministic node counts, hits and retained entries
+were as follows:
+
+| CNF | Policy | Nodes | Hits | Entries |
+| --- | --- | ---: | ---: | ---: |
+| Ring | OFF | 65 | 0 | 0 |
+| Ring | Legacy | 51 | 16 | 35 |
+| Ring | Proxy1 | 51 | 6 | 24 |
+| Ring | Proxy4 | 65 | 0 | 4 |
+| Chorded | OFF | 49 | 0 | 0 |
+| Chorded | Legacy | 49 | 6 | 43 |
+| Chorded | Proxy1 | 49 | 0 | 21 |
+| Chorded | Proxy4 | 49 | 0 | 3 |
+| Mixed | OFF | 56 | 0 | 0 |
+| Mixed | Legacy | 56 | 6 | 50 |
+| Mixed | Proxy1 | 56 | 0 | 24 |
+| Mixed | Proxy4 | 56 | 0 | 8 |
+
+**Negative results matter:** Chorded-12 and Mixed-12 demonstrate that
+the default Cache can report six hits **without reducing visited
+nodes**, while storing many keys. In Mixed-12 the median WallTime of
+Cache OFF is 0.285 ms, versus 0.329 ms Legacy and 0.312 ms Proxy4.
+Filtering obvious cheap entries helps somewhat but is insufficient.
+Conversely, Ring-12 has real node savings under Legacy/Proxy1
+(65→51), while Proxy4 is too restrictive and loses the savings.
+A single fixed work-to-payload ratio does **not** generalize across
+these selector-free families.
+
+Linux process `VmHWM` medians vary by tens of KiB, with no
+consistent physical-memory saving from either proxy. Neither retained
+logical items nor `RLIMIT_AS` constitutes an RSS hard limit.
+Values reflect the same runner and only three trials, so avoid
+ranking near-equal runtimes as significant. No real-world QuPRS
+data were included.
+
+The experiment supports collecting better calibrated evidence for
+**future reuse probability**, incremental recomputation, CNF
+structure, exact-value copy costs and physical memory footprint,
+rather than promoting a fixed threshold or an arbitrary numerical
+factor. Keep Legacy as the normal default and retain both proxy
+thresholds as research-only controls pending external holdouts.

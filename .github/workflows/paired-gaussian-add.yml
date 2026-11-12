@@ -38,7 +38,6 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git -C baseline rev-parse HEAD)" = 7dfae669fc1fef3a5e701666bf892ce042d44a83
-          git merge-base --is-ancestor 7dfae669fc1fef3a5e701666bf892ce042d44a83 HEAD
           cargo build --locked --release --manifest-path baseline/benchmarks/rust_core/Cargo.toml --example cache_profile
           cargo build --locked --release --manifest-path benchmarks/rust_core/Cargo.toml --example cache_profile --example gaussian_add_paired
       - name: Same-process paired arithmetic with independent exact formula

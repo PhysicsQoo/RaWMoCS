@@ -1,6 +1,6 @@
 //! Six stable native benchmark identities; fixtures are built outside timed spans.
-use rawmocs_benchmarks::{arithmetic_operands, fixture, Workload};
 use rawmocs_benchmarks::scalability::{fixture as medium_fixture, Family};
+use rawmocs_benchmarks::{arithmetic_operands, fixture, Workload};
 use rawmocs_core::{solve, solve_with_limits, Gaussian, Limits, Problem};
 use std::sync::OnceLock;
 
@@ -80,7 +80,6 @@ fn full_wmc_cache_disabled() {
     );
 }
 
-
 fn chain(variables: usize) -> &'static Problem {
     let slot = match variables {
         16 => &CHAIN16,
@@ -105,15 +104,12 @@ fn pair_components(variables: usize) -> &'static Problem {
 // Source generation and analytical oracle evaluation remain outside measured spans.
 #[divan::bench(args = [16_usize, 32_usize, 64_usize])]
 fn medium_equivalence_chain(variables: usize) {
-    divan::black_box(
-        solve(divan::black_box(chain(variables))).expect("bounded medium chain"),
-    );
+    divan::black_box(solve(divan::black_box(chain(variables))).expect("bounded medium chain"));
 }
 
 #[divan::bench(args = [16_usize, 32_usize, 64_usize])]
 fn medium_independent_components(variables: usize) {
     divan::black_box(
-        solve(divan::black_box(pair_components(variables)))
-            .expect("bounded medium components"),
+        solve(divan::black_box(pair_components(variables))).expect("bounded medium components"),
     );
 }

@@ -82,3 +82,55 @@ ON/OFF/threshold studies, and repeatable physical wall-time/RSS results.
 The CodSpeed Simulation results measure modeled CPU instruction costs,
 not Linux wall-clock or peak RSS. Preserve the existing benchmark IDs and
 report runner/CPU changes before quoting cross-run deltas.
+
+
+## First source-qualified feature-gated observation
+
+[Isolated Linux qualification #43184733187](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/43184733187)
+at exact instrumented source HEAD
+`8f0ac8408155b26d5b4f301e9e0307a486d60d99`
+passed all **27 exact Full Complex WMC/SAT worker rows**, all transaction
+accounting invariants, and both independently executed negative controls:
+`GUARD_MEMORY_DENIED=PASS STATUS=RESOURCE_FAILURE` and
+`GUARD_TIMEOUT=PASS STATUS=TIMEOUT`. This is **one** GitHub-hosted
+Linux runner, three fresh child processes per case, not a cross-runner
+statistical performance certification.
+
+Median measured values (nanoseconds) on the **instrumented** solver:
+
+| Cycle vertices | Policy | Solve WallTime ns | Nodes | Cache hits | Cache entries | Quota rejects | Key build ns | Lookup ns | Admission ns | Insert ns |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 6 | off | 96,736 | 23 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| 6 | on | 76,095 | 13 | 1 | 12 | 0 | 2,075 | 1,132 | 490 | 7,511 |
+| 6 | tight | 108,073 | 23 | 1 | 1 | 21 | 2,484 | 1,904 | 780 | 661 |
+| 10 | off | 344,772 | 75 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| 10 | on | 206,292 | 37 | 9 | 28 | 0 | 7,930 | 3,332 | 1,143 | 10,746 |
+| 10 | tight | 355,908 | 75 | 3 | 1 | 71 | 9,001 | 5,957 | 2,455 | 651 |
+| 14 | off | 1,041,015 | 231 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| 14 | on | 420,827 | 69 | 25 | 44 | 0 | 14,194 | 7,446 | 1,693 | 23,855 |
+| 14 | tight | 1,100,225 | 231 | 13 | 1 | 217 | 24,052 | 17,542 | 6,650 | 2,364 |
+
+At 14 vertices, the remaining hit-result clone median was approximately
+950 ns for `on` and 490 ns for `tight`. The `on` case has 25 hits and
+visits 69 nodes instead of 231. However, `tight` still reports **13
+hits without reducing node count at all**, and its median measured
+WallTime exceeds `off`; a cache hit is therefore **not** evidence of
+saved expensive search. Individual phase medians may come from different
+trials and cannot be summed as an exact per-run breakdown. Timer calls
+and instrumentation modify timings and code generation; do not
+subtract measured phase totals to claim a precise algorithmic
+recomputation cost.
+
+The 14-vertex median Linux process `VmHWM` for
+`off/on/tight` was **2444/2500/2460 KiB**. These small variations
+do not demonstrate any physical RSS improvement. The `tight`
+budget constrains *logical payload* rather than bytes or actual RSS.
+No eviction, cross-invocation weighted cache or new default admission
+policy has been implemented.
+
+**Next scientific gate:** directly compare different connected CNF
+families with varied reuse patterns, amortize instrumented timer
+overhead and evaluate selective/adaptive admission as a separate,
+independently checked policy experiment. Retain the present production
+default until controlled same-hardware, same-source holdout evidence
+supports a net benefit.

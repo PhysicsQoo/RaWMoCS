@@ -298,23 +298,13 @@ impl Engine<'_> {
             residual = assign(&residual, lit);
         }
 
-        // Each free variable contributes w(x) + w(!x) exactly once.
-        let mut appears = vec![false; self.p.variables + 1];
-        for c in &residual {
-            for &lit in c {
-                appears[lit.unsigned_abs() as usize] = true;
-            }
-        }
-        let mut active = Vec::new();
-        for var in remaining {
-            if appears[var] {
-                active.push(var);
-            } else {
+        // When unit propagation resolves every clause, all remaining
+        // variables are free. Avoid allocating any residual frequency table.
+        if residual.is_empty() {
+            for var in remaining {
                 let w = &self.p.weights[var - 1];
                 prefix = prefix.mul(&w.positive.add(&w.negative));
             }
-        }
-        if residual.is_empty() {
             return Ok(self.save(
                 key,
                 Outcome {
@@ -322,6 +312,24 @@ impl Engine<'_> {
                     count: prefix,
                 },
             ));
+        }
+
+        // One scan serves two purposes: identify free variables and retain
+        // the same literal-occurrence heuristic for the eventual DPLL pivot.
+        let mut frequency = vec![0usize; self.p.variables + 1];
+        for c in &residual {
+            for &lit in c {
+                frequency[lit.unsigned_abs() as usize] += 1;
+            }
+        }
+        let mut active = Vec::new();
+        for var in remaining {
+            if frequency[var] != 0 {
+                active.push(var);
+            } else {
+                let w = &self.p.weights[var - 1];
+                prefix = prefix.mul(&w.positive.add(&w.negative));
+            }
         }
 
         if let Some(pieces) = split_components(&residual, &active, self.p.variables) {
@@ -343,13 +351,8 @@ impl Engine<'_> {
             ));
         }
 
-        // Chronological DPLL. Do not divide by weights or assume zero => UNSAT.
-        let mut frequency = vec![0usize; self.p.variables + 1];
-        for c in &residual {
-            for &lit in c {
-                frequency[lit.unsigned_abs() as usize] += 1;
-            }
-        }
+        // Chronological DPLL uses the frequency table from the single
+        // residual scan. Do not divide by weights or assume zero => UNSAT.
         let var = *active
             .iter()
             .max_by_key(|&&v| frequency[v])

@@ -186,6 +186,26 @@ fn complex_rational_four_product_reference() {
     ));
 }
 
+// Research-only three-product candidate (Gauss trick). Do not change the
+// production four-product path until paired arithmetic and WMC evidence exists.
+// It trades one multiplication for additional exact rational additions, whose
+// normalization/GCD cost may outweigh the saved product.
+fn research_three_products(a: &Gaussian, b: &Gaussian) -> Gaussian {
+    let ac = &a.real * &b.real;
+    let bd = &a.imag * &b.imag;
+    let cross = (&a.real + &a.imag) * (&b.real + &b.imag);
+    Gaussian::new(&ac - &bd, cross - &ac - &bd)
+}
+
+#[divan::bench]
+fn complex_rational_three_product_candidate() {
+    let (a, b) = operands();
+    divan::black_box(research_three_products(
+        divan::black_box(a),
+        divan::black_box(b),
+    ));
+}
+
 // These measured operations intentionally exclude fixture and identity creation.
 #[divan::bench]
 fn complex_rational_multiply_by_one() {

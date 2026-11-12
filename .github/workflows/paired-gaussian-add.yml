@@ -47,7 +47,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/gaussian-paired"
-          printf 'IMMUTABLE_BASELINE_SHA=%s\\n' "$BASELINE_SHA" > "$RUNNER_TEMP/gaussian-paired/provenance.txt"
+          printf 'IMMUTABLE_BASELINE_SHA=%s\n' "$BASELINE_SHA" > "$RUNNER_TEMP/gaussian-paired/provenance.txt"
           benchmarks/rust_core/target/release/examples/gaussian_add_paired --paired > "$RUNNER_TEMP/gaussian-paired/arithmetic.csv"
           python3 benchmarks/rust_core/tools/paired_gaussian_add.py "$RUNNER_TEMP/gaussian-paired/arithmetic.csv" | tee "$RUNNER_TEMP/gaussian-paired/arithmetic-summary.txt"
       - name: Same-runner alternate main/candidate exact Full WMC and process VmHWM

@@ -1,4 +1,4 @@
-name: Paired Gaussian zero-addition research (Linux)
+name: Paired exact Gaussian and DPLL arithmetic research (Linux)
 
 on:
   pull_request:
@@ -19,6 +19,8 @@ concurrency:
 jobs:
   paired:
     runs-on: ubuntu-24.04
+    env:
+      BASELINE_SHA: ${{ github.event.pull_request.base.sha || 'b70686d59dbf8c159a0c1e4b2161260e2985fa04' }}
     timeout-minutes: 25
     steps:
       - name: Checkout proposed optimization
@@ -29,7 +31,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: PhysicsQoo/RaWMoCS
-          ref: 7dfae669fc1fef3a5e701666bf892ce042d44a83
+          ref: ${{ env.BASELINE_SHA }}
           path: baseline
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
@@ -37,7 +39,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git -C baseline rev-parse HEAD)" = 7dfae669fc1fef3a5e701666bf892ce042d44a83
+          test "$(git -C baseline rev-parse HEAD)" = "$BASELINE_SHA"
           cargo build --locked --release --manifest-path baseline/benchmarks/rust_core/Cargo.toml --example cache_profile
           cargo build --locked --release --manifest-path benchmarks/rust_core/Cargo.toml --example cache_profile --example gaussian_add_paired
       - name: Same-process paired arithmetic with independent exact formula
@@ -45,6 +47,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/gaussian-paired"
+          printf 'IMMUTABLE_BASELINE_SHA=%s\\n' "$BASELINE_SHA" > "$RUNNER_TEMP/gaussian-paired/provenance.txt"
           benchmarks/rust_core/target/release/examples/gaussian_add_paired --paired > "$RUNNER_TEMP/gaussian-paired/arithmetic.csv"
           python3 benchmarks/rust_core/tools/paired_gaussian_add.py "$RUNNER_TEMP/gaussian-paired/arithmetic.csv" | tee "$RUNNER_TEMP/gaussian-paired/arithmetic-summary.txt"
       - name: Same-runner alternate main/candidate exact Full WMC and process VmHWM

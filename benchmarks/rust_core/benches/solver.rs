@@ -41,7 +41,15 @@ fn zero() -> &'static Gaussian {
 }
 
 fn main() {
-    let _ = (forced(), connected(), disjoint(), cache(), operands(), identity(), zero());
+    let _ = (
+        forced(),
+        connected(),
+        disjoint(),
+        cache(),
+        operands(),
+        identity(),
+        zero(),
+    );
     for size in [16, 32, 64] {
         let _ = (chain(size), pair_components(size));
     }

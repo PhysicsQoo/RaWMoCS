@@ -45,7 +45,10 @@ fn fixtures() -> &'static [Fixture] {
                 let (oracle_sat, oracle_count) =
                     independent_exact_full_wmc(&parsed).expect("bounded independent oracle");
                 assert_eq!(oracle_sat, sat, "{label}: independent SAT oracle");
-                assert_eq!(oracle_count, expected, "{label}: independent exact Full WMC");
+                assert_eq!(
+                    oracle_count, expected,
+                    "{label}: independent exact Full WMC"
+                );
                 let check =
                     solve_with_limits(&parsed, Limits::default()).expect("solver preflight");
                 assert_eq!(check.satisfiable, sat, "{label}: solver SAT preflight");
@@ -73,7 +76,10 @@ fn one(label: &str) {
     let report = solve_with_limits(divan::black_box(&problem), Limits::default())
         .expect("bounded solver returned UNKNOWN");
     assert_eq!(report.satisfiable, case.sat, "{label}: SAT changed");
-    assert_eq!(report.count, case.expected, "{label}: exact complex count changed");
+    assert_eq!(
+        report.count, case.expected,
+        "{label}: exact complex count changed"
+    );
     divan::black_box(report);
 }
 

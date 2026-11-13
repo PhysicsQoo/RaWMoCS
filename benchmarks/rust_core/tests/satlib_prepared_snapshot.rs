@@ -15,6 +15,21 @@ fn raw(n: i64, d: i64) -> BigRational {
     BigRational::new_raw(n.into(), d.into())
 }
 
+// Use a separate, transparent nondegenerate weight scenario: under all-one
+// exact weights, WMC equals the independently counted number of Boolean SAT
+// assignments (8 / 29). The original QOO-219 signed/complex weight fixture
+// can cancel to numerical zero even for SAT, which would make a snapshot
+// mutation test vacuous.
+fn neutral_weighted_source(name: &str) -> Problem {
+    let original = fixture(name);
+    Problem::new(
+        original.variables(),
+        original.clauses().to_vec(),
+        vec![Weights::new(Gaussian::one(), Gaussian::one()); original.variables()],
+    )
+    .expect("same original SATLIB CNF with explicitly new all-one weights")
+}
+
 fn with_replaced_first_weight(original: &Problem, weight: Weights) -> Problem {
     let mut w = original.weights().to_vec();
     w[0] = weight;
@@ -44,6 +59,7 @@ fn compare(
         old_sat && new_sat,
         "weight changes may not change the Boolean CNF"
     );
+    assert_ne!(old_exact, Gaussian::zero(), "source WMC must not be vacuously zero");
     assert_ne!(
         old_exact, new_exact,
         "declared weights must change exact WMC"
@@ -86,7 +102,7 @@ fn compare(
 #[test]
 fn signed_complex_weight_mutation_requires_separate_prepare() {
     for name in ["satlib_uf20_01", "satlib_uf20_02"] {
-        let source = fixture(name);
+        let source = neutral_weighted_source(name);
         let old_prepared = PreparedCanonicalProblem::prepare(&source).unwrap();
         assert!(
             old_prepared.estimated_retained_payload_bytes() > 0,
@@ -111,7 +127,7 @@ fn signed_complex_weight_mutation_requires_separate_prepare() {
 #[test]
 fn noncanonical_signed_weight_updates_are_checked_and_snapshotted() {
     for name in ["satlib_uf20_01", "satlib_uf20_02"] {
-        let source = fixture(name);
+        let source = neutral_weighted_source(name);
         let prepared_old = PreparedCanonicalProblem::prepare(&source).unwrap();
 
         // Deliberately unreduced values, negative denominator, zero numerator.
@@ -129,9 +145,23 @@ fn noncanonical_signed_weight_updates_are_checked_and_snapshotted() {
 }
 
 #[test]
+fn original_qoo219_synthetic_weights_are_sat_but_zero_negative_controls() {
+    for name in ["satlib_uf20_01", "satlib_uf20_02"] {
+        let (sat, count) = independent_full_wmc(name, &fixture(name));
+        assert!(sat, "Boolean SAT must remain independent of numeric WMC");
+        assert_eq!(count, Gaussian::zero(), "zero-valued WMC is not UNSAT");
+        let (neutral_sat, neutral_count) =
+            independent_full_wmc(name, &neutral_weighted_source(name));
+        assert!(neutral_sat);
+        let number = if name == "satlib_uf20_01" { 8 } else { 29 };
+        assert_eq!(neutral_count, Gaussian::integers(number, 0));
+    }
+}
+
+#[test]
 fn invalid_new_weight_does_not_corrupt_existing_prepared_snapshot() {
     for name in ["satlib_uf20_01", "satlib_uf20_02"] {
-        let source = fixture(name);
+        let source = neutral_weighted_source(name);
         let prepared_old = PreparedCanonicalProblem::prepare(&source).unwrap();
         let bad = with_replaced_first_weight(
             &source,

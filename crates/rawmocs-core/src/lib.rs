@@ -1,6 +1,8 @@
 //! Experimental exact, full complex weighted model counting over Q[i].
 //! No projected-WMC or quantum-equivalence claims are made by this crate.
 
+#[cfg(feature = "canonical-mul-research")]
+use num_integer::Integer;
 use num_rational::BigRational;
 use num_traits::{One, Zero};
 use std::collections::{BTreeMap, HashMap};
@@ -78,6 +80,58 @@ impl Gaussian {
         Self::new(
             &self.real * &rhs.real - &self.imag * &rhs.imag,
             &self.real * &rhs.imag + &self.imag * &rhs.real,
+        )
+    }
+
+    /// Opt-in, research-only: canonical operands imply cross-cancelled products
+    /// are already reduced. This is NEVER used by the public Gaussian::mul.
+    #[cfg(feature = "canonical-mul-research")]
+    fn mul_canonical_research(&self, rhs: &Self) -> Self {
+        fn mul(a: &BigRational, b: &BigRational) -> BigRational {
+            #[cfg(debug_assertions)]
+            for value in [a, b] {
+                let canonical = BigRational::new(value.numer().clone(), value.denom().clone());
+                debug_assert_eq!(value.numer(), canonical.numer());
+                debug_assert_eq!(value.denom(), canonical.denom());
+            }
+            let g1 = a.numer().gcd(b.denom());
+            let g2 = a.denom().gcd(b.numer());
+            let n = (a.numer() / &g1) * (b.numer() / &g2);
+            let d = (a.denom() / &g2) * (b.denom() / &g1);
+            BigRational::new_raw(n, d)
+        }
+
+        if self.imag.is_zero() {
+            if self.real.is_zero() {
+                return Self::zero();
+            }
+            if self.real.is_one() {
+                return rhs.clone();
+            }
+        }
+        if rhs.imag.is_zero() {
+            if rhs.real.is_zero() {
+                return Self::zero();
+            }
+            if rhs.real.is_one() {
+                return self.clone();
+            }
+        }
+        if self.imag.is_zero() {
+            return Self::new(mul(&self.real, &rhs.real), mul(&self.real, &rhs.imag));
+        }
+        if rhs.imag.is_zero() {
+            return Self::new(mul(&self.real, &rhs.real), mul(&self.imag, &rhs.real));
+        }
+        if self.real.is_zero() {
+            return Self::new(-mul(&self.imag, &rhs.imag), mul(&self.imag, &rhs.real));
+        }
+        if rhs.real.is_zero() {
+            return Self::new(-mul(&self.imag, &rhs.imag), mul(&self.real, &rhs.imag));
+        }
+        Self::new(
+            mul(&self.real, &rhs.real) - mul(&self.imag, &rhs.imag),
+            mul(&self.real, &rhs.imag) + mul(&self.imag, &rhs.real),
         )
     }
 }
@@ -269,6 +323,8 @@ struct Engine<'a> {
     work_proxy_ratio: Option<u64>,
     #[cfg(feature = "branching-research")]
     pivot_policy: PivotPolicy,
+    #[cfg(feature = "canonical-mul-research")]
+    canonical_mul_research: bool,
     stats: Stats,
     cache: HashMap<Key, Outcome>,
 }
@@ -296,7 +352,16 @@ pub fn solve_with_pivot_policy(
     limits: Limits,
     policy: PivotPolicy,
 ) -> Result<Report, SolveError> {
-    solve_with_solver_policy(p, limits, None, 0, None, policy)
+    solve_with_solver_policy(
+        p,
+        limits,
+        None,
+        0,
+        None,
+        policy,
+        #[cfg(feature = "canonical-mul-research")]
+        false,
+    )
 }
 
 impl Default for Limits {
@@ -388,6 +453,8 @@ fn solve_with_research_cache_threshold(
         work_proxy_ratio,
         #[cfg(feature = "branching-research")]
         PivotPolicy::Frequency,
+        #[cfg(feature = "canonical-mul-research")]
+        false,
     )
 }
 
@@ -398,6 +465,7 @@ fn solve_with_solver_policy(
     min_cache_clauses: usize,
     work_proxy_ratio: Option<u64>,
     #[cfg(feature = "branching-research")] pivot_policy: PivotPolicy,
+    #[cfg(feature = "canonical-mul-research")] canonical_mul_research: bool,
 ) -> Result<Report, SolveError> {
     #[cfg(not(feature = "cache-admission-research"))]
     let _ = (min_cache_clauses, work_proxy_ratio);
@@ -413,6 +481,8 @@ fn solve_with_solver_policy(
         work_proxy_ratio,
         #[cfg(feature = "branching-research")]
         pivot_policy,
+        #[cfg(feature = "canonical-mul-research")]
+        canonical_mul_research,
         stats: Stats::default(),
         cache: HashMap::new(),
     };
@@ -436,6 +506,59 @@ pub fn solve(p: &Problem) -> Result<Report, SolveError> {
     solve_with_limits(p, Limits::default())
 }
 
+/// Research-only Full WMC entrypoint. Clone and normalize all externally
+/// supplied weights exactly once, before enabling the canonical-only
+/// multiplication algorithm. The normal solver and public Gaussian::mul stay
+/// unchanged; invalid zero denominators fail closed in this opt-in path.
+#[cfg(feature = "canonical-mul-research")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CanonicalMulResearchError {
+    ZeroDenominator {
+        variable: usize,
+        positive: bool,
+        component: &'static str,
+    },
+    Solve(SolveError),
+}
+
+/// The timer around this call MUST include its input normalization cost.
+/// The returned count remains a canonical exact Gaussian for valid weights.
+#[cfg(feature = "canonical-mul-research")]
+pub fn solve_with_canonical_mul_research(
+    problem: &Problem,
+    limits: Limits,
+) -> Result<Report, CanonicalMulResearchError> {
+    let mut canonical = problem.clone();
+    for (idx, weights) in canonical.weights.iter_mut().enumerate() {
+        for (positive, component, r) in [
+            (true, "real", &mut weights.positive.real),
+            (true, "imag", &mut weights.positive.imag),
+            (false, "real", &mut weights.negative.real),
+            (false, "imag", &mut weights.negative.imag),
+        ] {
+            if r.denom().is_zero() {
+                return Err(CanonicalMulResearchError::ZeroDenominator {
+                    variable: idx + 1,
+                    positive,
+                    component,
+                });
+            }
+            *r = BigRational::new(r.numer().clone(), r.denom().clone());
+        }
+    }
+    solve_with_solver_policy(
+        &canonical,
+        limits,
+        None,
+        0,
+        None,
+        #[cfg(feature = "branching-research")]
+        PivotPolicy::Frequency,
+        true,
+    )
+    .map_err(CanonicalMulResearchError::Solve)
+}
+
 fn rational_value_bits(r: &BigRational) -> u64 {
     r.numer().bits().saturating_add(r.denom().bits())
 }
@@ -445,6 +568,15 @@ fn gaussian_value_bits(value: &Gaussian) -> u64 {
 }
 
 impl Engine<'_> {
+    #[inline]
+    fn multiply(&self, a: &Gaussian, b: &Gaussian) -> Gaussian {
+        #[cfg(feature = "canonical-mul-research")]
+        if self.canonical_mul_research {
+            return a.mul_canonical_research(b);
+        }
+        a.mul(b)
+    }
+
     fn save(
         &mut self,
         key: Option<Key>,
@@ -651,7 +783,7 @@ impl Engine<'_> {
                 break;
             };
             let var = lit.unsigned_abs() as usize;
-            prefix = prefix.mul(self.weight(var, lit > 0));
+            prefix = self.multiply(&prefix, self.weight(var, lit > 0));
             remaining.retain(|&v| v != var);
             residual = assign(&residual, lit);
         }
@@ -661,7 +793,7 @@ impl Engine<'_> {
         if residual.is_empty() {
             for var in remaining {
                 let w = &self.p.weights[var - 1];
-                prefix = prefix.mul(&w.positive.add(&w.negative));
+                prefix = self.multiply(&prefix, &w.positive.add(&w.negative));
             }
             return Ok(self.save(
                 key,
@@ -688,7 +820,7 @@ impl Engine<'_> {
                 active.push(var);
             } else {
                 let w = &self.p.weights[var - 1];
-                prefix = prefix.mul(&w.positive.add(&w.negative));
+                prefix = self.multiply(&prefix, &w.positive.add(&w.negative));
             }
         }
 
@@ -705,13 +837,13 @@ impl Engine<'_> {
                         start_nodes,
                     ));
                 }
-                value = value.mul(&part.count);
+                value = self.multiply(&value, &part.count);
             }
             return Ok(self.save(
                 key,
                 Outcome {
                     sat: true,
-                    count: prefix.mul(&value),
+                    count: self.multiply(&prefix, &value),
                 },
                 #[cfg(feature = "cache-admission-research")]
                 start_nodes,
@@ -744,15 +876,14 @@ impl Engine<'_> {
         let child: Vec<_> = active.into_iter().filter(|&v| v != var).collect();
         let yes = self.count(assign(&residual, var as i32), child.clone(), depth + 1)?;
         let no = self.count(assign(&residual, -(var as i32)), child, depth + 1)?;
-        let sum = self
-            .weight(var, true)
-            .mul(&yes.count)
-            .add(&self.weight(var, false).mul(&no.count));
+        let yes_weighted = self.multiply(self.weight(var, true), &yes.count);
+        let no_weighted = self.multiply(self.weight(var, false), &no.count);
+        let sum = yes_weighted.add(&no_weighted);
         Ok(self.save(
             key,
             Outcome {
                 sat: yes.sat || no.sat,
-                count: prefix.mul(&sum),
+                count: self.multiply(&prefix, &sum),
             },
             #[cfg(feature = "cache-admission-research")]
             start_nodes,

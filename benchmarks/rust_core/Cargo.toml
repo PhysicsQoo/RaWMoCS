@@ -11,6 +11,8 @@ cache-cost-profile = ["rawmocs-core/cache-cost-profile"]
 cache-admission-research = ["rawmocs-core/cache-admission-research"]
 # Benchmark fixture reuse only: does not activate a cache-admission policy.
 branching-research = ["rawmocs-core/branching-research", "cache-admission-research"]
+# Opt-in only; do not alter default CodSpeed or release builds.
+canonical-mul-research = ["rawmocs-core/canonical-mul-research"]
 
 [workspace]
 
@@ -26,3 +28,7 @@ divan = { package = "codspeed-divan-compat", version = "=6.0.0" }
 [[bench]]
 name = "solver"
 harness = false
+
+[[example]]
+name = "canonical_mul_paired"
+required-features = ["canonical-mul-research"]

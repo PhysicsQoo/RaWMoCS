@@ -10,9 +10,12 @@ publish = false
 cache-cost-profile = []
 cache-admission-research = []
 branching-research = []
+# Explicit, isolated Full WMC arithmetic study; never enabled by default.
+canonical-mul-research = ["dep:num-integer"]
 
 [dependencies]
 num-rational = "0.4"
+num-integer = { version = "0.1", optional = true }
 num-traits = "0.2"
 
 [dev-dependencies]

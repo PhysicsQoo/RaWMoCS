@@ -6,6 +6,7 @@ pub mod branching_holdout;
 pub mod cache_reuse;
 pub mod cross_cancel_research;
 pub mod expensive_reuse;
+pub mod irregular_holdout;
 pub mod scalability;
 #[cfg(feature = "cache-admission-research")]
 pub mod work_proxy_holdout;

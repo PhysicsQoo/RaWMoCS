@@ -221,14 +221,18 @@ fn complex_rational_add_dense_reference() {
 // within a CodSpeed run, not across different runner hardware.
 type RationalInput = (num_bigint::BigInt, num_bigint::BigInt);
 static REDUCE_COPRIME_128: OnceLock<RationalInput> = OnceLock::new();
+static REDUCE_COPRIME_192: OnceLock<RationalInput> = OnceLock::new();
 static REDUCE_COPRIME_512: OnceLock<RationalInput> = OnceLock::new();
+static REDUCE_COPRIME_576: OnceLock<RationalInput> = OnceLock::new();
 static REDUCE_SHARED_128: OnceLock<RationalInput> = OnceLock::new();
 static REDUCE_SHARED_512: OnceLock<RationalInput> = OnceLock::new();
 
 fn rational_reduction_input(bits: usize, shared_factor: bool) -> &'static RationalInput {
     let slot = match (bits, shared_factor) {
         (128, false) => &REDUCE_COPRIME_128,
+        (192, false) => &REDUCE_COPRIME_192,
         (512, false) => &REDUCE_COPRIME_512,
+        (576, false) => &REDUCE_COPRIME_576,
         (128, true) => &REDUCE_SHARED_128,
         (512, true) => &REDUCE_SHARED_512,
         _ => panic!("only fixed rational-reduction benchmark fixtures"),
@@ -258,25 +262,22 @@ fn rational_reduction_input(bits: usize, shared_factor: bool) -> &'static Ration
 // Clone-only companion controls on the exact same input bit patterns.
 // Do not subtract these costs from normalization to infer a pure GCD time:
 // non-additive cache effects and normalization internals remain.
-#[divan::bench(args = [128_usize, 512_usize])]
+// The 192/576 variants approximate the bit width of corresponding
+// shared-factor 128/512 inputs after the 64-bit factor. Their values are
+// different, so this is a bit-width control, NOT a pure GCD experiment.
+#[divan::bench(args = [128_usize, 192_usize, 512_usize, 576_usize])]
 fn rational_operand_clone_coprime(bits: usize) {
     let (n, d) = rational_reduction_input(bits, false);
-    divan::black_box((
-        divan::black_box(n).clone(),
-        divan::black_box(d).clone(),
-    ));
+    divan::black_box((divan::black_box(n).clone(), divan::black_box(d).clone()));
 }
 
 #[divan::bench(args = [128_usize, 512_usize])]
 fn rational_operand_clone_shared_power_of_two(bits: usize) {
     let (n, d) = rational_reduction_input(bits, true);
-    divan::black_box((
-        divan::black_box(n).clone(),
-        divan::black_box(d).clone(),
-    ));
+    divan::black_box((divan::black_box(n).clone(), divan::black_box(d).clone()));
 }
 
-#[divan::bench(args = [128_usize, 512_usize])]
+#[divan::bench(args = [128_usize, 192_usize, 512_usize, 576_usize])]
 fn rational_normalize_coprime(bits: usize) {
     let (n, d) = rational_reduction_input(bits, false);
     divan::black_box(BigRational::new(

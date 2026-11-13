@@ -4,6 +4,7 @@ pub mod admission_holdout;
 #[cfg(feature = "branching-research")]
 pub mod branching_holdout;
 pub mod cache_reuse;
+pub mod cross_cancel_research;
 pub mod expensive_reuse;
 pub mod scalability;
 #[cfg(feature = "cache-admission-research")]

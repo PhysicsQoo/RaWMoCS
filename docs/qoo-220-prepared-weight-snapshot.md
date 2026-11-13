@@ -10,6 +10,8 @@ An immutable `PreparedCanonicalProblem` produced from source `A` owns a checked 
 - a new ordinary signed/complex weight pair; or
 - four deliberately unreduced, signed and negative-denominator `BigRational::new_raw` components, which B canonicalizes independently at the preparation boundary.
 
+**Degenerate-weight guard:** the existing QOO-219 synthetic signed/complex weight formula gives exact WMC **zero** on both selected SAT files despite Boolean SAT (8/29 satisfying assignments). Merely replacing one weight there also leaves the total zero, so asserting that a mutation changes count would be a **vacuous test**. This study instead explicitly reconstructs the *same original SATLIB CNF* with an independent **all-one synthetic base weight scenario**. Its exact WMC is the SAT count (8 or 29) by the schoolbook truth-table oracle, and changed signed/complex weights must yield a different exact WMC. A separate negative-control test preserves and labels the original SAT-but-zero property. Neither weight scenario is claimed to originate from SATLIB.
+
 The test retains both prepared instances simultaneously and alternates their repeated solves with cache OFF and ON. Each result is checked against **its own** independent SAT truth table and four-product weighted-sum oracle. It also checks the exact numerator and denominator fields, SAT independently of WMC value, and search statistics parity with the baseline solver. The test requires the two exact weighted counts to differ; otherwise the purported weight-mutation test would be vacuous.
 
 A separate negative control attempts to prepare a new problem with a zero denominator. It **must** fail closed without changing the older valid prepared snapshot; the old SAT/WMC witness remains exact and canonical.

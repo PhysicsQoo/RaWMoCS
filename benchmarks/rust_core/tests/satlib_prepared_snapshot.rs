@@ -30,9 +30,9 @@ fn neutral_weighted_source(name: &str) -> Problem {
     .expect("same original SATLIB CNF with explicitly new all-one weights")
 }
 
-fn with_replaced_first_weight(original: &Problem, weight: Weights) -> Problem {
+fn with_replaced_weight(original: &Problem, index: usize, weight: Weights) -> Problem {
     let mut w = original.weights().to_vec();
-    w[0] = weight;
+    w[index] = weight;
     Problem::new(original.variables(), original.clauses().to_vec(), w)
         .expect("same pinned SATLIB CNF, new independent weight assignment")
 }
@@ -68,6 +68,10 @@ fn compare(
         old_exact, new_exact,
         "declared weights must change exact WMC"
     );
+    if name == "satlib_uf20_01" {
+        assert_eq!(old_exact, Gaussian::zero(), "forced zero-weight SAT literal");
+        assert_ne!(new_exact, Gaussian::zero(), "changed weight removes forced zero");
+    }
 
     for cap in [0_usize, 10_000_usize] {
         let limits = Limits {
@@ -114,8 +118,13 @@ fn signed_complex_weight_mutation_requires_separate_prepare() {
         );
         let old_bytes = old_prepared.estimated_retained_payload_bytes();
 
-        let changed = with_replaced_first_weight(
+        // Original uf20-01 has all 8 SAT assignments with variable 17 true,
+        // and its synthetic positive weight at variable 17 is exactly 0+0i.
+        // Changing variable 1 instead would leave the original WMC at 0,
+        // making the "counts differ" assertion invalid.
+        let changed = with_replaced_weight(
             &source,
+            16, // variable 17, 0-based index
             Weights::new(Gaussian::integers(7, 3), Gaussian::integers(-1, -2)),
         );
         let new_prepared = PreparedCanonicalProblem::prepare(&changed).unwrap();
@@ -136,8 +145,9 @@ fn noncanonical_signed_weight_updates_are_checked_and_snapshotted() {
 
         // Deliberately unreduced values, negative denominator, zero numerator.
         // The fresh B preparation must canonicalize all four components.
-        let changed = with_replaced_first_weight(
+        let changed = with_replaced_weight(
             &source,
+            16, // variable 17: exercises SAT-but-zero and the signed raw boundary
             Weights::new(
                 Gaussian::new(raw(6, -8), raw(-10, 15)),
                 Gaussian::new(raw(0, 5), raw(4, 8)),
@@ -167,8 +177,9 @@ fn invalid_new_weight_does_not_corrupt_existing_prepared_snapshot() {
     for name in ["satlib_uf20_01", "satlib_uf20_02"] {
         let source = neutral_weighted_source(name);
         let prepared_old = PreparedCanonicalProblem::prepare(&source).unwrap();
-        let bad = with_replaced_first_weight(
+        let bad = with_replaced_weight(
             &source,
+            0, // Keep the zero-denominator error location fixed at variable 1.
             Weights::new(
                 Gaussian::new(raw(1, 0), BigRational::from_integer(0.into())),
                 Gaussian::one(),

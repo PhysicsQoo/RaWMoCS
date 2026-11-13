@@ -24,8 +24,18 @@ The SATLIB **Boolean** CNF bytes and original Git blob SHAs are recorded in `doc
 
 The `PreparedCanonicalProblem::estimated_retained_payload_bytes()` method is still a **non-exhaustive** logical footprint, not allocator profiling. A prepared object's private storage must not be mutated or reinterpreted to represent changed external weights; the caller must invoke `prepare` on each changed weighted problem and include that cost in end-to-end benchmarks.
 
-## Independent UNSAT gate remains open
+## Independently checked SATLIB Dubois20 UNSAT proof
 
-The original SATLIB `dubois20.cnf` (60 variables/160 clauses) is currently only **source-labeled UNSAT**, not independently certified by this project. A separate proof-producing SAT run, a pinned checker and a reproducible proof artifact (e.g., verified LRAT) are needed before using it as a certified UNSAT/full-WMC oracle. A naive unconstrained resolution-based elimination can explode exponentially; neither such an attempt nor a filename label substitutes for a checked proof.
+The original source-pinned `dubois20.cnf` (60 Boolean variables, 160 clauses, Git blob `fbad81bb8793f08cd9b12b0028d4d741263edb5b`) admits a compact **direct algebraic certificate**, requiring no unbounded resolution expansion or trust in the dataset's UNSAT label.
 
-Do not include `dubois20` in claimed independently verified WMC performance cohorts until proof, time and memory bounds have been accepted. No default `solve`, `Gaussian::mul`, cache policy, QuPRS or GPMC changes are authorized by this study.
+`benchmarks/rust_core/src/dubois_xor_certificate.rs` parses **the original DIMACS clauses** via `satlib_provenance` and checks every step:
+
+1. Split the 160 clauses into 40 consecutive groups of four. Each group has exactly the same **three distinct Boolean variables**, and the four clauses exclude exactly the four truth assignments of one parity (the XOR of their three Boolean variables). Thus satisfying all four clauses is logically equivalent to the XOR equation of the **opposite parity**.
+2. The checker derives all 40 XOR equations. Each of the **60 variables occurs exactly twice** in these equations, so XORing their left-hand sides produces zero.
+3. The XOR of all right-hand sides is **one**, yielding the contradiction `0 = 1`. Hence no Boolean assignment satisfies this original CNF, and its mathematical weighted model count is zero for any valid weights.
+
+This is a **fully checked CNF-to-XOR refutation**, not an LRAT/DRAT proof file, not a claim that a third-party certificate checker was executed, and not a measured RaWMoCS default-solver success. Unit-test negative controls flip a literal, remove a clause and duplicate a clause; all must invalidate the original proof. The original three DIMACS files remain byte-pinned by the existing SATLIB CI. No SATLIB Dubois20 performance cohort is added here: default-solver resource qualification and independently bounded Full WMC runtime remain separate acceptance steps.
+
+## Scope and release boundary
+
+The exact SAT/WMC witness on `uf20-01` and `uf20-02`, and the Dubois20 algebraic UNSAT proof, validate **specific source files**. The complex rational weights on the SAT cases remain synthetic; there is no general industrial or quantum-WMC performance claim. All tests are part of the disabled-by-default research workspace, with no change to public `Gaussian::mul`, default `solve()`, solver cache policy, QuPRS or GPMC.

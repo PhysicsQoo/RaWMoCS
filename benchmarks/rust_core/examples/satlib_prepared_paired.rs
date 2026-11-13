@@ -71,8 +71,8 @@ fn worker(name: &str, mode: &str, cap: usize, repeats: usize) -> Result<(), Stri
         }
         "prepared" => {
             let setup = Instant::now();
-            let value = PreparedCanonicalProblem::prepare(&problem)
-                .map_err(|e| format!("{e:?}"))?;
+            let value =
+                PreparedCanonicalProblem::prepare(&problem).map_err(|e| format!("{e:?}"))?;
             setup_ns = setup.elapsed().as_nanos();
             retained = value.estimated_retained_payload_bytes();
             for _ in 0..repeats {
@@ -85,10 +85,14 @@ fn worker(name: &str, mode: &str, cap: usize, repeats: usize) -> Result<(), Stri
     let elapsed_ns = start.elapsed().as_nanos();
     let report = last.ok_or("no solves executed")?;
     if report.satisfiable != expected_sat || report.count != expected_count {
-        return Err(format!("exact SAT/WMC disagreement: {name}/{mode}/{cap}/{repeats}"));
+        return Err(format!(
+            "exact SAT/WMC disagreement: {name}/{mode}/{cap}/{repeats}"
+        ));
     }
     if mode != "baseline" && !canonical_fields(&report.count) {
-        return Err(format!("noncanonical output fields: {name}/{mode}/{cap}/{repeats}"));
+        return Err(format!(
+            "noncanonical output fields: {name}/{mode}/{cap}/{repeats}"
+        ));
     }
     // The prepared object is STILL ALIVE while recording live RSS and VmHWM.
     let rss_live = memory_kib("VmRSS:")?;
@@ -132,8 +136,7 @@ fn parent() -> Result<(), String> {
                                 String::from_utf8_lossy(&result.stderr)
                             ));
                         }
-                        let output =
-                            String::from_utf8(result.stdout).map_err(|e| e.to_string())?;
+                        let output = String::from_utf8(result.stdout).map_err(|e| e.to_string())?;
                         let fields: Vec<_> = output.trim().split('\t').collect();
                         if fields.len() != 19
                             || fields[0] != "RESULT"
@@ -151,10 +154,16 @@ fn parent() -> Result<(), String> {
                         let live = fields[9].parse::<u64>().map_err(|e| e.to_string())?;
                         let retained = fields[10].parse::<usize>().map_err(|e| e.to_string())?;
                         let witness = fields[11..].join("\t");
-                        within_round.push((mode, witness, elapsed, setup, peak, before, live, retained));
+                        within_round
+                            .push((mode, witness, elapsed, setup, peak, before, live, retained));
                     }
-                    if within_round.iter().any(|record| record.1 != within_round[0].1) {
-                        return Err(format!("SAT/exact field/stats parity failed {name}/{cap}/{n}"));
+                    if within_round
+                        .iter()
+                        .any(|record| record.1 != within_round[0].1)
+                    {
+                        return Err(format!(
+                            "SAT/exact field/stats parity failed {name}/{cap}/{n}"
+                        ));
                     }
                     for (mode, _, elapsed, setup, peak, before, live, retained) in &within_round {
                         println!(
@@ -191,9 +200,7 @@ fn main() {
         parent()
     } else if args.len() == 6 && args[1] == "--worker" {
         match (args[4].parse::<usize>(), args[5].parse::<usize>()) {
-            (Ok(cap), Ok(n))
-                if [0, 10_000].contains(&cap) && REPEATS.contains(&n) =>
-            {
+            (Ok(cap), Ok(n)) if [0, 10_000].contains(&cap) && REPEATS.contains(&n) => {
                 worker(&args[2], &args[3], cap, n)
             }
             _ => Err("worker requires predeclared cache caps and repetitions".into()),

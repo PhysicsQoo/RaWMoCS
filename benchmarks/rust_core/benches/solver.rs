@@ -215,7 +215,6 @@ fn complex_rational_add_dense_reference() {
     divan::black_box(reference_add(divan::black_box(a), divan::black_box(b)));
 }
 
-
 // QOO-211 diagnostic only: isolate BigRational construction/normalization
 // from the solver. Each identity includes two BigInt clones; therefore the
 // numbers are NOT pure GCD timings or an allocation profile. Match bit sizes
@@ -240,7 +239,10 @@ fn rational_reduction_input(bits: usize, shared_factor: bool) -> &'static Ration
         // Consecutive positive integers are coprime. The shared-factor
         // family represents the SAME exact fraction after normalization.
         let (n, d) = if shared_factor {
-            (numerator.clone() << 64_usize, denominator.clone() << 64_usize)
+            (
+                numerator.clone() << 64_usize,
+                denominator.clone() << 64_usize,
+            )
         } else {
             (numerator.clone(), denominator.clone())
         };

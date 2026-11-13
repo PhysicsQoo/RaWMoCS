@@ -159,16 +159,56 @@ fn noncanonical_signed_weight_updates_are_checked_and_snapshotted() {
 }
 
 #[test]
-fn original_qoo219_synthetic_weights_are_sat_but_zero_negative_controls() {
+fn original_satlib_weights_and_explicit_sat_but_zero_cancellation() {
     for name in ["satlib_uf20_01", "satlib_uf20_02"] {
-        let (sat, count) = independent_full_wmc(name, &fixture(name));
+        // The original QOO-219 research weights are signed/complex and
+        // may produce zero OR nonzero WMC. Never equate numerical zero with
+        // UNSAT, nor assume every original fixture sums to zero.
+        let original = fixture(name);
+        let (sat, count) = independent_full_wmc(name, &original);
         assert!(sat, "Boolean SAT must remain independent of numeric WMC");
-        assert_eq!(count, Gaussian::zero(), "zero-valued WMC is not UNSAT");
-        let (neutral_sat, neutral_count) =
-            independent_full_wmc(name, &neutral_weighted_source(name));
+        let original_report = solve_with_limits(&original, Limits::default()).unwrap();
+        assert_eq!(original_report.count, count);
+
+        let neutral = neutral_weighted_source(name);
+        let (neutral_sat, neutral_count) = independent_full_wmc(name, &neutral);
         assert!(neutral_sat);
-        let number = if name == "satlib_uf20_01" { 8 } else { 29 };
-        assert_eq!(neutral_count, Gaussian::integers(number, 0));
+        let (total, first_true, first_false) = if name == "satlib_uf20_01" {
+            (8, 7, 1)
+        } else {
+            (29, 11, 18)
+        };
+        assert_eq!(neutral_count, Gaussian::integers(total, 0));
+
+        // The complete SAT masks independently establish exactly
+        // first_true satisfying assignments with x1=true and first_false
+        // with x1=false. Choose signed coefficients so their contributions
+        // cancel *without* zero-valued literal weights.
+        assert_eq!(first_true + first_false, total);
+        let cancellation = with_replaced_weight(
+            &neutral,
+            0,
+            Weights::new(
+                Gaussian::integers(first_false, 0),
+                Gaussian::integers(-first_true, 0),
+            ),
+        );
+        let (cancel_sat, cancel_count) = independent_full_wmc(name, &cancellation);
+        assert!(cancel_sat, "numeric cancellation does not imply UNSAT");
+        assert_eq!(cancel_count, Gaussian::zero());
+        let prepared = PreparedCanonicalProblem::prepare(&cancellation).unwrap();
+        for cache_entries in [0_usize, 10_000_usize] {
+            let limits = Limits {
+                cache_entries,
+                ..Limits::default()
+            };
+            let baseline = solve_with_limits(&cancellation, limits).unwrap();
+            let candidate = prepared.solve_with_limits(limits).unwrap();
+            assert!(baseline.satisfiable && candidate.satisfiable);
+            assert_eq!(baseline.count, Gaussian::zero());
+            assert_eq!(candidate.count, Gaussian::zero());
+            canonical_fields(&candidate.count);
+        }
     }
 }
 

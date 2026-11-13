@@ -15,12 +15,13 @@ fn check_pair(a: &BigRational, b: &BigRational) {
     let actual = mul_canonical_cross_cancelled(a, b);
     // Independent schoolbook oracle: no pre-cancellation and independent
     // BigRational::new normalization. Compare canonical FIELDS, not just value.
-    let expected = BigRational::new(
-        a.numer() * b.numer(),
-        a.denom() * b.denom(),
-    );
+    let expected = BigRational::new(a.numer() * b.numer(), a.denom() * b.denom());
     assert_eq!(actual.numer(), expected.numer(), "exact numerator");
-    assert_eq!(actual.denom(), expected.denom(), "positive canonical denominator");
+    assert_eq!(
+        actual.denom(),
+        expected.denom(),
+        "positive canonical denominator"
+    );
     assert_eq!(actual, a * b, "production num-rational agreement");
     assert!(is_canonical_fraction(&actual));
 }
@@ -93,6 +94,7 @@ fn reject_uncanonical_input_precondition() {
     if cfg!(debug_assertions) {
         assert!(std::panic::catch_unwind(|| {
             mul_canonical_cross_cancelled(&bad_reducible, &valid)
-        }).is_err());
+        })
+        .is_err());
     }
 }

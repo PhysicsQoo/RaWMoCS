@@ -41,9 +41,9 @@ jobs:
           set -euo pipefail
           cargo run --quiet --locked --manifest-path benchmarks/rust_core/Cargo.toml --release --features canonical-mul-research --example canonical_admission_paired > qoo216-admission-evidence.tsv
           cat qoo216-admission-evidence.tsv
-          test "$(grep -c '^ADMISSION' qoo216-admission-evidence.tsv)" -eq 13
-          test "$(grep -c '^SUMMARY' qoo216-admission-evidence.tsv)" -eq 26
-          test "$(grep -c '^PAIRED' qoo216-admission-evidence.tsv)" -eq 234
+          test "$(grep -c '^ADMISSION' qoo216-admission-evidence.tsv)" -eq 15
+          test "$(grep -c '^SUMMARY' qoo216-admission-evidence.tsv)" -eq 30
+          test "$(grep -c '^PAIRED' qoo216-admission-evidence.tsv)" -eq 270
           git diff --exit-code -- benchmarks/rust_core/Cargo.lock
       - name: Archive reproducible raw evidence
         if: always()

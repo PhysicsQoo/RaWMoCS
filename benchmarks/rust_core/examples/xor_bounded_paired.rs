@@ -43,7 +43,11 @@ fn expected(name: &str, input: &Problem) -> Result<(bool, Gaussian), String> {
 }
 
 fn solve_bounded(input: &Problem, cap: usize, name: &str) -> Result<&'static str, String> {
-    let nodes = if name == "satlib_dubois20_unverified" { 256 } else { 10_000 };
+    let nodes = if name == "satlib_dubois20_unverified" {
+        256
+    } else {
+        10_000
+    };
     let limits = Limits {
         nodes,
         depth: 128,
@@ -102,7 +106,11 @@ fn run() -> Result<(), String> {
         for cap in CAPS {
             let mut grouped = Vec::new();
             for round in 0..3usize {
-                let order = if round % 2 == 0 { MODES } else { ["xor_guard", "baseline"] };
+                let order = if round % 2 == 0 {
+                    MODES
+                } else {
+                    ["xor_guard", "baseline"]
+                };
                 for mode in order {
                     // These *independent* Linux process guards are a deadline
                     // and virtual address-space limit, NOT a cgroup RSS cap.
@@ -138,8 +146,12 @@ fn run() -> Result<(), String> {
                             return Err("certified Dubois20 XOR guard did not prove UNSAT".into());
                         }
                         if mode == "baseline"
-                            && !["UNKNOWN_NODE_BUDGET", "UNKNOWN_DEPTH_BUDGET", "PROVEN_UNSAT"]
-                                .contains(&verdict.as_str())
+                            && ![
+                                "UNKNOWN_NODE_BUDGET",
+                                "UNKNOWN_DEPTH_BUDGET",
+                                "PROVEN_UNSAT",
+                            ]
+                            .contains(&verdict.as_str())
                         {
                             return Err("baseline UNSAT-or-UNKNOWN contract violated".into());
                         }

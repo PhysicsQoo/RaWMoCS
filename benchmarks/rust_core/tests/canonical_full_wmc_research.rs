@@ -4,7 +4,8 @@
 use num_bigint::BigInt;
 use num_rational::BigRational;
 use rawmocs_core::{
-    solve_with_canonical_mul_research, solve_with_limits, CanonicalMulResearchError, Gaussian,
+    solve_with_canonical_mul_research, solve_with_limits, solve_with_normalized_input_research,
+    CanonicalMulResearchError, Gaussian,
     Limits, Problem, Weights,
 };
 
@@ -84,6 +85,8 @@ fn compare(p: &Problem, both_canonical: bool) {
         let baseline = solve_with_limits(p, limits).expect("bounded baseline solver");
         let candidate = solve_with_canonical_mul_research(p, limits)
             .expect("bounded, valid-denominator candidate");
+        let boundary = solve_with_normalized_input_research(p, limits)
+            .expect("bounded, valid-denominator normalized-input reference");
         assert_eq!(baseline.satisfiable, expected_sat, "baseline SAT cap={cap}");
         assert_eq!(
             candidate.satisfiable, expected_sat,
@@ -99,6 +102,12 @@ fn compare(p: &Problem, both_canonical: bool) {
             expected_count,
             "candidate WMC cap={cap}"
         );
+        assert_eq!(boundary.satisfiable, expected_sat, "normalized-input SAT cap={cap}");
+        assert_eq!(canonical(&boundary.count), expected_count, "normalized-input WMC cap={cap}");
+        assert_canonical_fields(&boundary.count);
+        assert_eq!(boundary.stats.nodes, candidate.stats.nodes);
+        assert_eq!(boundary.stats.cache_hits, candidate.stats.cache_hits);
+        assert_eq!(boundary.stats.decompositions, candidate.stats.decompositions);
         assert_canonical_fields(&candidate.count);
         assert_eq!(canonical(&candidate.count), canonical(&baseline.count));
         // Numeric bit-length stats can differ for externally malformed
@@ -111,6 +120,7 @@ fn compare(p: &Problem, both_canonical: bool) {
         );
         if both_canonical {
             assert_eq!(candidate.stats, baseline.stats, "canonical input stats");
+            assert_eq!(boundary.stats, baseline.stats, "canonical boundary stats");
         }
     }
 }
@@ -192,6 +202,8 @@ fn reject_zero_denominator_before_arithmetic() {
             component: "real"
         }
     ));
+    let boundary_err = solve_with_normalized_input_research(&p, Limits::default()).unwrap_err();
+    assert_eq!(boundary_err, err, "same denominator validation for both research arms");
 }
 
 #[test]

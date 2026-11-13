@@ -36,7 +36,7 @@ fn verify_original_xor_refutation(
     let mut occurrences = vec![0_usize; variables + 1];
     let mut rhs_xor = 0_u8;
 
-    for (group_index, group) in clauses.chunks_exact(4).enumerate() {
+    for (group_index, group) in clauses.as_chunks::<4>().0.iter().enumerate() {
         if group.iter().any(|clause| clause.len() != 3) {
             return Err(format!(
                 "group {group_index}: each clause needs three literals"

@@ -17,10 +17,9 @@ const SAT_UF20_01: [u32; 8] = [
 ];
 
 const SAT_UF20_02: [u32; 29] = [
-    41409, 41425, 57793, 57809, 303296, 303300, 303552, 303553, 303556,
-    303568, 303569, 303572, 305616, 305617, 305620, 319680, 319684,
-    319936, 319937, 319940, 319952, 319953, 319956, 322000, 322001,
-    322004, 322032, 322033, 322036,
+    41409, 41425, 57793, 57809, 303296, 303300, 303552, 303553, 303556, 303568, 303569, 303572,
+    305616, 305617, 305620, 319680, 319684, 319936, 319937, 319940, 319952, 319953, 319956, 322000,
+    322001, 322004, 322032, 322033, 322036,
 ];
 
 fn input(name: &str) -> (&'static str, usize, usize) {
@@ -112,7 +111,11 @@ fn satisfies(clauses: &[Vec<i32>], assignment: u32) -> bool {
     clauses.iter().all(|clause| {
         clause.iter().any(|lit| {
             let selected = assignment & (1_u32 << (lit.unsigned_abs() - 1)) != 0;
-            if *lit > 0 { selected } else { !selected }
+            if *lit > 0 {
+                selected
+            } else {
+                !selected
+            }
         })
     })
 }
@@ -151,7 +154,11 @@ mod tests {
 
     #[test]
     fn original_satlib_source_is_parsed_without_clause_edits() {
-        for name in ["satlib_uf20_01", "satlib_uf20_02", "satlib_dubois20_unverified"] {
+        for name in [
+            "satlib_uf20_01",
+            "satlib_uf20_02",
+            "satlib_dubois20_unverified",
+        ] {
             let p = fixture(name);
             assert_eq!(p.clauses().len(), input(name).2);
             assert_eq!(p.variables(), input(name).1);
@@ -187,7 +194,10 @@ mod tests {
             for cache_entries in [0_usize, 10_000_usize] {
                 let report = solve_with_limits(
                     &p,
-                    Limits { cache_entries, ..Limits::default() },
+                    Limits {
+                        cache_entries,
+                        ..Limits::default()
+                    },
                 )
                 .expect("SATLIB bounded Full WMC solve");
                 assert_eq!(report.satisfiable, sat, "Boolean SAT is separate");

@@ -1,0 +1,57 @@
+name: Canonical exact multiplication research
+
+on:
+  pull_request:
+    paths:
+      - "crates/rawmocs-core/src/lib.rs"
+      - "crates/rawmocs-core/Cargo.toml"
+      - "benchmarks/rust_core/**"
+      - ".github/workflows/canonical-mul-research.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: canonical-mul-research-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  exact-and-native-paired:
+    name: Source-locked Full WMC exactness and native paired Linux evidence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/rust_core -> target
+      - name: Rust formatting (production workspace and research workspace)
+        run: |
+          cargo fmt --all -- --check
+          cargo fmt --manifest-path benchmarks/rust_core/Cargo.toml --all -- --check
+      - name: Rust research Clippy, all targets with explicit feature
+        run: cargo clippy --locked --manifest-path benchmarks/rust_core/Cargo.toml --all-targets --features canonical-mul-research -- -D warnings
+      - name: Independent exact Full WMC oracle and input-boundary negative controls
+        run: cargo test --locked --manifest-path benchmarks/rust_core/Cargo.toml --features canonical-mul-research
+      - name: Paired same-host native Full Complex WMC (process isolated)
+        run: |
+          set -euo pipefail
+          cargo run --quiet --locked --manifest-path benchmarks/rust_core/Cargo.toml --release --features canonical-mul-research --example canonical_mul_paired > canonical-mul-evidence.tsv
+          cat canonical-mul-evidence.tsv
+          test "$(grep -c '^SUMMARY' canonical-mul-evidence.tsv)" -eq 14
+          test "$(grep -c '^PAIRED' canonical-mul-evidence.tsv)" -eq 84
+          git diff --exit-code -- benchmarks/rust_core/Cargo.lock
+      - name: Archive source-run native evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qoo214-canonical-mul-native-${{ github.sha }}
+          path: canonical-mul-evidence.tsv
+          if-no-files-found: warn
+          retention-days: 14

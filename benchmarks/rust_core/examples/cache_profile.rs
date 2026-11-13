@@ -655,9 +655,7 @@ fn cost_worker(vertices: usize, policy: &str, trial: usize) -> Result<(), String
             return Err("tight quota did not reject any cache entries".into());
         }
     }
-    if policy == "cap1"
-        && (stats.cache_entries != 1 || c.full_cache_lookup_calls == 0)
-    {
+    if policy == "cap1" && (stats.cache_entries != 1 || c.full_cache_lookup_calls == 0) {
         return Err("one-entry saturation was not exercised on a later lookup".into());
     }
     let peak_rss = peak_rss_kib()?;

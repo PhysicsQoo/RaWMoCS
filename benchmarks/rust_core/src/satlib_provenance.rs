@@ -90,6 +90,12 @@ fn weight_for_variable(index: usize) -> Weights {
     )
 }
 
+/// Original, byte-pinned Dubois20 Boolean CNF, without any synthetic WMC
+/// weights. The proof is independently checked in dubois_xor_certificate.
+pub fn original_dubois20_clauses() -> (usize, Vec<Vec<i32>>) {
+    parse_original_dimacs("satlib_dubois20_unverified")
+}
+
 pub fn fixture(name: &str) -> Problem {
     let (n, clauses) = parse_original_dimacs(name);
     let weights = (0..n).map(weight_for_variable).collect();

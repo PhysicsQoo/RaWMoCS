@@ -5,6 +5,7 @@ pub mod admission_holdout;
 pub mod branching_holdout;
 pub mod cache_reuse;
 pub mod cross_cancel_research;
+pub mod dubois_xor_certificate;
 pub mod expensive_reuse;
 pub mod irregular_holdout;
 pub mod satlib_provenance;

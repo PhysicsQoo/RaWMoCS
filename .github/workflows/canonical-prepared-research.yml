@@ -40,17 +40,17 @@ jobs:
       - name: Three-arm prepared-once inclusive native WallTime and VmHWM
         run: |
           set -euo pipefail
-          cargo run --quiet --locked --manifest-path benchmarks/rust_core/Cargo.toml --release --features canonical-mul-research --example canonical_prepared_paired > qoo218-prepared.tsv
-          cat qoo218-prepared.tsv
-          test "$(grep -c '^SUMMARY' qoo218-prepared.tsv)" -eq 104
-          test "$(grep -c '^PAIRED' qoo218-prepared.tsv)" -eq 936
-          test "$(grep -c '^SETUP' qoo218-prepared.tsv)" -eq 936
+          cargo run --quiet --locked --manifest-path benchmarks/rust_core/Cargo.toml --release --features canonical-mul-research --example canonical_prepared_paired > qoo215-prepared-irregular.tsv
+          cat qoo215-prepared-irregular.tsv
+          test "$(grep -c '^SUMMARY' qoo215-prepared-irregular.tsv)" -eq 180
+          test "$(grep -c '^PAIRED' qoo215-prepared-irregular.tsv)" -eq 1620
+          test "$(grep -c '^SETUP' qoo215-prepared-irregular.tsv)" -eq 1620
           git diff --exit-code -- benchmarks/rust_core/Cargo.lock
       - name: Archive native raw evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: qoo218-prepared-${{ github.sha }}
-          path: qoo218-prepared.tsv
+          name: qoo215-prepared-irregular-${{ github.sha }}
+          path: qoo215-prepared-irregular.tsv
           if-no-files-found: warn
           retention-days: 14

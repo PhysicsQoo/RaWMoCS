@@ -1,0 +1,68 @@
+name: Source-locked native XOR admission three-arm research
+
+on:
+  pull_request:
+    paths:
+      - "benchmarks/rust_core/src/xor_research.rs"
+      - "benchmarks/rust_core/examples/xor_native_admission_paired.rs"
+      - "benchmarks/rust_core/Cargo.toml"
+      - ".github/workflows/xor-native-admission-research.yml"
+      - "docs/qoo-224-native-xor-admission.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: xor-native-admission-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guarded-three-arm:
+    name: Original SATLIB, mixed XOR, 144 isolated native records
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/rust_core -> target
+      - name: Check original external SATLIB bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object benchmarks/rust_core/fixtures/satlib/uf20-01.cnf)" = bb5bdb347aa61f6c9f3079cf85f89d66595693e5
+          test "$(git hash-object benchmarks/rust_core/fixtures/satlib/uf20-02.cnf)" = f924caaef0d868bf62b1658e83e030ad8daee865
+          test "$(git hash-object benchmarks/rust_core/fixtures/satlib/dubois20.cnf)" = fbad81bb8793f08cd9b12b0028d4d741263edb5b
+      - name: Stable Rust formatting and isolated feature-enabled checks
+        run: |
+          cargo fmt --all -- --check
+          cargo fmt --all --manifest-path benchmarks/rust_core/Cargo.toml -- --check
+          cargo clippy --locked --manifest-path benchmarks/rust_core/Cargo.toml --all-targets --features branching-research -- -D warnings
+          cargo test --locked --manifest-path benchmarks/rust_core/Cargo.toml --features branching-research xor_research
+      - name: Build native exact comparison
+        run: cargo build --locked --release --manifest-path benchmarks/rust_core/Cargo.toml --features branching-research --example xor_native_admission_paired
+      - name: Run deadline and RLIMIT_AS guarded native workers
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v timeout
+          command -v prlimit
+          timeout -k 3s 240s cargo run --quiet --locked --release --manifest-path benchmarks/rust_core/Cargo.toml --features branching-research --example xor_native_admission_paired > xor-native-admission-evidence.tsv
+          cat xor-native-admission-evidence.tsv
+          test "$(grep -c '^PAIRED' xor-native-admission-evidence.tsv)" -eq 144
+          test "$(grep -c '^SUMMARY' xor-native-admission-evidence.tsv)" -eq 16
+          git diff --exit-code -- benchmarks/rust_core/Cargo.lock
+      - name: Preserve unmodified per-process evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qoo224-native-xor-${{ github.sha }}
+          path: xor-native-admission-evidence.tsv
+          if-no-files-found: warn
+          retention-days: 30

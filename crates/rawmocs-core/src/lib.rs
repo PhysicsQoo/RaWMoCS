@@ -521,13 +521,24 @@ pub enum CanonicalMulResearchError {
     Solve(SolveError),
 }
 
-/// The timer around this call MUST include its input normalization cost.
-/// The returned count remains a canonical exact Gaussian for valid weights.
+/// Research-only baseline with exactly the SAME external cloning,
+/// denominator validation and canonicalization as the opt-in arithmetic arm.
+/// Uses established, normalizing multiplication; never alters defaults.
 #[cfg(feature = "canonical-mul-research")]
-pub fn solve_with_canonical_mul_research(
+pub fn solve_with_normalized_input_research(
     problem: &Problem,
     limits: Limits,
 ) -> Result<Report, CanonicalMulResearchError> {
+    let canonical = normalize_research_problem(problem)?;
+    solve_with_limits(&canonical, limits).map_err(CanonicalMulResearchError::Solve)
+}
+
+/// Shared entry cost across both research arms; proof of field equality is
+/// tested independently. Invalid denominator fails before any solve begins.
+#[cfg(feature = "canonical-mul-research")]
+fn normalize_research_problem(
+    problem: &Problem,
+) -> Result<Problem, CanonicalMulResearchError> {
     let mut canonical = problem.clone();
     for (idx, weights) in canonical.weights.iter_mut().enumerate() {
         for (positive, component, r) in [
@@ -546,6 +557,17 @@ pub fn solve_with_canonical_mul_research(
             *r = BigRational::new(r.numer().clone(), r.denom().clone());
         }
     }
+    Ok(canonical)
+}
+
+/// The timer around this call MUST include its input normalization cost.
+/// The returned count remains a canonical exact Gaussian for valid weights.
+#[cfg(feature = "canonical-mul-research")]
+pub fn solve_with_canonical_mul_research(
+    problem: &Problem,
+    limits: Limits,
+) -> Result<Report, CanonicalMulResearchError> {
+    let canonical = normalize_research_problem(problem)?;
     solve_with_solver_policy(
         &canonical,
         limits,

@@ -74,3 +74,35 @@ repository to CodSpeed and setting `GPMC_CODSPEED_ENABLED=true`.
 Until both actual CodSpeed **measurement runs** complete successfully,
 `CI smoke success` is only a correctness/compilation observation.
 Do not claim either solver is faster without published paired measurements.
+
+## Verified final-head Rust CodSpeed integration
+
+- [CodSpeed run 6af74c57fb3193ed60289436](https://app.codspeed.io/PhysicsQoo/RaWMoCS/runs/6af74c57fb3193ed60289436),
+  source `2e3098f1baa6f13e7dc3e6ce67b8dd5aaf342a92`,
+  is **completed, 68 benchmarks**: original 62 plus six new
+  source-pinned QuPRS direct-CNF identities. All are Simulation, not
+  native WallTime; new values range 83.3–160 µs **inside Rust**, not
+  comparisons with GPMC.
+- RaWMoCS CodSpeed's first attempt erroneously uploaded 62 legacy and
+  six new benchmarks via different workflows on the same commit,
+  which CodSpeed flagged as unsupported. The **single**
+  `.github/workflows/codspeed.yml` now instruments and uploads both
+  targets with `cargo codspeed build -m simulation --locked
+  --features quprs-gpmc-paired-research --bench solver --bench
+  quprs_direct_cnf`, then one `cargo codspeed run --bench solver
+  --bench quprs_direct_cnf`. The extra standalone Rust workflow runs
+  **correctness-only**; no second CodSpeed run.
+- [Same original-source Rust CI](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/43474647343)
+  proves source input SHA and independent Full Complex WMC oracle. The
+  final merged PR decision must still confirm current-head CI.
+- GPMC's C++ in-process repeated counting adapter **is NOT admitted**:
+  four of six test-defined cases produced denormal garbage in measured
+  iterations. The GPMC research branch therefore uses the native
+  fresh-process CLI `codspeed.yml` exec benchmark as its better
+  actual integration comparison path. Until GPMC repo itself is connected
+  to CodSpeed and the correct native executor is measured, **no
+  cross-solver CPU speedup statement can be made**.
+- The CLI `exec` profile and Rust `Divan` profile do **not** have an
+  identical timed boundary. A fair native-CLI-vs-native-CLI E2E
+  WallTime/VmHWM bridge, under equivalent precision/verdict constraints,
+  remains necessary (as does QOO-226 actual QuPRS encoder output).

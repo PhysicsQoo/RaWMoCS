@@ -7,8 +7,8 @@ use rawmocs_benchmarks::cache_reuse::{independent_exact_wmc, repeated_residuals}
 use rawmocs_benchmarks::expensive_reuse::{guarded_cycle_residual, independent_cycle_wmc};
 use rawmocs_benchmarks::scalability::{expected, fixture as medium, Family};
 use rawmocs_core::{
-    solve_with_canonical_mul_research, solve_with_limits, PreparedCanonicalProblem, Gaussian,
-    Limits, Problem, Weights,
+    solve_with_canonical_mul_research, solve_with_limits, Gaussian, Limits,
+    PreparedCanonicalProblem, Problem, Weights,
 };
 use std::process::Command;
 use std::time::Instant;
@@ -130,7 +130,8 @@ fn fixture(name: &str) -> Result<(Problem, bool, Gaussian), String> {
                 32,
                 vec![vec![1], vec![-1]],
                 medium(Family::EqualityChain, 32).weights().to_vec(),
-            ).expect("unit-contradictory 32-variable CNF"),
+            )
+            .expect("unit-contradictory 32-variable CNF"),
             false,
             Gaussian::zero(),
         ),
@@ -170,11 +171,15 @@ fn worker(name: &str, mode: &str, cap: usize, repeats: usize) -> Result<(), Stri
     match mode {
         "prepared" => {
             let setup_start = Instant::now();
-            let prepared = PreparedCanonicalProblem::prepare(&problem)
-                .map_err(|e| format!("{e:?}"))?;
+            let prepared =
+                PreparedCanonicalProblem::prepare(&problem).map_err(|e| format!("{e:?}"))?;
             setup_ns = setup_start.elapsed().as_nanos();
             for _ in 0..repeats {
-                last = Some(prepared.solve_with_limits(limits).map_err(|e| format!("{e}"))?);
+                last = Some(
+                    prepared
+                        .solve_with_limits(limits)
+                        .map_err(|e| format!("{e}"))?,
+                );
             }
         }
         "baseline" => {
@@ -184,8 +189,10 @@ fn worker(name: &str, mode: &str, cap: usize, repeats: usize) -> Result<(), Stri
         }
         "gated" => {
             for _ in 0..repeats {
-                last = Some(solve_with_canonical_mul_research(&problem, limits)
-                    .map_err(|e| format!("{e:?}"))?);
+                last = Some(
+                    solve_with_canonical_mul_research(&problem, limits)
+                        .map_err(|e| format!("{e:?}"))?,
+                );
             }
         }
         _ => return Err("invalid fixed mode".into()),
@@ -193,7 +200,9 @@ fn worker(name: &str, mode: &str, cap: usize, repeats: usize) -> Result<(), Stri
     let nanos = start.elapsed().as_nanos();
     let report = last.ok_or("zero repeats")?;
     if report.satisfiable != expected_sat || canonical(&report.count) != expected_count {
-        return Err(format!("independent exact witness mismatch {name}/{mode}/{cap}/{repeats}"));
+        return Err(format!(
+            "independent exact witness mismatch {name}/{mode}/{cap}/{repeats}"
+        ));
     }
     let rss = vmhwm_kib()?;
     println!(

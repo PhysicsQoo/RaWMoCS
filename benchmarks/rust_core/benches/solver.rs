@@ -215,6 +215,62 @@ fn complex_rational_add_dense_reference() {
     divan::black_box(reference_add(divan::black_box(a), divan::black_box(b)));
 }
 
+
+// QOO-211 diagnostic only: isolate BigRational construction/normalization
+// from the solver. Each identity includes two BigInt clones; therefore the
+// numbers are NOT pure GCD timings or an allocation profile. Match bit sizes
+// within a CodSpeed run, not across different runner hardware.
+type RationalInput = (num_bigint::BigInt, num_bigint::BigInt);
+static REDUCE_COPRIME_128: OnceLock<RationalInput> = OnceLock::new();
+static REDUCE_COPRIME_512: OnceLock<RationalInput> = OnceLock::new();
+static REDUCE_SHARED_128: OnceLock<RationalInput> = OnceLock::new();
+static REDUCE_SHARED_512: OnceLock<RationalInput> = OnceLock::new();
+
+fn rational_reduction_input(bits: usize, shared_factor: bool) -> &'static RationalInput {
+    let slot = match (bits, shared_factor) {
+        (128, false) => &REDUCE_COPRIME_128,
+        (512, false) => &REDUCE_COPRIME_512,
+        (128, true) => &REDUCE_SHARED_128,
+        (512, true) => &REDUCE_SHARED_512,
+        _ => panic!("only fixed rational-reduction benchmark fixtures"),
+    };
+    slot.get_or_init(|| {
+        let numerator = (num_bigint::BigInt::from(1_u8) << bits) + 1_u8;
+        let denominator = &numerator + 1_u8;
+        // Consecutive positive integers are coprime. The shared-factor
+        // family represents the SAME exact fraction after normalization.
+        let (n, d) = if shared_factor {
+            (numerator.clone() << 64_usize, denominator.clone() << 64_usize)
+        } else {
+            (numerator.clone(), denominator.clone())
+        };
+        assert_eq!(
+            BigRational::new(n.clone(), d.clone()),
+            BigRational::new(numerator, denominator),
+            "fixture must normalize to the same exact rational",
+        );
+        (n, d)
+    })
+}
+
+#[divan::bench(args = [128_usize, 512_usize])]
+fn rational_normalize_coprime(bits: usize) {
+    let (n, d) = rational_reduction_input(bits, false);
+    divan::black_box(BigRational::new(
+        divan::black_box(n).clone(),
+        divan::black_box(d).clone(),
+    ));
+}
+
+#[divan::bench(args = [128_usize, 512_usize])]
+fn rational_normalize_shared_power_of_two(bits: usize) {
+    let (n, d) = rational_reduction_input(bits, true);
+    divan::black_box(BigRational::new(
+        divan::black_box(n).clone(),
+        divan::black_box(d).clone(),
+    ));
+}
+
 // These measured operations intentionally exclude fixture and identity creation.
 #[divan::bench]
 fn complex_rational_multiply_by_one() {

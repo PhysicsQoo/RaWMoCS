@@ -281,3 +281,38 @@ trials per policy; they cannot establish a robust real-world speedup,
 projected WMC benefit, QuPRS end-to-end improvement or a change to the
 default cache policy. Additional controlled hardware and representative
 CNF families remain necessary.
+
+
+## Research-only CNF-normalization and saturated-cache attribution (QOO-206)
+
+The source-locked `--cost-suite` cohort retains its 27 exact Full Complex
+WMC rows and pre-existing columns. Under `cache-cost-profile` only,
+six **append-only** diagnostics distinguish work performed before cache
+transactions from useful lookups when the entry limit has already been reached:
+
+| New column | Definition |
+| --- | --- |
+| `root_normalize_calls` / `root_normalize_ns` | One root CNF canonicalization per successful solver invocation |
+| `recursive_normalize_calls` / `recursive_normalize_ns` | Canonical residual normalization on every visited non-root DPLL node, including Cache OFF |
+| `full_cache_lookup_calls` | Lookups performed while the cache already contains `cache_entries` entries at its configured cap |
+| `full_cache_lookup_hits` | Subset of those full-cache lookups that successfully reused a retained outcome |
+
+On a completed run, the combined normalization call count equals
+`nodes`; this attribution covers root/recursive normalization before
+key cloning and HashMap lookup. A full cache **still permits lookups**,
+even though new insertions are disabled. When Cache OFF, cache transaction
+counters remain zero, but normalization counters still track the solver.
+
+These timings are collected with per-node `Instant` probes and change
+the instrumented workload. They are **not exclusive all-process CPU shares**,
+do not isolate HashMap hashing from equality checks, and cannot be subtracted
+from an uninstrumented production WallTime. The new columns count
+operations and self-timed stages, **not allocated bytes, RSS, or
+a calibrated future reuse probability**. Continue to use the existing
+independent Cache ON/OFF process-isolated suites to measure native
+end-to-end WallTime and VmHWM.
+
+This extension preserves the original solver's `Key` identity,
+weights/scopes, SAT and exact Gaussian WMC semantics, Cache admission
+rules and default build. Positive attribution alone is insufficient
+justification to change production Cache policy.

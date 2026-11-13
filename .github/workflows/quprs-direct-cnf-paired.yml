@@ -47,7 +47,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: PhysicsQoo/GPMC
-          ref: 8dbf7f45d3e808f8c27c4c5f5e69eeb271cd0adb
+          ref: e3faa9c022bf93bc8ccebef7376e69d96367dd8e
           path: .upstream/gpmc
           persist-credentials: false
       - name: Confirm shared generator and original QuPRS source, generate exact same CNF bytes
@@ -99,7 +99,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: PhysicsQoo/GPMC
-          ref: 8dbf7f45d3e808f8c27c4c5f5e69eeb271cd0adb
+          ref: e3faa9c022bf93bc8ccebef7376e69d96367dd8e
           path: .upstream/gpmc
           submodules: recursive
           persist-credentials: false

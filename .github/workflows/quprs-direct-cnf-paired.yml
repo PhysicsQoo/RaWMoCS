@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
-      GPMC_QU_PRS_CNF_DIR: ${{ runner.temp }}/quprs-cnf
+      GPMC_QU_PRS_CNF_DIR: ${{ github.workspace }}/.research/quprs-cnf
     steps:
       - uses: actions/checkout@v4
         with:
@@ -73,7 +73,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: identical-quprs-test-defined-cnf-rust-side
-          path: ${{ runner.temp }}/quprs-cnf/
+          path: ${{ github.workspace }}/.research/quprs-cnf/
           if-no-files-found: error
           retention-days: 14
 
@@ -90,7 +90,7 @@ jobs:
       contents: read
       id-token: write
     env:
-      GPMC_QU_PRS_CNF_DIR: ${{ runner.temp }}/quprs-cnf
+      GPMC_QU_PRS_CNF_DIR: ${{ github.workspace }}/.research/quprs-cnf
     steps:
       - uses: actions/checkout@v4
         with:

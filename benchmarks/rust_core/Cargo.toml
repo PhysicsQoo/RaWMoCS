@@ -13,6 +13,8 @@ cache-admission-research = ["rawmocs-core/cache-admission-research"]
 branching-research = ["rawmocs-core/branching-research", "cache-admission-research"]
 # Opt-in only; do not alter default CodSpeed or release builds.
 canonical-mul-research = ["rawmocs-core/canonical-mul-research"]
+# Only paired original QuPRS test-defined CNF; exclude from standard CodSpeed IDs.
+quprs-gpmc-paired-research = []
 
 [workspace]
 
@@ -62,3 +64,8 @@ required-features = ["branching-research"]
 name = "xor_native_admission_paired"
 # QOO-224 benchmark-only native study; not a public solver feature.
 required-features = ["branching-research"]
+
+[[bench]]
+name = "quprs_direct_cnf"
+harness = false
+required-features = ["quprs-gpmc-paired-research"]

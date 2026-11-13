@@ -38,7 +38,9 @@ fn verify_original_xor_refutation(
 
     for (group_index, group) in clauses.chunks_exact(4).enumerate() {
         if group.iter().any(|clause| clause.len() != 3) {
-            return Err(format!("group {group_index}: each clause needs three literals"));
+            return Err(format!(
+                "group {group_index}: each clause needs three literals"
+            ));
         }
         let mut triple: Vec<usize> = group[0]
             .iter()
@@ -46,11 +48,10 @@ fn verify_original_xor_refutation(
             .collect();
         triple.sort_unstable();
         triple.dedup();
-        if triple.len() != 3
-            || triple[0] == 0
-            || triple[2] > variables
-        {
-            return Err(format!("group {group_index}: invalid three-variable triple"));
+        if triple.len() != 3 || triple[0] == 0 || triple[2] > variables {
+            return Err(format!(
+                "group {group_index}: invalid three-variable triple"
+            ));
         }
 
         let mut forbidden_masks = BTreeSet::new();
@@ -87,7 +88,9 @@ fn verify_original_xor_refutation(
                 forbidden_parity = Some(parity);
             }
             if !forbidden_masks.insert(forbidden) {
-                return Err(format!("group {group_index}: repeated forbidden assignment"));
+                return Err(format!(
+                    "group {group_index}: repeated forbidden assignment"
+                ));
             }
         }
         if forbidden_masks.len() != 4 {

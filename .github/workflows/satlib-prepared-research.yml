@@ -1,0 +1,62 @@
+name: Source-pinned SATLIB Full WMC prepared-input research
+
+on:
+  pull_request:
+    paths:
+      - "crates/rawmocs-core/src/lib.rs"
+      - "benchmarks/rust_core/**"
+      - ".github/workflows/satlib-prepared-research.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: satlib-prepared-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  satlib-native:
+    name: Byte-pinned SATLIB exact oracle and native WallTime/lifetime
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/rust_core -> target
+      - name: Verify SATLIB original raw bytes (external mirror Git blobs)
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object benchmarks/rust_core/fixtures/satlib/uf20-01.cnf)" = bb5bdb347aa61f6c9f3079cf85f89d66595693e5
+          test "$(git hash-object benchmarks/rust_core/fixtures/satlib/uf20-02.cnf)" = f924caaef0d868bf62b1658e83e030ad8daee865
+          test "$(git hash-object benchmarks/rust_core/fixtures/satlib/dubois20.cnf)" = fbad81bb8793f08cd9b12b0028d4d741263edb5b
+      - name: Formatting and research-only Clippy
+        run: |
+          cargo fmt --all -- --check
+          cargo fmt --manifest-path benchmarks/rust_core/Cargo.toml --all -- --check
+          cargo clippy --locked --manifest-path benchmarks/rust_core/Cargo.toml --all-targets --features canonical-mul-research -- -D warnings
+      - name: Independent DIMACS truth-table, exact Full Complex WMC and baseline tests
+        run: cargo test --locked --manifest-path benchmarks/rust_core/Cargo.toml --features canonical-mul-research
+      - name: SATLIB same-runner source-pinned three-arm native performance
+        run: |
+          set -euo pipefail
+          cargo run --quiet --locked --manifest-path benchmarks/rust_core/Cargo.toml --release --features canonical-mul-research --example satlib_prepared_paired > satlib-prepared-evidence.tsv
+          cat satlib-prepared-evidence.tsv
+          test "$(grep -c '^PAIRED' satlib-prepared-evidence.tsv)" -eq 144
+          test "$(grep -c '^SUMMARY' satlib-prepared-evidence.tsv)" -eq 16
+          git diff --exit-code -- benchmarks/rust_core/Cargo.lock
+      - name: Archive raw native evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qoo219-satlib-prepared-${{ github.sha }}
+          path: satlib-prepared-evidence.tsv
+          if-no-files-found: warn
+          retention-days: 14

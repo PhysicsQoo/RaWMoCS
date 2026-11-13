@@ -166,6 +166,19 @@ impl std::error::Error for SolveError {}
 #[cfg(feature = "cache-cost-profile")]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CacheCostProfile {
+    /// Root CNF canonicalization before any key construction.
+    /// Instrumentation perturbs wall time; not part of Key build or lookup.
+    pub root_normalize_calls: u64,
+    pub root_normalize_ns: u128,
+    /// Recursive residual canonicalization before cache lookup.
+    pub recursive_normalize_calls: u64,
+    pub recursive_normalize_ns: u128,
+    /// Number of lookups when the retained entry count is already at cap.
+    /// Lookups still remain active after the insertion budget is exhausted.
+    pub full_cache_lookup_calls: u64,
+    /// Hits that occurred when the cache was already full, a subset of
+    /// full_cache_lookup_calls and hit_clone_calls.
+    pub full_cache_lookup_hits: u64,
     /// Copies the already-normalized residual and scope to construct a key.
     /// Excludes CNF normalization itself.
     pub key_build_calls: u64,
@@ -562,11 +575,21 @@ impl Engine<'_> {
         // call receives either an assigned canonical residual or a component
         // partition of one. Both preserve each clause's sorted, tautology-free
         // form; only the outer clause ordering and duplicates can change.
+        #[cfg(feature = "cache-cost-profile")]
+        let normalize_start = Instant::now();
         let mut residual = if depth == 0 {
             normalize(clauses)
         } else {
             normalize_child(clauses)
         };
+        #[cfg(feature = "cache-cost-profile")]
+        if depth == 0 {
+            self.stats.cache_cost.root_normalize_calls += 1;
+            self.stats.cache_cost.root_normalize_ns += normalize_start.elapsed().as_nanos();
+        } else {
+            self.stats.cache_cost.recursive_normalize_calls += 1;
+            self.stats.cache_cost.recursive_normalize_ns += normalize_start.elapsed().as_nanos();
+        }
         let key = if self.cache_budget == 0 {
             None
         } else {
@@ -582,12 +605,20 @@ impl Engine<'_> {
                 self.stats.cache_cost.key_build_ns += key_start.elapsed().as_nanos();
             }
             #[cfg(feature = "cache-cost-profile")]
+            let cache_full_before_lookup = self.cache.len() == self.cache_budget;
+            #[cfg(feature = "cache-cost-profile")]
             let lookup_start = Instant::now();
             let cached = self.cache.get(&key);
             #[cfg(feature = "cache-cost-profile")]
             {
                 self.stats.cache_cost.lookup_calls += 1;
                 self.stats.cache_cost.lookup_ns += lookup_start.elapsed().as_nanos();
+                if cache_full_before_lookup {
+                    self.stats.cache_cost.full_cache_lookup_calls += 1;
+                    if cached.is_some() {
+                        self.stats.cache_cost.full_cache_lookup_hits += 1;
+                    }
+                }
             }
             if let Some(cached) = cached {
                 self.stats.cache_hits += 1;

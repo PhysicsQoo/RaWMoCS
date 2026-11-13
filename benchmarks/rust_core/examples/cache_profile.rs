@@ -598,8 +598,12 @@ fn cost_worker(vertices: usize, policy: &str, trial: usize) -> Result<(), String
     let mut limits = Limits::default();
     if policy == "off" {
         limits.cache_entries = 0;
+    } else if policy == "cap1" {
+        // Independent research-only saturation cohort. Leave legacy/on/tight
+        // cohorts and their 27-row evidence unchanged.
+        limits.cache_entries = 1;
     } else if policy != "on" && policy != "tight" {
-        return Err("cost policy must be off, on or tight".into());
+        return Err("cost policy must be off, on, tight or cap1".into());
     }
     let input = guarded_cycle_residual(vertices);
     let expected = independent_cycle_wmc(vertices);
@@ -651,9 +655,12 @@ fn cost_worker(vertices: usize, policy: &str, trial: usize) -> Result<(), String
             return Err("tight quota did not reject any cache entries".into());
         }
     }
+    if policy == "cap1" && (stats.cache_entries != 1 || c.full_cache_lookup_calls == 0) {
+        return Err("one-entry saturation was not exercised on a later lookup".into());
+    }
     let peak_rss = peak_rss_kib()?;
     println!(
-        "{vertices},{},{trial},{policy},{elapsed_ns},{peak_rss},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+        "{vertices},{},{trial},{policy},{elapsed_ns},{peak_rss},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
         vertices + 1,
         stats.nodes,
         stats.cache_hits,
@@ -669,6 +676,12 @@ fn cost_worker(vertices: usize, policy: &str, trial: usize) -> Result<(), String
         c.admission_ns,
         c.insert_calls,
         c.insert_ns,
+        c.root_normalize_calls,
+        c.root_normalize_ns,
+        c.recursive_normalize_calls,
+        c.recursive_normalize_ns,
+        c.full_cache_lookup_calls,
+        c.full_cache_lookup_hits,
     );
     Ok(())
 }
@@ -699,6 +712,24 @@ fn launch_cost(
 }
 
 #[cfg(feature = "cache-cost-profile")]
+fn cost_capacity_suite() -> Result<(), String> {
+    if !cfg!(target_os = "linux") {
+        return Err("cache capacity attribution requires Linux VmHWM".into());
+    }
+    let exe = std::env::current_exe().map_err(|e| format!("executable path: {e}"))?;
+    guard_negative_controls(&exe)?;
+    println!(
+        "vertices,variables,trial,policy,solve_wall_ns,process_peak_rss_kib,nodes,cache_hits,cache_entries,cache_payload_rejections,key_build_calls,key_build_ns,lookup_calls,lookup_ns,hit_clone_calls,hit_clone_ns,admission_calls,admission_ns,insert_calls,insert_ns,root_normalize_calls,root_normalize_ns,recursive_normalize_calls,recursive_normalize_ns,full_cache_lookup_calls,full_cache_lookup_hits"
+    );
+    for vertices in [6, 10, 14] {
+        for trial in 0..3 {
+            launch_cost(&exe, vertices, trial, "cap1")?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "cache-cost-profile")]
 fn cost_suite() -> Result<(), String> {
     if !cfg!(target_os = "linux") {
         return Err("cache transaction profiler requires Linux VmHWM".into());
@@ -706,7 +737,7 @@ fn cost_suite() -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| format!("executable path: {e}"))?;
     guard_negative_controls(&exe)?;
     println!(
-        "vertices,variables,trial,policy,solve_wall_ns,process_peak_rss_kib,nodes,cache_hits,cache_entries,cache_payload_rejections,key_build_calls,key_build_ns,lookup_calls,lookup_ns,hit_clone_calls,hit_clone_ns,admission_calls,admission_ns,insert_calls,insert_ns"
+        "vertices,variables,trial,policy,solve_wall_ns,process_peak_rss_kib,nodes,cache_hits,cache_entries,cache_payload_rejections,key_build_calls,key_build_ns,lookup_calls,lookup_ns,hit_clone_calls,hit_clone_ns,admission_calls,admission_ns,insert_calls,insert_ns,root_normalize_calls,root_normalize_ns,recursive_normalize_calls,recursive_normalize_ns,full_cache_lookup_calls,full_cache_lookup_hits"
     );
     const POLICIES: [&str; 3] = ["off", "on", "tight"];
     for vertices in [6, 10, 14] {
@@ -1083,6 +1114,8 @@ fn run() -> Result<(), String> {
         [_, flag] if flag == "--cycle-suite" => cycle_suite(),
         #[cfg(feature = "cache-cost-profile")]
         [_, flag] if flag == "--cost-suite" => cost_suite(),
+        #[cfg(feature = "cache-cost-profile")]
+        [_, flag] if flag == "--cost-capacity-suite" => cost_capacity_suite(),
         #[cfg(feature = "cache-admission-research")]
         [_, flag] if flag == "--admission-suite" => admission_suite(),
         #[cfg(feature = "cache-admission-research")]
@@ -1146,7 +1179,7 @@ fn run() -> Result<(), String> {
                 .map_err(|e| format!("cache cap: {e}"))?;
             worker(name, variables, cache_cap)
         }
-        _ => Err("usage: cache_profile [--branch-suite (requires branching-research)|--branch-worker family variables off|legacy frequency|short|minfill trial|--work-suite (requires cache-admission-research)|--work-worker family variables off|legacy|proxy1|proxy4 trial|--admission-suite (requires cache-admission-research)|--admission-worker family vertices off|legacy|min4|min12 trial|--cost-suite (requires cache-cost-profile feature)|--cost-worker vertices off|on|tight trial|--cycle-suite|--cycle-worker vertices off|on trial|--repeat-suite|--repeat-worker gadgets off|legacy|tight|roomy trial|--quota-suite|--quota-worker chain|pairs|cache n legacy|tight|roomy] [--worker chain|pairs|cache n cache_cap] [--stress-memory|--stress-sleep]".into()),
+        _ => Err("usage: cache_profile [--branch-suite (requires branching-research)|--branch-worker family variables off|legacy frequency|short|minfill trial|--work-suite (requires cache-admission-research)|--work-worker family variables off|legacy|proxy1|proxy4 trial|--admission-suite (requires cache-admission-research)|--admission-worker family vertices off|legacy|min4|min12 trial|--cost-suite|--cost-capacity-suite (requires cache-cost-profile feature)|--cost-worker vertices off|on|tight|cap1 trial|--cycle-suite|--cycle-worker vertices off|on trial|--repeat-suite|--repeat-worker gadgets off|legacy|tight|roomy trial|--quota-suite|--quota-worker chain|pairs|cache n legacy|tight|roomy] [--worker chain|pairs|cache n cache_cap] [--stress-memory|--stress-sleep]".into()),
     }
 }
 

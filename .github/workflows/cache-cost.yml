@@ -76,11 +76,20 @@ jobs:
               value = lambda name: int(row[name])
               assert value("variables") == value("vertices") + 1
               assert value("solve_wall_ns") > 0 and value("process_peak_rss_kib") > 0
+              assert value("root_normalize_calls") == 1
+              assert value("recursive_normalize_calls") == value("nodes") - 1
+              assert value("root_normalize_ns") > 0
+              if value("recursive_normalize_calls"):
+                  assert value("recursive_normalize_ns") > 0
+              assert value("full_cache_lookup_calls") <= value("lookup_calls")
+              assert value("full_cache_lookup_hits") <= value("full_cache_lookup_calls")
+              assert value("full_cache_lookup_hits") <= value("cache_hits")
               if row["policy"] == "off":
                   assert all(value(name) == 0 for name in (
                       "cache_hits", "cache_entries", "cache_payload_rejections",
                       "key_build_calls", "lookup_calls", "hit_clone_calls",
-                      "admission_calls", "insert_calls"))
+                      "admission_calls", "insert_calls",
+                      "full_cache_lookup_calls", "full_cache_lookup_hits"))
               else:
                   assert value("key_build_calls") == value("nodes")
                   assert value("lookup_calls") == value("key_build_calls")
@@ -94,12 +103,42 @@ jobs:
                       assert value("cache_payload_rejections") > 0
           print("CACHE_COST_27_EXACT_ORACLE_AND_TRANSACTION_ROWS=PASS")
           PY
+      - name: Separate 9-worker one-entry saturation positive-control cohort
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked --release --manifest-path benchmarks/rust_core/Cargo.toml --features cache-cost-profile --example cache_profile -- --cost-capacity-suite 2> "$RUNNER_TEMP/cache-capacity-guards.log" | tee "$RUNNER_TEMP/cache-capacity-profile.csv"
+          grep -F "GUARD_MEMORY_DENIED=PASS STATUS=RESOURCE_FAILURE" "$RUNNER_TEMP/cache-capacity-guards.log"
+          grep -F "GUARD_TIMEOUT=PASS STATUS=TIMEOUT" "$RUNNER_TEMP/cache-capacity-guards.log"
+          python3 - "$RUNNER_TEMP/cache-capacity-profile.csv" <<'PY'
+          import csv
+          import sys
+          with open(sys.argv[1], newline="", encoding="utf-8") as source:
+              rows = list(csv.DictReader(source))
+          expected = {(str(n), str(t), "cap1") for n in (6, 10, 14) for t in range(3)}
+          actual = {(r["vertices"], r["trial"], r["policy"]) for r in rows}
+          assert len(rows) == 9 and actual == expected, "missing/duplicate capacity workers"
+          for row in rows:
+              value = lambda field: int(row[field])
+              assert value("solve_wall_ns") > 0 and value("process_peak_rss_kib") > 0
+              assert value("cache_entries") == value("insert_calls") == 1
+              assert value("cache_payload_rejections") == 0
+              assert value("root_normalize_calls") == 1
+              assert value("recursive_normalize_calls") == value("nodes") - 1
+              assert value("lookup_calls") == value("key_build_calls") == value("nodes")
+              assert 0 < value("full_cache_lookup_calls") < value("lookup_calls")
+              assert value("full_cache_lookup_hits") <= value("full_cache_lookup_calls")
+              assert value("full_cache_lookup_hits") <= value("cache_hits")
+          print("CACHE_CAPACITY_9_EXACT_ORACLE_AND_FULL_LOOKUP_ROWS=PASS")
+          PY
       - name: Upload isolated cache-cost research evidence
         uses: actions/upload-artifact@v4
         with:
           name: cache-cost-profile
           path: |
             ${{ runner.temp }}/cache-cost-profile.csv
+            ${{ runner.temp }}/cache-capacity-profile.csv
+            ${{ runner.temp }}/cache-capacity-guards.log
             ${{ runner.temp }}/cache-cost-guards.log
           if-no-files-found: error
           retention-days: 30

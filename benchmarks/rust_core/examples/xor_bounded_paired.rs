@@ -186,7 +186,12 @@ fn run() -> Result<(), String> {
                 .2
                 .as_str();
             if grouped.iter().any(|entry| {
-                entry.2 != if entry.0 == "baseline" { b_verdict } else { g_verdict }
+                entry.2
+                    != if entry.0 == "baseline" {
+                        b_verdict
+                    } else {
+                        g_verdict
+                    }
             }) {
                 return Err("inconsistent repeated verdict for the same mode".into());
             }

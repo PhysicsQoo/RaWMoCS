@@ -69,8 +69,16 @@ fn compare(
         "declared weights must change exact WMC"
     );
     if name == "satlib_uf20_01" {
-        assert_eq!(old_exact, Gaussian::zero(), "forced zero-weight SAT literal");
-        assert_ne!(new_exact, Gaussian::zero(), "changed weight removes forced zero");
+        assert_eq!(
+            old_exact,
+            Gaussian::zero(),
+            "forced zero-weight SAT literal"
+        );
+        assert_ne!(
+            new_exact,
+            Gaussian::zero(),
+            "changed weight removes forced zero"
+        );
     }
 
     for cap in [0_usize, 10_000_usize] {

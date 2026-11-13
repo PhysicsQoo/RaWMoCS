@@ -86,11 +86,13 @@ fn compare(p: &Problem, both_canonical: bool) {
             .expect("bounded, valid-denominator candidate");
         let boundary = solve_with_normalized_input_research(p, limits)
             .expect("bounded, valid-denominator normalized-input reference");
-        let prepared_input = PreparedCanonicalProblem::prepare(p)
-            .expect("bounded canonical input preparation");
-        let prepared = prepared_input.solve_with_limits(limits)
+        let prepared_input =
+            PreparedCanonicalProblem::prepare(p).expect("bounded canonical input preparation");
+        let prepared = prepared_input
+            .solve_with_limits(limits)
             .expect("bounded prepared Full WMC solver");
-        let repeat = prepared_input.solve_with_limits(limits)
+        let repeat = prepared_input
+            .solve_with_limits(limits)
             .expect("repeat solve without preparation");
         assert_eq!(baseline.satisfiable, expected_sat, "baseline SAT cap={cap}");
         assert_eq!(
@@ -118,14 +120,23 @@ fn compare(p: &Problem, both_canonical: bool) {
         );
         assert_canonical_fields(&boundary.count);
         assert_eq!(prepared.satisfiable, expected_sat, "prepared SAT cap={cap}");
-        assert_eq!(prepared.count, expected_count, "prepared exact WMC cap={cap}");
+        assert_eq!(
+            prepared.count, expected_count,
+            "prepared exact WMC cap={cap}"
+        );
         assert_canonical_fields(&prepared.count);
         assert_eq!(repeat.satisfiable, prepared.satisfiable);
         assert_eq!(repeat.count, prepared.count);
-        assert_eq!(repeat.stats, prepared.stats, "separate identical fresh searches");
+        assert_eq!(
+            repeat.stats, prepared.stats,
+            "separate identical fresh searches"
+        );
         assert_eq!(prepared.stats.nodes, candidate.stats.nodes);
         assert_eq!(prepared.stats.cache_hits, candidate.stats.cache_hits);
-        assert_eq!(prepared.stats.decompositions, candidate.stats.decompositions);
+        assert_eq!(
+            prepared.stats.decompositions,
+            candidate.stats.decompositions
+        );
         assert_eq!(boundary.stats.nodes, candidate.stats.nodes);
         assert_eq!(boundary.stats.cache_hits, candidate.stats.cache_hits);
         assert_eq!(
@@ -232,7 +243,10 @@ fn reject_zero_denominator_before_arithmetic() {
         "same denominator validation for both research arms"
     );
     let prepared_err = PreparedCanonicalProblem::prepare(&p).unwrap_err();
-    assert_eq!(prepared_err, err, "prepared input rejects zero denominator identically");
+    assert_eq!(
+        prepared_err, err,
+        "prepared input rejects zero denominator identically"
+    );
 }
 
 #[test]

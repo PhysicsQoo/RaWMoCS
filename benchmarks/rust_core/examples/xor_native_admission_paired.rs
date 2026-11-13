@@ -101,7 +101,11 @@ fn synthetic_oracle(input: &Problem) -> (bool, Gaussian) {
         let holds = input.clauses().iter().all(|clause| {
             clause.iter().any(|&literal| {
                 let truth = (mask & (1 << (literal.unsigned_abs() as usize - 1))) != 0;
-                if literal > 0 { truth } else { !truth }
+                if literal > 0 {
+                    truth
+                } else {
+                    !truth
+                }
             })
         });
         if holds {
@@ -146,7 +150,10 @@ fn expected(name: &str, input: &Problem) -> Result<(bool, Gaussian), String> {
 
 fn peak_kib() -> Result<u64, String> {
     let text = std::fs::read_to_string("/proc/self/status").map_err(|e| e.to_string())?;
-    let line = text.lines().find(|x| x.starts_with("VmHWM:")).ok_or("no VmHWM")?;
+    let line = text
+        .lines()
+        .find(|x| x.starts_with("VmHWM:"))
+        .ok_or("no VmHWM")?;
     let fields: Vec<_> = line.split_whitespace().collect();
     if fields.len() != 3 || fields[2] != "kB" {
         return Err("invalid VmHWM schema".into());
@@ -161,7 +168,11 @@ fn native_worker(name: &str, cache: usize, mode: &str) -> Result<(), String> {
     let input = problem(name);
     let (sat, exact) = expected(name, &input)?;
     let limits = Limits {
-        nodes: if name.starts_with("dubois") { 256 } else { 10_000 },
+        nodes: if name.starts_with("dubois") {
+            256
+        } else {
+            10_000
+        },
         depth: 128,
         cache_entries: cache,
     };
@@ -186,7 +197,11 @@ fn native_worker(name: &str, cache: usize, mode: &str) -> Result<(), String> {
                 if report.satisfiable != sat || report.count != exact {
                     return Err(format!("independent exact oracle mismatch {name}/{mode}"));
                 }
-                if sat { "PROVEN_SAT_EXACT_WMC" } else { "PROVEN_UNSAT" }
+                if sat {
+                    "PROVEN_SAT_EXACT_WMC"
+                } else {
+                    "PROVEN_UNSAT"
+                }
             }
             Err(SolveError::NodeBudgetExceeded) => "UNKNOWN_NODE_BUDGET",
             Err(SolveError::DepthBudgetExceeded) => "UNKNOWN_DEPTH_BUDGET",
@@ -197,7 +212,9 @@ fn native_worker(name: &str, cache: usize, mode: &str) -> Result<(), String> {
         return Err(format!("SAT oracle not completed: {name}/{mode}/{verdict}"));
     }
     if !sat && name.starts_with("xor_") && verdict != "PROVEN_UNSAT" {
-        return Err(format!("small UNSAT oracle not completed: {name}/{mode}/{verdict}"));
+        return Err(format!(
+            "small UNSAT oracle not completed: {name}/{mode}/{verdict}"
+        ));
     }
     if proof_rows == 0 && !fallback {
         return Err("unobserved nonempty proof".into());
@@ -232,8 +249,11 @@ fn run() -> Result<(), String> {
                     }
                     let out = String::from_utf8(output.stdout).map_err(|e| e.to_string())?;
                     let f: Vec<_> = out.trim().split('\t').collect();
-                    if f.len() != 9 || f[0] != "RESULT" || f[1] != name
-                        || f[2] != cap.to_string() || f[3] != mode
+                    if f.len() != 9
+                        || f[0] != "RESULT"
+                        || f[1] != name
+                        || f[2] != cap.to_string()
+                        || f[3] != mode
                     {
                         return Err(format!("invalid worker line: {out}"));
                     }
@@ -242,7 +262,9 @@ fn run() -> Result<(), String> {
                     let peak = f[6].parse::<u64>().map_err(|e| e.to_string())?;
                     let proof = f[7].parse::<usize>().map_err(|e| e.to_string())?;
                     let fallback = f[8].parse::<bool>().map_err(|e| e.to_string())?;
-                    if nanos == 0 || peak == 0 || (proof > 0) == fallback
+                    if nanos == 0
+                        || peak == 0
+                        || (proof > 0) == fallback
                         || (mode == "baseline" && proof != 0)
                     {
                         return Err("inconsistent timing/memory/proof provenance".into());
@@ -251,10 +273,16 @@ fn run() -> Result<(), String> {
                     if independent.0 && verdict != "PROVEN_SAT_EXACT_WMC" {
                         return Err("SAT misclassified".into());
                     }
-                    if name == "dubois_orig" && mode != "baseline" && (verdict != "PROVEN_UNSAT" || proof == 0) {
+                    if name == "dubois_orig"
+                        && mode != "baseline"
+                        && (verdict != "PROVEN_UNSAT" || proof == 0)
+                    {
                         return Err("original Dubois proof missing".into());
                     }
-                    if name == "dubois_dup" && mode == "relaxed" && (verdict != "PROVEN_UNSAT" || proof == 0) {
+                    if name == "dubois_dup"
+                        && mode == "relaxed"
+                        && (verdict != "PROVEN_UNSAT" || proof == 0)
+                    {
                         return Err("duplicate Dubois relaxed proof missing".into());
                     }
                     println!(

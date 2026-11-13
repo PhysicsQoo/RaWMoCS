@@ -1,9 +1,9 @@
 //! Experimental exact, full complex weighted model counting over Q[i].
 //! No projected-WMC or quantum-equivalence claims are made by this crate.
 
-use num_rational::BigRational;
 #[cfg(feature = "canonical-mul-research")]
 use num_integer::Integer;
+use num_rational::BigRational;
 use num_traits::{One, Zero};
 use std::collections::{BTreeMap, HashMap};
 #[cfg(feature = "cache-cost-profile")]
@@ -501,7 +501,6 @@ pub fn solve_with_budget(p: &Problem, budget: u64) -> Result<Report, SolveError>
 pub fn solve(p: &Problem) -> Result<Report, SolveError> {
     solve_with_limits(p, Limits::default())
 }
-
 
 /// Research-only Full WMC entrypoint. Clone and normalize all externally
 /// supplied weights exactly once, before enabling the canonical-only

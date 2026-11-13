@@ -613,7 +613,8 @@ impl PreparedCanonicalProblem {
                     .saturating_mul(std::mem::size_of::<Weights>()),
             );
         for clause in &p.clauses {
-            size = size.saturating_add(clause.capacity().saturating_mul(std::mem::size_of::<i32>()));
+            size =
+                size.saturating_add(clause.capacity().saturating_mul(std::mem::size_of::<i32>()));
         }
         for weights in &p.weights {
             for r in [

@@ -52,3 +52,8 @@ required-features = ["canonical-mul-research"]
 [[example]]
 name = "dubois_bounded_paired"
 required-features = ["canonical-mul-research"]
+
+[[example]]
+name = "xor_bounded_paired"
+# Opt-in benchmark research; never included in default production solver builds.
+required-features = ["branching-research"]

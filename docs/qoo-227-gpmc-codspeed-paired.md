@@ -106,3 +106,44 @@ Do not claim either solver is faster without published paired measurements.
   identical timed boundary. A fair native-CLI-vs-native-CLI E2E
   WallTime/VmHWM bridge, under equivalent precision/verdict constraints,
   remains necessary (as does QOO-226 actual QuPRS encoder output).
+
+## Same-runner native CLI validation and accepted GPMC source
+
+The source-locked experimental GPMC [native CLI PR #23](https://github.com/PhysicsQoo/GPMC/pull/23)
+was **squash merged** to `PhysicsQoo/GPMC master@e3faa9c022bf93bc8ccebef7376e69d96367dd8e`
+after its six original QuPRS direct-CNF cases passed 18 fresh-process
+GPMC CLI exact source/MPFR30 SAT/count checks. The Rust research
+workflows now pin **this merged GPMC main SHA**, not the earlier Draft
+in-process Google Benchmark commit. The original shared generator
+Git blob remains `0a6859c583f34725e59983380cedf1030d7da15b`.
+
+A new [source-pinned same-Linux-runner native CLI paired workflow](../.github/workflows/quprs-direct-cnf-paired.yml)
+checks out that GPMC source, builds its unchanged C++ GPMC
+`gpmc-bin` plus independent Rust `quprs_native_cli`, reuses the **same
+raw six CNF bytes**, and runs each with an identical GNU
+`/usr/bin/time` per-child wrapper. Each case has three order-rotated
+paired trials, i.e. **36 fresh native subprocess samples**. The
+independent expected SAT and complex counts are required on every
+sample (GPMC MPFR30 observation versus exact Rust rational printed
+weight count); process elapsed and peak RSS are recorded and all
+sample records archived.
+
+[First passing paired source SHA a5bc8722 / CI #43476624430](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/43476624430)
+produced 36/36 valid samples. Observed median WallTime in **milliseconds**
+(the single GH-hosted runner, three samples per solver per case):
+
+| Test-defined 2-variable CNF | GPMC native CLI | RaWMoCS native CLI |
+| --- | ---: | ---: |
+| unconstrained | 2.000 | 1.271 |
+| forced-sat | 1.849 | 1.214 |
+| contradictory-unsat | 1.712 | 1.199 |
+| disjunction | 5.782 | 1.295 |
+| xor | 1.848 | 1.255 |
+| complex-cancellation | 1.805 | 1.190 |
+
+These are **not** QuPRS circuit miter encoder instances. Timings
+include executable startup and file I/O, often dominating two-variable
+search. They are a micro-cohort process-integrity and pipeline
+smoke, **NOT evidence of solver dominance in actual quantum circuits**
+or a production default-change gate. GPMC's in-process repeated-count
+research is still invalid and separate [Draft PR #22](https://github.com/PhysicsQoo/GPMC/pull/22).

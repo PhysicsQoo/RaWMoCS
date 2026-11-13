@@ -1,0 +1,69 @@
+name: Sound XOR-from-CNF refutation research
+
+on:
+  pull_request:
+    paths:
+      - "benchmarks/rust_core/src/xor_research.rs"
+      - "benchmarks/rust_core/src/lib.rs"
+      - "benchmarks/rust_core/examples/xor_bounded_paired.rs"
+      - "benchmarks/rust_core/Cargo.toml"
+      - ".github/workflows/xor-refutation-research.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: xor-refutation-research-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-pinned-xor:
+    name: Source-proven XOR UNSAT, no-false-UNSAT, bounded native DPLL
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/rust_core -> target
+      - name: Verify unchanged external SATLIB Boolean original
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object benchmarks/rust_core/fixtures/satlib/uf20-01.cnf)" = bb5bdb347aa61f6c9f3079cf85f89d66595693e5
+          test "$(git hash-object benchmarks/rust_core/fixtures/satlib/uf20-02.cnf)" = f924caaef0d868bf62b1658e83e030ad8daee865
+          test "$(git hash-object benchmarks/rust_core/fixtures/satlib/dubois20.cnf)" = fbad81bb8793f08cd9b12b0028d4d741263edb5b
+      - name: Research-only stable Rust formatting and Clippy
+        run: |
+          cargo fmt --all -- --check
+          cargo fmt --manifest-path benchmarks/rust_core/Cargo.toml --all -- --check
+          cargo clippy --locked --manifest-path benchmarks/rust_core/Cargo.toml --all-targets --features branching-research -- -D warnings
+      - name: Source-admitted GF2 proof, reorder and negative exact controls
+        run: |
+          cargo test --locked --manifest-path benchmarks/rust_core/Cargo.toml --features branching-research xor_research
+      - name: Source-pinned isolated native guarded-vs-baseline evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v prlimit
+          command -v timeout
+          cargo build --locked --manifest-path benchmarks/rust_core/Cargo.toml --release --features branching-research --example xor_bounded_paired
+          timeout -k 3s 180s cargo run --quiet --locked --manifest-path benchmarks/rust_core/Cargo.toml --release --features branching-research --example xor_bounded_paired > xor-refutation-evidence.tsv
+          cat xor-refutation-evidence.tsv
+          test "$(grep -c '^PAIRED' xor-refutation-evidence.tsv)" -eq 36
+          test "$(grep -c '^SUMMARY' xor-refutation-evidence.tsv)" -eq 6
+          git diff --exit-code -- benchmarks/rust_core/Cargo.lock
+      - name: Archive unmodified native WallTime and VmHWM evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qoo222-source-locked-xor-${{ github.sha }}
+          path: xor-refutation-evidence.tsv
+          if-no-files-found: warn
+          retention-days: 14

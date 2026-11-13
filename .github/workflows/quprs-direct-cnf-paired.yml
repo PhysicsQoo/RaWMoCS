@@ -1,0 +1,127 @@
+name: QuPRS direct-CNF paired Rust research
+
+on:
+  pull_request:
+    paths:
+      - benchmarks/rust_core/benches/quprs_direct_cnf.rs
+      - benchmarks/rust_core/Cargo.toml
+      - .github/workflows/quprs-direct-cnf-paired.yml
+      - docs/qoo-227-gpmc-codspeed-paired.md
+  push:
+    branches: [main]
+    paths:
+      - benchmarks/rust_core/benches/quprs_direct_cnf.rs
+      - benchmarks/rust_core/Cargo.toml
+      - .github/workflows/quprs-direct-cnf-paired.yml
+      - docs/qoo-227-gpmc-codspeed-paired.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rawmocs-quprs-paired-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  paired-rust-smoke:
+    name: Pinned identical source CNFs / exact Rust WMC benchmarks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      GPMC_QU_PRS_CNF_DIR: ${{ runner.temp }}/quprs-cnf
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Original QuPRS direct-CNF source
+        uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/QuPRS
+          ref: 0b28736651b3740ed3b201edd2efdef3da541e0d
+          path: .upstream/quprs
+          persist-credentials: false
+      - name: Same pinned GPMC/QuPRS fixture generator as C++ benchmarking
+        uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/GPMC
+          ref: 8dbf7f45d3e808f8c27c4c5f5e69eeb271cd0adb
+          path: .upstream/gpmc
+          persist-credentials: false
+      - name: Confirm shared generator and original QuPRS source, generate exact same CNF bytes
+        run: |
+          test "$(git -C .upstream/gpmc hash-object benchmarks/quprs/prepare_direct_cnf.py)" = "0a6859c583f34725e59983380cedf1030d7da15b"
+          python3 .upstream/gpmc/benchmarks/quprs/prepare_direct_cnf.py \
+            --quprs .upstream/quprs --output "$GPMC_QU_PRS_CNF_DIR"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/rust_core -> target
+      - name: Rustfmt and strict Clippy on optional paired bench
+        run: |
+          cargo fmt --manifest-path benchmarks/rust_core/Cargo.toml --all -- --check
+          cargo clippy --locked --manifest-path benchmarks/rust_core/Cargo.toml \
+            --all-targets --features quprs-gpmc-paired-research -- -D warnings
+      - name: Source-locked exact printed-CNF tests
+        run: cargo test --locked --manifest-path benchmarks/rust_core/Cargo.toml quprs_printed_cnf
+      - name: Run all six Rust paired benchmarks, fail closed on wrong Full WMC
+        run: |
+          cargo bench --locked --manifest-path benchmarks/rust_core/Cargo.toml \
+            --features quprs-gpmc-paired-research --bench quprs_direct_cnf
+      - uses: actions/upload-artifact@v4
+        with:
+          name: identical-quprs-test-defined-cnf-rust-side
+          path: ${{ runner.temp }}/quprs-cnf/
+          if-no-files-found: error
+          retention-days: 14
+
+  codspeed-simulation:
+    name: Opt-in Rust CodSpeed full in-process parse and solve
+    needs: paired-rust-smoke
+    if: >-
+      vars.RAWMOCS_CODSPEED_ENABLED == 'true' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GPMC_QU_PRS_CNF_DIR: ${{ runner.temp }}/quprs-cnf
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/QuPRS
+          ref: 0b28736651b3740ed3b201edd2efdef3da541e0d
+          path: .upstream/quprs
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/GPMC
+          ref: 8dbf7f45d3e808f8c27c4c5f5e69eeb271cd0adb
+          path: .upstream/gpmc
+          persist-credentials: false
+      - name: Produce source-locked shared QuPRS CNF bytes
+        run: |
+          test "$(git -C .upstream/gpmc hash-object benchmarks/quprs/prepare_direct_cnf.py)" = "0a6859c583f34725e59983380cedf1030d7da15b"
+          python3 .upstream/gpmc/benchmarks/quprs/prepare_direct_cnf.py \
+            --quprs .upstream/quprs --output "$GPMC_QU_PRS_CNF_DIR"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/rust_core -> target
+      - run: cargo install cargo-codspeed --version 6.0.0 --locked
+      - name: Build instrumented paired benchmark (isolated opt-in identities)
+        working-directory: benchmarks/rust_core
+        run: cargo codspeed build -m simulation --features quprs-gpmc-paired-research --bench quprs_direct_cnf
+      - name: Upload measured Rust CPU simulation
+        uses: CodSpeedHQ/action@v5
+        with:
+          mode: simulation
+          run: cd benchmarks/rust_core && cargo codspeed run --bench quprs_direct_cnf

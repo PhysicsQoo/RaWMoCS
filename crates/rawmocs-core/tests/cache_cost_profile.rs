@@ -50,12 +50,27 @@ fn instrumented_cache_transactions_are_consistent_and_semantics_unchanged() {
     assert_eq!(off.count, on.count);
     assert_eq!(off.count, tight.count);
 
+    // Root/child normalization occurs for every visited node regardless
+    // of whether a cache is active. This is a separate cost from key cloning.
+    for report in [&off, &on, &tight] {
+        let c = &report.stats.cache_cost;
+        assert_eq!(c.root_normalize_calls, 1);
+        assert_eq!(c.recursive_normalize_calls, report.stats.nodes - 1);
+        assert!(c.root_normalize_ns > 0);
+        assert!(c.recursive_normalize_ns > 0);
+        assert!(c.full_cache_lookup_calls <= c.lookup_calls);
+        assert!(c.full_cache_lookup_hits <= c.full_cache_lookup_calls);
+        assert!(c.full_cache_lookup_hits <= c.hit_clone_calls);
+    }
+
     let off_cost = &off.stats.cache_cost;
     assert_eq!(off.stats.cache_hits, 0);
     assert_eq!(off_cost.key_build_calls, 0);
     assert_eq!(off_cost.lookup_calls, 0);
     assert_eq!(off_cost.insert_calls, 0);
     assert_eq!(off_cost.admission_calls, 0);
+    assert_eq!(off_cost.full_cache_lookup_calls, 0);
+    assert_eq!(off_cost.full_cache_lookup_hits, 0);
 
     let on_cost = &on.stats.cache_cost;
     assert!(on.stats.cache_hits > 0);

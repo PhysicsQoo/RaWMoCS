@@ -32,7 +32,7 @@ pub fn printed_decimal(token: &str) -> Result<BigRational, String> {
     if token.is_empty() || token.len() > MAX_DECIMAL_BYTES {
         return Err("empty or oversized decimal token".into());
     }
-    let exponent_position = token.find(|c: char| c == 'e' || c == 'E');
+    let exponent_position = token.find(['e', 'E']);
     let (mantissa, exponent) = if let Some(index) = exponent_position {
         let exponent = token[index + 1..]
             .parse::<i32>()
@@ -198,7 +198,7 @@ pub fn parse_printed_dimacs(raw: &str, dialect: Dialect) -> Result<Problem, Stri
         return Err("missing weighted marker or incorrect clause count".into());
     }
     let mut weights = Vec::with_capacity(n);
-    for entries in literal_weights.chunks_exact_mut(2) {
+    for entries in literal_weights.as_chunks_mut::<2>().0 {
         let positive = entries[0].take().unwrap_or_else(Gaussian::one);
         let negative = entries[1].take().unwrap_or_else(Gaussian::one);
         weights.push(Weights::new(positive, negative));
@@ -311,35 +311,71 @@ mod tests {
         }
     }
 
+    struct GoldenCase {
+        clauses: &'static [&'static str],
+        cancellation: bool,
+        sat: bool,
+        real: (i64, i64),
+        imag: (i64, i64),
+    }
+
     #[test]
     fn quprs_source_defined_six_golden_cases_in_both_dialects() {
-        let cases: [(&str, &[&str], bool, bool, (i64, i64), (i64, i64)); 6] = [
-            ("unconstrained", &[], false, true, (3, 4), (0, 1)),
-            (
-                "forced-sat",
-                &["1 0", "-2 0"],
-                false,
-                true,
-                (19, 16),
-                (-3, 16),
-            ),
-            (
-                "contradictory-unsat",
-                &["1 0", "-1 0"],
-                false,
-                false,
-                (0, 1),
-                (0, 1),
-            ),
-            ("disjunction", &["1 2 0"], false, true, (-5, 16), (9, 16)),
-            ("xor", &["1 2 0", "-1 -2 0"], false, true, (1, 2), (5, 16)),
-            ("complex-cancellation", &[], true, true, (0, 1), (0, 1)),
+        let cases = [
+            GoldenCase {
+                clauses: &[],
+                cancellation: false,
+                sat: true,
+                real: (3, 4),
+                imag: (0, 1),
+            },
+            GoldenCase {
+                clauses: &["1 0", "-2 0"],
+                cancellation: false,
+                sat: true,
+                real: (19, 16),
+                imag: (-3, 16),
+            },
+            GoldenCase {
+                clauses: &["1 0", "-1 0"],
+                cancellation: false,
+                sat: false,
+                real: (0, 1),
+                imag: (0, 1),
+            },
+            GoldenCase {
+                clauses: &["1 2 0"],
+                cancellation: false,
+                sat: true,
+                real: (-5, 16),
+                imag: (9, 16),
+            },
+            GoldenCase {
+                clauses: &["1 2 0", "-1 -2 0"],
+                cancellation: false,
+                sat: true,
+                real: (1, 2),
+                imag: (5, 16),
+            },
+            GoldenCase {
+                clauses: &[],
+                cancellation: true,
+                sat: true,
+                real: (0, 1),
+                imag: (0, 1),
+            },
         ];
         for dialect in [Dialect::Gpmc, Dialect::Ganak] {
-            for (name, clauses, cancellation, sat, (rn, rd), (in_, id)) in cases {
-                let source = golden_text(dialect, clauses, cancellation);
-                assert_exact(&source, dialect, sat, rat(rn, rd), rat(in_, id));
-                if name == "complex-cancellation" {
+            for case in &cases {
+                let source = golden_text(dialect, case.clauses, case.cancellation);
+                assert_exact(
+                    &source,
+                    dialect,
+                    case.sat,
+                    rat(case.real.0, case.real.1),
+                    rat(case.imag.0, case.imag.1),
+                );
+                if case.cancellation {
                     let parsed = parse_printed_dimacs(&source, dialect).unwrap();
                     let (oracle_sat, oracle_wmc) = independent_exact_full_wmc(&parsed).unwrap();
                     assert!(oracle_sat, "SAT may have a zero exact complex count");

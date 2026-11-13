@@ -99,6 +99,9 @@ fn main() {
     for bits in [128_usize, 512_usize] {
         let _ = rational_reduction_input(bits, true);
     }
+    // Verify that the experimental raw-constructor is canonical only for
+    // mathematically coprime inputs before any benchmarks are measured.
+    verify_new_raw_preconditions();
     divan::main();
 }
 
@@ -273,6 +276,41 @@ fn rational_reduction_input(bits: usize, shared_factor: bool) -> &'static Ration
 // The 192/576 variants approximate the bit width of corresponding
 // shared-factor 128/512 inputs after the 64-bit factor. Their values are
 // different, so this is a bit-width control, NOT a pure GCD experiment.
+// Only consecutive positive integers are used for the raw-constructor
+// candidate: gcd(n,n+1)=1, denominator>0. Both canonical fields are
+// checked against BigRational::new outside the measured spans.
+fn verify_new_raw_preconditions() {
+    for bits in [128_usize, 192_usize, 512_usize, 576_usize] {
+        let (numer, denom) = rational_reduction_input(bits, false);
+        assert!(*denom > num_bigint::BigInt::from(0_u8));
+        let candidate = BigRational::new_raw(numer.clone(), denom.clone());
+        let canonical = BigRational::new(numer.clone(), denom.clone());
+        assert_eq!(candidate.numer(), canonical.numer(), "numerator {bits}");
+        assert_eq!(candidate.denom(), canonical.denom(), "denominator {bits}");
+    }
+    // Negative control: the shared-factor input is mathematically equal to
+    // its reduced fraction, but new_raw must NOT be treated as canonical.
+    for bits in [128_usize, 512_usize] {
+        let (numer, denom) = rational_reduction_input(bits, true);
+        let raw = BigRational::new_raw(numer.clone(), denom.clone());
+        let canonical = BigRational::new(numer.clone(), denom.clone());
+        assert_ne!(raw.numer(), canonical.numer(), "raw is not reduced {bits}");
+        assert_ne!(raw.denom(), canonical.denom(), "raw is not reduced {bits}");
+        assert_eq!(raw.reduced(), canonical, "reduction restores value {bits}");
+    }
+}
+
+// Research-only upper-bound proxy for the cost of normalization when the
+// caller can PROVE canonical numerator/denominator. No solver call uses raw.
+#[divan::bench(args = [128_usize, 192_usize, 512_usize, 576_usize])]
+fn rational_known_coprime_new_raw(bits: usize) {
+    let (numer, denom) = rational_reduction_input(bits, false);
+    divan::black_box(BigRational::new_raw(
+        divan::black_box(numer).clone(),
+        divan::black_box(denom).clone(),
+    ));
+}
+
 #[divan::bench(args = [128_usize, 192_usize, 512_usize, 576_usize])]
 fn rational_operand_clone_coprime(bits: usize) {
     let (n, d) = rational_reduction_input(bits, false);

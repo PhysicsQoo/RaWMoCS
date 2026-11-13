@@ -99,8 +99,11 @@ fn fixture(name: &str) -> Result<(Problem, bool, Gaussian), String> {
             Problem::new(
                 20,
                 (1_i32..=20).map(|lit| vec![lit]).collect(),
-                (0..20).map(|_| Weights::new(Gaussian::one(), Gaussian::zero())).collect(),
-            ).expect("forced all-true SAT formula"),
+                (0..20)
+                    .map(|_| Weights::new(Gaussian::one(), Gaussian::zero()))
+                    .collect(),
+            )
+            .expect("forced all-true SAT formula"),
             true,
             Gaussian::one(),
         ),
@@ -109,7 +112,8 @@ fn fixture(name: &str) -> Result<(Problem, bool, Gaussian), String> {
                 20,
                 vec![vec![1], vec![-1]],
                 medium(Family::EqualityChain, 20).weights().to_vec(),
-            ).expect("unit-contradictory CNF with expensive weights"),
+            )
+            .expect("unit-contradictory CNF with expensive weights"),
             false,
             Gaussian::zero(),
         ),
@@ -150,8 +154,9 @@ fn worker(name: &str, mode: &str, cap: usize, repeats: usize) -> Result<(), Stri
             "baseline" => solve_with_limits(&problem, limits).map_err(|e| format!("{e}"))?,
             "boundary" => solve_with_normalized_input_research(&problem, limits)
                 .map_err(|e| format!("{e:?}"))?,
-            "gated" => solve_with_canonical_mul_research(&problem, limits)
-                .map_err(|e| format!("{e:?}"))?,
+            "gated" => {
+                solve_with_canonical_mul_research(&problem, limits).map_err(|e| format!("{e:?}"))?
+            }
             _ => return Err("invalid fixed mode".into()),
         };
         last = Some(report);
@@ -159,7 +164,9 @@ fn worker(name: &str, mode: &str, cap: usize, repeats: usize) -> Result<(), Stri
     let nanos = start.elapsed().as_nanos();
     let report = last.ok_or("zero repeats")?;
     if report.satisfiable != expected_sat || canonical(&report.count) != expected_count {
-        return Err(format!("independent exact witness mismatch {name}/{mode}/{cap}/{repeats}"));
+        return Err(format!(
+            "independent exact witness mismatch {name}/{mode}/{cap}/{repeats}"
+        ));
     }
     let rss = vmhwm_kib()?;
     println!(
@@ -189,8 +196,11 @@ fn run_parent() -> Result<(), String> {
                     for mode in order {
                         let output = Command::new(&executable)
                             .args([
-                                "--worker", name, mode, &cap.to_string(),
-                                &repeats.to_string()
+                                "--worker",
+                                name,
+                                mode,
+                                &cap.to_string(),
+                                &repeats.to_string(),
                             ])
                             .output()
                             .map_err(|e| format!("worker launch failed: {e}"))?;
@@ -216,14 +226,20 @@ fn run_parent() -> Result<(), String> {
                         observed.push((mode.to_owned(), duration, vmhwm, values[7..].join("\t")));
                     }
                     if observed.iter().any(|row| row.3 != observed[0].3) {
-                        return Err(format!("SAT/count/stats parity failed {name}/{cap}/{repeats}"));
+                        return Err(format!(
+                            "SAT/count/stats parity failed {name}/{cap}/{repeats}"
+                        ));
                     }
                     for (mode, duration, rss, _) in &observed {
                         println!(
                             "PAIRED\t{name}\t{cap}\t{repeats}\t{round}\t{mode}\t{duration}\t{rss}"
                         );
                     }
-                    trials.extend(observed.into_iter().map(|(mode, duration, _, _)| (mode, duration)));
+                    trials.extend(
+                        observed
+                            .into_iter()
+                            .map(|(mode, duration, _, _)| (mode, duration)),
+                    );
                 }
                 let median = |mode: &str| {
                     let mut values: Vec<_> = trials

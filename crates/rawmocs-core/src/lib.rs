@@ -536,9 +536,7 @@ pub fn solve_with_normalized_input_research(
 /// Shared entry cost across both research arms; proof of field equality is
 /// tested independently. Invalid denominator fails before any solve begins.
 #[cfg(feature = "canonical-mul-research")]
-fn normalize_research_problem(
-    problem: &Problem,
-) -> Result<Problem, CanonicalMulResearchError> {
+fn normalize_research_problem(problem: &Problem) -> Result<Problem, CanonicalMulResearchError> {
     let mut canonical = problem.clone();
     for (idx, weights) in canonical.weights.iter_mut().enumerate() {
         for (positive, component, r) in [

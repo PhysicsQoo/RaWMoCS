@@ -89,7 +89,7 @@ jobs:
         run: cargo metadata --locked --format-version 1 --manifest-path benchmarks/rust_core/Cargo.toml --no-deps > /dev/null
       - name: Build instrumented solver microbenchmarks
         working-directory: benchmarks/rust_core
-        run: cargo codspeed build -m simulation --features quprs-gpmc-paired-research --benches
+        run: cargo codspeed build -m simulation --locked --features quprs-gpmc-paired-research --bench solver --bench quprs_direct_cnf
       - name: Confirm instrumented build did not rewrite the lockfile
         run: git diff --exit-code -- benchmarks/rust_core/Cargo.lock
       - name: Upload all 62 legacy and six new paired CodSpeed identities in ONE workflow
@@ -98,4 +98,4 @@ jobs:
           GPMC_QU_PRS_CNF_DIR: ${{ runner.temp }}/quprs-cnf
         with:
           mode: simulation
-          run: cd benchmarks/rust_core && cargo codspeed run --features quprs-gpmc-paired-research --benches
+          run: cd benchmarks/rust_core && cargo codspeed run --bench solver --bench quprs_direct_cnf

@@ -7,8 +7,8 @@
 use num_rational::BigRational;
 use rawmocs_benchmarks::satlib_provenance::{fixture, independent_full_wmc};
 use rawmocs_core::{
-    solve_with_limits, CanonicalMulResearchError, Gaussian, Limits,
-    PreparedCanonicalProblem, Problem, Weights,
+    solve_with_limits, CanonicalMulResearchError, Gaussian, Limits, PreparedCanonicalProblem,
+    Problem, Weights,
 };
 
 fn raw(n: i64, d: i64) -> BigRational {
@@ -39,8 +39,14 @@ fn compare(
 ) {
     let (old_sat, old_exact) = independent_full_wmc(name, original);
     let (new_sat, new_exact) = independent_full_wmc(name, replacement);
-    assert!(old_sat && new_sat, "weight changes may not change the Boolean CNF");
-    assert_ne!(old_exact, new_exact, "declared weights must change exact WMC");
+    assert!(
+        old_sat && new_sat,
+        "weight changes may not change the Boolean CNF"
+    );
+    assert_ne!(
+        old_exact, new_exact,
+        "declared weights must change exact WMC"
+    );
 
     for cap in [0_usize, 10_000_usize] {
         let limits = Limits {
@@ -84,10 +90,7 @@ fn signed_complex_weight_mutation_requires_separate_prepare() {
 
         let changed = with_replaced_first_weight(
             &source,
-            Weights::new(
-                Gaussian::integers(7, 3),
-                Gaussian::integers(-1, -2),
-            ),
+            Weights::new(Gaussian::integers(7, 3), Gaussian::integers(-1, -2)),
         );
         let new_prepared = PreparedCanonicalProblem::prepare(&changed).unwrap();
         compare(name, &source, &changed, &old_prepared, &new_prepared);

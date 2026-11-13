@@ -1,0 +1,56 @@
+name: Prepared canonical Full WMC amortization research
+
+on:
+  pull_request:
+    paths:
+      - "crates/rawmocs-core/src/lib.rs"
+      - "benchmarks/rust_core/**"
+      - ".github/workflows/canonical-prepared-research.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: canonical-prepared-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prepared-native:
+    name: Source-locked immutable-prepared input exactness and native amortization
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/rust_core -> target
+      - name: Format and Clippy default and gated research
+        run: |
+          cargo fmt --all -- --check
+          cargo fmt --manifest-path benchmarks/rust_core/Cargo.toml --all -- --check
+          cargo clippy --locked --manifest-path benchmarks/rust_core/Cargo.toml --all-targets --features canonical-mul-research -- -D warnings
+      - name: Independent exact Full WMC oracle plus prepared negative controls
+        run: cargo test --locked --manifest-path benchmarks/rust_core/Cargo.toml --features canonical-mul-research
+      - name: Three-arm prepared-once inclusive native WallTime and VmHWM
+        run: |
+          set -euo pipefail
+          cargo run --quiet --locked --manifest-path benchmarks/rust_core/Cargo.toml --release --features canonical-mul-research --example canonical_prepared_paired > qoo218-prepared.tsv
+          cat qoo218-prepared.tsv
+          test "$(grep -c '^SUMMARY' qoo218-prepared.tsv)" -eq 104
+          test "$(grep -c '^PAIRED' qoo218-prepared.tsv)" -eq 936
+          test "$(grep -c '^SETUP' qoo218-prepared.tsv)" -eq 936
+          git diff --exit-code -- benchmarks/rust_core/Cargo.lock
+      - name: Archive native raw evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qoo218-prepared-${{ github.sha }}
+          path: qoo218-prepared.tsv
+          if-no-files-found: warn
+          retention-days: 14

@@ -653,7 +653,7 @@ fn cost_worker(vertices: usize, policy: &str, trial: usize) -> Result<(), String
     }
     let peak_rss = peak_rss_kib()?;
     println!(
-        "{vertices},{},{trial},{policy},{elapsed_ns},{peak_rss},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+        "{vertices},{},{trial},{policy},{elapsed_ns},{peak_rss},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
         vertices + 1,
         stats.nodes,
         stats.cache_hits,
@@ -669,6 +669,12 @@ fn cost_worker(vertices: usize, policy: &str, trial: usize) -> Result<(), String
         c.admission_ns,
         c.insert_calls,
         c.insert_ns,
+        c.root_normalize_calls,
+        c.root_normalize_ns,
+        c.recursive_normalize_calls,
+        c.recursive_normalize_ns,
+        c.full_cache_lookup_calls,
+        c.full_cache_lookup_hits,
     );
     Ok(())
 }
@@ -706,7 +712,7 @@ fn cost_suite() -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| format!("executable path: {e}"))?;
     guard_negative_controls(&exe)?;
     println!(
-        "vertices,variables,trial,policy,solve_wall_ns,process_peak_rss_kib,nodes,cache_hits,cache_entries,cache_payload_rejections,key_build_calls,key_build_ns,lookup_calls,lookup_ns,hit_clone_calls,hit_clone_ns,admission_calls,admission_ns,insert_calls,insert_ns"
+        "vertices,variables,trial,policy,solve_wall_ns,process_peak_rss_kib,nodes,cache_hits,cache_entries,cache_payload_rejections,key_build_calls,key_build_ns,lookup_calls,lookup_ns,hit_clone_calls,hit_clone_ns,admission_calls,admission_ns,insert_calls,insert_ns,root_normalize_calls,root_normalize_ns,recursive_normalize_calls,recursive_normalize_ns,full_cache_lookup_calls,full_cache_lookup_hits"
     );
     const POLICIES: [&str; 3] = ["off", "on", "tight"];
     for vertices in [6, 10, 14] {

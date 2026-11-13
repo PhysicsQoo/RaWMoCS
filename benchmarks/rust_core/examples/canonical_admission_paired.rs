@@ -137,8 +137,8 @@ fn admit(problem: &Problem) -> bool {
         && problem.clauses().len() >= problem.variables() / 2
         && problem.clauses().iter().all(|c| c.len() >= 2)
         && problem.weights().iter().any(|w| {
-            !w.positive.imag.numer().eq(&0.into()) &&
-            !w.negative.imag.numer().eq(&0.into())
+            w.positive.imag.numer().sign() != num_bigint::Sign::NoSign
+                && w.negative.imag.numer().sign() != num_bigint::Sign::NoSign
         })
 }
 

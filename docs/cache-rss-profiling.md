@@ -316,3 +316,26 @@ This extension preserves the original solver's `Key` identity,
 weights/scopes, SAT and exact Gaussian WMC semantics, Cache admission
 rules and default build. Positive attribution alone is insufficient
 justification to change production Cache policy.
+
+### Saturated-entry-cache control: separate source-locked nine-worker cohort
+
+The original 27-row cost cohort has no full-capacity lookups because
+its unbounded `on` cache does not fill 10,000 entries; the `tight`
+payload policy rejects inserts before reaching the entry count cap.
+A zero `full_cache_lookup_calls` value there is an **unexercised
+control**, not a proof that lookups at capacity are useless.
+
+A second, independent Linux `--cost-capacity-suite` now uses
+`cache_entries=1` on the identical guarded-cycle source and independent
+exact Full Complex WMC oracle at 6/10/14 vertices and three fresh
+processes each (9 rows). It requires `cache_entries=1`,
+`full_cache_lookup_calls>0`, and bounded full-capacity hit counters.
+The 27-row source schema and selected policies remain unchanged.
+Both suites must pass independent timeout/virtual-address-space-denial
+negative controls; no hard physical-RSS limit is claimed.
+
+The new nine rows are **diagnostic evidence**, not a performance
+comparison with the 27-row cohort; for a rigorous policy tradeoff,
+compare equal source, compiler, workload and cache capacity within a
+dedicated paired run. No adaptive cache admission rule has been
+calibrated or enabled for production.

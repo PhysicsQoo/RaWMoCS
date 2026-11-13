@@ -5,6 +5,7 @@
 use num_rational::BigRational;
 use rawmocs_benchmarks::cache_reuse::{independent_exact_wmc, repeated_residuals};
 use rawmocs_benchmarks::expensive_reuse::{guarded_cycle_residual, independent_cycle_wmc};
+use rawmocs_benchmarks::irregular_holdout::{independent_exact_irregular_wmc, irregular};
 use rawmocs_benchmarks::scalability::{expected, fixture as medium, Family};
 use rawmocs_core::{
     solve_with_canonical_mul_research, solve_with_limits, Gaussian, Limits,
@@ -13,7 +14,7 @@ use rawmocs_core::{
 use std::process::Command;
 use std::time::Instant;
 
-const CASES: [&str; 13] = [
+const CASES: [&str; 15] = [
     "cycle10",
     "repeat8",
     "chain16",
@@ -29,6 +30,9 @@ const CASES: [&str; 13] = [
     // Newly predeclared unseen holdouts, not used by QOO-217.
     "chain32_holdout",
     "contradict32_holdout",
+    // Independent exhaustive Full WMC oracles; first introduced by QOO-215.
+    "irregular8",
+    "irregular10",
 ];
 
 fn raw(n: i64, d: i64) -> BigRational {
@@ -135,6 +139,11 @@ fn fixture(name: &str) -> Result<(Problem, bool, Gaussian), String> {
             false,
             Gaussian::zero(),
         ),
+        "irregular8" | "irregular10" => {
+            let input = irregular(name);
+            let (satisfiable, exact_count) = independent_exact_irregular_wmc(&input);
+            (input, satisfiable, exact_count)
+        }
         _ => return Err(format!("unexpected fixed case {name}")),
     };
     Ok(result)
@@ -220,7 +229,7 @@ fn run_parent() -> Result<(), String> {
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
     for name in CASES {
         for cap in [0_usize, 10_000_usize] {
-            for repeats in [1_usize, 2_usize, 12_usize, 64_usize] {
+            for repeats in [1_usize, 2_usize, 4_usize, 12_usize, 16_usize, 64_usize] {
                 let mut trials = Vec::new();
                 for round in 0..3_usize {
                     let order = match round {
@@ -307,7 +316,7 @@ fn main() {
     let result = if args.len() == 6 && args[1] == "--worker" {
         match (args[4].parse::<usize>(), args[5].parse::<usize>()) {
             (Ok(cap), Ok(repeats))
-                if (cap == 0 || cap == 10_000) && [1, 2, 12, 64].contains(&repeats) =>
+                if (cap == 0 || cap == 10_000) && [1, 2, 4, 12, 16, 64].contains(&repeats) =>
             {
                 worker(&args[2], &args[3], cap, repeats)
             }

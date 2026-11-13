@@ -593,6 +593,43 @@ impl PreparedCanonicalProblem {
             true,
         )
     }
+
+    /// Logical object storage estimate for an immutable, privately-owned
+    /// prepared input. Includes Vec capacities, inline structs and actual
+    /// numerator/denominator bit payloads; EXCLUDES hidden BigInt limb slack,
+    /// allocator metadata, fragmentation, stack, cache and solver RSS.
+    /// This is neither an exact allocation measure nor a hard memory bound.
+    pub fn estimated_retained_payload_bytes(&self) -> usize {
+        let p = &self.canonical;
+        let mut size = std::mem::size_of::<Problem>()
+            .saturating_add(
+                p.clauses
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<Vec<i32>>()),
+            )
+            .saturating_add(
+                p.weights
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<Weights>()),
+            );
+        for clause in &p.clauses {
+            size = size.saturating_add(clause.capacity().saturating_mul(std::mem::size_of::<i32>()));
+        }
+        for weights in &p.weights {
+            for r in [
+                &weights.positive.real,
+                &weights.positive.imag,
+                &weights.negative.real,
+                &weights.negative.imag,
+            ] {
+                for bits in [r.numer().bits(), r.denom().bits()] {
+                    let bytes = bits.saturating_add(7) / 8;
+                    size = size.saturating_add(usize::try_from(bytes).unwrap_or(usize::MAX));
+                }
+            }
+        }
+        size
+    }
 }
 
 /// The timer around this call MUST include its input normalization cost.

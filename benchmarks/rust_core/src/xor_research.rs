@@ -228,8 +228,8 @@ pub fn refute_problem(problem: &Problem) -> Option<XorRefutation> {
 mod tests {
     use super::*;
     use crate::dubois_xor_certificate::verify_dubois20_unsat;
-    use crate::satlib_provenance::{fixture, original_dubois20_clauses};
     use crate::irregular_holdout::irregular;
+    use crate::satlib_provenance::{fixture, original_dubois20_clauses};
 
     fn brute_sat(variables: usize, clauses: &[Vec<i32>]) -> bool {
         assert!(variables <= 10);
@@ -237,7 +237,11 @@ mod tests {
             clauses.iter().all(|clause| {
                 clause.iter().any(|&lit| {
                     let value = (a & (1usize << (lit.unsigned_abs() as usize - 1))) != 0;
-                    if lit > 0 { value } else { !value }
+                    if lit > 0 {
+                        value
+                    } else {
+                        !value
+                    }
                 })
             })
         })
@@ -256,7 +260,10 @@ mod tests {
         shuffled.rotate_left(17);
         let reordered = refute(variables, &shuffled).expect("not dependent on source ordering");
         assert!(verify(variables, &shuffled, &reordered));
-        assert!(!verify(variables, &shuffled, &proof), "witness source positions matter");
+        assert!(
+            !verify(variables, &shuffled, &proof),
+            "witness source positions matter"
+        );
     }
 
     #[test]
@@ -279,10 +286,18 @@ mod tests {
         for kind in 0..4 {
             let mut clauses = original.clone();
             match kind {
-                0 => { clauses.remove(0); }
-                1 => { clauses[0][0] = -clauses[0][0]; }
-                2 => { clauses.push(clauses[0].clone()); }
-                _ => { clauses[0] = vec![1, -1, 2]; }
+                0 => {
+                    clauses.remove(0);
+                }
+                1 => {
+                    clauses[0][0] = -clauses[0][0];
+                }
+                2 => {
+                    clauses.push(clauses[0].clone());
+                }
+                _ => {
+                    clauses[0] = vec![1, -1, 2];
+                }
             }
             assert!(refute(variables, &clauses).is_none(), "kind={kind}");
         }
@@ -292,7 +307,9 @@ mod tests {
     fn independent_exhaustive_small_cnf_no_false_unsat() {
         let all = (1_i32..=4)
             .flat_map(|a| {
-                (1_i32..=4).filter(move |&b| b != a).map(move |b| vec![a, -b, 4])
+                (1_i32..=4)
+                    .filter(move |&b| b != a)
+                    .map(move |b| vec![a, -b, 4])
             })
             .collect::<Vec<_>>();
         // 200 deterministic subsets of a SAT formula. Every clause is

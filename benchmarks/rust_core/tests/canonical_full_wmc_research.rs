@@ -41,7 +41,11 @@ fn enumerate(p: &Problem) -> (bool, Gaussian) {
             clause.iter().any(|&lit| {
                 let var = lit.unsigned_abs() as usize - 1;
                 let chosen = (mask & (1_usize << var)) != 0;
-                if lit > 0 { chosen } else { !chosen }
+                if lit > 0 {
+                    chosen
+                } else {
+                    !chosen
+                }
             })
         });
         if !satisfied {
@@ -65,20 +69,37 @@ fn enumerate(p: &Problem) -> (bool, Gaussian) {
 fn compare(p: &Problem, both_canonical: bool) {
     let (expected_sat, expected_count) = enumerate(p);
     for cap in [0_usize, 1_usize, 100_usize] {
-        let limits = Limits { cache_entries: cap, ..Limits::default() };
+        let limits = Limits {
+            cache_entries: cap,
+            ..Limits::default()
+        };
         let baseline = solve_with_limits(p, limits).expect("bounded baseline solver");
         let candidate = solve_with_canonical_mul_research(p, limits)
             .expect("bounded, valid-denominator candidate");
         assert_eq!(baseline.satisfiable, expected_sat, "baseline SAT cap={cap}");
-        assert_eq!(candidate.satisfiable, expected_sat, "candidate SAT cap={cap}");
-        assert_eq!(canonical(&baseline.count), expected_count, "baseline WMC cap={cap}");
-        assert_eq!(canonical(&candidate.count), expected_count, "candidate WMC cap={cap}");
+        assert_eq!(
+            candidate.satisfiable, expected_sat,
+            "candidate SAT cap={cap}"
+        );
+        assert_eq!(
+            canonical(&baseline.count),
+            expected_count,
+            "baseline WMC cap={cap}"
+        );
+        assert_eq!(
+            canonical(&candidate.count),
+            expected_count,
+            "candidate WMC cap={cap}"
+        );
         assert_eq!(canonical(&candidate.count), canonical(&baseline.count));
         // Numeric bit-length stats can differ for externally malformed
         // noncanonical representations; Boolean search behavior must not.
         assert_eq!(candidate.stats.nodes, baseline.stats.nodes);
         assert_eq!(candidate.stats.cache_hits, baseline.stats.cache_hits);
-        assert_eq!(candidate.stats.decompositions, baseline.stats.decompositions);
+        assert_eq!(
+            candidate.stats.decompositions,
+            baseline.stats.decompositions
+        );
         if both_canonical {
             assert_eq!(candidate.stats, baseline.stats, "canonical input stats");
         }
@@ -94,7 +115,10 @@ fn cancellation_zero_is_still_satisfiable_and_unsat_is_distinct() {
     let cancel = Problem::new(
         1,
         vec![],
-        vec![Weights::new(Gaussian::integers(1, 0), Gaussian::integers(-1, 0))],
+        vec![Weights::new(
+            Gaussian::integers(1, 0),
+            Gaussian::integers(-1, 0),
+        )],
     )
     .expect("valid SAT but zero problem");
     let (sat, count) = enumerate(&cancel);

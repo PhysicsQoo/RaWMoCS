@@ -1,0 +1,55 @@
+name: Canonical input boundary attribution research
+
+on:
+  pull_request:
+    paths:
+      - "crates/rawmocs-core/src/lib.rs"
+      - "benchmarks/rust_core/**"
+      - ".github/workflows/canonical-boundary-attribution.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: canonical-boundary-attribution-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  three-arm-boundary:
+    name: Source-locked exact Full WMC boundary-only and arithmetic paired evidence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/rust_core -> target
+      - name: Format and Clippy default and gated research
+        run: |
+          cargo fmt --all -- --check
+          cargo fmt --manifest-path benchmarks/rust_core/Cargo.toml --all -- --check
+          cargo clippy --locked --manifest-path benchmarks/rust_core/Cargo.toml --all-targets --features canonical-mul-research -- -D warnings
+      - name: Independent exact oracle on original and both normalized research arms
+        run: cargo test --locked --manifest-path benchmarks/rust_core/Cargo.toml --features canonical-mul-research
+      - name: Same-host three-arm single-shot and repeated Full WMC
+        run: |
+          set -euo pipefail
+          cargo run --quiet --locked --manifest-path benchmarks/rust_core/Cargo.toml --release --features canonical-mul-research --example canonical_normalization_paired > qoo217-boundary-evidence.tsv
+          cat qoo217-boundary-evidence.tsv
+          test "$(grep -c '^SUMMARY' qoo217-boundary-evidence.tsv)" -eq 44
+          test "$(grep -c '^PAIRED' qoo217-boundary-evidence.tsv)" -eq 396
+          git diff --exit-code -- benchmarks/rust_core/Cargo.lock
+      - name: Archive source-locked native evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qoo217-boundary-${{ github.sha }}
+          path: qoo217-boundary-evidence.tsv
+          if-no-files-found: warn
+          retention-days: 14

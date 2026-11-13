@@ -57,3 +57,8 @@ required-features = ["canonical-mul-research"]
 name = "xor_bounded_paired"
 # Opt-in benchmark research; never included in default production solver builds.
 required-features = ["branching-research"]
+
+[[example]]
+name = "xor_native_admission_paired"
+# QOO-224 benchmark-only native study; not a public solver feature.
+required-features = ["branching-research"]

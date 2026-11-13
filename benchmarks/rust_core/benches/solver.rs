@@ -255,6 +255,27 @@ fn rational_reduction_input(bits: usize, shared_factor: bool) -> &'static Ration
     })
 }
 
+// Clone-only companion controls on the exact same input bit patterns.
+// Do not subtract these costs from normalization to infer a pure GCD time:
+// non-additive cache effects and normalization internals remain.
+#[divan::bench(args = [128_usize, 512_usize])]
+fn rational_operand_clone_coprime(bits: usize) {
+    let (n, d) = rational_reduction_input(bits, false);
+    divan::black_box((
+        divan::black_box(n).clone(),
+        divan::black_box(d).clone(),
+    ));
+}
+
+#[divan::bench(args = [128_usize, 512_usize])]
+fn rational_operand_clone_shared_power_of_two(bits: usize) {
+    let (n, d) = rational_reduction_input(bits, true);
+    divan::black_box((
+        divan::black_box(n).clone(),
+        divan::black_box(d).clone(),
+    ));
+}
+
 #[divan::bench(args = [128_usize, 512_usize])]
 fn rational_normalize_coprime(bits: usize) {
     let (n, d) = rational_reduction_input(bits, false);

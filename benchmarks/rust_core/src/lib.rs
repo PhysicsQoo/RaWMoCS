@@ -8,6 +8,7 @@ pub mod cross_cancel_research;
 pub mod expensive_reuse;
 pub mod irregular_holdout;
 pub mod scalability;
+pub mod satlib_provenance;
 #[cfg(feature = "cache-admission-research")]
 pub mod work_proxy_holdout;
 use num_bigint::BigInt;

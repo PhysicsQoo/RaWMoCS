@@ -235,8 +235,8 @@ fn rational_reduction_input(bits: usize, shared_factor: bool) -> &'static Ration
         _ => panic!("only fixed rational-reduction benchmark fixtures"),
     };
     slot.get_or_init(|| {
-        let numerator = (num_bigint::BigInt::from(1_u8) << bits) + 1_u8;
-        let denominator = &numerator + 1_u8;
+        let numerator: num_bigint::BigInt = (num_bigint::BigInt::from(1_u8) << bits) + 1_u8;
+        let denominator: num_bigint::BigInt = &numerator + 1_u8;
         // Consecutive positive integers are coprime. The shared-factor
         // family represents the SAME exact fraction after normalization.
         let (n, d) = if shared_factor {

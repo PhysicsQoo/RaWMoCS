@@ -11,10 +11,11 @@ use rawmocs_core::{
 use std::process::Command;
 use std::time::Instant;
 
-const CASES: [&str; 13] = [
+const CASES: [&str; 15] = [
     "cycle10", "repeat8", "chain16", "pairs16",
     "cancel1", "unsat1", "noncanonical1",
     "cycle14_holdout", "repeat12_holdout",
+    "cycle6_holdout", "repeat2_holdout",
     "units16_holdout", "contradict16_holdout",
     "identity16_holdout", "sparse16_holdout",
 ];
@@ -90,6 +91,12 @@ fn fixture(name: &str) -> Result<(Problem, bool, Gaussian), String> {
         ),
         "repeat12_holdout" => (
             repeated_residuals(12), true, independent_exact_wmc(12),
+        ),
+        "cycle6_holdout" => (
+            guarded_cycle_residual(6), true, independent_cycle_wmc(6),
+        ),
+        "repeat2_holdout" => (
+            repeated_residuals(2), true, independent_exact_wmc(2),
         ),
         "units16_holdout" => {
             let clauses = (1..=16_i32).map(|i| vec![i]).collect();

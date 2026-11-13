@@ -59,7 +59,11 @@ fn compare(
         old_sat && new_sat,
         "weight changes may not change the Boolean CNF"
     );
-    assert_ne!(old_exact, Gaussian::zero(), "source WMC must not be vacuously zero");
+    assert_ne!(
+        old_exact,
+        Gaussian::zero(),
+        "source WMC must not be vacuously zero"
+    );
     assert_ne!(
         old_exact, new_exact,
         "declared weights must change exact WMC"

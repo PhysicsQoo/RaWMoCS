@@ -36,3 +36,7 @@ required-features = ["canonical-mul-research"]
 [[example]]
 name = "canonical_admission_paired"
 required-features = ["canonical-mul-research"]
+
+[[example]]
+name = "canonical_normalization_paired"
+required-features = ["canonical-mul-research"]

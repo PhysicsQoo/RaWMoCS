@@ -45,3 +45,10 @@ Dedicated `.github/workflows/satlib-prepared-research.yml`:
 Even positive SATLIB results cannot prove default performance improvements on unknown industrial/quantum WMC instances, particularly since the complex rational weights are synthetic. Retain mandatory UNSAT and SAT-but-zero negative controls from the preceding studies. Do not switch default `solve()` or `Gaussian::mul`, modify cache policy, or integrate changes into QuPRS/GPMC without new, representative, source-locked holdouts and explicit API review.
 
 **Next evidence gap:** independently checked UNSAT proof for the original `dubois20`, realistic large CNF with bounded native RSS/WallTime and adequate **Full Complex WMC** oracle, and stability of preparation break-even under changed input weights (never reuse a prepared object after changing weights without a new preparation step).
+
+
+## Post-QOO-219 evidence: QOO-220 algebraic UNSAT certification
+
+The sections above preserve the **historical evidence available when QOO-219 was accepted**: Dubois20 was only source-labeled UNSAT and was excluded from timing. A later, separately checked research certificate is now documented in `docs/qoo-220-prepared-weight-snapshot.md` and implemented in `benchmarks/rust_core/src/dubois_xor_certificate.rs`.
+
+The checker validates the pinned **160 original clauses** as 40 three-variable XOR parity equations, checks that every variable occurs exactly twice and that the combined right-hand parity is one, obtaining `0 = 1`. It rejects tampered clauses. This establishes **Boolean UNSAT** without trusting a solver result; it does **not** establish any native solver runtime, memory qualification, externally checked LRAT certificate, or new WMC performance result.

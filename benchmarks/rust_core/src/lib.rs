@@ -12,6 +12,7 @@ pub mod satlib_provenance;
 pub mod scalability;
 #[cfg(feature = "cache-admission-research")]
 pub mod work_proxy_holdout;
+pub mod xor_research;
 use num_bigint::BigInt;
 use num_rational::BigRational;
 use rawmocs_core::{Gaussian, Problem, Weights};

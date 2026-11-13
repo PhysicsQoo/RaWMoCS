@@ -76,11 +76,20 @@ jobs:
               value = lambda name: int(row[name])
               assert value("variables") == value("vertices") + 1
               assert value("solve_wall_ns") > 0 and value("process_peak_rss_kib") > 0
+              assert value("root_normalize_calls") == 1
+              assert value("recursive_normalize_calls") == value("nodes") - 1
+              assert value("root_normalize_ns") > 0
+              if value("recursive_normalize_calls"):
+                  assert value("recursive_normalize_ns") > 0
+              assert value("full_cache_lookup_calls") <= value("lookup_calls")
+              assert value("full_cache_lookup_hits") <= value("full_cache_lookup_calls")
+              assert value("full_cache_lookup_hits") <= value("cache_hits")
               if row["policy"] == "off":
                   assert all(value(name) == 0 for name in (
                       "cache_hits", "cache_entries", "cache_payload_rejections",
                       "key_build_calls", "lookup_calls", "hit_clone_calls",
-                      "admission_calls", "insert_calls"))
+                      "admission_calls", "insert_calls",
+                      "full_cache_lookup_calls", "full_cache_lookup_hits"))
               else:
                   assert value("key_build_calls") == value("nodes")
                   assert value("lookup_calls") == value("key_build_calls")

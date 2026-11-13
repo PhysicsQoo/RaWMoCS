@@ -370,6 +370,7 @@ dependencies = [
 name = "rawmocs-core"
 version = "0.1.0"
 dependencies = [
+ "num-integer",
  "num-rational",
  "num-traits",
 ]

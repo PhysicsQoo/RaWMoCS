@@ -1,0 +1,79 @@
+name: QuPRS printed weighted-CNF cross-repository source parity
+
+on:
+  pull_request:
+    paths:
+      - "benchmarks/rust_core/src/quprs_printed_cnf.rs"
+      - "benchmarks/rust_core/src/lib.rs"
+      - ".github/workflows/quprs-printed-cnf-parity.yml"
+      - "docs/qoo-225-quprs-printed-cnf.md"
+  push:
+    branches: [main]
+    paths:
+      - "benchmarks/rust_core/src/quprs_printed_cnf.rs"
+      - "benchmarks/rust_core/src/lib.rs"
+      - ".github/workflows/quprs-printed-cnf-parity.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quprs-printed-cnf-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-locked-oracle:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Read exact QuPRS test-defined weighted CNF source
+        uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/QuPRS
+          ref: 0b28736651b3740ed3b201edd2efdef3da541e0d
+          path: .quprs-printed
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/rust_core -> target
+      - name: Verify upstream immutable Git blobs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object .quprs-printed/test/test_wmc_direct_cnf_golden.py)" = d5d9b8ab6e513afd332e34c642a8017b7c415caa
+          test "$(git hash-object .quprs-printed/test/test_v0140_exact_printed_cnf.py)" = b4b486dd66599daca70861e1b5c8ad7db804d7f2
+          test "$(git hash-object .quprs-printed/.diagnostics/wmc_interval_reference/import_dimacs.py)" = fd942b2dfe23080390bb4e151f684e2562c22d91
+          test "$(git hash-object .quprs-printed/src/QuPRS/utils/wmc_problem.py)" = a14e94a8eed1bfe414f2eae3400cd904fa65b068
+          echo "QUPRS_UPSTREAM_SOURCE_PIN=VERIFIED"
+      - name: Check exact rational source parser and independent oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo fmt --all --manifest-path benchmarks/rust_core/Cargo.toml -- --check
+          cargo clippy --locked --manifest-path benchmarks/rust_core/Cargo.toml --all-targets -- -D warnings
+          cargo test --locked --manifest-path benchmarks/rust_core/Cargo.toml quprs_printed_cnf -- --nocapture
+      - name: Ensure no locked dependencies changed
+        run: git diff --exit-code -- benchmarks/rust_core/Cargo.lock
+
+  portability:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04-arm, windows-latest, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: QuPRS printed-CNF exact science across platform
+        run: cargo test --locked --manifest-path benchmarks/rust_core/Cargo.toml quprs_printed_cnf

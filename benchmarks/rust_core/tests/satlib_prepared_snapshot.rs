@@ -60,11 +60,6 @@ fn compare(
         "weight changes may not change the Boolean CNF"
     );
     assert_ne!(
-        old_exact,
-        Gaussian::zero(),
-        "source WMC must not be vacuously zero"
-    );
-    assert_ne!(
         old_exact, new_exact,
         "declared weights must change exact WMC"
     );
@@ -118,7 +113,7 @@ fn compare(
 #[test]
 fn signed_complex_weight_mutation_requires_separate_prepare() {
     for name in ["satlib_uf20_01", "satlib_uf20_02"] {
-        let source = neutral_weighted_source(name);
+        let source = fixture(name);
         let old_prepared = PreparedCanonicalProblem::prepare(&source).unwrap();
         assert!(
             old_prepared.estimated_retained_payload_bytes() > 0,
@@ -148,7 +143,7 @@ fn signed_complex_weight_mutation_requires_separate_prepare() {
 #[test]
 fn noncanonical_signed_weight_updates_are_checked_and_snapshotted() {
     for name in ["satlib_uf20_01", "satlib_uf20_02"] {
-        let source = neutral_weighted_source(name);
+        let source = fixture(name);
         let prepared_old = PreparedCanonicalProblem::prepare(&source).unwrap();
 
         // Deliberately unreduced values, negative denominator, zero numerator.

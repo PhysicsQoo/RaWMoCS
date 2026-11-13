@@ -28,7 +28,7 @@ The validator also tests clause reorder, mutation/duplicate/removal invalidation
 
 Each mode runs in a **fresh Linux process** with external `timeout -k 1s 6s`, `prlimit --as=512MiB` and logical node/depth limits. `RLIMIT_AS` caps virtual address space, **not** RSS or kernel cgroup memory.max; VmHWM is observational. Worker guard failure is **not** interpreted as a solver UNSAT result. The case's proof extraction/checking is included in candidate WallTime, and fallback is the unmodified default `solve_with_limits`. Three alternating rounds reduce order bias but do not guarantee low noise.
 
-**Comparability restriction:** baseline Dubois UNKNOWN at a bounded node count versus candidate PROVEN_UNSAT cannot be interpreted as a numeric acceleration of the *same completed task*. Measure separate classification and compare only proof completeness under a fixed budget; SAT controls with the same exact verdict allow an overhead comparison. Do not use this study to claim a general solver speedup or default-admission decision.
+**Comparability restriction:** baseline Dubois UNKNOWN at a bounded node count versus candidate PROVEN_UNSAT cannot be interpreted as a numeric acceleration of the *same completed task*. The native SUMMARY explicitly emits `baseline_over_guard=NA_DIFFERENT_VERDICT` for this case, rather than a misleading large speedup multiplier; it still preserves the raw per-process WallTime and VmHWM evidence. Measure separate classification and compare only proof completeness under a fixed budget; SAT controls with the same exact verdict allow an overhead comparison. Do not use this study to claim a general solver speedup or default-admission decision.
 
 ## Follow-ups
 

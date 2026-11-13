@@ -43,7 +43,10 @@ fn fixture(name: &str) -> Result<(Problem, bool, Gaussian), String> {
             Problem::new(
                 1,
                 vec![],
-                vec![Weights::new(Gaussian::integers(1, 0), Gaussian::integers(-1, 0))],
+                vec![Weights::new(
+                    Gaussian::integers(1, 0),
+                    Gaussian::integers(-1, 0),
+                )],
             )
             .expect("fixed cancellation"),
             true,
@@ -88,7 +91,9 @@ fn canonical(g: &Gaussian) -> Gaussian {
 fn vmhwm_kib() -> Result<u64, String> {
     let status = std::fs::read_to_string("/proc/self/status")
         .map_err(|e| format!("VmHWM unavailable: {e}"))?;
-    let line = status.lines().find(|s| s.starts_with("VmHWM:"))
+    let line = status
+        .lines()
+        .find(|s| s.starts_with("VmHWM:"))
         .ok_or("VmHWM missing")?;
     let parts: Vec<_> = line.split_whitespace().collect();
     if parts.len() != 3 || parts[2] != "kB" {
@@ -100,14 +105,18 @@ fn vmhwm_kib() -> Result<u64, String> {
 fn worker(name: &str, mode: &str, cap: usize) -> Result<(), String> {
     const REPEATS: usize = 12;
     let (problem, expected_sat, expected_count) = fixture(name)?;
-    let limits = Limits { cache_entries: cap, ..Limits::default() };
+    let limits = Limits {
+        cache_entries: cap,
+        ..Limits::default()
+    };
     let start = Instant::now();
     let mut last = None;
     for _ in 0..REPEATS {
         let report = match mode {
             "baseline" => solve_with_limits(&problem, limits).map_err(|e| format!("{e}"))?,
-            "gated" => solve_with_canonical_mul_research(&problem, limits)
-                .map_err(|e| format!("{e:?}"))?,
+            "gated" => {
+                solve_with_canonical_mul_research(&problem, limits).map_err(|e| format!("{e:?}"))?
+            }
             _ => return Err("invalid fixed strategy".into()),
         };
         last = Some(report);
@@ -115,7 +124,9 @@ fn worker(name: &str, mode: &str, cap: usize) -> Result<(), String> {
     let nanos = start.elapsed().as_nanos();
     let report = last.ok_or("zero repeats")?;
     if report.satisfiable != expected_sat || canonical(&report.count) != expected_count {
-        return Err(format!("independent exact witness mismatch for {name}/{mode}/{cap}"));
+        return Err(format!(
+            "independent exact witness mismatch for {name}/{mode}/{cap}"
+        ));
     }
     let rss = vmhwm_kib()?;
     println!(
@@ -154,8 +165,10 @@ fn run_parent() -> Result<(), String> {
                     }
                     let text = String::from_utf8(output.stdout).map_err(|e| e.to_string())?;
                     let values: Vec<_> = text.trim().split('\t').collect();
-                    if values.len() != 11 || values[0] != "RESULT"
-                        || values[1] != name || values[2] != mode
+                    if values.len() != 11
+                        || values[0] != "RESULT"
+                        || values[1] != name
+                        || values[2] != mode
                         || values[3] != cap.to_string()
                     {
                         return Err(format!("malformed worker record: {text}"));
@@ -170,10 +183,22 @@ fn run_parent() -> Result<(), String> {
                 for (mode, duration, rss, _) in &observed {
                     println!("PAIRED\t{name}\t{cap}\t{round}\t{mode}\t{duration}\t{rss}");
                 }
-                trials.extend(observed.into_iter().map(|(mode, duration, rss, _)| (mode, duration, rss)));
+                trials.extend(
+                    observed
+                        .into_iter()
+                        .map(|(mode, duration, rss, _)| (mode, duration, rss)),
+                );
             }
-            let mut base: Vec<_> = trials.iter().filter(|x| x.0 == "baseline").map(|x| x.1).collect();
-            let mut gated: Vec<_> = trials.iter().filter(|x| x.0 == "gated").map(|x| x.1).collect();
+            let mut base: Vec<_> = trials
+                .iter()
+                .filter(|x| x.0 == "baseline")
+                .map(|x| x.1)
+                .collect();
+            let mut gated: Vec<_> = trials
+                .iter()
+                .filter(|x| x.0 == "gated")
+                .map(|x| x.1)
+                .collect();
             base.sort_unstable();
             gated.sort_unstable();
             let ratio = base[1] as f64 / gated[1] as f64;

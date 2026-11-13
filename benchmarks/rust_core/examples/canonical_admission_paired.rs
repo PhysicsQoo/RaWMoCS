@@ -6,18 +6,28 @@ use rawmocs_benchmarks::cache_reuse::{independent_exact_wmc, repeated_residuals}
 use rawmocs_benchmarks::expensive_reuse::{guarded_cycle_residual, independent_cycle_wmc};
 use rawmocs_benchmarks::scalability::{expected, fixture as medium, Family};
 use rawmocs_core::{
-    solve_with_canonical_mul_research, solve_with_limits, Gaussian, Limits, Problem, Report, Weights,
+    solve_with_canonical_mul_research, solve_with_limits, Gaussian, Limits, Problem, Report,
+    Weights,
 };
 use std::process::Command;
 use std::time::Instant;
 
 const CASES: [&str; 15] = [
-    "cycle10", "repeat8", "chain16", "pairs16",
-    "cancel1", "unsat1", "noncanonical1",
-    "cycle14_holdout", "repeat12_holdout",
-    "cycle6_holdout", "repeat2_holdout",
-    "units16_holdout", "contradict16_holdout",
-    "identity16_holdout", "sparse16_holdout",
+    "cycle10",
+    "repeat8",
+    "chain16",
+    "pairs16",
+    "cancel1",
+    "unsat1",
+    "noncanonical1",
+    "cycle14_holdout",
+    "repeat12_holdout",
+    "cycle6_holdout",
+    "repeat2_holdout",
+    "units16_holdout",
+    "contradict16_holdout",
+    "identity16_holdout",
+    "sparse16_holdout",
 ];
 
 fn ratio(n: i64, d: i64) -> BigRational {
@@ -29,13 +39,15 @@ fn gaussian_integer(n: i64) -> Gaussian {
 }
 
 fn dense_weights(n: usize) -> Vec<Weights> {
-    (1..=n).map(|i| {
-        let k = i as i64;
-        Weights::new(
-            Gaussian::new(ratio(k % 7 + 1, 11), ratio(k % 5 + 1, 13)),
-            Gaussian::new(ratio(k % 9 + 1, 17), ratio(-k % 5 - 1, 19)),
-        )
-    }).collect()
+    (1..=n)
+        .map(|i| {
+            let k = i as i64;
+            Weights::new(
+                Gaussian::new(ratio(k % 7 + 1, 11), ratio(k % 5 + 1, 13)),
+                Gaussian::new(ratio(k % 9 + 1, 17), ratio(-k % 5 - 1, 19)),
+            )
+        })
+        .collect()
 }
 
 fn equality_chain(n: usize) -> Vec<Vec<i32>> {
@@ -62,75 +74,92 @@ fn fixture(name: &str) -> Result<(Problem, bool, Gaussian), String> {
             expected(Family::IndependentPairs, 16),
         ),
         "cancel1" => (
-            Problem::new(1, vec![], vec![Weights::new(
-                gaussian_integer(1), gaussian_integer(-1),
-            )]).expect("fixed cancellation"),
-            true, Gaussian::zero(),
+            Problem::new(
+                1,
+                vec![],
+                vec![Weights::new(gaussian_integer(1), gaussian_integer(-1))],
+            )
+            .expect("fixed cancellation"),
+            true,
+            Gaussian::zero(),
         ),
         "unsat1" => (
-            Problem::new(1, vec![vec![1], vec![-1]], vec![Weights::new(
-                Gaussian::one(), Gaussian::one(),
-            )]).expect("fixed UNSAT"),
-            false, Gaussian::zero(),
+            Problem::new(
+                1,
+                vec![vec![1], vec![-1]],
+                vec![Weights::new(Gaussian::one(), Gaussian::one())],
+            )
+            .expect("fixed UNSAT"),
+            false,
+            Gaussian::zero(),
         ),
         "noncanonical1" => (
-            Problem::new(1, vec![], vec![Weights::new(
-                Gaussian::new(
-                    BigRational::new_raw(2.into(), 4.into()),
-                    BigRational::new_raw((-3).into(), 6.into()),
-                ),
-                Gaussian::new(
-                    BigRational::new_raw(0.into(), 7.into()),
-                    BigRational::new_raw(1.into(), (-2).into()),
-                ),
-            )]).expect("valid denominators"),
-            true, Gaussian::new(ratio(1, 2), gaussian_integer(-1).real),
+            Problem::new(
+                1,
+                vec![],
+                vec![Weights::new(
+                    Gaussian::new(
+                        BigRational::new_raw(2.into(), 4.into()),
+                        BigRational::new_raw((-3).into(), 6.into()),
+                    ),
+                    Gaussian::new(
+                        BigRational::new_raw(0.into(), 7.into()),
+                        BigRational::new_raw(1.into(), (-2).into()),
+                    ),
+                )],
+            )
+            .expect("valid denominators"),
+            true,
+            Gaussian::new(ratio(1, 2), gaussian_integer(-1).real),
         ),
-        "cycle14_holdout" => (
-            guarded_cycle_residual(14), true, independent_cycle_wmc(14),
-        ),
-        "repeat12_holdout" => (
-            repeated_residuals(12), true, independent_exact_wmc(12),
-        ),
-        "cycle6_holdout" => (
-            guarded_cycle_residual(6), true, independent_cycle_wmc(6),
-        ),
-        "repeat2_holdout" => (
-            repeated_residuals(2), true, independent_exact_wmc(2),
-        ),
+        "cycle14_holdout" => (guarded_cycle_residual(14), true, independent_cycle_wmc(14)),
+        "repeat12_holdout" => (repeated_residuals(12), true, independent_exact_wmc(12)),
+        "cycle6_holdout" => (guarded_cycle_residual(6), true, independent_cycle_wmc(6)),
+        "repeat2_holdout" => (repeated_residuals(2), true, independent_exact_wmc(2)),
         "units16_holdout" => {
             let clauses = (1..=16_i32).map(|i| vec![i]).collect();
-            let weights = (0..16).map(|_| Weights::new(
-                Gaussian::one(), Gaussian::zero(),
-            )).collect();
-            (Problem::new(16, clauses, weights).expect("forced SAT"), true, Gaussian::one())
-        },
+            let weights = (0..16)
+                .map(|_| Weights::new(Gaussian::one(), Gaussian::zero()))
+                .collect();
+            (
+                Problem::new(16, clauses, weights).expect("forced SAT"),
+                true,
+                Gaussian::one(),
+            )
+        }
         "contradict16_holdout" => {
             // No unit clauses, but four clauses over x1,x2 are contradictory.
             // Padding ensures variables and clause count look expensive.
-            let mut clauses = vec![
-                vec![1, 2], vec![1, -2], vec![-1, 2], vec![-1, -2],
-            ];
+            let mut clauses = vec![vec![1, 2], vec![1, -2], vec![-1, 2], vec![-1, -2]];
             for i in 3..16_i32 {
                 clauses.push(vec![i, i + 1]);
             }
-            (Problem::new(16, clauses, dense_weights(16)).expect("contradiction"),
-                false, Gaussian::zero())
-        },
+            (
+                Problem::new(16, clauses, dense_weights(16)).expect("contradiction"),
+                false,
+                Gaussian::zero(),
+            )
+        }
         "identity16_holdout" => {
-            let weights = (0..16).map(|_| Weights::new(
-                Gaussian::one(), Gaussian::one(),
-            )).collect();
-            (Problem::new(16, equality_chain(16), weights).expect("identity chain"),
-                true, gaussian_integer(2))
-        },
+            let weights = (0..16)
+                .map(|_| Weights::new(Gaussian::one(), Gaussian::one()))
+                .collect();
+            (
+                Problem::new(16, equality_chain(16), weights).expect("identity chain"),
+                true,
+                gaussian_integer(2),
+            )
+        }
         "sparse16_holdout" => {
-            let weights = (0..16).map(|_| Weights::new(
-                Gaussian::one(), Gaussian::zero(),
-            )).collect();
-            (Problem::new(16, equality_chain(16), weights).expect("sparse chain"),
-                true, Gaussian::one())
-        },
+            let weights = (0..16)
+                .map(|_| Weights::new(Gaussian::one(), Gaussian::zero()))
+                .collect();
+            (
+                Problem::new(16, equality_chain(16), weights).expect("sparse chain"),
+                true,
+                Gaussian::one(),
+            )
+        }
         _ => return Err(format!("undeclared fixture: {name}")),
     };
     Ok(output)
@@ -157,7 +186,9 @@ fn canonical(g: &Gaussian) -> Gaussian {
 fn vmhwm_kib() -> Result<u64, String> {
     let status = std::fs::read_to_string("/proc/self/status")
         .map_err(|e| format!("VmHWM unavailable: {e}"))?;
-    let line = status.lines().find(|l| l.starts_with("VmHWM:"))
+    let line = status
+        .lines()
+        .find(|l| l.starts_with("VmHWM:"))
         .ok_or("VmHWM unavailable")?;
     let fields: Vec<_> = line.split_whitespace().collect();
     if fields.len() != 3 || fields[2] != "kB" {
@@ -169,16 +200,20 @@ fn vmhwm_kib() -> Result<u64, String> {
 fn run_mode(problem: &Problem, limits: Limits, mode: &str) -> Result<(Report, bool), String> {
     match mode {
         "baseline" => solve_with_limits(problem, limits)
-            .map(|r| (r, false)).map_err(|e| format!("{e}")),
+            .map(|r| (r, false))
+            .map_err(|e| format!("{e}")),
         "gated" => solve_with_canonical_mul_research(problem, limits)
-            .map(|r| (r, true)).map_err(|e| format!("{e:?}")),
+            .map(|r| (r, true))
+            .map_err(|e| format!("{e:?}")),
         "selective" => {
             if admit(problem) {
                 solve_with_canonical_mul_research(problem, limits)
-                    .map(|r| (r, true)).map_err(|e| format!("{e:?}"))
+                    .map(|r| (r, true))
+                    .map_err(|e| format!("{e:?}"))
             } else {
                 solve_with_limits(problem, limits)
-                    .map(|r| (r, false)).map_err(|e| format!("{e}"))
+                    .map(|r| (r, false))
+                    .map_err(|e| format!("{e}"))
             }
         }
         _ => Err("unknown mode".into()),
@@ -188,7 +223,10 @@ fn run_mode(problem: &Problem, limits: Limits, mode: &str) -> Result<(Report, bo
 fn worker(name: &str, mode: &str, cap: usize) -> Result<(), String> {
     const REPEATS: usize = 12;
     let (p, sat, wmc) = fixture(name)?;
-    let limits = Limits { cache_entries: cap, ..Limits::default() };
+    let limits = Limits {
+        cache_entries: cap,
+        ..Limits::default()
+    };
     let start = Instant::now();
     let mut last = None;
     for _ in 0..REPEATS {
@@ -197,12 +235,18 @@ fn worker(name: &str, mode: &str, cap: usize) -> Result<(), String> {
     let elapsed = start.elapsed().as_nanos();
     let (report, chosen) = last.ok_or("empty cohort")?;
     if report.satisfiable != sat || canonical(&report.count) != wmc {
-        return Err(format!("independent exact witness mismatch: {name}/{mode}/{cap}"));
+        return Err(format!(
+            "independent exact witness mismatch: {name}/{mode}/{cap}"
+        ));
     }
     println!(
         "RESULT\t{name}\t{mode}\t{cap}\t{elapsed}\t{}\t{chosen}\t{}\t{:?}\t{}\t{}\t{}",
-        vmhwm_kib()?, report.satisfiable, canonical(&report.count),
-        report.stats.nodes, report.stats.cache_hits, report.stats.decompositions,
+        vmhwm_kib()?,
+        report.satisfiable,
+        canonical(&report.count),
+        report.stats.nodes,
+        report.stats.cache_hits,
+        report.stats.decompositions,
     );
     Ok(())
 }
@@ -225,15 +269,21 @@ fn parent() -> Result<(), String> {
                 for mode in modes {
                     let output = Command::new(&executable)
                         .args(["--worker", name, mode, &cap.to_string()])
-                        .output().map_err(|e| e.to_string())?;
+                        .output()
+                        .map_err(|e| e.to_string())?;
                     if !output.status.success() {
-                        return Err(format!("worker failed {name}/{mode}/{cap}: {}",
-                            String::from_utf8_lossy(&output.stderr)));
+                        return Err(format!(
+                            "worker failed {name}/{mode}/{cap}: {}",
+                            String::from_utf8_lossy(&output.stderr)
+                        ));
                     }
                     let line = String::from_utf8(output.stdout).map_err(|e| e.to_string())?;
                     let fields: Vec<_> = line.trim().split('\t').collect();
-                    if fields.len() != 12 || fields[0] != "RESULT" || fields[1] != name ||
-                        fields[2] != mode || fields[3] != cap.to_string()
+                    if fields.len() != 12
+                        || fields[0] != "RESULT"
+                        || fields[1] != name
+                        || fields[2] != mode
+                        || fields[3] != cap.to_string()
                     {
                         return Err(format!("invalid worker record {line}"));
                     }
@@ -254,8 +304,11 @@ fn parent() -> Result<(), String> {
                 }
             }
             let median = |mode: &str| {
-                let mut ns: Vec<_> = times.iter().filter(|row| row.0 == mode)
-                    .map(|row| row.1).collect();
+                let mut ns: Vec<_> = times
+                    .iter()
+                    .filter(|row| row.0 == mode)
+                    .map(|row| row.1)
+                    .collect();
                 ns.sort_unstable();
                 ns[1]
             };

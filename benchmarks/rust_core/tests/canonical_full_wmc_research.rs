@@ -20,6 +20,14 @@ fn canonical(g: &Gaussian) -> Gaussian {
     Gaussian::new(normalized(&g.real), normalized(&g.imag))
 }
 
+fn assert_canonical_fields(value: &Gaussian) {
+    let expected = canonical(value);
+    assert_eq!(value.real.numer(), expected.real.numer());
+    assert_eq!(value.real.denom(), expected.real.denom());
+    assert_eq!(value.imag.numer(), expected.imag.numer());
+    assert_eq!(value.imag.denom(), expected.imag.denom());
+}
+
 fn mul_reference(a: &Gaussian, b: &Gaussian) -> Gaussian {
     Gaussian::new(
         &a.real * &b.real - &a.imag * &b.imag,
@@ -91,6 +99,7 @@ fn compare(p: &Problem, both_canonical: bool) {
             expected_count,
             "candidate WMC cap={cap}"
         );
+        assert_canonical_fields(&candidate.count);
         assert_eq!(canonical(&candidate.count), canonical(&baseline.count));
         // Numeric bit-length stats can differ for externally malformed
         // noncanonical representations; Boolean search behavior must not.

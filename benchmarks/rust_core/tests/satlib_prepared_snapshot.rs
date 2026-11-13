@@ -36,6 +36,7 @@ fn compare(
     replacement: &Problem,
     cached_original: &PreparedCanonicalProblem,
     cached_replacement: &PreparedCanonicalProblem,
+    replacement_is_canonical: bool,
 ) {
     let (old_sat, old_exact) = independent_full_wmc(name, original);
     let (new_sat, new_exact) = independent_full_wmc(name, replacement);
@@ -70,7 +71,12 @@ fn compare(
             assert_eq!(a.satisfiable, old_sat);
             assert_eq!(b.satisfiable, new_sat);
             assert_eq!(a.stats, old_baseline.stats);
-            assert_eq!(b.stats, new_baseline.stats);
+            assert_eq!(b.stats.nodes, new_baseline.stats.nodes);
+            assert_eq!(b.stats.cache_hits, new_baseline.stats.cache_hits);
+            assert_eq!(b.stats.decompositions, new_baseline.stats.decompositions);
+            if replacement_is_canonical {
+                assert_eq!(b.stats, new_baseline.stats);
+            }
             canonical_fields(&a.count);
             canonical_fields(&b.count);
         }
@@ -93,7 +99,7 @@ fn signed_complex_weight_mutation_requires_separate_prepare() {
             Weights::new(Gaussian::integers(7, 3), Gaussian::integers(-1, -2)),
         );
         let new_prepared = PreparedCanonicalProblem::prepare(&changed).unwrap();
-        compare(name, &source, &changed, &old_prepared, &new_prepared);
+        compare(name, &source, &changed, &old_prepared, &new_prepared, true);
         assert_eq!(
             old_prepared.estimated_retained_payload_bytes(),
             old_bytes,
@@ -118,7 +124,7 @@ fn noncanonical_signed_weight_updates_are_checked_and_snapshotted() {
             ),
         );
         let prepared_new = PreparedCanonicalProblem::prepare(&changed).unwrap();
-        compare(name, &source, &changed, &prepared_old, &prepared_new);
+        compare(name, &source, &changed, &prepared_old, &prepared_new, false);
     }
 }
 

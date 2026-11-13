@@ -558,6 +558,43 @@ fn normalize_research_problem(problem: &Problem) -> Result<Problem, CanonicalMul
     Ok(canonical)
 }
 
+/// Immutable, privately canonicalized problem for research-only repeated solves.
+///
+/// Construction clones the source problem, rejects zero denominators and
+/// normalizes every external rational exactly once. The private field cannot
+/// be replaced with an unchecked Problem by a caller; no mutable access is
+/// exposed. All methods are OFF by default behind canonical-mul-research.
+#[cfg(feature = "canonical-mul-research")]
+#[derive(Clone, Debug)]
+pub struct PreparedCanonicalProblem {
+    canonical: Problem,
+}
+
+#[cfg(feature = "canonical-mul-research")]
+impl PreparedCanonicalProblem {
+    /// Preparation cost must be included when reporting end-to-end timings.
+    pub fn prepare(problem: &Problem) -> Result<Self, CanonicalMulResearchError> {
+        let canonical = normalize_research_problem(problem)?;
+        Ok(Self { canonical })
+    }
+
+    /// Reuse the same verified canonical input without repeating preparation.
+    /// Every solve creates a new isolated DPLL Engine and cache, so no search
+    /// results leak between repeated solves.
+    pub fn solve_with_limits(&self, limits: Limits) -> Result<Report, SolveError> {
+        solve_with_solver_policy(
+            &self.canonical,
+            limits,
+            None,
+            0,
+            None,
+            #[cfg(feature = "branching-research")]
+            PivotPolicy::Frequency,
+            true,
+        )
+    }
+}
+
 /// The timer around this call MUST include its input normalization cost.
 /// The returned count remains a canonical exact Gaussian for valid weights.
 #[cfg(feature = "canonical-mul-research")]

@@ -44,10 +44,7 @@ fn verdict(result: Result<Report, SolveError>) -> Result<&'static str, String> {
 
 fn worker(mode: &str, nodes: u64, cap: usize) -> Result<(), String> {
     let certificate = verify_dubois20_unsat().map_err(|e| format!("source proof: {e}"))?;
-    if certificate.variables != 60
-        || certificate.xor_equations != 40
-        || certificate.rhs_xor != 1
-    {
+    if certificate.variables != 60 || certificate.xor_equations != 40 || certificate.rhs_xor != 1 {
         return Err("source certificate no longer proves original UNSAT".into());
     }
 
@@ -64,14 +61,12 @@ fn worker(mode: &str, nodes: u64, cap: usize) -> Result<(), String> {
     let mut prepared = None;
     let result = match mode {
         "baseline" => solve_with_limits(&original, limits),
-        "gated" => {
-            solve_with_canonical_mul_research(&original, limits).map_err(|e| match e {
-                CanonicalMulResearchError::Solve(error) => error,
-                CanonicalMulResearchError::ZeroDenominator { .. } => {
-                    panic!("source-pinned synthetic weights have valid denominators")
-                }
-            })
-        }
+        "gated" => solve_with_canonical_mul_research(&original, limits).map_err(|e| match e {
+            CanonicalMulResearchError::Solve(error) => error,
+            CanonicalMulResearchError::ZeroDenominator { .. } => {
+                panic!("source-pinned synthetic weights have valid denominators")
+            }
+        }),
         "prepared" => {
             let setup_started = Instant::now();
             let value = PreparedCanonicalProblem::prepare(&original)

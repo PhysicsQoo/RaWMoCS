@@ -35,7 +35,11 @@ pub struct XorRefutation {
 /// A one-parity half-space requires all four unique forbidden masks.
 /// Skip groups with duplicates, wrong arity, tautologies, or mixtures
 /// of forbidden parity; do not assume all CNF clauses form XORs.
-fn source_equations(variables: usize, clauses: &[Vec<i32>], allow_subsets: bool) -> Vec<XorEquation> {
+fn source_equations(
+    variables: usize,
+    clauses: &[Vec<i32>],
+    allow_subsets: bool,
+) -> Vec<XorEquation> {
     let mut grouped: BTreeMap<[usize; 3], Vec<(u8, usize)>> = BTreeMap::new();
     for (index, clause) in clauses.iter().enumerate() {
         if clause.len() != 3 {
@@ -446,5 +450,4 @@ mod tests {
         let oversized = vec![vec![1, 2, 3]; 10_001];
         assert!(refute_relaxed(3, &oversized).is_none());
     }
-
 }

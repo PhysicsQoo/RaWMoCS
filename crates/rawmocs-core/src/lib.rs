@@ -88,8 +88,12 @@ impl Gaussian {
     #[cfg(feature = "canonical-mul-research")]
     fn mul_canonical_research(&self, rhs: &Self) -> Self {
         fn mul(a: &BigRational, b: &BigRational) -> BigRational {
-            debug_assert_eq!(a, &BigRational::new(a.numer().clone(), a.denom().clone()));
-            debug_assert_eq!(b, &BigRational::new(b.numer().clone(), b.denom().clone()));
+            #[cfg(debug_assertions)]
+            for value in [a, b] {
+                let canonical = BigRational::new(value.numer().clone(), value.denom().clone());
+                debug_assert_eq!(value.numer(), canonical.numer());
+                debug_assert_eq!(value.denom(), canonical.denom());
+            }
             let g1 = a.numer().gcd(b.denom());
             let g2 = a.denom().gcd(b.numer());
             let n = (a.numer() / &g1) * (b.numer() / &g2);

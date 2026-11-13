@@ -1,6 +1,9 @@
 //! Six stable native benchmark identities; fixtures are built outside timed spans.
 use num_rational::BigRational;
 use rawmocs_benchmarks::cache_reuse::repeated_residuals;
+use rawmocs_benchmarks::cross_cancel_research::{
+    is_canonical_fraction, mul_canonical_cross_cancelled,
+};
 use rawmocs_benchmarks::expensive_reuse::guarded_cycle_residual;
 use rawmocs_benchmarks::scalability::{fixture as medium_fixture, Family};
 use rawmocs_benchmarks::{arithmetic_operands, fixture, Workload};
@@ -10,6 +13,8 @@ use rawmocs_core::{
 };
 use std::sync::OnceLock;
 
+static CROSS_CANCEL_128: OnceLock<(BigRational, BigRational)> = OnceLock::new();
+static CROSS_CANCEL_512: OnceLock<(BigRational, BigRational)> = OnceLock::new();
 static FORCED: OnceLock<Problem> = OnceLock::new();
 static CONNECTED: OnceLock<Problem> = OnceLock::new();
 static DISJOINT: OnceLock<Problem> = OnceLock::new();
@@ -102,7 +107,81 @@ fn main() {
     // Verify that the experimental raw-constructor is canonical only for
     // mathematically coprime inputs before any benchmarks are measured.
     verify_new_raw_preconditions();
+    verify_cross_cancel_experiments();
     divan::main();
+}
+
+// QOO-213 proof-guided candidate, isolated to the benchmark crate.
+// Canonical inputs are REQUIRED; do not call on unchecked Ratio::new_raw.
+fn cross_cancel_pair(bits: usize) -> &'static (BigRational, BigRational) {
+    let slot = match bits {
+        128 => &CROSS_CANCEL_128,
+        512 => &CROSS_CANCEL_512,
+        _ => panic!("fixed research sizes only"),
+    };
+    slot.get_or_init(|| {
+        let n: num_bigint::BigInt = (num_bigint::BigInt::from(1_u8) << bits) + 1_u8;
+        let n1 = &n + 1_u8;
+        let n2 = &n + 2_u8;
+        // Both ratios are canonical; their middle factor cancels.
+        (
+            BigRational::new(n.clone(), n1.clone()),
+            BigRational::new(n1, n2),
+        )
+    })
+}
+
+fn gaussian_research_cross_cancel(a: &Gaussian, b: &Gaussian) -> Gaussian {
+    Gaussian::new(
+        mul_canonical_cross_cancelled(&a.real, &b.real)
+            - mul_canonical_cross_cancelled(&a.imag, &b.imag),
+        mul_canonical_cross_cancelled(&a.real, &b.imag)
+            + mul_canonical_cross_cancelled(&a.imag, &b.real),
+    )
+}
+
+fn verify_cross_cancel_experiments() {
+    for bits in [128_usize, 512_usize] {
+        let (lhs, rhs) = cross_cancel_pair(bits);
+        assert!(is_canonical_fraction(lhs));
+        assert!(is_canonical_fraction(rhs));
+        let candidate = mul_canonical_cross_cancelled(lhs, rhs);
+        let reference = lhs * rhs;
+        assert_eq!(candidate.numer(), reference.numer());
+        assert_eq!(candidate.denom(), reference.denom());
+        assert!(is_canonical_fraction(&candidate));
+    }
+    let (a, b) = operands();
+    let candidate = gaussian_research_cross_cancel(a, b);
+    let reference = a.mul(b);
+    assert_eq!(candidate, reference);
+    for part in [&candidate.real, &candidate.imag] {
+        assert!(is_canonical_fraction(part));
+    }
+}
+
+#[divan::bench(args = [128_usize, 512_usize])]
+fn rational_cross_cancel_reference(bits: usize) {
+    let (a, b) = cross_cancel_pair(bits);
+    divan::black_box(divan::black_box(a) * divan::black_box(b));
+}
+
+#[divan::bench(args = [128_usize, 512_usize])]
+fn rational_cross_cancel_without_final_reduce(bits: usize) {
+    let (a, b) = cross_cancel_pair(bits);
+    divan::black_box(mul_canonical_cross_cancelled(
+        divan::black_box(a),
+        divan::black_box(b),
+    ));
+}
+
+#[divan::bench]
+fn gaussian_dense_cross_cancel_without_final_reduce() {
+    let (a, b) = operands();
+    divan::black_box(gaussian_research_cross_cancel(
+        divan::black_box(a),
+        divan::black_box(b),
+    ));
 }
 
 #[divan::bench]

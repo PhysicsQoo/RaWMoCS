@@ -44,3 +44,7 @@ required-features = ["canonical-mul-research"]
 [[example]]
 name = "canonical_prepared_paired"
 required-features = ["canonical-mul-research"]
+
+[[example]]
+name = "satlib_prepared_paired"
+required-features = ["canonical-mul-research"]

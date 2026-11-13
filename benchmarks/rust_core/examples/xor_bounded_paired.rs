@@ -173,9 +173,32 @@ fn run() -> Result<(), String> {
             };
             let baseline = median("baseline");
             let guarded = median("xor_guard");
+            let b_verdict = grouped
+                .iter()
+                .find(|entry| entry.0 == "baseline")
+                .ok_or("missing baseline verdict")?
+                .2
+                .as_str();
+            let g_verdict = grouped
+                .iter()
+                .find(|entry| entry.0 == "xor_guard")
+                .ok_or("missing XOR verdict")?
+                .2
+                .as_str();
+            if grouped.iter().any(|entry| {
+                entry.2 != if entry.0 == "baseline" { b_verdict } else { g_verdict }
+            }) {
+                return Err("inconsistent repeated verdict for the same mode".into());
+            }
+            // UNKNOWN versus PROVEN_UNSAT are different completed tasks:
+            // do not publish a meaningless "500x speedup" quotient.
+            let ratio = if b_verdict == g_verdict {
+                format!("{:.4}", baseline as f64 / guarded as f64)
+            } else {
+                "NA_DIFFERENT_VERDICT".to_owned()
+            };
             println!(
-                "SUMMARY\t{name}\t{cap}\tbaseline_ns={baseline}\txor_guard_ns={guarded}\tbaseline_over_guard={:.4}",
-                baseline as f64 / guarded as f64
+                "SUMMARY\t{name}\t{cap}\tbaseline_verdict={b_verdict}\txor_verdict={g_verdict}\tbaseline_ns={baseline}\txor_guard_ns={guarded}\tbaseline_over_guard={ratio}"
             );
         }
     }

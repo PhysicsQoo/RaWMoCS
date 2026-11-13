@@ -1,0 +1,55 @@
+name: Selective canonical multiplication research
+
+on:
+  pull_request:
+    paths:
+      - "benchmarks/rust_core/examples/canonical_admission_paired.rs"
+      - "benchmarks/rust_core/Cargo.toml"
+      - ".github/workflows/canonical-admission-research.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: canonical-admission-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  paired-native:
+    name: Native three-arm admission and adverse-holdout evidence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/rust_core -> target
+      - name: Format and Clippy default and gated research
+        run: |
+          cargo fmt --manifest-path benchmarks/rust_core/Cargo.toml --all -- --check
+          cargo clippy --locked --manifest-path benchmarks/rust_core/Cargo.toml --all-targets --features canonical-mul-research -- -D warnings
+      - name: Independent oracle from QOO-214
+        run: cargo test --locked --manifest-path benchmarks/rust_core/Cargo.toml --features canonical-mul-research
+      - name: Same-host baseline / always-gated / selective, alternating order
+        run: |
+          set -euo pipefail
+          cargo run --quiet --locked --manifest-path benchmarks/rust_core/Cargo.toml --release --features canonical-mul-research --example canonical_admission_paired > qoo216-admission-evidence.tsv
+          cat qoo216-admission-evidence.tsv
+          test "$(grep -c '^ADMISSION' qoo216-admission-evidence.tsv)" -eq 13
+          test "$(grep -c '^SUMMARY' qoo216-admission-evidence.tsv)" -eq 26
+          test "$(grep -c '^PAIRED' qoo216-admission-evidence.tsv)" -eq 234
+          git diff --exit-code -- benchmarks/rust_core/Cargo.lock
+      - name: Archive reproducible raw evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qoo216-admission-${{ github.sha }}
+          path: qoo216-admission-evidence.tsv
+          if-no-files-found: warn
+          retention-days: 14

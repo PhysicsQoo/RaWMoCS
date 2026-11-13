@@ -91,6 +91,14 @@ fn main() {
     for vertices in [6, 10, 14] {
         let _ = connected_cycle_case(vertices);
     }
+    // Pre-initialize all rational normalization fixtures and exact-oracle
+    // checks before Divan begins measuring any benchmark iteration.
+    for bits in [128_usize, 192_usize, 512_usize, 576_usize] {
+        let _ = rational_reduction_input(bits, false);
+    }
+    for bits in [128_usize, 512_usize] {
+        let _ = rational_reduction_input(bits, true);
+    }
     divan::main();
 }
 

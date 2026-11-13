@@ -61,6 +61,25 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Check out pinned original QuPRS test definitions
+        uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/QuPRS
+          ref: 0b28736651b3740ed3b201edd2efdef3da541e0d
+          path: .upstream/quprs
+          persist-credentials: false
+      - name: Check out pinned same-source GPMC CNF generator
+        uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/GPMC
+          ref: 8dbf7f45d3e808f8c27c4c5f5e69eeb271cd0adb
+          path: .upstream/gpmc
+          persist-credentials: false
+      - name: Generate source-locked identical GPMC/Rust QuPRS CNFs
+        run: |
+          test "$(git -C .upstream/gpmc hash-object benchmarks/quprs/prepare_direct_cnf.py)" = "0a6859c583f34725e59983380cedf1030d7da15b"
+          python3 .upstream/gpmc/benchmarks/quprs/prepare_direct_cnf.py \
+            --quprs .upstream/quprs --output "${RUNNER_TEMP}/quprs-cnf"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -70,11 +89,13 @@ jobs:
         run: cargo metadata --locked --format-version 1 --manifest-path benchmarks/rust_core/Cargo.toml --no-deps > /dev/null
       - name: Build instrumented solver microbenchmarks
         working-directory: benchmarks/rust_core
-        run: cargo codspeed build -m simulation --bench solver
+        run: cargo codspeed build -m simulation --features quprs-gpmc-paired-research --benches
       - name: Confirm instrumented build did not rewrite the lockfile
         run: git diff --exit-code -- benchmarks/rust_core/Cargo.lock
-      - name: Upload native CodSpeed results
+      - name: Upload all 62 legacy and six new paired CodSpeed identities in ONE workflow
         uses: CodSpeedHQ/action@v5
+        env:
+          GPMC_QU_PRS_CNF_DIR: ${{ runner.temp }}/quprs-cnf
         with:
           mode: simulation
-          run: cd benchmarks/rust_core && cargo codspeed run --bench solver
+          run: cd benchmarks/rust_core && cargo codspeed run --features quprs-gpmc-paired-research --benches

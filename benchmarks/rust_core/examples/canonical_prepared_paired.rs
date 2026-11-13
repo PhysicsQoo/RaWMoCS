@@ -213,6 +213,20 @@ fn worker(name: &str, mode: &str, cap: usize, repeats: usize) -> Result<(), Stri
             "independent exact witness mismatch {name}/{mode}/{cap}/{repeats}"
         ));
     }
+    // Preserve the stronger representation invariant for both guarded arms.
+    // Baseline still accepts raw noncanonical public weights by contract.
+    if mode != "baseline" {
+        let expected = canonical(&report.count);
+        if report.count.real.numer() != expected.real.numer()
+            || report.count.real.denom() != expected.real.denom()
+            || report.count.imag.numer() != expected.imag.numer()
+            || report.count.imag.denom() != expected.imag.denom()
+        {
+            return Err(format!(
+                "noncanonical guarded output for {name}/{mode}/{cap}/{repeats}"
+            ));
+        }
+    }
     let rss = vmhwm_kib()?;
     println!(
         "RESULT\t{name}\t{mode}\t{cap}\t{repeats}\t{nanos}\t{rss}\t{}\t{:?}\t{}\t{}\t{}\t{setup_ns}",

@@ -32,12 +32,12 @@ pub fn printed_decimal(token: &str) -> Result<BigRational, String> {
     if token.is_empty() || token.len() > MAX_DECIMAL_BYTES {
         return Err("empty or oversized decimal token".into());
     }
-    let exponent_position = token.find(['e', 'E']);
+    let exponent_position = token.find(|c: char| c == 'e' || c == 'E');
     let (mantissa, exponent) = if let Some(index) = exponent_position {
         let exponent = token[index + 1..]
             .parse::<i32>()
             .map_err(|_| "invalid decimal exponent")?;
-        if exponent.abs() > MAX_DECIMAL_EXPONENT {
+        if exponent.unsigned_abs() > MAX_DECIMAL_EXPONENT as u32 {
             return Err("decimal exponent exceeds reference guard".into());
         }
         (&token[..index], exponent)
@@ -56,12 +56,16 @@ pub fn printed_decimal(token: &str) -> Result<BigRational, String> {
     if whole.is_empty() && fractional.is_empty() {
         return Err("decimal token missing digits".into());
     }
-    if !whole.bytes().chain(fractional.bytes()).all(|c| c.is_ascii_digit()) {
+    if !whole
+        .bytes()
+        .chain(fractional.bytes())
+        .all(|c| c.is_ascii_digit())
+    {
         return Err("non-decimal or non-finite token".into());
     }
     let digits = format!("{whole}{fractional}");
-    let mut numerator = BigInt::parse_bytes(digits.as_bytes(), 10)
-        .ok_or("unable to parse decimal mantissa")?;
+    let mut numerator =
+        BigInt::parse_bytes(digits.as_bytes(), 10).ok_or("unable to parse decimal mantissa")?;
     if negative {
         numerator = -numerator;
     }
@@ -131,8 +135,12 @@ pub fn parse_printed_dimacs(raw: &str, dialect: Dialect) -> Result<Problem, Stri
             if header.is_some() || marker || fields.len() != 4 || fields[1] != "cnf" {
                 return Err("duplicate or invalid CNF header".into());
             }
-            let n = fields[2].parse::<usize>().map_err(|_| "invalid variable count")?;
-            let count = fields[3].parse::<usize>().map_err(|_| "invalid clause count")?;
+            let n = fields[2]
+                .parse::<usize>()
+                .map_err(|_| "invalid variable count")?;
+            let count = fields[3]
+                .parse::<usize>()
+                .map_err(|_| "invalid clause count")?;
             if n == 0 || n > MAX_VARIABLES || count > MAX_CLAUSES {
                 return Err("CNF exceeds independent reference limits".into());
             }
@@ -149,7 +157,9 @@ pub fn parse_printed_dimacs(raw: &str, dialect: Dialect) -> Result<Problem, Stri
                     return Err("weight outside source header".into());
                 }
                 let n = header.ok_or("weight before header")?.0;
-                let lit = fields[3].parse::<i32>().map_err(|_| "invalid weighted literal")?;
+                let lit = fields[3]
+                    .parse::<i32>()
+                    .map_err(|_| "invalid weighted literal")?;
                 let abs = lit.unsigned_abs() as usize;
                 if abs == 0 || abs > n {
                     return Err("weighted literal outside CNF scope".into());
@@ -305,8 +315,22 @@ mod tests {
     fn quprs_source_defined_six_golden_cases_in_both_dialects() {
         let cases: [(&str, &[&str], bool, bool, (i64, i64), (i64, i64)); 6] = [
             ("unconstrained", &[], false, true, (3, 4), (0, 1)),
-            ("forced-sat", &["1 0", "-2 0"], false, true, (19, 16), (-3, 16)),
-            ("contradictory-unsat", &["1 0", "-1 0"], false, false, (0, 1), (0, 1)),
+            (
+                "forced-sat",
+                &["1 0", "-2 0"],
+                false,
+                true,
+                (19, 16),
+                (-3, 16),
+            ),
+            (
+                "contradictory-unsat",
+                &["1 0", "-1 0"],
+                false,
+                false,
+                (0, 1),
+                (0, 1),
+            ),
             ("disjunction", &["1 2 0"], false, true, (-5, 16), (9, 16)),
             ("xor", &["1 2 0", "-1 -2 0"], false, true, (1, 2), (5, 16)),
             ("complex-cancellation", &[], true, true, (0, 1), (0, 1)),
@@ -331,8 +355,20 @@ mod tests {
         assert_exact(forced, Dialect::Gpmc, true, rat(3, 5), rat(4, 5));
         let free = "p cnf 2 1\nc t wmc\nc p weight 1 0.5 0 0\nc p weight -1 1 0 0\nc p weight 2 0.5 0 0\nc p weight -2 1 0 0\n1 2 0\n";
         assert_exact(free, Dialect::Gpmc, true, rat(5, 4), rat(0, 1));
-        assert_exact("p cnf 2 0\nc t wmc\n", Dialect::Gpmc, true, rat(4, 1), rat(0, 1));
-        assert_exact("p cnf 1 1\nc t wmc\n0\n", Dialect::Gpmc, false, rat(0, 1), rat(0, 1));
+        assert_exact(
+            "p cnf 2 0\nc t wmc\n",
+            Dialect::Gpmc,
+            true,
+            rat(4, 1),
+            rat(0, 1),
+        );
+        assert_exact(
+            "p cnf 1 1\nc t wmc\n0\n",
+            Dialect::Gpmc,
+            false,
+            rat(0, 1),
+            rat(0, 1),
+        );
         assert_eq!(printed_decimal("1.25e-2").unwrap(), rat(1, 80));
         assert_eq!(printed_decimal("-0.5").unwrap(), rat(-1, 2));
         let scientific = "p cnf 1 1\nc t wmc\nc p weight 1 1e-3 - 2.5e-2i 0\n1 0\n";
@@ -363,8 +399,17 @@ mod tests {
                 "must refuse invalid printed input: {source}"
             );
         }
-        for token in ["nan", "inf", "1/2", "0.1j", "1e1000", ".",
-                      "1.2.3", "", "1".repeat(121).as_str()] {
+        for token in [
+            "nan",
+            "inf",
+            "1/2",
+            "0.1j",
+            "1e1000",
+            ".",
+            "1.2.3",
+            "",
+            "1".repeat(121).as_str(),
+        ] {
             assert!(printed_decimal(token).is_err());
         }
         let ganak_bad = [
@@ -381,8 +426,12 @@ mod tests {
 
     #[test]
     fn rejects_unknown_unbounded_or_forged_oracle_uses() {
-        let input = Problem::new(13, vec![], vec![Weights::new(Gaussian::one(), Gaussian::one()); 13])
-            .unwrap();
+        let input = Problem::new(
+            13,
+            vec![],
+            vec![Weights::new(Gaussian::one(), Gaussian::one()); 13],
+        )
+        .unwrap();
         assert!(independent_exact_full_wmc(&input).is_err());
         assert!(parse_printed_dimacs("p cnf 0 0\nc t wmc", Dialect::Gpmc).is_err());
     }

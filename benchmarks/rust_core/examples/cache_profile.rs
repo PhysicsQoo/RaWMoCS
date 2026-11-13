@@ -653,7 +653,7 @@ fn cost_worker(vertices: usize, policy: &str, trial: usize) -> Result<(), String
     }
     let peak_rss = peak_rss_kib()?;
     println!(
-        "{vertices},{},{trial},{policy},{elapsed_ns},{peak_rss},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+        "{vertices},{},{trial},{policy},{elapsed_ns},{peak_rss},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
         vertices + 1,
         stats.nodes,
         stats.cache_hits,

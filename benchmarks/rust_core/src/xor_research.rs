@@ -35,7 +35,7 @@ pub struct XorRefutation {
 /// A one-parity half-space requires all four unique forbidden masks.
 /// Skip groups with duplicates, wrong arity, tautologies, or mixtures
 /// of forbidden parity; do not assume all CNF clauses form XORs.
-fn source_equations(variables: usize, clauses: &[Vec<i32>]) -> Vec<XorEquation> {
+fn source_equations(variables: usize, clauses: &[Vec<i32>], allow_subsets: bool) -> Vec<XorEquation> {
     let mut grouped: BTreeMap<[usize; 3], Vec<(u8, usize)>> = BTreeMap::new();
     for (index, clause) in clauses.iter().enumerate() {
         if clause.len() != 3 {
@@ -64,6 +64,33 @@ fn source_equations(variables: usize, clauses: &[Vec<i32>]) -> Vec<XorEquation> 
     }
     let mut result = Vec::new();
     for (vars, candidates) in grouped {
+        // QOO-223 research only: any four distinct forbidden masks of one
+        // parity imply the opposite XOR equation, even when the original
+        // CNF contains duplicates, the other parity or unrelated clauses.
+        // Retain original indices: verify() replays only genuine source
+        // clauses and never discards the remaining CNF constraints.
+        if allow_subsets {
+            for forbidden_parity in [0u8, 1u8] {
+                let mut masks: BTreeMap<u8, usize> = BTreeMap::new();
+                for &(mask, index) in &candidates {
+                    if (mask.count_ones() as u8 & 1) == forbidden_parity {
+                        masks.entry(mask).or_insert(index);
+                    }
+                }
+                if masks.len() == 4 {
+                    let mut indices = [0usize; 4];
+                    for (j, index) in masks.values().enumerate() {
+                        indices[j] = *index;
+                    }
+                    result.push(XorEquation {
+                        variables: vars,
+                        rhs: forbidden_parity ^ 1,
+                        clauses: indices,
+                    });
+                }
+            }
+            continue;
+        }
         // A duplicated clause cannot be silently counted as a distinct mask.
         if candidates.len() != 4 {
             continue;
@@ -105,11 +132,27 @@ fn xor_symmetric_difference(left: &mut BTreeSet<usize>, right: &BTreeSet<usize>)
 ///
 /// Work is capped by both input dimensions. The basis has at most 256 rows;
 /// no candidate is run on unbounded large arbitrary CNFs.
+/// Original QOO-222 strict source policy: exactly four clauses per triple.
 pub fn refute(variables: usize, clauses: &[Vec<i32>]) -> Option<XorRefutation> {
+    refute_with_extraction(variables, clauses, false)
+}
+
+/// Research-only QOO-223 policy. It may extract a four-mask XOR subset
+/// from an overcomplete or duplicated triple, but returns only a verified
+/// Boolean UNSAT proof, never a count or a SAT verdict.
+pub fn refute_relaxed(variables: usize, clauses: &[Vec<i32>]) -> Option<XorRefutation> {
+    refute_with_extraction(variables, clauses, true)
+}
+
+fn refute_with_extraction(
+    variables: usize,
+    clauses: &[Vec<i32>],
+    allow_subsets: bool,
+) -> Option<XorRefutation> {
     if variables == 0 || variables > MAX_VARIABLES || clauses.len() > MAX_CLAUSES {
         return None;
     }
-    let equations = source_equations(variables, clauses);
+    let equations = source_equations(variables, clauses, allow_subsets);
     let words = variables.div_ceil(64);
     // Pivot by first set bit. All words are local, densely bounded bitsets.
     let mut basis: BTreeMap<usize, (Vec<u64>, u8, BTreeSet<usize>)> = BTreeMap::new();
@@ -339,4 +382,69 @@ mod tests {
         // refuse pattern admission on groups >4. None is a valid outcome.
         assert!(refute(3, &eight).is_none());
     }
+    #[test]
+    fn relaxed_refutes_complete_opposite_parity_with_original_clause_indices() {
+        let mut all = Vec::new();
+        for a in 0_u8..8 {
+            all.push(vec![
+                if a & 1 != 0 { -1 } else { 1 },
+                if a & 2 != 0 { -2 } else { 2 },
+                if a & 4 != 0 { -3 } else { 3 },
+            ]);
+        }
+        assert!(!brute_sat(3, &all));
+        assert!(refute(3, &all).is_none(), "QOO-222 conservative baseline");
+        let proof = refute_relaxed(3, &all).expect("two source parity halves conflict");
+        assert_eq!(proof.equations.len(), 2);
+        assert!(verify(3, &all, &proof));
+        let mut altered = all.clone();
+        let used = proof.equations[0].clauses[0];
+        altered[used][0] = -altered[used][0];
+        assert!(!verify(3, &altered, &proof), "proof is source-bound");
+
+        let mut mixed = all.clone();
+        mixed.push(all[0].clone()); // duplicate source mask
+        mixed.push(vec![4]); // unrelated original-CNF clause
+        mixed.push(vec![-4, 2]);
+        assert!(!brute_sat(4, &mixed));
+        assert!(refute(4, &mixed).is_none());
+        let proof = refute_relaxed(4, &mixed).expect("source subset proof");
+        assert!(verify(4, &mixed, &proof));
+    }
+
+    #[test]
+    fn relaxed_still_requires_a_parity_contradiction_not_just_unsat() {
+        let mut one_parity = Vec::new();
+        for mask in 0_u8..8 {
+            if mask.count_ones() % 2 == 1 {
+                one_parity.push(vec![
+                    if mask & 1 != 0 { -1 } else { 1 },
+                    if mask & 2 != 0 { -2 } else { 2 },
+                    if mask & 4 != 0 { -3 } else { 3 },
+                ]);
+            }
+        }
+        assert!(brute_sat(4, &one_parity));
+        assert!(refute_relaxed(4, &one_parity).is_none());
+        // The complete CNF becomes UNSAT only due to non-XOR unit clauses.
+        // A consistent extracted XOR subsystem cannot certify this conflict.
+        one_parity.push(vec![4]);
+        one_parity.push(vec![-4]);
+        assert!(!brute_sat(4, &one_parity));
+        assert!(refute_relaxed(4, &one_parity).is_none());
+    }
+
+    #[test]
+    fn relaxed_dubois_repeated_mask_and_bounded_fail_closed() {
+        let (variables, original) = original_dubois20_clauses();
+        let mut repeated = original.clone();
+        repeated.push(original[0].clone());
+        assert!(refute(variables, &repeated).is_none());
+        let proof = refute_relaxed(variables, &repeated).expect("40 source XOR groups");
+        assert!(verify(variables, &repeated, &proof));
+        assert!(refute_relaxed(257, &repeated).is_none());
+        let oversized = vec![vec![1, 2, 3]; 10_001];
+        assert!(refute_relaxed(3, &oversized).is_none());
+    }
+
 }

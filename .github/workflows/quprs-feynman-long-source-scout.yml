@@ -91,6 +91,7 @@ jobs:
           key: mpfr-rawmocs-original-feynman-scout
       - name: Build same-bit RaWMoCS research MPFR release executable
         run: |
+          cargo test --release --manifest-path benchmarks/mpfr_research/Cargo.toml
           cargo build --release --manifest-path benchmarks/mpfr_research/Cargo.toml
       - name: Source and bounded same-MPFR native paired scout
         run: |

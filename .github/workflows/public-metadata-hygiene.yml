@@ -1,0 +1,76 @@
+name: Public research metadata hygiene
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, edited, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  guard-public-metadata:
+    name: Reject internal tracker numbers in published PR changes
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check public branch, PR metadata, new code and commit messages
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Internal tracker identifiers belong to private project tracking.
+            // Preserve only neutral public research terminology in repository.
+            const {owner, repo} = context.repo;
+            const number = context.issue.number;
+            const pull = context.payload.pull_request;
+            const forbidden = /\bqoo[-_]\d+\b/i;
+            const violations = [];
+            for (const [field, value] of [
+              ["public PR title", pull.title],
+              ["public PR body", pull.body || ""],
+              ["public source branch", pull.head.ref],
+            ]) {
+              if (forbidden.test(value)) violations.push(field);
+            }
+            const changed = await github.paginate(
+              github.rest.pulls.listFiles,
+              {owner, repo, pull_number: number, per_page: 100}
+            );
+            for (const file of changed) {
+              if (forbidden.test(file.filename)) {
+                violations.push("public filename: " + file.filename);
+              }
+              // Diff-scoped, not a whole-repository historical grep:
+              // only new lines can leak identifiers in this PR.
+              if (file.patch === undefined || file.patch === null) {
+                violations.push("unreviewable changed-file patch: " + file.filename);
+                continue;
+              }
+              for (const line of file.patch.split("\n")) {
+                if (line.startsWith("+") && !line.startsWith("+++") && forbidden.test(line)) {
+                  violations.push("new line in " + file.filename);
+                  break;
+                }
+              }
+            }
+            const commits = await github.paginate(
+              github.rest.pulls.listCommits,
+              {owner, repo, pull_number: number, per_page: 100}
+            );
+            for (const commit of commits) {
+              if (forbidden.test(commit.commit.message)) {
+                violations.push("public commit message: " + commit.sha.slice(0, 12));
+              }
+            }
+            if (violations.length) {
+              core.setFailed(
+                "Internal issue identifiers must remain in private tracking:\n" +
+                violations.join("\n")
+              );
+            } else {
+              core.info(
+                "PUBLIC_METADATA_PASS: " + changed.length +
+                " changed files; " + commits.length + " commits"
+              );
+            }

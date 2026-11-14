@@ -37,3 +37,25 @@ comparisons rather than independent exhaustive proof.
 No production change or merge is authorized by a positive
 microbenchmark alone. The primary decision is long QFT4
 end-to-end improvement without mod5_4 degradation or memory growth.
+
+## Expanded original Feynman source-scout test
+
+The user-facing performance priority is **long-running cases**.
+The separate source-scout CI now also tests the original
+`feynman_hwb6` CNF (297 variables, 827 clauses) which qualified
+a finite 1,000,000-node cap, together with original Feynman
+`barenco_tof_5` (97 variables) and `mod_mult_55` (91 variables).
+At 100 and 333 MPFR bits, perform three rotating fresh process
+trials each for unchanged GPMC C++, the original Borrowed Cache
+Rust control, and the shared-residual candidate. HWB6 is a
+**seconds-scale** Rust solver benchmark, rather than a startup
+dominated microbenchmark. Grover5 (607 variables) remains
+explicitly censored at the 1M-node limit, without a speed rank.
+
+The long scout uses identical original CNF bytes, explicit 30s
+native process and 2 GiB virtual address bounds, unchanged GPMC,
+finite Rust node limits, SAT and numerical acceptance and exact
+stdout/search-structure parity for both Rust arms. All WallTime,
+RSS, solver-only time and failures are recorded. For large source
+CNFs, scientific status is cross-solver agreement only, not an
+independent exhaustive WMC or quantum phase certificate.

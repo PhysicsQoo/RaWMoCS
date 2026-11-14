@@ -63,6 +63,8 @@ struct Engine<'a> {
     bits: u32,
     cache: HashMap<Key, Outcome>,
     stats: Stats,
+    fast_units: bool,
+    fast_assign: bool,
 }
 impl Engine<'_> {
     fn weight(&self, var: usize, positive: bool) -> &C {
@@ -88,14 +90,37 @@ impl Engine<'_> {
         let mut remaining = scope;
         let mut prefix = C::one(self.bits);
         loop {
-            if residual.iter().any(Vec::is_empty) {
-                return Ok(self.save(key, Outcome::unsat(self.bits)));
-            }
-            let Some(lit) = residual.iter().find(|c| c.len() == 1).map(|c| c[0]) else { break; };
+            // The original path first checks all empty clauses and then
+            // searches the first unit. The opt-in path preserves that
+            // priority and first-unit order in one exhaustive scan.
+            let first_unit = if self.fast_units {
+                let mut first = None;
+                let mut has_conflict = false;
+                for clause in &residual {
+                    if clause.is_empty() { has_conflict = true; break; }
+                    if first.is_none() && clause.len() == 1 {
+                        first = Some(clause[0]);
+                    }
+                }
+                if has_conflict {
+                    return Ok(self.save(key, Outcome::unsat(self.bits)));
+                }
+                first
+            } else {
+                if residual.iter().any(Vec::is_empty) {
+                    return Ok(self.save(key, Outcome::unsat(self.bits)));
+                }
+                residual.iter().find(|c| c.len() == 1).map(|c| c[0])
+            };
+            let Some(lit) = first_unit else { break; };
             let var = lit.unsigned_abs() as usize;
             prefix = prefix.mul(self.weight(var, lit > 0), self.bits);
             remaining.retain(|&v| v != var);
-            residual = assign(&residual, lit);
+            residual = if self.fast_assign {
+                assign_fast(&residual, lit)
+            } else {
+                assign(&residual, lit)
+            };
         }
         if residual.is_empty() {
             for var in remaining {
@@ -130,8 +155,18 @@ impl Engine<'_> {
         }
         let var = *active.iter().max_by_key(|&&v| frequency[v]).ok_or("no active pivot")?;
         let child: Vec<_> = active.into_iter().filter(|&v| v != var).collect();
-        let yes = self.count(assign(&residual, var as i32), child.clone(), depth + 1)?;
-        let no = self.count(assign(&residual, -(var as i32)), child, depth + 1)?;
+        let yes_clauses = if self.fast_assign {
+            assign_fast(&residual, var as i32)
+        } else {
+            assign(&residual, var as i32)
+        };
+        let yes = self.count(yes_clauses, child.clone(), depth + 1)?;
+        let no_clauses = if self.fast_assign {
+            assign_fast(&residual, -(var as i32))
+        } else {
+            assign(&residual, -(var as i32))
+        };
+        let no = self.count(no_clauses, child, depth + 1)?;
         let yes_weighted = self.weight(var, true).mul(&yes.count, self.bits);
         let no_weighted = self.weight(var, false).mul(&no.count, self.bits);
         let sum = yes_weighted.add(&no_weighted, self.bits);
@@ -159,6 +194,33 @@ fn normalize_child(mut cls: Vec<Clause>) -> Vec<Clause> {
 fn assign(clauses: &[Clause], lit: i32) -> Vec<Clause> {
     clauses.iter().filter(|c| !c.contains(&lit))
         .map(|c| c.iter().copied().filter(|&x| x != -lit).collect()).collect()
+}
+/// Preserve original clause order while specializing the high-frequency
+/// two-literal QuPRS CNF case, and clone unchanged clauses directly.
+fn assign_fast(clauses: &[Clause], lit: i32) -> Vec<Clause> {
+    let opposite = -lit;
+    let mut child = Vec::with_capacity(clauses.len());
+    for clause in clauses {
+        if clause.len() == 2 {
+            let a = clause[0];
+            let b = clause[1];
+            if a == lit || b == lit { continue; }
+            if a == opposite {
+                child.push(vec![b]);
+            } else if b == opposite {
+                child.push(vec![a]);
+            } else {
+                child.push(clause.clone());
+            }
+        } else if clause.contains(&lit) {
+            continue;
+        } else if clause.contains(&opposite) {
+            child.push(clause.iter().copied().filter(|&v| v != opposite).collect());
+        } else {
+            child.push(clause.clone());
+        }
+    }
+    child
 }
 fn root(parent: &mut [usize], mut x: usize) -> usize {
     while parent[x] != x {
@@ -243,8 +305,17 @@ fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
 }
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
-    let digits: u32 = args.next().ok_or("usage: rawmocs-mpfr-research DIGITS FILE")?
-        .to_str().ok_or("non-UTF8 precision")?.parse().map_err(|_| "bad precision")?;
+    let first = args.next().ok_or(
+        "usage: rawmocs-mpfr-research [--fused-units|--fast-assign|--fast-both] DIGITS FILE"
+    )?;
+    let (fast_units, fast_assign, digits_token) = match first.to_str() {
+        Some("--fused-units") => (true, false, args.next().ok_or("missing digits")?),
+        Some("--fast-assign") => (false, true, args.next().ok_or("missing digits")?),
+        Some("--fast-both") => (true, true, args.next().ok_or("missing digits")?),
+        _ => (false, false, first),
+    };
+    let digits: u32 = digits_token.to_str().ok_or("non-UTF8 precision")?
+        .parse().map_err(|_| "bad precision")?;
     if !(30..=100).contains(&digits) { return Err("supported precision 30..100 digits".into()); }
     // Source GPMC/mpfr/mpreal.h uses this EXACT digits2bits conversion.
     let bits = (f64::from(digits) * 3.321_928_094_887_362_4).ceil() as u32;
@@ -257,7 +328,10 @@ fn run() -> Result<(), String> {
     let p = parse_emitted(&raw, bits)?;
     let parse_ns = t1.elapsed().as_nanos();
     let t2 = Instant::now();
-    let mut engine = Engine { p: &p, bits, cache: HashMap::new(), stats: Stats::default() };
+    let mut engine = Engine {
+        p: &p, bits, cache: HashMap::new(), stats: Stats::default(),
+        fast_units, fast_assign,
+    };
     let answer = engine.count(p.clauses.clone(), (1..=p.n).collect(), 0)?;
     let solve_ns = t2.elapsed().as_nanos();
     let t3 = Instant::now();
@@ -296,10 +370,53 @@ mod tests {
         assert_eq!(z.im, Float::with_val(100, 0.171875));
     }
     #[test]
+    fn fast_clause_assignment_matches_original_under_all_literatures() {
+        let cnfs: Vec<Vec<Clause>> = vec![
+            vec![],
+            vec![vec![]],
+            vec![vec![1], vec![-1]],
+            vec![vec![1, 2], vec![-1, 3], vec![2, -3]],
+            vec![vec![1, 2, 3], vec![-1, -2, -3], vec![4, 2]],
+            vec![vec![1, -2, 3, 4], vec![1, 2], vec![-4], vec![-1, 3]],
+        ];
+        for cnf in cnfs {
+            let cnf = normalize(cnf);
+            for literal in -6_i32..=6_i32 {
+                if literal == 0 { continue; }
+                assert_eq!(assign_fast(&cnf, literal), assign(&cnf, literal),
+                    "assignment must preserve each clause and clause order for literal={literal}");
+            }
+        }
+    }
+    #[test]
+    fn all_fast_propagation_modes_match_original_sat_and_count() {
+        let fixtures = [
+            "p cnf 2 2\nc t wmc\nc p weight 1 -1 0 0\nc p weight -1 1 0 0\n1 2 0\n-1 -2 0\n",
+            "p cnf 3 4\nc t wmc\nc p weight 2 0.25 -0.5 0\n1 2 0\n-1 3 0\n-2 3 0\n1 -3 0\n",
+            "p cnf 3 2\nc t wmc\n1 0\n-1 0\n",
+        ];
+        for text in fixtures {
+            let p = parse_emitted(text, 100).unwrap();
+            let mut expected = None;
+            for (fast_units, fast_assign) in [(false, false), (true, false), (false, true), (true, true)] {
+                let mut engine = Engine { p: &p, bits: 100, cache: HashMap::new(),
+                    stats: Stats::default(), fast_units, fast_assign };
+                let out = engine.count(p.clauses.clone(), (1..=p.n).collect(), 0).unwrap();
+                let witness = (out.sat, out.count.re, out.count.im,
+                    engine.stats.nodes, engine.stats.cache_hits, engine.stats.decompositions);
+                if let Some(ref prior) = expected {
+                    assert_eq!(&witness, prior, "all opt-in paths must preserve structural and MPFR results");
+                } else {
+                    expected = Some(witness);
+                }
+            }
+        }
+    }
+    #[test]
     fn boolean_sat_with_cancelled_wmc() {
         let text = "p cnf 1 0\nc t wmc\nc p weight 1 1 0 0\nc p weight -1 -1 0 0\n";
         let p = parse_emitted(text, 100).unwrap();
-        let mut engine = Engine { p: &p, bits: 100, stats: Stats::default(), cache: HashMap::new() };
+        let mut engine = Engine { p: &p, bits: 100, stats: Stats::default(), cache: HashMap::new(), fast_units: false, fast_assign: false };
         let out = engine.count(p.clauses.clone(), vec![1], 0).unwrap();
         assert!(out.sat);
         assert_eq!(out.count.re, 0);

@@ -60,6 +60,8 @@ impl Outcome {
 struct Key { scope: Vec<usize>, clauses: Vec<Clause> }
 #[derive(Default, Clone, Copy)]
 struct Stats { nodes: u64, cache_hits: u64, decompositions: u64 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PivotPolicy { Frequency, ShortClause, Moms }
 #[derive(Clone, Copy, Debug)]
 enum CachePolicy { StdOwned, HbOwned, HbBorrowed }
 impl CachePolicy {
@@ -79,12 +81,13 @@ struct Engine<'a> {
     cache_policy: CachePolicy,
     stats: Stats,
     fast_assign: bool,
+    pivot_policy: PivotPolicy,
 }
 impl<'a> Engine<'a> {
     fn new(p: &'a Problem, bits: u32, cache_policy: CachePolicy) -> Engine<'a> {
         Engine {
             p, bits, cache: StdHashMap::new(), hb_cache: HbHashMap::new(),
-            cache_policy, stats: Stats::default(), fast_assign: false,
+            cache_policy, stats: Stats::default(), fast_assign: false, pivot_policy: PivotPolicy::Frequency,
         }
     }
     fn borrowed_key_hash(&self, scope: &[usize], residual: &[Clause]) -> u64 {
@@ -195,7 +198,8 @@ impl<'a> Engine<'a> {
                 sat: true, count: prefix.mul(&value, self.bits),
             }));
         }
-        let var = *active.iter().max_by_key(|&&v| frequency[v]).ok_or("no active pivot")?;
+        let var = select_pivot(self.pivot_policy, &residual, &active, &frequency, self.p.n)
+            .ok_or("no active pivot")?;
         let child: Vec<_> = active.into_iter().filter(|&v| v != var).collect();
         let yes_clauses = if self.fast_assign {
             assign_fast(&residual, var as i32)
@@ -216,6 +220,38 @@ impl<'a> Engine<'a> {
             sat: yes.sat || no.sat,
             count: prefix.mul(&sum, self.bits),
         }))
+    }
+}
+/// Source-pinned deterministic pivot research. A candidate can change
+/// search topology and floating-point accumulation order; the native
+/// holdout compares against the independent printed-decimal exact reference.
+fn select_pivot(
+    mode: PivotPolicy,
+    residual: &[Clause],
+    active: &[usize],
+    frequency: &[usize],
+    n: usize,
+) -> Option<usize> {
+    match mode {
+        PivotPolicy::Frequency => active.iter().copied().max_by_key(|&v| frequency[v]),
+        PivotPolicy::ShortClause | PivotPolicy::Moms => {
+            let shortest = residual.iter().map(Vec::len).min().unwrap_or(usize::MAX);
+            let mut scores = vec![0_u64; n + 1];
+            for clause in residual {
+                let score = match mode {
+                    PivotPolicy::ShortClause => 1_u64 << (8 - clause.len().min(8)),
+                    PivotPolicy::Moms if clause.len() == shortest => 1,
+                    PivotPolicy::Moms => 0,
+                    PivotPolicy::Frequency => unreachable!(),
+                };
+                for &lit in clause {
+                    scores[lit.unsigned_abs() as usize] =
+                        scores[lit.unsigned_abs() as usize].saturating_add(score);
+                }
+            }
+            // Last candidate on an exact tie, as in baseline max_by_key.
+            active.iter().copied().max_by_key(|&v| (scores[v], frequency[v]))
+        }
     }
 }
 fn normalize(clauses: Vec<Clause>) -> Vec<Clause> {
@@ -344,13 +380,23 @@ fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
     let first = args.next().ok_or(
-        "usage: rawmocs-mpfr-research [--fast-assign] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
+        "usage: rawmocs-mpfr-research [--pivot-short|--pivot-moms] [--fast-assign] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
     )?;
-    let fast_assign = first.to_str() == Some("--fast-assign");
+    let pivot_policy = match first.to_str() {
+        Some("--pivot-short") => PivotPolicy::ShortClause,
+        Some("--pivot-moms") => PivotPolicy::Moms,
+        _ => PivotPolicy::Frequency,
+    };
+    let argument = if pivot_policy != PivotPolicy::Frequency {
+        args.next().ok_or("missing precision or flags after pivot policy")?
+    } else {
+        first
+    };
+    let fast_assign = argument.to_str() == Some("--fast-assign");
     let cache_first = if fast_assign {
         args.next().ok_or("missing precision or cache mode after --fast-assign")?
     } else {
-        first
+        argument
     };
     let cache_policy = match cache_first.to_str() {
         Some("--hashbrown-owned") => CachePolicy::HbOwned,
@@ -378,6 +424,7 @@ fn run() -> Result<(), String> {
     let t2 = Instant::now();
     let mut engine = Engine::new(&p, bits, cache_policy);
     engine.fast_assign = fast_assign;
+    engine.pivot_policy = pivot_policy;
     let answer = engine.count(p.clauses.clone(), (1..=p.n).collect(), 0)?;
     let solve_ns = t2.elapsed().as_nanos();
     let t3 = Instant::now();
@@ -460,6 +507,46 @@ mod tests {
         }
     }
 
+    #[test]
+    fn pivot_modes_preserve_expected_tie_break_and_short_clause_priority() {
+        let residual = vec![
+            vec![1, 2], vec![-1, 3], vec![2, 3],
+            vec![3, 4, 5], vec![-3, -4, 5], vec![3, 4, -5],
+        ];
+        let active = vec![1, 2, 3, 4, 5];
+        let mut frequency = vec![0_usize; 6];
+        for clause in &residual {
+            for &lit in clause { frequency[lit.unsigned_abs() as usize] += 1; }
+        }
+        for mode in [PivotPolicy::Frequency, PivotPolicy::ShortClause, PivotPolicy::Moms] {
+            let pivot = select_pivot(mode, &residual, &active, &frequency, 5).unwrap();
+            assert!(active.contains(&pivot));
+            let repeated = select_pivot(mode, &residual, &active, &frequency, 5).unwrap();
+            assert_eq!(pivot, repeated, "deterministic source-order policy");
+        }
+        assert_eq!(select_pivot(PivotPolicy::Frequency, &residual, &active, &frequency, 5), Some(3));
+        assert_eq!(select_pivot(PivotPolicy::Moms, &residual, &active, &frequency, 5), Some(3));
+        assert_eq!(select_pivot(PivotPolicy::ShortClause, &residual, &active, &frequency, 5), Some(3));
+        let equal = vec![vec![1, 2], vec![3, 4]];
+        assert_eq!(select_pivot(PivotPolicy::Frequency, &equal, &active[..4], &[0,1,1,1,1], 4), Some(4));
+    }
+
+    #[test]
+    fn pivot_modes_match_full_wmc_and_sat_on_dyadic_weight_source() {
+        let source = "p cnf 5 5\nc t wmc\nc p weight 1 0.25 0.5 0\nc p weight -1 0.75 -0.25 0\nc p weight 2 -0.5 0 0\nc p weight -2 0.25 0.25 0\n1 2 0\n-1 3 0\n2 -4 0\n-2 5 0\n-3 -4 -5 0\n";
+        let p = parse_emitted(source, 100).unwrap();
+        let mut expected: Option<(bool, Float, Float)> = None;
+        for mode in [PivotPolicy::Frequency, PivotPolicy::ShortClause, PivotPolicy::Moms] {
+            let mut solver = Engine::new(&p, 100, CachePolicy::HbBorrowed);
+            solver.fast_assign = true;
+            solver.pivot_policy = mode;
+            let value = solver.count(p.clauses.clone(), (1..=p.n).collect(), 0).unwrap();
+            let observed = (value.sat, value.count.re, value.count.im);
+            if let Some(ref original) = expected {
+                assert_eq!(&observed, original, "exact dyadic weights are independent of branching");
+            } else { expected = Some(observed); }
+        }
+    }
     #[test]
     fn borrowed_hash_matches_owned_key_hash_for_exact_lookup() {
         let p = parse_emitted("p cnf 2 1\nc t wmc\n1 -2 0\n", 100).unwrap();

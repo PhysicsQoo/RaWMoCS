@@ -509,7 +509,7 @@ mod tests {
 
     #[test]
     fn pivot_modes_preserve_expected_tie_break_and_short_clause_priority() {
-        let residual = vec![
+        let residual: Vec<Clause> = vec![
             vec![1, 2], vec![-1, 3], vec![2, 3],
             vec![3, 4, 5], vec![-3, -4, 5], vec![3, 4, -5],
         ];

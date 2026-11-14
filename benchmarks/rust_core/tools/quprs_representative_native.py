@@ -143,7 +143,7 @@ def main() -> None:
             "qasm_sha256": sha256(qasm.read_bytes()).hexdigest(),
             "phase_sha256": sha256(sidecar.read_bytes()).hexdigest(),
             "variables": n, "clauses": m, "source_phase_count": len(ids),
-            "exact_printed_oracle_available": n <= 12,
+            "exact_printed_oracle_available": n <= 17,
             "source_kind": "pinned_Feynman_QASM" if case.startswith("feynman_") else "defined_research_motif",
         })
         if n > MAX_SOLVER_CNF_VARS or m > MAX_SOLVER_CNF_CLAUSES or input_path.stat().st_size > MAX_SOURCE_CNF_BYTES:

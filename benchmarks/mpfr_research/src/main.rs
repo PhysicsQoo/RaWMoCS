@@ -79,12 +79,13 @@ struct Engine<'a> {
     cache_policy: CachePolicy,
     stats: Stats,
     fast_assign: bool,
+    node_budget: u64,
 }
 impl<'a> Engine<'a> {
     fn new(p: &'a Problem, bits: u32, cache_policy: CachePolicy) -> Engine<'a> {
         Engine {
             p, bits, cache: StdHashMap::new(), hb_cache: HbHashMap::new(),
-            cache_policy, stats: Stats::default(), fast_assign: false,
+            cache_policy, stats: Stats::default(), fast_assign: false, node_budget: 100_000,
         }
     }
     fn borrowed_key_hash(&self, scope: &[usize], residual: &[Clause]) -> u64 {
@@ -112,7 +113,7 @@ impl<'a> Engine<'a> {
     }
     fn count(&mut self, clauses: Vec<Clause>, scope: Vec<usize>, depth: usize) -> Result<Outcome, String> {
         if depth >= 512 { return Err("depth limit".into()); }
-        if self.stats.nodes >= 100_000 { return Err("node limit".into()); }
+        if self.stats.nodes >= self.node_budget { return Err("node limit".into()); }
         self.stats.nodes += 1;
         let mut residual = if depth == 0 { normalize(clauses) } else { normalize_child(clauses) };
         // The original arm duplicates the entire Key before every lookup.
@@ -344,13 +345,24 @@ fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
     let first = args.next().ok_or(
-        "usage: rawmocs-mpfr-research [--fast-assign] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
+        "usage: rawmocs-mpfr-research [--node-budget=250000|--node-budget=1000000] [--fast-assign] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
     )?;
-    let fast_assign = first.to_str() == Some("--fast-assign");
+    // Explicit finite research-only budgets. No unlimited or arbitrary cap.
+    let node_budget = match first.to_str() {
+        Some("--node-budget=250000") => 250_000,
+        Some("--node-budget=1000000") => 1_000_000,
+        _ => 100_000,
+    };
+    let algorithm_start = if node_budget != 100_000 {
+        args.next().ok_or("missing numeric arguments after bounded node budget")?
+    } else {
+        first
+    };
+    let fast_assign = algorithm_start.to_str() == Some("--fast-assign");
     let cache_first = if fast_assign {
         args.next().ok_or("missing precision or cache mode after --fast-assign")?
     } else {
-        first
+        algorithm_start
     };
     let cache_policy = match cache_first.to_str() {
         Some("--hashbrown-owned") => CachePolicy::HbOwned,
@@ -378,6 +390,7 @@ fn run() -> Result<(), String> {
     let t2 = Instant::now();
     let mut engine = Engine::new(&p, bits, cache_policy);
     engine.fast_assign = fast_assign;
+    engine.node_budget = node_budget;
     let answer = engine.count(p.clauses.clone(), (1..=p.n).collect(), 0)?;
     let solve_ns = t2.elapsed().as_nanos();
     let t3 = Instant::now();
@@ -458,6 +471,30 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn node_budget_is_bounded_and_default_is_unchanged() {
+        let p = parse_emitted("p cnf 2 1\nc t wmc\n1 2 0\n", 100).unwrap();
+        let mut default = Engine::new(&p, 100, CachePolicy::HbBorrowed);
+        assert_eq!(default.node_budget, 100_000);
+        default.fast_assign = true;
+        let expected = default.count(p.clauses.clone(), vec![1, 2], 0).unwrap();
+        for cap in [250_000_u64, 1_000_000_u64] {
+            let mut increased = Engine::new(&p, 100, CachePolicy::HbBorrowed);
+            increased.fast_assign = true;
+            increased.node_budget = cap;
+            let actual = increased.count(p.clauses.clone(), vec![1, 2], 0).unwrap();
+            assert_eq!(actual.sat, expected.sat);
+            assert_eq!(actual.count.re, expected.count.re);
+            assert_eq!(actual.count.im, expected.count.im);
+            assert_eq!(increased.stats.nodes, default.stats.nodes);
+        }
+        let mut capped = Engine::new(&p, 100, CachePolicy::HbBorrowed);
+        capped.node_budget = 1;
+        let error = capped.count(p.clauses.clone(), vec![1, 2], 0).err();
+        assert_eq!(error.as_deref(), Some("node limit"));
+        assert!(capped.stats.nodes <= 1);
     }
 
     #[test]

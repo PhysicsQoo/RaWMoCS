@@ -13,6 +13,7 @@ on:
       - "benchmarks/rust_core/tools/quprs_mpfr_cache_ab.py"
       - "benchmarks/rust_core/tools/quprs_mpfr_composed_ab.py"
       - "benchmarks/rust_core/tools/quprs_mpfr_shared_residual_ab.py"
+      - "benchmarks/rust_core/tools/quprs_mpfr_indexed_unit_ab.py"
       - "benchmarks/mpfr_research/**"
       - "benchmarks/rust_core/examples/quprs_encoder_research_cli.rs"
   push:
@@ -242,6 +243,16 @@ jobs:
             --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
             --trials 5 \
             --report .research/quprs-mpfr-shared-residual-ab.json
+      - name: Source-locked original QuPRS QFT4 MPFR unit-occurrence propagation A/B
+        run: |
+          python3 -m py_compile benchmarks/rust_core/tools/quprs_mpfr_indexed_unit_ab.py
+          python3 benchmarks/rust_core/tools/quprs_mpfr_indexed_unit_ab.py \
+            --source-report .research/quprs-representative-native.json \
+            --matched-reference .research/quprs-mpfr-matched-long.json \
+            --corpus .research/quprs-representative \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --trials 5 \
+            --report .research/quprs-mpfr-indexed-unit-ab.json
       - name: Archive real encoder bytes, raw phase sidecars and SHA256 provenance
         if: always()
         uses: actions/upload-artifact@v4
@@ -260,6 +271,7 @@ jobs:
             .research/quprs-mpfr-composed-ab.json
             .research/quprs-mpfr-matched-optimized.json
             .research/quprs-mpfr-shared-residual-ab.json
+            .research/quprs-mpfr-indexed-unit-ab.json
             .research/mpfr-research-lock.sha256
             benchmarks/mpfr_research/Cargo.lock
           if-no-files-found: warn

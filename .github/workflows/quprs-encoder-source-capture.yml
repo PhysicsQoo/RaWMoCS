@@ -146,12 +146,19 @@ jobs:
           cargo build --locked --release \
             --manifest-path .upstream/rawmocs-baseline/benchmarks/rust_core/Cargo.toml \
             --example quprs_encoder_research_cli
+      - name: Build feature-gated canonical exact multiplication candidate
+        run: |
+          cargo build --locked --release \
+            --manifest-path benchmarks/rust_core/Cargo.toml \
+            --features canonical-mul-research \
+            --example quprs_encoder_research_cli
       - name: Same-runner source-identical original-vs-optimized Rust exact A/B
         run: |
           python3 -m py_compile benchmarks/rust_core/tools/quprs_optimizer_paired.py
           python3 benchmarks/rust_core/tools/quprs_optimizer_paired.py \
             --baseline .upstream/rawmocs-baseline/benchmarks/rust_core/target/release/examples/quprs_encoder_research_cli \
             --candidate benchmarks/rust_core/target/release/examples/quprs_encoder_research_cli \
+            --canonical-candidate benchmarks/rust_core/target/release/examples/quprs_encoder_research_cli \
             --corpus .research/quprs-representative \
             --representative-report .research/quprs-representative-native.json \
             --trials 3 \

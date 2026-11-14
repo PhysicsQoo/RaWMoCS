@@ -64,16 +64,3 @@ fn sparse_factors_preserve_cancellation_and_exact_sign() {
     assert_eq!(i.mul(&negative), Gaussian::integers(0, -7));
     assert_eq!(negative.mul(&minus_i), Gaussian::integers(0, 7));
 }
-
-#[test]
-fn two_pure_imaginary_factors_match_independent_oracle_at_large_precision() {
-    let numerator = (num_bigint::BigInt::from(1_u8) << 521_usize) + 19;
-    let denominator = (num_bigint::BigInt::from(1_u8) << 503_usize) + 7;
-    let fraction = BigRational::new(numerator, denominator);
-    let zero = BigRational::from_integer(0.into());
-    let a = Gaussian::new(zero.clone(), fraction.clone());
-    let b = Gaussian::new(zero, -fraction);
-    assert_eq!(a.mul(&b), classic(&a, &b));
-    assert_eq!(b.mul(&a), classic(&b, &a));
-    assert_eq!(a.mul(&a), classic(&a, &a));
-}

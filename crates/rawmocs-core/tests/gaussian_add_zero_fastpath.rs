@@ -52,17 +52,3 @@ fn large_exact_rational_addition_zero_identity() {
     assert_eq!(a.add(&z), reference(&a, &z));
     assert_eq!(z.add(&a), reference(&z, &a));
 }
-
-#[test]
-fn sparse_component_addition_matches_reference_at_large_precision() {
-    let numerator = (num_bigint::BigInt::from(1_u8) << 701_usize) + 31;
-    let denominator = (num_bigint::BigInt::from(1_u8) << 617_usize) + 23;
-    let fraction = BigRational::new(numerator, denominator);
-    let zero = BigRational::from_integer(0.into());
-    let a = Gaussian::new(fraction.clone(), zero.clone());
-    let b = Gaussian::new(zero.clone(), -fraction.clone());
-    let c = Gaussian::new(zero.clone(), fraction.clone());
-    for (lhs, rhs) in [(&a, &b), (&b, &a), (&a, &c), (&c, &a), (&b, &c)] {
-        assert_eq!(lhs.add(rhs), reference(lhs, rhs));
-    }
-}

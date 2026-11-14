@@ -8,6 +8,9 @@ on:
       - "benchmarks/rust_core/tools/quprs_encoder_paired.py"
       - "benchmarks/rust_core/tools/quprs_representative_native.py"
       - "benchmarks/rust_core/tools/quprs_optimizer_paired.py"
+      - "benchmarks/rust_core/tools/quprs_precision_sweep.py"
+      - "benchmarks/rust_core/tools/quprs_mpfr_matched.py"
+      - "benchmarks/mpfr_research/**"
       - "benchmarks/rust_core/examples/quprs_encoder_research_cli.rs"
   push:
     branches: [main]
@@ -17,6 +20,9 @@ on:
       - "benchmarks/rust_core/tools/quprs_encoder_paired.py"
       - "benchmarks/rust_core/tools/quprs_representative_reference.rs"
       - "benchmarks/rust_core/tools/quprs_representative_native.py"
+      - "benchmarks/rust_core/tools/quprs_precision_sweep.py"
+      - "benchmarks/rust_core/tools/quprs_mpfr_matched.py"
+      - "benchmarks/mpfr_research/**"
       - "benchmarks/rust_core/examples/quprs_encoder_research_cli.rs"
   workflow_dispatch:
 
@@ -167,6 +173,34 @@ jobs:
             --representative-report .research/quprs-representative-native.json \
             --trials 3 \
             --report .research/quprs-optimizer-ab.json
+      - name: GPMC 30/50/100-digit MPFR sweep on long original QuPRS CNFs
+        run: |
+          python3 -m py_compile benchmarks/rust_core/tools/quprs_precision_sweep.py
+          python3 benchmarks/rust_core/tools/quprs_precision_sweep.py \
+            --source-report .research/quprs-representative-native.json \
+            --corpus .research/quprs-representative \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --trials 3 \
+            --report .research/quprs-gpmc-precision-sweep.json
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/mpfr_research -> target
+          key: research-matched-mpfr-100-167-333
+      - name: Build and test isolated Rust MPFR 100/167/333-bit reference engine
+        run: |
+          cargo test --release --manifest-path benchmarks/mpfr_research/Cargo.toml
+          cargo build --release --manifest-path benchmarks/mpfr_research/Cargo.toml
+          sha256sum benchmarks/mpfr_research/Cargo.lock > .research/mpfr-research-lock.sha256
+      - name: Source-identical long-CNF GPMC vs Rust at matched MPFR precision
+        run: |
+          python3 -m py_compile benchmarks/rust_core/tools/quprs_mpfr_matched.py
+          python3 benchmarks/rust_core/tools/quprs_mpfr_matched.py \
+            --source-report .research/quprs-representative-native.json \
+            --corpus .research/quprs-representative \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --rawmocs-mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --trials 3 \
+            --report .research/quprs-mpfr-matched-long.json
       - name: Archive real encoder bytes, raw phase sidecars and SHA256 provenance
         if: always()
         uses: actions/upload-artifact@v4
@@ -179,5 +213,9 @@ jobs:
             .research/quprs-representative/
             .research/quprs-representative-native.json
             .research/quprs-optimizer-ab.json
+            .research/quprs-gpmc-precision-sweep.json
+            .research/quprs-mpfr-matched-long.json
+            .research/mpfr-research-lock.sha256
+            benchmarks/mpfr_research/Cargo.lock
           if-no-files-found: warn
           retention-days: 30

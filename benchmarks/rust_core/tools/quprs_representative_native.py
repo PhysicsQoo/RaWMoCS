@@ -69,6 +69,25 @@ def guarded_execution(command: list[str], tool: str) -> dict[str, Any]:
             "peak_rss_kib": rss, "native_stdout_sha256": sha256(result.stdout.encode()).hexdigest(),
             "native_stdout_bytes": len(result.stdout.encode("utf8")),
         }
+        if tool == "rawmocs_mpfr":
+            phase = re.search(
+                r"^RESEARCH_MPFR_PHASE_NS read=(\d+) parse=(\d+) solve=(\d+) "
+                r"output=(\d+) nodes=(\d+) cache_hits=(\d+) decompositions=(\d+) "
+                r"digits=(\d+) bits=(\d+)$",
+                result.stderr, flags=re.MULTILINE,
+            )
+            if phase:
+                numbers = [int(v) for v in phase.groups()]
+                record["mpfr_phase_ns"] = dict(zip(
+                    ("read", "parse", "solve", "output"), numbers[:4]
+                ))
+                record["mpfr_stats"] = dict(zip(
+                    ("nodes", "cache_hits", "decompositions"), numbers[4:7]
+                ))
+                record["mpfr_precision_digits"] = numbers[7]
+                record["mpfr_precision_bits"] = numbers[8]
+            else:
+                record["mpfr_profile_status"] = "UNAVAILABLE"
         if tool == "rawmocs":
             phase = re.search(
                 r"^RESEARCH_PHASE_NS read=(\d+) parse=(\d+) solve=(\d+) output=(\d+) "

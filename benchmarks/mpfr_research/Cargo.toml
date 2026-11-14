@@ -9,4 +9,4 @@ publish = false
 
 # Independent opt-in precision-parity research. No production dependencies.
 [dependencies]
-rug = { version = "=1.30.0", default-features = false, features = ["float"] }
+rug = { version = "=1.30.0", default-features = false, features = ["float", "std"] }

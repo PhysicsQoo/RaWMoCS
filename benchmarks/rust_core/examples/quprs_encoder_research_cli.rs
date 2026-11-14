@@ -4,6 +4,7 @@
 use rawmocs_benchmarks::quprs_printed_cnf::printed_decimal;
 use rawmocs_core::{solve_with_limits, Gaussian, Limits, Problem, Weights};
 use std::path::Path;
+use std::time::Instant;
 
 fn parse_emitted(source: &str) -> Result<Problem, String> {
     if source.is_empty() || source.len() > 2_000_000 {
@@ -91,11 +92,18 @@ fn run() -> Result<(), String> {
     if args.next().is_some() {
         return Err("expected exactly one source CNF".into());
     }
+    let read_start = Instant::now();
     let input = std::fs::read_to_string(Path::new(&filename))
         .map_err(|err| format!("CNF input read failure: {err}"))?;
+    let read_ns = read_start.elapsed().as_nanos();
+    let parse_start = Instant::now();
     let problem = parse_emitted(&input)?;
+    let parse_ns = parse_start.elapsed().as_nanos();
+    let solve_start = Instant::now();
     let report = solve_with_limits(&problem, Limits::default())
         .map_err(|err| format!("bounded exact source solver returned UNKNOWN: {err}"))?;
+    let solve_ns = solve_start.elapsed().as_nanos();
+    let output_start = Instant::now();
     println!(
         "s {}",
         if report.satisfiable {
@@ -105,6 +113,17 @@ fn run() -> Result<(), String> {
         }
     );
     println!("c r rational {} {}", report.count.real, report.count.imag);
+    let output_ns = output_start.elapsed().as_nanos();
+    eprintln!(
+        "RESEARCH_PHASE_NS read={} parse={} solve={} output={} nodes={} cache_hits={} decompositions={}",
+        read_ns,
+        parse_ns,
+        solve_ns,
+        output_ns,
+        report.stats.nodes,
+        report.stats.cache_hits,
+        report.stats.decompositions
+    );
     Ok(())
 }
 

@@ -6,6 +6,8 @@ on:
       - ".github/workflows/quprs-encoder-source-capture.yml"
       - "benchmarks/rust_core/tools/quprs_encoder_validate.py"
       - "benchmarks/rust_core/tools/quprs_encoder_paired.py"
+      - "benchmarks/rust_core/tools/quprs_representative_native.py"
+      - "benchmarks/rust_core/examples/quprs_encoder_research_cli.rs"
   push:
     branches: [main]
     paths:
@@ -128,7 +130,7 @@ jobs:
             --corpus .research/quprs-representative \
             --gpmc .upstream/gpmc/build/gpmc \
             --rawmocs benchmarks/rust_core/target/release/examples/quprs_encoder_research_cli \
-            --trials 2 \
+            --trials 3 \
             --report .research/quprs-representative-native.json
       - name: Archive real encoder bytes, raw phase sidecars and SHA256 provenance
         if: always()

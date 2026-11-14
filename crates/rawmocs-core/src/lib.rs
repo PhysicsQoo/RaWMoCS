@@ -33,16 +33,31 @@ impl Gaussian {
     pub fn one() -> Self {
         Self::new(BigRational::one(), BigRational::zero())
     }
+    #[inline]
+    fn add_component(lhs: &BigRational, rhs: &BigRational) -> BigRational {
+        // One zero component must not force an otherwise unnecessary
+        // arbitrary-precision addition and denominator normalization.
+        if lhs.is_zero() {
+            return rhs.clone();
+        }
+        if rhs.is_zero() {
+            return lhs.clone();
+        }
+        lhs + rhs
+    }
+
     pub fn add(&self, rhs: &Self) -> Self {
-        // Exact zero is the additive identity. Skip two BigRational
-        // additions (and their normalization) when an operand vanishes.
+        // Preserve the whole-Gaussian identity before component checks.
         if self.real.is_zero() && self.imag.is_zero() {
             return rhs.clone();
         }
         if rhs.real.is_zero() && rhs.imag.is_zero() {
             return self.clone();
         }
-        Self::new(&self.real + &rhs.real, &self.imag + &rhs.imag)
+        Self::new(
+            Self::add_component(&self.real, &rhs.real),
+            Self::add_component(&self.imag, &rhs.imag),
+        )
     }
     pub fn mul(&self, rhs: &Self) -> Self {
         // Common multiplicative identities need no BigRational products or GCDs.
@@ -62,6 +77,11 @@ impl Gaussian {
             if rhs.real.is_one() {
                 return self.clone();
             }
+        }
+        // Two purely imaginary factors need only one real product.
+        // Preserve the exact sign and keep the imaginary part exactly zero.
+        if self.real.is_zero() && rhs.real.is_zero() {
+            return Self::new(-(&self.imag * &rhs.imag), BigRational::zero());
         }
         // Sparse factors avoid multiplying zero rational components.
         // The four-product expression remains unchanged for general inputs.

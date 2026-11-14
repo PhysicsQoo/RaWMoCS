@@ -100,6 +100,7 @@ struct Engine<'a> {
     fast_assign: bool,
     node_budget: u64,
     indexed_unit_propagation: bool,
+    indexed_activation_node: u64,
 }
 impl<'a> Engine<'a> {
     fn new(p: &'a Problem, bits: u32, cache_policy: CachePolicy) -> Engine<'a> {
@@ -108,7 +109,7 @@ impl<'a> Engine<'a> {
             shared_cache: HbHashMap::new(),
             cache_policy, shared_residual_key: false,
             stats: Stats::default(), fast_assign: false, node_budget: 100_000,
-            indexed_unit_propagation: false,
+            indexed_unit_propagation: false, indexed_activation_node: 0,
         }
     }
     fn borrowed_key_hash(&self, scope: &[usize], residual: &[Clause]) -> u64 {
@@ -202,7 +203,9 @@ impl<'a> Engine<'a> {
         };
         let mut remaining = scope;
         let mut prefix = C::one(self.bits);
-        if self.indexed_unit_propagation && residual.iter().any(|c| c.len() == 1) {
+        if self.indexed_unit_propagation &&
+            self.stats.nodes >= self.indexed_activation_node &&
+            residual.iter().any(|c| c.len() == 1) {
             let Some(reduced) = unit_propagate_indexed(
                 &residual, self.p.n, &self.p.weights, self.bits, &mut remaining, &mut prefix
             ) else {
@@ -482,7 +485,7 @@ fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
     let first = args.next().ok_or(
-        "usage: rawmocs-mpfr-research [--node-budget=250000|--node-budget=1000000] [--indexed-unit-prop] [--shared-residual-key] [--fast-assign] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
+        "usage: rawmocs-mpfr-research [--node-budget=250000|--node-budget=1000000] [--indexed-unit-prop|--indexed-unit-prop-after-8192] [--shared-residual-key] [--fast-assign] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
     )?;
     // Explicit finite research-only node limits, untouched default.
     let node_budget = match first.to_str() {
@@ -495,7 +498,13 @@ fn run() -> Result<(), String> {
     } else {
         first
     };
-    let indexed_unit_propagation = algorithm_start.to_str() == Some("--indexed-unit-prop");
+    let indexed_unit_propagation = matches!(
+        algorithm_start.to_str(),
+        Some("--indexed-unit-prop" | "--indexed-unit-prop-after-8192")
+    );
+    let indexed_activation_node = if algorithm_start.to_str() == Some("--indexed-unit-prop-after-8192") {
+        8192
+    } else { 0 };
     let storage_start = if indexed_unit_propagation {
         args.next().ok_or("missing arguments after --indexed-unit-prop")?
     } else {
@@ -545,6 +554,7 @@ fn run() -> Result<(), String> {
     engine.shared_residual_key = shared_residual_key;
     engine.node_budget = node_budget;
     engine.indexed_unit_propagation = indexed_unit_propagation;
+    engine.indexed_activation_node = indexed_activation_node;
     let answer = engine.count(p.clauses.clone(), (1..=p.n).collect(), 0)?;
     let solve_ns = t2.elapsed().as_nanos();
     let t3 = Instant::now();
@@ -560,7 +570,7 @@ fn run() -> Result<(), String> {
     eprintln!("RESEARCH_MPFR_CACHE_POLICY {}", cache_policy.label());
     eprintln!("RESEARCH_MPFR_SHARED_RESIDUAL enabled={} entries={}",
         shared_residual_key, engine.shared_cache.len());
-    eprintln!("RESEARCH_MPFR_UNIT_PROP_INDEXED enabled={indexed_unit_propagation}");
+    eprintln!("RESEARCH_MPFR_UNIT_PROP_INDEXED enabled={indexed_unit_propagation} activation_node={indexed_activation_node}");
     Ok(())
 }
 fn main() {
@@ -676,6 +686,26 @@ mod tests {
         }
         // Extra test of independently created residual with exact cache behavior.
         assert_eq!(problem.n, 5);
+    }
+
+    #[test]
+    fn node_work_activation_preserves_baseline_on_small_sources() {
+        let raw = "p cnf 4 4\nc t wmc\n1 2 0\n-1 3 0\n-3 4 0\n-4 0\n";
+        let p = parse_emitted(raw, 100).unwrap();
+        let mut baseline = Engine::new(&p, 100, CachePolicy::HbBorrowed);
+        baseline.fast_assign = true;
+        baseline.shared_residual_key = true;
+        let expected = baseline.count(p.clauses.clone(), vec![1,2,3,4], 0).unwrap();
+        let mut admitted = Engine::new(&p, 100, CachePolicy::HbBorrowed);
+        admitted.fast_assign = true;
+        admitted.shared_residual_key = true;
+        admitted.indexed_unit_propagation = true;
+        admitted.indexed_activation_node = 8192;
+        let actual = admitted.count(p.clauses.clone(), vec![1,2,3,4], 0).unwrap();
+        assert_eq!((expected.sat, expected.count.re, expected.count.im),
+                   (actual.sat, actual.count.re, actual.count.im));
+        assert_eq!(baseline.stats.nodes, admitted.stats.nodes);
+        assert_eq!(baseline.stats.cache_hits, admitted.stats.cache_hits);
     }
 
     #[test]

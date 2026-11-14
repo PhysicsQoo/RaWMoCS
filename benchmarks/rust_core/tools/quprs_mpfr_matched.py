@@ -38,9 +38,10 @@ def main() -> None:
     ap.add_argument("--rawmocs-mpfr", type=Path, required=True)
     ap.add_argument("--report", type=Path, required=True)
     ap.add_argument("--trials", type=int, default=3)
+    ap.add_argument("--rust-mode", choices=("original", "borrowed_assign"), default="original")
     args = ap.parse_args()
-    if not 2 <= args.trials <= 4:
-        raise SystemExit("two to four fresh native process trials required")
+    if not 2 <= args.trials <= 5:
+        raise SystemExit("two to five fresh native process trials required")
     original = json.loads(args.source_report.read_text())
     if original["source_commit"] != SOURCE_SHA:
         raise SystemExit("QuPRS original emitter source is not pinned")
@@ -53,6 +54,7 @@ def main() -> None:
         "time_contract": "fresh process wall including input/read/parse/preprocessing/search/arithmetic/serialization; bounded 8s and 2GiB virtual memory",
         "digits_to_bits": BITS,
         "trials_per_tool": args.trials,
+        "rust_mode": args.rust_mode,
         "rows": [],
     }
     any_unqualified = False
@@ -89,7 +91,9 @@ def main() -> None:
                     command = (
                         [str(args.gpmc.resolve()), "-mode=1", f"-prec={digits}", str(file.resolve())]
                         if tool == "gpmc" else
-                        [str(args.rawmocs_mpfr.resolve()), str(digits), str(file.resolve())]
+                        [str(args.rawmocs_mpfr.resolve())]
+                        + (["--fast-assign", "--hashbrown-borrowed"] if args.rust_mode == "borrowed_assign" else [])
+                        + [str(digits), str(file.resolve())]
                     )
                     sample = timed_execution(command, tool)
                     sample["trial"] = trial

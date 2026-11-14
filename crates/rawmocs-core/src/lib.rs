@@ -1081,12 +1081,37 @@ fn normalize_child(mut clauses: Vec<Clause>) -> Vec<Clause> {
     clauses.dedup();
     clauses
 }
+/// Fast residual assignment for normalized CNFs. Preserve clause order and
+/// the exact Boolean substitution; prioritize the common two-literal case.
+/// Root normalization guarantees clauses are deduplicated and tautology-free.
 fn assign(clauses: &[Clause], literal: i32) -> Vec<Clause> {
-    clauses
-        .iter()
-        .filter(|c| !c.contains(&literal))
-        .map(|c| c.iter().copied().filter(|&lit| lit != -literal).collect())
-        .collect()
+    let opposite = -literal;
+    let mut child = Vec::with_capacity(clauses.len());
+    for clause in clauses {
+        if clause.len() == 2 {
+            let a = clause[0];
+            let b = clause[1];
+            if a == literal || b == literal {
+                continue;
+            }
+            if a == opposite {
+                child.push(vec![b]);
+            } else if b == opposite {
+                child.push(vec![a]);
+            } else {
+                child.push(clause.clone());
+            }
+        } else if clause.contains(&literal) {
+            continue;
+        } else if clause.contains(&opposite) {
+            child.push(
+                clause.iter().copied().filter(|&lit| lit != opposite).collect()
+            );
+        } else {
+            child.push(clause.clone());
+        }
+    }
+    child
 }
 fn root(parent: &mut [usize], mut x: usize) -> usize {
     while parent[x] != x {
@@ -1142,6 +1167,67 @@ fn split_components(
             .map(|(vars, cls)| (cls, vars))
             .collect(),
     )
+}
+
+#[cfg(test)]
+mod assignment_substitution_tests {
+    use super::{assign, normalize, Clause};
+
+    // Independent reference preserves the original literal-level Boolean
+    // assignment semantics rather than reusing the optimized branches.
+    fn reference(clauses: &[Clause], selected: i32) -> Vec<Clause> {
+        clauses
+            .iter()
+            .filter(|c| !c.iter().any(|&lit| lit == selected))
+            .map(|c| c.iter().copied().filter(|&lit| lit != -selected).collect())
+            .collect()
+    }
+
+    #[test]
+    fn binary_assignment_matches_reference_on_all_small_literal_pairs() {
+        for n in 1_i32..=5 {
+            let literals: Vec<i32> = (-n..=n).filter(|&x| x != 0).collect();
+            let mut clauses = vec![vec![]];
+            for &a in &literals {
+                clauses.push(vec![a]);
+                for &b in &literals {
+                    clauses.push(vec![a, b]);
+                }
+            }
+            for &a in &literals {
+                for &b in &literals {
+                    for &c in &literals {
+                        if n <= 3 {
+                            clauses.push(vec![a, b, c]);
+                        }
+                    }
+                }
+            }
+            // The solver calls assign only after canonicalization.
+            let clauses = normalize(clauses);
+            for selected in literals {
+                assert_eq!(
+                    assign(&clauses, selected),
+                    reference(&clauses, selected),
+                    "n={n}, assignment={selected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn assignment_matches_reference_after_recursive_residuals() {
+        let root = normalize(vec![
+            vec![-1, 2], vec![1, -2, 3], vec![-3, 4],
+            vec![2, 4], vec![-2, -4], vec![1, 5], vec![4, -5],
+        ]);
+        for initial in [-5_i32, -4, -3, -2, -1, 1, 2, 3, 4, 5] {
+            let residual = super::normalize_child(reference(&root, initial));
+            for next in [-5_i32, -4, -3, -2, -1, 1, 2, 3, 4, 5] {
+                assert_eq!(assign(&residual, next), reference(&residual, next));
+            }
+        }
+    }
 }
 
 #[cfg(test)]

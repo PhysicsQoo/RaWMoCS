@@ -41,7 +41,7 @@ def main() -> None:
     ap.add_argument("--trials", type=int, default=3)
     ap.add_argument("--report", type=Path, required=True)
     args = ap.parse_args()
-    if not 2 <= args.trials <= 4:
+    if not 2 <= args.trials <= 5:
         raise SystemExit("A/B requires two to four alternating independent trials")
     for binary in (args.baseline, args.candidate, args.canonical_candidate):
         if not binary.is_file():

@@ -8,6 +8,7 @@ on:
       - "benchmarks/rust_core/tools/quprs_encoder_paired.py"
       - "benchmarks/rust_core/tools/quprs_representative_native.py"
       - "benchmarks/rust_core/tools/quprs_optimizer_paired.py"
+      - "crates/rawmocs-core/src/**"
       - "benchmarks/rust_core/tools/quprs_precision_sweep.py"
       - "benchmarks/rust_core/tools/quprs_mpfr_matched.py"
       - "benchmarks/rust_core/tools/quprs_mpfr_cache_ab.py"
@@ -23,6 +24,7 @@ on:
       - "benchmarks/rust_core/tools/quprs_representative_native.py"
       - "benchmarks/rust_core/tools/quprs_precision_sweep.py"
       - "benchmarks/rust_core/tools/quprs_mpfr_matched.py"
+      - "crates/rawmocs-core/src/**"
       - "benchmarks/mpfr_research/**"
       - "benchmarks/rust_core/examples/quprs_encoder_research_cli.rs"
   workflow_dispatch:
@@ -172,7 +174,7 @@ jobs:
             --canonical-candidate benchmarks/rust_core/target/release/examples/quprs_encoder_research_cli \
             --corpus .research/quprs-representative \
             --representative-report .research/quprs-representative-native.json \
-            --trials 3 \
+            --trials 5 \
             --report .research/quprs-optimizer-ab.json
       - name: GPMC 30/50/100-digit MPFR sweep on long original QuPRS CNFs
         run: |

@@ -101,6 +101,7 @@ struct Engine<'a> {
     node_budget: u64,
     indexed_unit_propagation: bool,
     indexed_activation_node: u64,
+    component_group_dense: bool,
 }
 impl<'a> Engine<'a> {
     fn new(p: &'a Problem, bits: u32, cache_policy: CachePolicy) -> Engine<'a> {
@@ -110,6 +111,7 @@ impl<'a> Engine<'a> {
             cache_policy, shared_residual_key: false,
             stats: Stats::default(), fast_assign: false, node_budget: 100_000,
             indexed_unit_propagation: false, indexed_activation_node: 0,
+            component_group_dense: false,
         }
     }
     fn borrowed_key_hash(&self, scope: &[usize], residual: &[Clause]) -> u64 {
@@ -249,7 +251,12 @@ impl<'a> Engine<'a> {
                 prefix = prefix.mul(&w.positive.add(&w.negative, self.bits), self.bits);
             }
         }
-        if let Some(pieces) = split_components(&residual, &active, self.p.n) {
+        let pieces = if self.component_group_dense {
+            split_components_dense(&residual, &active, self.p.n)
+        } else {
+            split_components(&residual, &active, self.p.n)
+        };
+        if let Some(pieces) = pieces {
             self.stats.decompositions += 1;
             let mut value = C::one(self.bits);
             for (cls, sub_scope) in pieces {
@@ -409,6 +416,37 @@ fn root(parent: &mut [usize], mut x: usize) -> usize {
     }
     x
 }
+/// Research-only dense component grouping. The union-find operations and
+/// component order are identical to split_components: indexing by root ID
+/// and visiting ascending IDs reproduces BTreeMap::into_values().
+/// No shared state, no change to the counted CNF or MPFR operation order.
+fn split_components_dense(
+    clauses: &[Clause], scope: &[usize], variables: usize
+) -> Option<Vec<(Vec<Clause>, Vec<usize>)>> {
+    let mut parent: Vec<_> = (0..=variables).collect();
+    for clause in clauses {
+        let first = clause[0].unsigned_abs() as usize;
+        for &lit in &clause[1..] {
+            let a = root(&mut parent, first);
+            let b = root(&mut parent, lit.unsigned_abs() as usize);
+            parent[b] = a;
+        }
+    }
+    let &first = scope.first()?;
+    let first_root = root(&mut parent, first);
+    if scope.iter().all(|&v| root(&mut parent, v) == first_root) { return None; }
+    let mut groups: Vec<Option<(Vec<usize>, Vec<Clause>)>> =
+        (0..=variables).map(|_| None).collect();
+    for &var in scope {
+        let r = root(&mut parent, var);
+        groups[r].get_or_insert_with(Default::default).0.push(var);
+    }
+    for clause in clauses {
+        let r = root(&mut parent, clause[0].unsigned_abs() as usize);
+        groups[r].as_mut().expect("scope contains clause var").1.push(clause.clone());
+    }
+    Some(groups.into_iter().flatten().map(|(vars, cs)| (cs, vars)).collect())
+}
 fn split_components(
     clauses: &[Clause], scope: &[usize], variables: usize
 ) -> Option<Vec<(Vec<Clause>, Vec<usize>)>> {
@@ -485,7 +523,7 @@ fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
     let first = args.next().ok_or(
-        "usage: rawmocs-mpfr-research [--node-budget=250000|--node-budget=1000000] [--indexed-unit-prop|--indexed-unit-prop-after-8192] [--shared-residual-key] [--fast-assign] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
+        "usage: rawmocs-mpfr-research [--node-budget=250000|--node-budget=1000000] [--dense-component-groups] [--indexed-unit-prop|--indexed-unit-prop-after-8192] [--shared-residual-key] [--fast-assign] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
     )?;
     // Explicit finite research-only node limits, untouched default.
     let node_budget = match first.to_str() {
@@ -498,6 +536,10 @@ fn run() -> Result<(), String> {
     } else {
         first
     };
+    let component_group_dense = algorithm_start.to_str() == Some("--dense-component-groups");
+    let algorithm_start = if component_group_dense {
+        args.next().ok_or("missing arguments after --dense-component-groups")?
+    } else { algorithm_start };
     let indexed_unit_propagation = matches!(
         algorithm_start.to_str(),
         Some("--indexed-unit-prop" | "--indexed-unit-prop-after-8192")
@@ -555,6 +597,7 @@ fn run() -> Result<(), String> {
     engine.node_budget = node_budget;
     engine.indexed_unit_propagation = indexed_unit_propagation;
     engine.indexed_activation_node = indexed_activation_node;
+    engine.component_group_dense = component_group_dense;
     let answer = engine.count(p.clauses.clone(), (1..=p.n).collect(), 0)?;
     let solve_ns = t2.elapsed().as_nanos();
     let t3 = Instant::now();
@@ -571,6 +614,7 @@ fn run() -> Result<(), String> {
     eprintln!("RESEARCH_MPFR_SHARED_RESIDUAL enabled={} entries={}",
         shared_residual_key, engine.shared_cache.len());
     eprintln!("RESEARCH_MPFR_UNIT_PROP_INDEXED enabled={indexed_unit_propagation} activation_node={indexed_activation_node}");
+    eprintln!("RESEARCH_MPFR_DENSE_COMPONENT_GROUPS enabled={component_group_dense}");
     Ok(())
 }
 fn main() {
@@ -802,6 +846,55 @@ mod tests {
                     (candidate.stats.nodes, candidate.stats.cache_hits, candidate.stats.decompositions),
                     "unchanged search topology for {case}, {bits}"
                 );
+            }
+        }
+    }
+
+
+    #[test]
+    fn dense_component_groups_keep_exact_btree_order() {
+        let cases = [
+            (vec![vec![1, 2], vec![3, 4], vec![5, 6]], (1..=6).collect::<Vec<_>>()),
+            (vec![vec![1, 4], vec![2, 6], vec![3, 5]], (1..=6).collect::<Vec<_>>()),
+            (vec![vec![3, 4], vec![1, 2], vec![2, 3]], (1..=4).collect::<Vec<_>>()),
+            (vec![vec![1, 2], vec![-2, 3], vec![3, 4]], (1..=4).collect::<Vec<_>>()),
+        ];
+        for (clauses, scope) in cases {
+            let original = split_components(&clauses, &scope, 6);
+            let dense = split_components_dense(&clauses, &scope, 6);
+            assert_eq!(dense, original, "component and clause ordering must not change");
+        }
+    }
+
+    #[test]
+    fn dense_component_groups_preserve_full_mpfr_and_search_parity() {
+        let source = concat!(
+            "p cnf 7 6\nc t wmc\n",
+            "c p weight 2 0.3 0.1 0\nc p weight -2 -0.2 0.5 0\n",
+            "c p weight 4 -0.1 0.2 0\nc p weight -4 0.8 -0.1 0\n",
+            "1 2 0\n-1 2 0\n3 4 0\n-3 4 0\n5 6 0\n-5 6 0\n"
+        );
+        for bits in [100_u32, 333_u32] {
+            let p = parse_emitted(source, bits).unwrap();
+            for indexed in [false, true] {
+                let mut witness = None;
+                for dense in [false, true] {
+                    let mut engine = Engine::new(&p, bits, CachePolicy::HbBorrowed);
+                    engine.fast_assign = true;
+                    engine.shared_residual_key = true;
+                    engine.indexed_unit_propagation = indexed;
+                    engine.component_group_dense = dense;
+                    let answer = engine.count(p.clauses.clone(), (1..=p.n).collect(), 0).unwrap();
+                    assert!(answer.sat);
+                    assert!(engine.stats.decompositions > 0);
+                    let observed = (
+                        answer.sat, answer.count.re, answer.count.im,
+                        engine.stats.nodes, engine.stats.cache_hits, engine.stats.decompositions
+                    );
+                    if let Some(expected) = witness.take() {
+                        assert_eq!(observed, expected, "dense groups must preserve MPFR order");
+                    } else { witness = Some(observed); }
+                }
             }
         }
     }

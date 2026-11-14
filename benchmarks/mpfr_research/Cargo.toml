@@ -10,3 +10,5 @@ publish = false
 # Independent opt-in precision-parity research. No production dependencies.
 [dependencies]
 rug = { version = "=1.30.0", default-features = false, features = ["float", "std"] }
+# Bounded research-only hash-table A/B, never linked into production.
+hashbrown = "=0.14.5"

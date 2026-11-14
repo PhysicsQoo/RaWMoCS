@@ -3,7 +3,9 @@
 //! frequency pivot and 10,000-entry exact-shape residual cache.
 //! Verify structure against main exact-rational solve before claiming parity.
 use rug::Float;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap as StdHashMap};
+use hashbrown::HashMap as HbHashMap;
+use std::hash::{BuildHasher, Hash, Hasher};
 use std::io::Write;
 use std::path::Path;
 use std::time::Instant;
@@ -58,20 +60,52 @@ impl Outcome {
 struct Key { scope: Vec<usize>, clauses: Vec<Clause> }
 #[derive(Default, Clone, Copy)]
 struct Stats { nodes: u64, cache_hits: u64, decompositions: u64 }
+#[derive(Clone, Copy, Debug)]
+enum CachePolicy { StdOwned, HbOwned, HbBorrowed }
+impl CachePolicy {
+    fn label(self) -> &'static str {
+        match self {
+            Self::StdOwned => "std-owned",
+            Self::HbOwned => "hashbrown-owned",
+            Self::HbBorrowed => "hashbrown-borrowed",
+        }
+    }
+}
 struct Engine<'a> {
     p: &'a Problem,
     bits: u32,
-    cache: HashMap<Key, Outcome>,
+    cache: StdHashMap<Key, Outcome>,
+    hb_cache: HbHashMap<Key, Outcome>,
+    cache_policy: CachePolicy,
     stats: Stats,
 }
 impl Engine<'_> {
+    fn new(p: &'a Problem, bits: u32, cache_policy: CachePolicy) -> Engine<'a> {
+        Engine {
+            p, bits, cache: StdHashMap::new(), hb_cache: HbHashMap::new(),
+            cache_policy, stats: Stats::default(),
+        }
+    }
+    fn borrowed_key_hash(&self, scope: &[usize], residual: &[Clause]) -> u64 {
+        // Match Key's derived Hash field sequence exactly, with borrowed slices.
+        let mut hasher = self.hb_cache.hasher().build_hasher();
+        scope.hash(&mut hasher);
+        residual.hash(&mut hasher);
+        hasher.finish()
+    }
     fn weight(&self, var: usize, positive: bool) -> &C {
         let w = &self.p.weights[var - 1];
         if positive { &w.positive } else { &w.negative }
     }
     fn save(&mut self, key: Key, result: Outcome) -> Outcome {
-        if self.cache.len() < 10_000 {
-            self.cache.insert(key, result.clone());
+        match self.cache_policy {
+            CachePolicy::StdOwned if self.cache.len() < 10_000 => {
+                self.cache.insert(key, result.clone());
+            }
+            CachePolicy::HbOwned | CachePolicy::HbBorrowed if self.hb_cache.len() < 10_000 => {
+                self.hb_cache.insert(key, result.clone());
+            }
+            _ => {}
         }
         result
     }
@@ -80,11 +114,39 @@ impl Engine<'_> {
         if self.stats.nodes >= 100_000 { return Err("node limit".into()); }
         self.stats.nodes += 1;
         let mut residual = if depth == 0 { normalize(clauses) } else { normalize_child(clauses) };
-        let key = Key { scope: scope.clone(), clauses: residual.clone() };
-        if let Some(hit) = self.cache.get(&key) {
-            self.stats.cache_hits += 1;
-            return Ok(hit.clone());
-        }
+        // The original arm duplicates the entire Key before every lookup.
+        // The borrowed arm hashes the existing normalized residual and scope
+        // without deep-copying either; only a true miss constructs a Key.
+        // Exact equality is still checked in the hash table (no hash-only hits).
+        let key = match self.cache_policy {
+            CachePolicy::StdOwned => {
+                let key = Key { scope: scope.clone(), clauses: residual.clone() };
+                if let Some(hit) = self.cache.get(&key) {
+                    self.stats.cache_hits += 1;
+                    return Ok(hit.clone());
+                }
+                key
+            }
+            CachePolicy::HbOwned => {
+                let key = Key { scope: scope.clone(), clauses: residual.clone() };
+                if let Some(hit) = self.hb_cache.get(&key) {
+                    self.stats.cache_hits += 1;
+                    return Ok(hit.clone());
+                }
+                key
+            }
+            CachePolicy::HbBorrowed => {
+                let hash = self.borrowed_key_hash(&scope, &residual);
+                if let Some((_, hit)) = self.hb_cache.raw_entry().from_hash(hash, |key| {
+                    key.scope.as_slice() == scope.as_slice()
+                        && key.clauses.as_slice() == residual.as_slice()
+                }) {
+                    self.stats.cache_hits += 1;
+                    return Ok(hit.clone());
+                }
+                Key { scope: scope.clone(), clauses: residual.clone() }
+            }
+        };
         let mut remaining = scope;
         let mut prefix = C::one(self.bits);
         loop {
@@ -243,8 +305,21 @@ fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
 }
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
-    let digits: u32 = args.next().ok_or("usage: rawmocs-mpfr-research DIGITS FILE")?
-        .to_str().ok_or("non-UTF8 precision")?.parse().map_err(|_| "bad precision")?;
+    let first = args.next().ok_or(
+        "usage: rawmocs-mpfr-research [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
+    )?;
+    let cache_policy = match first.to_str() {
+        Some("--hashbrown-owned") => CachePolicy::HbOwned,
+        Some("--hashbrown-borrowed") => CachePolicy::HbBorrowed,
+        _ => CachePolicy::StdOwned,
+    };
+    let numeric = if matches!(cache_policy, CachePolicy::StdOwned) {
+        first
+    } else {
+        args.next().ok_or("missing MPFR precision")?
+    };
+    let digits: u32 = numeric.to_str().ok_or("non-UTF8 precision")?
+        .parse().map_err(|_| "bad precision")?;
     if !(30..=100).contains(&digits) { return Err("supported precision 30..100 digits".into()); }
     // Source GPMC/mpfr/mpreal.h uses this EXACT digits2bits conversion.
     let bits = (f64::from(digits) * 3.321_928_094_887_362_4).ceil() as u32;
@@ -257,7 +332,7 @@ fn run() -> Result<(), String> {
     let p = parse_emitted(&raw, bits)?;
     let parse_ns = t1.elapsed().as_nanos();
     let t2 = Instant::now();
-    let mut engine = Engine { p: &p, bits, cache: HashMap::new(), stats: Stats::default() };
+    let mut engine = Engine::new(&p, bits, cache_policy);
     let answer = engine.count(p.clauses.clone(), (1..=p.n).collect(), 0)?;
     let solve_ns = t2.elapsed().as_nanos();
     let t3 = Instant::now();
@@ -270,6 +345,7 @@ fn run() -> Result<(), String> {
     let output_ns = t3.elapsed().as_nanos();
     eprintln!("RESEARCH_MPFR_PHASE_NS read={read_ns} parse={parse_ns} solve={solve_ns} output={output_ns} nodes={} cache_hits={} decompositions={} digits={digits} bits={bits}",
         engine.stats.nodes, engine.stats.cache_hits, engine.stats.decompositions);
+    eprintln!("RESEARCH_MPFR_CACHE_POLICY {}", cache_policy.label());
     Ok(())
 }
 fn main() {
@@ -299,9 +375,46 @@ mod tests {
     fn boolean_sat_with_cancelled_wmc() {
         let text = "p cnf 1 0\nc t wmc\nc p weight 1 1 0 0\nc p weight -1 -1 0 0\n";
         let p = parse_emitted(text, 100).unwrap();
-        let mut engine = Engine { p: &p, bits: 100, stats: Stats::default(), cache: HashMap::new() };
+        let mut engine = Engine::new(&p, 100, CachePolicy::StdOwned);
         let out = engine.count(p.clauses.clone(), vec![1], 0).unwrap();
         assert!(out.sat);
         assert_eq!(out.count.re, 0);
     }
+    #[test]
+    fn borrowed_hash_matches_owned_key_hash_for_exact_lookup() {
+        let p = parse_emitted("p cnf 2 1\nc t wmc\n1 -2 0\n", 100).unwrap();
+        let mut engine = Engine::new(&p, 100, CachePolicy::HbBorrowed);
+        let scope = vec![1_usize, 2_usize];
+        let residual = vec![vec![-2, 1]];
+        let key = Key { scope: scope.clone(), clauses: residual.clone() };
+        engine.hb_cache.insert(key, Outcome {
+            sat: true, count: C::one(100),
+        });
+        let hash = engine.borrowed_key_hash(&scope, &residual);
+        let lookup = engine.hb_cache.raw_entry().from_hash(hash, |key| {
+            key.scope == scope && key.clauses == residual
+        });
+        assert!(lookup.is_some(), "borrowed lookup must use the exact Key hash");
+        let wrong = vec![vec![1, 2]];
+        assert!(engine.hb_cache.raw_entry().from_hash(hash, |key| {
+            key.scope == scope && key.clauses == wrong
+        }).is_none(), "hash alone must never confer a cache hit");
+    }
+
+    #[test]
+    fn cache_modes_preserve_sat_wmc_and_structure() {
+        let source = "p cnf 4 4\nc t wmc\nc p weight 1 0.25 -0.5 0\nc p weight -1 -0.25 0.5 0\nc p weight 2 0.3 0.1 0\nc p weight -2 0.7 0 0\n1 2 0\n-1 3 0\n1 -4 0\n-2 3 -4 0\n";
+        let problem = parse_emitted(source, 100).unwrap();
+        let mut reference = None;
+        for mode in [CachePolicy::StdOwned, CachePolicy::HbOwned, CachePolicy::HbBorrowed] {
+            let mut engine = Engine::new(&problem, 100, mode);
+            let answer = engine.count(problem.clauses.clone(), (1..=4).collect(), 0).unwrap();
+            let record = (answer.sat, answer.count.re, answer.count.im,
+                engine.stats.nodes, engine.stats.cache_hits, engine.stats.decompositions);
+            if let Some(expected) = &reference {
+                assert_eq!(&record, expected, "cache variant {}", mode.label());
+            } else { reference = Some(record); }
+        }
+    }
+
 }

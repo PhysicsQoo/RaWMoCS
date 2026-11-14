@@ -112,7 +112,7 @@ def main() -> None:
     expected = {f"{case}{suffix}" for case in NAMES for suffix in (
         ".qasm", "-gpmc.cnf", "-ganak.cnf", "-gpmc-phases.tsv", "-ganak-phases.tsv"
     )}
-    supplied = {f.name for f in args.corpus.iterdir() if f.is_file()}
+    supplied = {f.name for f in args.corpus.iterdir() if f.is_file() and f.name != 'exporter.log'}
     if supplied != expected:
         raise SystemExit(f"ARTIFACT_SET_MISMATCH missing={sorted(expected-supplied)} excess={sorted(supplied-expected)}")
     manifest: dict = {

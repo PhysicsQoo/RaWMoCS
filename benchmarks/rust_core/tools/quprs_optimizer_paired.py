@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+"""Same-runner source-identical exact Rust solver A/B on original QuPRS CNFs.
+
+The native GPMC MPFR30 reference and original QuPRS encoder are qualified by
+the companion representative report. This compares unchanged prior Rust exact
+solver against a candidate and never infers improvements from separate CI runs.
+"""
+from __future__ import annotations
+
+import argparse
+from fractions import Fraction
+from hashlib import sha256
+import json
+from pathlib import Path
+import statistics
+import subprocess
+from typing import Any
+
+from quprs_representative_native import timed_execution
+
+BASELINE_COMMIT = "45d71e9f5e302a53732b6f678898404c9c8a20e9"
+CASES = ("qft3", "grover2", "feynman_mod5_4", "feynman_qft_4")
+ACCEPTED = {"ORACLE_VERIFIED_PAIRED", "SOLVER_AGREEMENT_ONLY"}
+
+
+def sha_file(path: Path) -> str:
+    return sha256(path.read_bytes()).hexdigest()
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--baseline", type=Path, required=True)
+    ap.add_argument("--candidate", type=Path, required=True)
+    ap.add_argument("--corpus", type=Path, required=True)
+    ap.add_argument("--representative-report", type=Path, required=True)
+    ap.add_argument("--trials", type=int, default=3)
+    ap.add_argument("--report", type=Path, required=True)
+    args = ap.parse_args()
+    if not 2 <= args.trials <= 4:
+        raise SystemExit("A/B requires two to four alternating independent trials")
+    for binary in (args.baseline, args.candidate):
+        if not binary.is_file():
+            raise SystemExit(f"native executable missing: {binary}")
+    source = json.loads(args.representative_report.read_text(encoding="utf8"))
+    if source["source_commit"] != "0b28736651b3740ed3b201edd2efdef3da541e0d":
+        raise SystemExit("unverified QuPRS exporter source")
+    original_rows = {r["case"]: r for r in source["rows"]}
+    base_root = args.baseline.resolve().parents[4]
+    baseline_sha = subprocess.check_output(
+        ["git", "-C", str(base_root), "rev-parse", "HEAD"], text=True
+    ).strip()
+    if baseline_sha != BASELINE_COMMIT:
+        raise SystemExit(f"unexpected baseline commit: {baseline_sha}")
+    report: dict[str, Any] = {
+        "source_quprs_sha": source["source_commit"],
+        "baseline_rawmocs_sha": baseline_sha,
+        "candidate_rawmocs_sha": subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], text=True
+        ).strip(),
+        "precision_contract": "exact finite printed decimal rational on both arms",
+        "scope": "same input bytes, alternating native processes, 8s/2GiB bounds",
+        "gpmc_contract": "GPMC MPFR30 is compared separately in original representative report",
+        "rows": [],
+    }
+    invalid = False
+    for case in CASES:
+        input_file = args.corpus / f"{case}-gpmc.cnf"
+        source_row = original_rows[case]
+        if source_row.get("status") not in ACCEPTED:
+            raise SystemExit(f"unqualified original paired input: {case}")
+        cnf_sha = sha_file(input_file)
+        if cnf_sha != source_row["cnf_sha256"]:
+            raise SystemExit(f"source-pinned CNF bytes changed: {case}")
+        row: dict[str, Any] = {
+            "case": case, "cnf_sha256": cnf_sha,
+            "variables": source_row["variables"], "clauses": source_row["clauses"],
+            "samples": [],
+        }
+        for trial in range(args.trials):
+            order = ("baseline", "candidate") if trial % 2 == 0 else ("candidate", "baseline")
+            for arm in order:
+                binary = args.baseline if arm == "baseline" else args.candidate
+                outcome = timed_execution([str(binary.resolve()), str(input_file.resolve())], "rawmocs")
+                outcome["arm"] = arm
+                outcome["trial"] = trial
+                row["samples"].append(outcome)
+        all_completed = all(s["status"] == "COMPLETED" for s in row["samples"])
+        if not all_completed:
+            row["status"] = "CENSORED_NATIVE_FAILURE"
+        else:
+            exact_answers = {
+                (s["sat"], Fraction(s["real"]), Fraction(s["imag"]))
+                for s in row["samples"]
+            }
+            stdout_hashes = {s["native_stdout_sha256"] for s in row["samples"]}
+            candidate_profiles = [
+                s.get("rawmocs_phase_ns")
+                for s in row["samples"] if s["arm"] == "candidate"
+            ]
+            if len(exact_answers) != 1 or len(stdout_hashes) != 1:
+                row["status"] = "EXACT_RESULT_OR_PROTOCOL_MISMATCH"
+            elif any(profile is None for profile in candidate_profiles):
+                row["status"] = "MISSING_CANDIDATE_PHASE_PROFILE"
+            else:
+                row["status"] = "EXACT_MATCH"
+                row["wall_ns_median"] = {
+                    arm: statistics.median(s["wall_ns"] for s in row["samples"] if s["arm"] == arm)
+                    for arm in ("baseline", "candidate")
+                }
+                row["peak_rss_kib_median"] = {
+                    arm: statistics.median(s["peak_rss_kib"] for s in row["samples"] if s["arm"] == arm)
+                    for arm in ("baseline", "candidate")
+                }
+                row["candidate_phase_ns_median"] = {
+                    phase: statistics.median(p[phase] for p in candidate_profiles)
+                    for phase in ("read", "parse", "solve", "output")
+                }
+                base = row["wall_ns_median"]["baseline"]
+                candidate = row["wall_ns_median"]["candidate"]
+                row["speed_ratio_baseline_over_candidate"] = base / candidate
+                print(
+                    f"RAWMOCS_AB case={case} status=EXACT_MATCH "
+                    f"baseline_ms={base / 1e6:.3f} candidate_ms={candidate / 1e6:.3f} "
+                    f"ratio={base / candidate:.3f} rss_baseline_kib={row['peak_rss_kib_median']['baseline']} "
+                    f"rss_candidate_kib={row['peak_rss_kib_median']['candidate']}"
+                )
+        if row["status"] != "EXACT_MATCH":
+            invalid = True
+            print(f"RAWMOCS_AB_CENSORED case={case} status={row['status']}")
+        report["rows"].append(row)
+    args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf8")
+    if invalid:
+        raise SystemExit("exact A/B admission failed: inspect censored cases before claiming speedup")
+
+
+if __name__ == "__main__":
+    main()

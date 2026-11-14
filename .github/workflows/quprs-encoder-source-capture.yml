@@ -7,6 +7,7 @@ on:
       - "benchmarks/rust_core/tools/quprs_encoder_validate.py"
       - "benchmarks/rust_core/tools/quprs_encoder_paired.py"
       - "benchmarks/rust_core/tools/quprs_representative_native.py"
+      - "benchmarks/rust_core/tools/quprs_optimizer_paired.py"
       - "benchmarks/rust_core/examples/quprs_encoder_research_cli.rs"
   push:
     branches: [main]
@@ -132,6 +133,29 @@ jobs:
             --rawmocs benchmarks/rust_core/target/release/examples/quprs_encoder_research_cli \
             --trials 3 \
             --report .research/quprs-representative-native.json
+      - name: Checkout pinned previous RaWMoCS baseline for true same-runner A/B
+        uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/RaWMoCS
+          ref: 45d71e9f5e302a53732b6f678898404c9c8a20e9
+          path: .upstream/rawmocs-baseline
+          persist-credentials: false
+      - name: Build unchanged prior native Rust exact solver
+        run: |
+          test "$(git -C .upstream/rawmocs-baseline rev-parse HEAD)" = "45d71e9f5e302a53732b6f678898404c9c8a20e9"
+          cargo build --locked --release \
+            --manifest-path .upstream/rawmocs-baseline/benchmarks/rust_core/Cargo.toml \
+            --example quprs_encoder_research_cli
+      - name: Same-runner source-identical original-vs-optimized Rust exact A/B
+        run: |
+          python3 -m py_compile benchmarks/rust_core/tools/quprs_optimizer_paired.py
+          python3 benchmarks/rust_core/tools/quprs_optimizer_paired.py \
+            --baseline .upstream/rawmocs-baseline/benchmarks/rust_core/target/release/examples/quprs_encoder_research_cli \
+            --candidate benchmarks/rust_core/target/release/examples/quprs_encoder_research_cli \
+            --corpus .research/quprs-representative \
+            --representative-report .research/quprs-representative-native.json \
+            --trials 3 \
+            --report .research/quprs-optimizer-ab.json
       - name: Archive real encoder bytes, raw phase sidecars and SHA256 provenance
         if: always()
         uses: actions/upload-artifact@v4
@@ -143,5 +167,6 @@ jobs:
             .research/quprs-encoder-native-paired.json
             .research/quprs-representative/
             .research/quprs-representative-native.json
+            .research/quprs-optimizer-ab.json
           if-no-files-found: warn
           retention-days: 30

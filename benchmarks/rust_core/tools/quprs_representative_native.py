@@ -67,6 +67,7 @@ def guarded_execution(command: list[str], tool: str) -> dict[str, Any]:
             "tool": tool, "status": "COMPLETED",
             "sat": sat, "real": str(count[0]), "imag": str(count[1]),
             "peak_rss_kib": rss, "native_stdout_sha256": sha256(result.stdout.encode()).hexdigest(),
+            "native_stdout_bytes": len(result.stdout.encode("utf8")),
         }
 
 
@@ -188,15 +189,16 @@ def main() -> None:
                 if record["status"] != "COMPLETED":
                     agreement = False
                     continue
-                if record["sat"] != left["sat"] or (
+                # No trial may silently disagree with another trial from
+                # its OWN solver. Never use a second-trial result as a valid
+                # performance sample if exact printed observations differ.
+                own = completed[record["tool"]][0]
+                if record["sat"] != own["sat"] or (
                     Fraction(record["real"]), Fraction(record["imag"])
                 ) != (
-                    Fraction(left["real"]), Fraction(left["imag"])
-                ) and record["tool"] == "gpmc":
-                    # GPMC repeated fresh process values must be stable;
-                    # mixed exact/finite arithmetic is checked separately.
-                    if record["tool"] == "gpmc":
-                        agreement = False
+                    Fraction(own["real"]), Fraction(own["imag"])
+                ):
+                    agreement = False
                 if oracle:
                     valid_tolerance = Fraction(0) if record["tool"] == "rawmocs" else max(
                         ABS_DECIMAL_GUARD,

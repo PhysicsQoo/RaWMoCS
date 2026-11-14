@@ -63,6 +63,7 @@ struct Engine<'a> {
     bits: u32,
     cache: HashMap<Key, Outcome>,
     stats: Stats,
+    dense_components: bool,
 }
 impl Engine<'_> {
     fn weight(&self, var: usize, positive: bool) -> &C {
@@ -116,7 +117,12 @@ impl Engine<'_> {
                 prefix = prefix.mul(&w.positive.add(&w.negative, self.bits), self.bits);
             }
         }
-        if let Some(pieces) = split_components(&residual, &active, self.p.n) {
+        let pieces = if self.dense_components {
+            split_components_dense(&residual, &active, self.p.n)
+        } else {
+            split_components(&residual, &active, self.p.n)
+        };
+        if let Some(pieces) = pieces {
             self.stats.decompositions += 1;
             let mut value = C::one(self.bits);
             for (cls, sub_scope) in pieces {
@@ -193,6 +199,41 @@ fn split_components(
     }
     Some(groups.into_values().map(|(vars, cs)| (cs, vars)).collect())
 }
+/// Preserve BTreeMap root ordering while replacing per-component RB-tree
+/// insertion with a directly indexed dense table. A separate research
+/// switch isolates its allocation costs and semantics on real QuPRS CNFs.
+fn split_components_dense(
+    clauses: &[Clause], scope: &[usize], variables: usize
+) -> Option<Vec<(Vec<Clause>, Vec<usize>)>> {
+    let mut parent: Vec<_> = (0..=variables).collect();
+    for clause in clauses {
+        let first = clause[0].unsigned_abs() as usize;
+        for &lit in &clause[1..] {
+            let a = root(&mut parent, first);
+            let b = root(&mut parent, lit.unsigned_abs() as usize);
+            parent[b] = a;
+        }
+    }
+    let &first = scope.first()?;
+    let first_root = root(&mut parent, first);
+    if scope.iter().all(|&v| root(&mut parent, v) == first_root) { return None; }
+
+    let mut groups: Vec<Option<(Vec<usize>, Vec<Clause>)>> =
+        vec![None; variables + 1];
+    for &var in scope {
+        let component = root(&mut parent, var);
+        groups[component].get_or_insert_with(Default::default).0.push(var);
+    }
+    for clause in clauses {
+        let component = root(&mut parent, clause[0].unsigned_abs() as usize);
+        groups[component]
+            .as_mut()
+            .expect("source clause root belongs to active scope")
+            .1
+            .push(clause.clone());
+    }
+    Some(groups.into_iter().flatten().map(|(vars, cs)| (cs, vars)).collect())
+}
 fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
     if raw.is_empty() || raw.len() > 2_000_000 { return Err("invalid source bytes".into()); }
     let mut lines = raw.lines().filter(|s| !s.trim().is_empty());
@@ -243,8 +284,15 @@ fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
 }
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
-    let digits: u32 = args.next().ok_or("usage: rawmocs-mpfr-research DIGITS FILE")?
-        .to_str().ok_or("non-UTF8 precision")?.parse().map_err(|_| "bad precision")?;
+    let first = args.next().ok_or("usage: rawmocs-mpfr-research [--dense-components] DIGITS FILE")?;
+    let dense_components = first.to_str() == Some("--dense-components");
+    let digits_token = if dense_components {
+        args.next().ok_or("missing digits after --dense-components")?
+    } else {
+        first
+    };
+    let digits: u32 = digits_token.to_str().ok_or("non-UTF8 precision")?
+        .parse().map_err(|_| "bad precision")?;
     if !(30..=100).contains(&digits) { return Err("supported precision 30..100 digits".into()); }
     // Source GPMC/mpfr/mpreal.h uses this EXACT digits2bits conversion.
     let bits = (f64::from(digits) * 3.321_928_094_887_362_4).ceil() as u32;
@@ -257,7 +305,9 @@ fn run() -> Result<(), String> {
     let p = parse_emitted(&raw, bits)?;
     let parse_ns = t1.elapsed().as_nanos();
     let t2 = Instant::now();
-    let mut engine = Engine { p: &p, bits, cache: HashMap::new(), stats: Stats::default() };
+    let mut engine = Engine {
+        p: &p, bits, cache: HashMap::new(), stats: Stats::default(), dense_components,
+    };
     let answer = engine.count(p.clauses.clone(), (1..=p.n).collect(), 0)?;
     let solve_ns = t2.elapsed().as_nanos();
     let t3 = Instant::now();
@@ -296,10 +346,38 @@ mod tests {
         assert_eq!(z.im, Float::with_val(100, 0.171875));
     }
     #[test]
+    fn dense_component_partition_matches_original_root_order() {
+        let fixtures: Vec<(Vec<Clause>, Vec<usize>, usize)> = vec![
+            (vec![vec![1, 2], vec![-3, 4], vec![-6, 5]], vec![1, 2, 3, 4, 5, 6], 6),
+            (vec![vec![-3, 1], vec![2, 3], vec![5, 6], vec![-7, 8]],
+             vec![1, 2, 3, 5, 6, 7, 8], 8),
+            (vec![vec![1, -2], vec![2, 3], vec![1, 3]],
+             vec![1, 2, 3], 3),
+        ];
+        for (clauses, active, n) in fixtures {
+            let clauses = normalize(clauses);
+            let original = split_components(&clauses, &active, n);
+            let dense = split_components_dense(&clauses, &active, n);
+            assert_eq!(dense, original, "dense must preserve original component order");
+            for lit in -i32::try_from(n).unwrap()..=i32::try_from(n).unwrap() {
+                if lit == 0 { continue; }
+                let reduced = normalize_child(assign(&clauses, lit));
+                let remaining: Vec<_> = active.iter().copied()
+                    .filter(|&v| v != lit.unsigned_abs() as usize).collect();
+                if reduced.iter().any(|c| c.is_empty()) { continue; }
+                assert_eq!(
+                    split_components_dense(&reduced, &remaining, n),
+                    split_components(&reduced, &remaining, n),
+                    "literal assignment {lit}"
+                );
+            }
+        }
+    }
+    #[test]
     fn boolean_sat_with_cancelled_wmc() {
         let text = "p cnf 1 0\nc t wmc\nc p weight 1 1 0 0\nc p weight -1 -1 0 0\n";
         let p = parse_emitted(text, 100).unwrap();
-        let mut engine = Engine { p: &p, bits: 100, stats: Stats::default(), cache: HashMap::new() };
+        let mut engine = Engine { p: &p, bits: 100, stats: Stats::default(), cache: HashMap::new(), dense_components: false };
         let out = engine.count(p.clauses.clone(), vec![1], 0).unwrap();
         assert!(out.sat);
         assert_eq!(out.count.re, 0);

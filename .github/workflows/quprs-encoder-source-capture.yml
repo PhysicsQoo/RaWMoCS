@@ -5,7 +5,7 @@ on:
     paths:
       - ".github/workflows/quprs-encoder-source-capture.yml"
       - "benchmarks/rust_core/tools/quprs_encoder_validate.py"
-      - "benchmarks/rust_core/tools/quprs_paired_encoder.py"
+      - "benchmarks/rust_core/tools/quprs_encoder_paired.py"
   push:
     branches: [main]
     paths:
@@ -88,8 +88,8 @@ jobs:
           cargo build --locked --release --manifest-path benchmarks/rust_core/Cargo.toml --example quprs_native_cli
       - name: Independent exhaustive oracle plus same-runner native GPMC/Rust process WallTime RSS
         run: |
-          python3 -m py_compile benchmarks/rust_core/tools/quprs_paired_encoder.py
-          python3 benchmarks/rust_core/tools/quprs_paired_encoder.py \
+          python3 -m py_compile benchmarks/rust_core/tools/quprs_encoder_paired.py
+          python3 benchmarks/rust_core/tools/quprs_encoder_paired.py \
             --corpus .research/quprs-encoder \
             --manifest .research/quprs-encoder-manifest.json \
             --gpmc .upstream/gpmc/build/gpmc \

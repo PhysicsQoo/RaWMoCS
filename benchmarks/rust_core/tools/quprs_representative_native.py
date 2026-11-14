@@ -71,9 +71,9 @@ def guarded_execution(command: list[str], tool: str) -> dict[str, Any]:
         }
         if tool == "rawmocs_mpfr":
             phase = re.search(
-                r"^RESEARCH_MPFR_PHASE_NS read=(\\d+) parse=(\\d+) solve=(\\d+) "
-                r"output=(\\d+) nodes=(\\d+) cache_hits=(\\d+) decompositions=(\\d+) "
-                r"digits=(\\d+) bits=(\\d+)$",
+                r"^RESEARCH_MPFR_PHASE_NS read=(\d+) parse=(\d+) solve=(\d+) "
+                r"output=(\d+) nodes=(\d+) cache_hits=(\d+) decompositions=(\d+) "
+                r"digits=(\d+) bits=(\d+)$",
                 result.stderr, flags=re.MULTILINE,
             )
             if phase:

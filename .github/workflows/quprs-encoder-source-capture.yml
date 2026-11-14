@@ -13,6 +13,8 @@ on:
       - "benchmarks/rust_core/tools/quprs_encoder_validate.py"
       - "benchmarks/rust_core/tools/quprs_encoder_paired.py"
       - "benchmarks/rust_core/tools/quprs_representative_reference.rs"
+      - "benchmarks/rust_core/tools/quprs_representative_native.py"
+      - "benchmarks/rust_core/examples/quprs_encoder_research_cli.rs"
   workflow_dispatch:
 
 permissions:
@@ -93,6 +95,41 @@ jobs:
             --gpmc .upstream/gpmc/build/gpmc \
             --rawmocs benchmarks/rust_core/target/release/examples/quprs_native_cli \
             --trials 3 --report .research/quprs-encoder-native-paired.json
+      - name: Build research-only multi-qubit QuPRS exporter using unchanged original WmcManager
+        run: |
+          cp benchmarks/rust_core/tools/quprs_representative_reference.rs \
+            .upstream/quprs/rust/quprs/examples/quprs_representative_reference.rs
+          cargo build --locked --release --no-default-features \
+            --manifest-path .upstream/quprs/rust/Cargo.toml \
+            -p quprs --example quprs_representative_reference
+          cargo build --locked --release \
+            --manifest-path benchmarks/rust_core/Cargo.toml \
+            --example quprs_encoder_research_cli
+      - name: Export bounded representative multi-qubit circuit family from original Rust QuPRS encoder
+        run: |
+          mkdir -p .research/quprs-representative
+          EXPORTER="$GITHUB_WORKSPACE/.upstream/quprs/rust/target/release/examples/quprs_representative_reference"
+          for family in ghz2 ghz3 ghz4 graph3 bv3 qft2 qft3 grover2 qaoa3 feynman_mod5_4 feynman_qft_4; do
+            echo "NATIVE_SOURCE_START $family" | tee -a .research/quprs-representative/emit.log
+            if timeout -k 2s 20s "$EXPORTER" "$family" \
+                "$GITHUB_WORKSPACE/.upstream/quprs" \
+                "$GITHUB_WORKSPACE/.research/quprs-representative" \
+                >> .research/quprs-representative/emit.log 2>&1; then
+              echo "NATIVE_SOURCE_FINISHED $family" | tee -a .research/quprs-representative/emit.log
+            else
+              echo "NATIVE_SOURCE_CENSORED $family" | tee -a .research/quprs-representative/emit.log
+            fi
+          done
+      - name: Same-runner bounded GPMC and RaWMoCS native Full WMC comparison
+        run: |
+          python3 -m py_compile benchmarks/rust_core/tools/quprs_representative_native.py
+          python3 benchmarks/rust_core/tools/quprs_representative_native.py \
+            --source .upstream/quprs \
+            --corpus .research/quprs-representative \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --rawmocs benchmarks/rust_core/target/release/examples/quprs_encoder_research_cli \
+            --trials 2 \
+            --report .research/quprs-representative-native.json
       - name: Archive real encoder bytes, raw phase sidecars and SHA256 provenance
         if: always()
         uses: actions/upload-artifact@v4
@@ -102,5 +139,7 @@ jobs:
             .research/quprs-encoder/
             .research/quprs-encoder-manifest.json
             .research/quprs-encoder-native-paired.json
+            .research/quprs-representative/
+            .research/quprs-representative-native.json
           if-no-files-found: warn
           retention-days: 30

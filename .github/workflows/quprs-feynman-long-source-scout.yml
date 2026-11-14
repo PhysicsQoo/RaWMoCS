@@ -1,0 +1,108 @@
+name: Original larger Feynman QuPRS CNF bounded source scout
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/quprs-feynman-long-source-scout.yml"
+      - "benchmarks/rust_core/tools/quprs_long_feynman_reference.rs"
+      - "benchmarks/rust_core/tools/quprs_long_feynman_pilot.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: original-feynman-scout-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bounded-original-feynman:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout research scripts only
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Checkout pinned, unchanged QuPRS original source
+        uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/QuPRS
+          ref: 0b28736651b3740ed3b201edd2efdef3da541e0d
+          path: .upstream/quprs
+          persist-credentials: false
+      - name: Checkout unchanged pinned GPMC C++ source
+        uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/GPMC
+          ref: 89bbc89d0de918e7a5385740355df55765039230
+          path: .upstream/gpmc
+          submodules: recursive
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .upstream/quprs/rust -> target
+          key: quprs-original-feynman-long-source
+      - name: Verify both source versions and install native dependencies
+        run: |
+          test "$(git -C .upstream/quprs rev-parse HEAD)" = "0b28736651b3740ed3b201edd2efdef3da541e0d"
+          test "$(git -C .upstream/gpmc rev-parse HEAD)" = "89bbc89d0de918e7a5385740355df55765039230"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build libgmp-dev libmpfr-dev zlib1g-dev time
+      - name: Build original QuPRS PathSum and WmcManager research source bridge
+        run: |
+          cp benchmarks/rust_core/tools/quprs_long_feynman_reference.rs \
+            .upstream/quprs/rust/quprs/examples/quprs_long_feynman_reference.rs
+          cargo build --locked --release --no-default-features \
+            --manifest-path .upstream/quprs/rust/Cargo.toml \
+            -p quprs --example quprs_long_feynman_reference
+      - name: Bounded export of four original committed Feynman QASM cases
+        run: |
+          mkdir -p .research/feynman-long
+          EXPORTER="$GITHUB_WORKSPACE/.upstream/quprs/rust/target/release/examples/quprs_long_feynman_reference"
+          : > .research/feynman-long/source-status.tsv
+          for family in feynman_mod_mult_55 feynman_barenco_tof_5 feynman_hwb6 feynman_grover_5; do
+            echo "ORIGINAL_SOURCE_START $family"
+            if timeout -k 2s 30s prlimit --as=2147483648 --fsize=2097152 -- \
+              "$EXPORTER" "$family" \
+              "$GITHUB_WORKSPACE/.upstream/quprs" \
+              "$GITHUB_WORKSPACE/.research/feynman-long" \
+              > ".research/feynman-long/$family.export.log" 2>&1; then
+              printf '%s\tEXPORTED\n' "$family" >> .research/feynman-long/source-status.tsv
+              echo "ORIGINAL_SOURCE_FINISHED $family"
+            else
+              printf '%s\tEXPORT_CENSORED_OR_UNSUPPORTED\n' "$family" >> .research/feynman-long/source-status.tsv
+              echo "ORIGINAL_SOURCE_CENSORED $family"
+            fi
+          done
+      - name: Build unchanged GPMC C++ native executable
+        run: |
+          cmake -S .upstream/gpmc -B .upstream/gpmc/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build .upstream/gpmc/build --target gpmc-bin --parallel 2
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/mpfr_research -> target
+          key: mpfr-rawmocs-original-feynman-scout
+      - name: Build same-bit RaWMoCS research MPFR release executable
+        run: |
+          cargo build --release --manifest-path benchmarks/mpfr_research/Cargo.toml
+      - name: Source and bounded same-MPFR native paired scout
+        run: |
+          python3 -m py_compile benchmarks/rust_core/tools/quprs_long_feynman_pilot.py
+          python3 benchmarks/rust_core/tools/quprs_long_feynman_pilot.py \
+            --source .upstream/quprs \
+            --gpmc-source .upstream/gpmc \
+            --corpus .research/feynman-long \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --trials 2 \
+            --report .research/feynman-long/scout-report.json
+      - name: Archive every source/solver outcome including censored cases
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: original-feynman-long-source-scout
+          path: .research/feynman-long/
+          if-no-files-found: warn
+          retention-days: 30

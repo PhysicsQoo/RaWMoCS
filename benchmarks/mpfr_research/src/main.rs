@@ -78,12 +78,13 @@ struct Engine<'a> {
     hb_cache: HbHashMap<Key, Outcome>,
     cache_policy: CachePolicy,
     stats: Stats,
+    fast_assign: bool,
 }
 impl<'a> Engine<'a> {
     fn new(p: &'a Problem, bits: u32, cache_policy: CachePolicy) -> Engine<'a> {
         Engine {
             p, bits, cache: StdHashMap::new(), hb_cache: HbHashMap::new(),
-            cache_policy, stats: Stats::default(),
+            cache_policy, stats: Stats::default(), fast_assign: false,
         }
     }
     fn borrowed_key_hash(&self, scope: &[usize], residual: &[Clause]) -> u64 {
@@ -157,7 +158,11 @@ impl<'a> Engine<'a> {
             let var = lit.unsigned_abs() as usize;
             prefix = prefix.mul(self.weight(var, lit > 0), self.bits);
             remaining.retain(|&v| v != var);
-            residual = assign(&residual, lit);
+            residual = if self.fast_assign {
+                assign_fast(&residual, lit)
+            } else {
+                assign(&residual, lit)
+            };
         }
         if residual.is_empty() {
             for var in remaining {
@@ -192,8 +197,18 @@ impl<'a> Engine<'a> {
         }
         let var = *active.iter().max_by_key(|&&v| frequency[v]).ok_or("no active pivot")?;
         let child: Vec<_> = active.into_iter().filter(|&v| v != var).collect();
-        let yes = self.count(assign(&residual, var as i32), child.clone(), depth + 1)?;
-        let no = self.count(assign(&residual, -(var as i32)), child, depth + 1)?;
+        let yes_clauses = if self.fast_assign {
+            assign_fast(&residual, var as i32)
+        } else {
+            assign(&residual, var as i32)
+        };
+        let yes = self.count(yes_clauses, child.clone(), depth + 1)?;
+        let no_clauses = if self.fast_assign {
+            assign_fast(&residual, -(var as i32))
+        } else {
+            assign(&residual, -(var as i32))
+        };
+        let no = self.count(no_clauses, child, depth + 1)?;
         let yes_weighted = self.weight(var, true).mul(&yes.count, self.bits);
         let no_weighted = self.weight(var, false).mul(&no.count, self.bits);
         let sum = yes_weighted.add(&no_weighted, self.bits);
@@ -221,6 +236,29 @@ fn normalize_child(mut cls: Vec<Clause>) -> Vec<Clause> {
 fn assign(clauses: &[Clause], lit: i32) -> Vec<Clause> {
     clauses.iter().filter(|c| !c.contains(&lit))
         .map(|c| c.iter().copied().filter(|&x| x != -lit).collect()).collect()
+}
+/// Source-normalized two-literal assignment. This is an opt-in research
+/// control: the original borrowed/owned-cache comparison remains unchanged.
+fn assign_fast(clauses: &[Clause], selected: i32) -> Vec<Clause> {
+    let opposite = -selected;
+    let mut child = Vec::with_capacity(clauses.len());
+    for clause in clauses {
+        if clause.len() == 2 {
+            let a = clause[0];
+            let b = clause[1];
+            if a == selected || b == selected { continue; }
+            if a == opposite { child.push(vec![b]); }
+            else if b == opposite { child.push(vec![a]); }
+            else { child.push(clause.clone()); }
+        } else if clause.contains(&selected) {
+            continue;
+        } else if clause.contains(&opposite) {
+            child.push(clause.iter().copied().filter(|&v| v != opposite).collect());
+        } else {
+            child.push(clause.clone());
+        }
+    }
+    child
 }
 fn root(parent: &mut [usize], mut x: usize) -> usize {
     while parent[x] != x {
@@ -306,15 +344,21 @@ fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
     let first = args.next().ok_or(
-        "usage: rawmocs-mpfr-research [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
+        "usage: rawmocs-mpfr-research [--fast-assign] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
     )?;
-    let cache_policy = match first.to_str() {
+    let fast_assign = first.to_str() == Some("--fast-assign");
+    let cache_first = if fast_assign {
+        args.next().ok_or("missing precision or cache mode after --fast-assign")?
+    } else {
+        first
+    };
+    let cache_policy = match cache_first.to_str() {
         Some("--hashbrown-owned") => CachePolicy::HbOwned,
         Some("--hashbrown-borrowed") => CachePolicy::HbBorrowed,
         _ => CachePolicy::StdOwned,
     };
     let numeric = if matches!(cache_policy, CachePolicy::StdOwned) {
-        first
+        cache_first
     } else {
         args.next().ok_or("missing MPFR precision")?
     };
@@ -333,6 +377,7 @@ fn run() -> Result<(), String> {
     let parse_ns = t1.elapsed().as_nanos();
     let t2 = Instant::now();
     let mut engine = Engine::new(&p, bits, cache_policy);
+    engine.fast_assign = fast_assign;
     let answer = engine.count(p.clauses.clone(), (1..=p.n).collect(), 0)?;
     let solve_ns = t2.elapsed().as_nanos();
     let t3 = Instant::now();
@@ -380,6 +425,41 @@ mod tests {
         assert!(out.sat);
         assert_eq!(out.count.re, 0);
     }
+    #[test]
+    fn opt_in_assignment_preserves_original_normalized_clause_semantics() {
+        let clauses = normalize(vec![
+            vec![1, 2], vec![-1, 3], vec![-3, 4], vec![2, -4],
+            vec![2, 3, -4], vec![1], vec![], vec![3, -3],
+        ]);
+        for literal in [-4_i32, -3, -2, -1, 1, 2, 3, 4] {
+            assert_eq!(assign_fast(&clauses, literal), assign(&clauses, literal));
+            let reduced = normalize_child(assign(&clauses, literal));
+            for other in [-4_i32, -3, -2, -1, 1, 2, 3, 4] {
+                assert_eq!(assign_fast(&reduced, other), assign(&reduced, other));
+            }
+        }
+    }
+    #[test]
+    fn cache_ownership_and_binary_assignment_preserve_full_mpfr_wmc() {
+        let source = "p cnf 4 4\nc t wmc\nc p weight 1 0.25 -0.5 0\nc p weight -1 -0.25 0.5 0\nc p weight 2 0.3 0.1 0\nc p weight -2 0.7 0 0\n1 2 0\n-1 3 0\n1 -4 0\n-2 3 -4 0\n";
+        let p = parse_emitted(source, 100).unwrap();
+        let mut reference = None;
+        for mode in [CachePolicy::StdOwned, CachePolicy::HbOwned, CachePolicy::HbBorrowed] {
+            for fast in [false, true] {
+                let mut engine = Engine::new(&p, 100, mode);
+                engine.fast_assign = fast;
+                let out = engine.count(p.clauses.clone(), (1..=p.n).collect(), 0).unwrap();
+                let observed = (out.sat, out.count.re, out.count.im,
+                    engine.stats.nodes, engine.stats.cache_hits, engine.stats.decompositions);
+                if let Some(ref expected) = reference {
+                    assert_eq!(&observed, expected, "same source CNF and MPFR operation order");
+                } else {
+                    reference = Some(observed);
+                }
+            }
+        }
+    }
+
     #[test]
     fn borrowed_hash_matches_owned_key_hash_for_exact_lookup() {
         let p = parse_emitted("p cnf 2 1\nc t wmc\n1 -2 0\n", 100).unwrap();

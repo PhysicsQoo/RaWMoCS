@@ -3,6 +3,8 @@
 //! frequency pivot and 10,000-entry exact-shape residual cache.
 //! Verify structure against main exact-rational solve before claiming parity.
 use rug::Float;
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 use std::sync::Arc;
 use std::ops::Deref;
 use std::collections::{BTreeMap, HashMap as StdHashMap};
@@ -97,6 +99,7 @@ struct Engine<'a> {
     stats: Stats,
     fast_assign: bool,
     node_budget: u64,
+    indexed_unit_propagation: bool,
 }
 impl<'a> Engine<'a> {
     fn new(p: &'a Problem, bits: u32, cache_policy: CachePolicy) -> Engine<'a> {
@@ -105,6 +108,7 @@ impl<'a> Engine<'a> {
             shared_cache: HbHashMap::new(),
             cache_policy, shared_residual_key: false,
             stats: Stats::default(), fast_assign: false, node_budget: 100_000,
+            indexed_unit_propagation: false,
         }
     }
     fn borrowed_key_hash(&self, scope: &[usize], residual: &[Clause]) -> u64 {
@@ -198,19 +202,30 @@ impl<'a> Engine<'a> {
         };
         let mut remaining = scope;
         let mut prefix = C::one(self.bits);
-        loop {
-            if residual.iter().any(Vec::is_empty) {
+        if self.indexed_unit_propagation && residual.iter().any(|c| c.len() == 1) {
+            let Some(reduced) = unit_propagate_indexed(
+                &residual, self.p.n, &self.p.weights, self.bits, &mut remaining, &mut prefix
+            ) else {
                 return Ok(self.save(key, Outcome::unsat(self.bits)));
+            };
+            residual = ResidualStorage::Owned(reduced);
+        } else {
+            // Control is intentionally byte-for-byte the original unit order
+            // and clause-copy behavior; no production path is changed.
+            loop {
+                if residual.iter().any(Vec::is_empty) {
+                    return Ok(self.save(key, Outcome::unsat(self.bits)));
+                }
+                let Some(lit) = residual.iter().find(|c| c.len() == 1).map(|c| c[0]) else { break; };
+                let var = lit.unsigned_abs() as usize;
+                prefix = prefix.mul(self.weight(var, lit > 0), self.bits);
+                remaining.retain(|&v| v != var);
+                residual = ResidualStorage::Owned(if self.fast_assign {
+                    assign_fast(&residual, lit)
+                } else {
+                    assign(&residual, lit)
+                });
             }
-            let Some(lit) = residual.iter().find(|c| c.len() == 1).map(|c| c[0]) else { break; };
-            let var = lit.unsigned_abs() as usize;
-            prefix = prefix.mul(self.weight(var, lit > 0), self.bits);
-            remaining.retain(|&v| v != var);
-            residual = ResidualStorage::Owned(if self.fast_assign {
-                assign_fast(&residual, lit)
-            } else {
-                assign(&residual, lit)
-            });
         }
         if residual.is_empty() {
             for var in remaining {
@@ -266,6 +281,81 @@ impl<'a> Engine<'a> {
         }))
     }
 }
+/// Research-only occurrence-indexed unit propagation within ONE normalized
+/// DPLL residual node. Unlike a global watched-literal index, these bounded
+/// local indices never outlive their source clause list or cache lookup.
+///
+/// BinaryHeap<Reverse<usize>> always chooses the smallest ORIGINAL clause
+/// index, preserving the original first-unit-clause order even when an
+/// earlier nonunit clause becomes unit after a forced literal assignment.
+/// The original stable residual order is preserved in reconstructed output.
+/// Return None for a Boolean contradiction, independent of numeric zero WMC.
+fn unit_propagate_indexed(
+    clauses: &[Clause],
+    variables: usize,
+    weights: &[Weights],
+    bits: u32,
+    remaining: &mut Vec<usize>,
+    prefix: &mut C,
+) -> Option<Vec<Clause>> {
+    let mut occurrences: Vec<[Vec<usize>; 2]> =
+        vec![[Vec::new(), Vec::new()]; variables + 1];
+    let mut lengths = Vec::with_capacity(clauses.len());
+    let mut alive = vec![true; clauses.len()];
+    let mut unit = BinaryHeap::<Reverse<usize>>::new();
+    let mut assignments = vec![0_i8; variables + 1];
+    for (cid, clause) in clauses.iter().enumerate() {
+        if clause.is_empty() { return None; }
+        lengths.push(clause.len());
+        if clause.len() == 1 { unit.push(Reverse(cid)); }
+        for &lit in clause {
+            let v = lit.unsigned_abs() as usize;
+            occurrences[v][usize::from(lit < 0)].push(cid);
+        }
+    }
+    while let Some(Reverse(cid)) = unit.pop() {
+        if !alive[cid] || lengths[cid] != 1 { continue; }
+        // Normalized input clauses have neither repeated literals nor
+        // both polarities. Active clauses never contain satisfied literals.
+        let lit = *clauses[cid].iter().find(|&&lit| {
+            assignments[lit.unsigned_abs() as usize] == 0
+        }).expect("active unit has exactly one unassigned literal");
+        let var = lit.unsigned_abs() as usize;
+        let side = usize::from(lit < 0);
+        let w = &weights[var - 1];
+        *prefix = prefix.mul(if lit > 0 { &w.positive } else { &w.negative }, bits);
+        remaining.retain(|&v| v != var);
+        assignments[var] = if lit > 0 { 1 } else { -1 };
+
+        // Satisfied clauses disappear without touching their literals.
+        for &index in &occurrences[var][side] {
+            alive[index] = false;
+        }
+        // Falsified literal occurrences lose one literal. Only those
+        // clauses can become new units or empty. Stale heap entries are
+        // filtered on pop, so queue ordering reproduces the baseline.
+        for &index in &occurrences[var][1 - side] {
+            if !alive[index] { continue; }
+            lengths[index] -= 1;
+            if lengths[index] == 0 { return None; }
+            if lengths[index] == 1 { unit.push(Reverse(index)); }
+        }
+    }
+    let mut reduced = Vec::with_capacity(clauses.len());
+    for (cid, clause) in clauses.iter().enumerate() {
+        if !alive[cid] { continue; }
+        let mut next = Vec::with_capacity(lengths[cid]);
+        for &lit in clause {
+            if assignments[lit.unsigned_abs() as usize] == 0 {
+                next.push(lit);
+            }
+        }
+        debug_assert_eq!(next.len(), lengths[cid]);
+        reduced.push(next);
+    }
+    Some(reduced)
+}
+
 fn normalize(clauses: Vec<Clause>) -> Vec<Clause> {
     let mut result = Vec::new();
     for mut clause in clauses {
@@ -392,7 +482,7 @@ fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
     let first = args.next().ok_or(
-        "usage: rawmocs-mpfr-research [--node-budget=250000|--node-budget=1000000] [--shared-residual-key] [--fast-assign] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
+        "usage: rawmocs-mpfr-research [--node-budget=250000|--node-budget=1000000] [--indexed-unit-prop] [--shared-residual-key] [--fast-assign] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
     )?;
     // Explicit finite research-only node limits, untouched default.
     let node_budget = match first.to_str() {
@@ -405,11 +495,17 @@ fn run() -> Result<(), String> {
     } else {
         first
     };
-    let shared_residual_key = algorithm_start.to_str() == Some("--shared-residual-key");
+    let indexed_unit_propagation = algorithm_start.to_str() == Some("--indexed-unit-prop");
+    let storage_start = if indexed_unit_propagation {
+        args.next().ok_or("missing arguments after --indexed-unit-prop")?
+    } else {
+        algorithm_start
+    };
+    let shared_residual_key = storage_start.to_str() == Some("--shared-residual-key");
     let next = if shared_residual_key {
         args.next().ok_or("missing arguments after --shared-residual-key")?
     } else {
-        algorithm_start
+        storage_start
     };
     let fast_assign = next.to_str() == Some("--fast-assign");
     let cache_first = if fast_assign {
@@ -448,6 +544,7 @@ fn run() -> Result<(), String> {
     engine.fast_assign = fast_assign;
     engine.shared_residual_key = shared_residual_key;
     engine.node_budget = node_budget;
+    engine.indexed_unit_propagation = indexed_unit_propagation;
     let answer = engine.count(p.clauses.clone(), (1..=p.n).collect(), 0)?;
     let solve_ns = t2.elapsed().as_nanos();
     let t3 = Instant::now();
@@ -463,6 +560,7 @@ fn run() -> Result<(), String> {
     eprintln!("RESEARCH_MPFR_CACHE_POLICY {}", cache_policy.label());
     eprintln!("RESEARCH_MPFR_SHARED_RESIDUAL enabled={} entries={}",
         shared_residual_key, engine.shared_cache.len());
+    eprintln!("RESEARCH_MPFR_UNIT_PROP_INDEXED enabled={indexed_unit_propagation}");
     Ok(())
 }
 fn main() {
@@ -578,6 +676,104 @@ mod tests {
         }
         // Extra test of independently created residual with exact cache behavior.
         assert_eq!(problem.n, 5);
+    }
+
+    #[test]
+    fn indexed_unit_propagation_respects_original_first_unit_order() {
+        let bits = 100;
+        let text = "p cnf 4 4\nc t wmc\nc p weight 1 0.11 0.21 0\nc p weight -1 0.4 0 0\nc p weight 2 0.33 -0.3 0\nc p weight -2 -0.4 0.1 0\nc p weight 3 0.51 0.13 0\nc p weight -3 0.19 0.13 0\n-1 2 0\n1 3 0\n-3 4 0\n-4 0\n";
+        let p = parse_emitted(text, bits).unwrap();
+        let canonical = normalize(p.clauses.clone());
+        let mut expected = canonical.clone();
+        let mut scope = (1..=p.n).collect::<Vec<_>>();
+        let mut pref = C::one(bits);
+        while let Some(lit) = expected.iter().find(|c| c.len() == 1).map(|c| c[0]) {
+            let var = lit.unsigned_abs() as usize;
+            let weight = if lit > 0 { &p.weights[var-1].positive } else { &p.weights[var-1].negative };
+            pref = pref.mul(weight, bits);
+            scope.retain(|&v| v != var);
+            expected = assign_fast(&expected, lit);
+            assert!(!expected.iter().any(Vec::is_empty));
+        }
+        let mut actual_scope = (1..=p.n).collect::<Vec<_>>();
+        let mut actual_pref = C::one(bits);
+        let actual = unit_propagate_indexed(
+            &canonical, p.n, &p.weights, bits, &mut actual_scope, &mut actual_pref
+        ).unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(actual_scope, scope);
+        assert_eq!(actual_pref.re, pref.re);
+        assert_eq!(actual_pref.im, pref.im);
+    }
+
+    #[test]
+    fn indexed_unit_propagation_handles_conflicting_forces_and_zero_count_sat() {
+        let text = "p cnf 2 2\nc t wmc\n1 0\n-1 0\n";
+        let p = parse_emitted(text, 100).unwrap();
+        for indexed in [false, true] {
+            let mut engine = Engine::new(&p, 100, CachePolicy::HbBorrowed);
+            engine.fast_assign = true;
+            engine.shared_residual_key = true;
+            engine.indexed_unit_propagation = indexed;
+            let out = engine.count(p.clauses.clone(), vec![1,2], 0).unwrap();
+            assert!(!out.sat);
+        }
+        let text = "p cnf 2 1\nc t wmc\nc p weight 1 0 0 0\nc p weight -1 0 0 0\n1 0\n";
+        let p = parse_emitted(text, 100).unwrap();
+        for indexed in [false, true] {
+            let mut engine = Engine::new(&p, 100, CachePolicy::HbBorrowed);
+            engine.indexed_unit_propagation = indexed;
+            let out = engine.count(p.clauses.clone(), vec![1,2], 0).unwrap();
+            assert!(out.sat, "numerical zero is distinct from Boolean UNSAT");
+            assert_eq!(out.count.re, 0);
+        }
+    }
+
+    #[test]
+    fn deterministic_small_full_wmc_fuzz_preserves_mpfr_bytes_and_dpll_structure() {
+        // Generated CNFs exercise many unit-chain / nonunit paths with mixed
+        // literal polarity and exact weight cancellation; deterministic seed.
+        let mut seed = 0x12345678_u64;
+        for case in 0..96 {
+            let mut clauses = Vec::new();
+            for _ in 0..(3 + case % 9) {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let len = (seed as usize % 3) + 1;
+                let mut clause = Vec::new();
+                for _ in 0..len {
+                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    let var = (seed as usize % 5) + 1;
+                    clause.push(if seed & 0x4000 == 0 { var as i32 } else { -(var as i32) });
+                }
+                clauses.push(clause);
+            }
+            for bits in [100_u32, 333_u32] {
+                let p = Problem {
+                    n: 5, clauses: clauses.clone(),
+                    weights: (0..5).map(|_| Weights {
+                        positive: C::decimal(bits, "0.3", "0.1").unwrap(),
+                        negative: C::decimal(bits, "0.25", "-0.5").unwrap(),
+                    }).collect()
+                };
+                let mut baseline = Engine::new(&p, bits, CachePolicy::HbBorrowed);
+                baseline.fast_assign = true;
+                baseline.shared_residual_key = true;
+                let expected = baseline.count(p.clauses.clone(), (1..=5).collect(), 0).unwrap();
+                let mut candidate = Engine::new(&p, bits, CachePolicy::HbBorrowed);
+                candidate.fast_assign = true;
+                candidate.shared_residual_key = true;
+                candidate.indexed_unit_propagation = true;
+                let observed = candidate.count(p.clauses.clone(), (1..=5).collect(), 0).unwrap();
+                assert_eq!((expected.sat, expected.count.re, expected.count.im),
+                           (observed.sat, observed.count.re, observed.count.im),
+                           "case {case}, bits {bits}");
+                assert_eq!(
+                    (baseline.stats.nodes, baseline.stats.cache_hits, baseline.stats.decompositions),
+                    (candidate.stats.nodes, candidate.stats.cache_hits, candidate.stats.decompositions),
+                    "unchanged search topology for {case}, {bits}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -57,3 +57,29 @@ prefer substantial, repeatable **HWB6** WallTime savings
 with acceptable memory and no Feynman holdout regression.
 A slower variant remains a documented negative result and
 must not replace default production behavior.
+
+## Work-based activation follow-up
+
+The first source-locked full-index mode proved **30% lower HWB6
+native WallTime at 273,928 DPLL nodes**, while short Barenco and
+ModMult controls regressed 4–8%; QFT4 showed neutral results.
+
+Because this is a *benchmark-informed* hypothesis rather than
+held-out proof, also test optional
+`--indexed-unit-prop-after-8192`. It preserves the legacy
+unit-scan algorithm while fewer than **8,192 DPLL nodes** have
+been visited, then switches to the same indexed implementation.
+This avoids constructing a per-node occurrence table on most
+small/easy inputs, without checking any benchmark name or
+variable count, and without raising the finite node cap.
+
+The threshold was chosen after inspecting the current corpus
+(QFT4 ~5,119 nodes; Barenco ~4,325; ModMult ~5,699;
+HWB6 ~273,928), so generalization to independent real CNF
+corpora is **not established**. Test the unmodified shared-Cache
+control, unconditional indexed propagation and admitted indexed
+propagation on every retained source at the same original
+100/333-bit precision. Compare the raw per-trial WallTime,
+solve time, peak RSS, SAT, complete output and search stats.
+Keep Grover5 censored at 1M nodes. No production default
+promotion is permitted merely from threshold tuning.

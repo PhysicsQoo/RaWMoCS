@@ -16,10 +16,11 @@ from quprs_representative_native import timed_execution
 
 CASES = ("feynman_qft_4", "feynman_mod5_4", "qaoa3", "grover2", "qft3")
 PRECISIONS = {30: 100, 100: 333}
-ARMS = ("shared", "indexed")
+ARMS = ("shared", "indexed", "admitted")
 FLAGS = {
     "shared": ("--shared-residual-key",),
     "indexed": ("--indexed-unit-prop", "--shared-residual-key"),
+    "admitted": ("--indexed-unit-prop-after-8192", "--shared-residual-key"),
 }
 SOURCE = "0b28736651b3740ed3b201edd2efdef3da541e0d"
 
@@ -42,7 +43,7 @@ def main() -> None:
     expected = {r["case"]: r for r in source["rows"]}
     qualified = {(r["case"], r["digits"]): r for r in matched["rows"]}
     report = {
-        "study": "source-identical shared-residual Cache vs occurrence-indexed unit propagation",
+        "study": "source-identical shared-Residual Cache versus unconditional and after-8192-node indexed unit propagation",
         "source_quprs_commit": SOURCE,
         "source_qualification": "unchanged original GPMC C++ and 100/333-bit MPFR reference",
         "search": "same original frequency pivot, component split, exact equality and 10000 Cache entry cap",
@@ -63,7 +64,7 @@ def main() -> None:
                 raise SystemExit(f"original MPFR precision reference invalid: {case} {digits}")
             samples = []
             for trial in range(args.trials):
-                order = ARMS if trial % 2 == 0 else ARMS[::-1]
+                order = ARMS[trial % len(ARMS):] + ARMS[:trial % len(ARMS)]
                 for arm in order:
                     command = [
                         str(args.mpfr.resolve()),
@@ -107,14 +108,15 @@ def main() -> None:
                         arm: statistics.median(s["peak_rss_kib"] for s in samples if s["arm"] == arm)
                         for arm in ARMS
                     }
-                    row["speed_ratio"] = (
-                        row["wall_ns_median"][ARMS[0]] / row["wall_ns_median"][ARMS[1]]
-                    )
+                    row["baseline_over_arm"] = {
+                        arm: row["wall_ns_median"]["shared"] / row["wall_ns_median"][arm]
+                        for arm in ("indexed", "admitted")
+                    }
                     print(
                         f"MPFR_INDEXED_UNIT_AB case={case} bits={bits} status=SEMANTIC_PARITY_PASS "
-                        f"shared_ms={row['wall_ns_median'][ARMS[0]]/1e6:.3f} "
-                        f"indexed_ms={row['wall_ns_median'][ARMS[1]]/1e6:.3f} "
-                        f"ratio={row['speed_ratio']:.3f}"
+                        f"shared_ms={row['wall_ns_median']['shared']/1e6:.3f} "
+                        f"indexed_ms={row['wall_ns_median']['indexed']/1e6:.3f} "
+                        f"admitted_ms={row['wall_ns_median']['admitted']/1e6:.3f}"
                     )
             if row["status"] != "SEMANTIC_PARITY_PASS":
                 any_bad = True

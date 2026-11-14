@@ -17,7 +17,7 @@ from quprs_long_feynman_pilot import native, numerically_agree, sha_file
 
 CASES = ("feynman_hwb6", "feynman_barenco_tof_5", "feynman_mod_mult_55")
 DIGITS = {30: 100, 100: 333}
-ARMS = ("gpmc", "shared", "indexed")
+ARMS = ("gpmc", "shared", "indexed", "admitted")
 SOURCE_SHA = "0b28736651b3740ed3b201edd2efdef3da541e0d"
 GPMC_SHA = "89bbc89d0de918e7a5385740355df55765039230"
 
@@ -51,7 +51,7 @@ def main() -> None:
     result = {
         "source_quprs_sha": SOURCE_SHA,
         "source_gpmc_sha": GPMC_SHA,
-        "numeric_contract": "identical 100/333-bit MPFR, unchanged original source weighted CNF; byte-equal Rust WMC and nodes",
+        "numeric_contract": "GPMC/Rust equal 100/333-bit MPFR; byte-equal Rust stdout/search, 8192-node activation cohort",
         "bounds": "30s/2GiB per native solver process, finite node caps only",
         "precision_caveat": "no independent exact Full WMC certificate for these >17-variable source CNFs; cross-solver agreement only",
         "Grover5": {"status": "CENSORED_NODE_BUDGET_AT_1000000", "variables": 607, "no_rank": True},
@@ -81,6 +81,8 @@ def main() -> None:
                             cmd.append(f"--node-budget={budget}")
                         if arm == "indexed":
                             cmd.append("--indexed-unit-prop")
+                        elif arm == "admitted":
+                            cmd.append("--indexed-unit-prop-after-8192")
                         cmd.append("--shared-residual-key")
                         cmd.extend(("--fast-assign", "--hashbrown-borrowed", str(digits), str(cnf.resolve())))
                         tool = "rawmocs_mpfr"
@@ -129,14 +131,16 @@ def main() -> None:
                     }
                     row["rust_solve_ns_median"] = {
                         arm: statistics.median(s["solve_ns"] for s in rust if s["arm"] == arm)
-                        for arm in ("shared", "indexed")
+                        for arm in ("shared", "indexed", "admitted")
                     }
-                    row["speed_ratio_shared_over_indexed"] = (
-                        row["wall_ns_median"]["shared"] / row["wall_ns_median"]["indexed"]
-                    )
-                    row["speed_ratio_gpmc_over_indexed"] = (
-                        row["wall_ns_median"]["gpmc"] / row["wall_ns_median"]["indexed"]
-                    )
+                    row["baseline_over_arm"] = {
+                        arm: row["wall_ns_median"]["shared"] / row["wall_ns_median"][arm]
+                        for arm in ("indexed", "admitted")
+                    }
+                    row["gpmc_over_arm"] = {
+                        arm: row["wall_ns_median"][arm] / row["wall_ns_median"]["gpmc"]
+                        for arm in ("shared", "indexed", "admitted")
+                    }
                     print(
                         f"LONG_INDEXED_UNIT_AB case={case} bits={bits} "
                         "status=MATCHED_MPFR_SOURCE_AGREEMENT_ONLY "

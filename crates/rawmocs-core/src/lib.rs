@@ -1105,7 +1105,11 @@ fn assign(clauses: &[Clause], literal: i32) -> Vec<Clause> {
             continue;
         } else if clause.contains(&opposite) {
             child.push(
-                clause.iter().copied().filter(|&lit| lit != opposite).collect()
+                clause
+                    .iter()
+                    .copied()
+                    .filter(|&lit| lit != opposite)
+                    .collect(),
             );
         } else {
             child.push(clause.clone());
@@ -1218,8 +1222,13 @@ mod assignment_substitution_tests {
     #[test]
     fn assignment_matches_reference_after_recursive_residuals() {
         let root = normalize(vec![
-            vec![-1, 2], vec![1, -2, 3], vec![-3, 4],
-            vec![2, 4], vec![-2, -4], vec![1, 5], vec![4, -5],
+            vec![-1, 2],
+            vec![1, -2, 3],
+            vec![-3, 4],
+            vec![2, 4],
+            vec![-2, -4],
+            vec![1, 5],
+            vec![4, -5],
         ]);
         for initial in [-5_i32, -4, -3, -2, -1, 1, 2, 3, 4, 5] {
             let residual = super::normalize_child(reference(&root, initial));

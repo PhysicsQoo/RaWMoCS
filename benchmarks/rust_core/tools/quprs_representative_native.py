@@ -71,8 +71,8 @@ def guarded_execution(command: list[str], tool: str) -> dict[str, Any]:
         }
         if tool == "rawmocs":
             phase = re.search(
-                r"^RESEARCH_PHASE_NS read=(\\d+) parse=(\\d+) solve=(\\d+) output=(\\d+) "
-                r"nodes=(\\d+) cache_hits=(\\d+) decompositions=(\\d+)$",
+                r"^RESEARCH_PHASE_NS read=(\d+) parse=(\d+) solve=(\d+) output=(\d+) "
+                r"nodes=(\d+) cache_hits=(\d+) decompositions=(\d+)$",
                 result.stderr, flags=re.MULTILINE,
             )
             if phase:

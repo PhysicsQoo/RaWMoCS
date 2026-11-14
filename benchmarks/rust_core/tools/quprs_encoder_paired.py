@@ -13,7 +13,7 @@ import statistics
 
 from quprs_paired_native import one_call
 
-MAX_ORACLE_VARIABLES = 12
+MAX_ORACLE_VARIABLES = 17
 MPFR_ABSOLUTE_TOL = Fraction(1, 10**23)
 MPFR_RELATIVE_TOL = Fraction(1, 10**21)
 

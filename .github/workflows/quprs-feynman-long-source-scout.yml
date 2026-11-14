@@ -9,6 +9,7 @@ on:
       - "benchmarks/rust_core/tools/quprs_feynman_node_budget_ab.py"
       - "benchmarks/rust_core/tools/quprs_mpfr_shared_long_ab.py"
       - "benchmarks/rust_core/tools/quprs_mpfr_indexed_unit_long_ab.py"
+      - "benchmarks/rust_core/tools/quprs_mpfr_fused_component_long_ab.py"
       - "benchmarks/mpfr_research/src/main.rs"
   workflow_dispatch:
 
@@ -90,6 +91,7 @@ jobs:
           key: mpfr-rawmocs-original-feynman-scout
       - name: Build same-bit RaWMoCS research MPFR release executable
         run: |
+          cargo test --release --manifest-path benchmarks/mpfr_research/Cargo.toml
           cargo build --release --manifest-path benchmarks/mpfr_research/Cargo.toml
       - name: Source and bounded same-MPFR native paired scout
         run: |
@@ -133,6 +135,17 @@ jobs:
             --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
             --trials 3 \
             --report .research/feynman-long/indexed-unit-ab.json
+      - name: Original Feynman matched-MPFR fused frequency-component scan A/B
+        run: |
+          python3 -m py_compile benchmarks/rust_core/tools/quprs_mpfr_fused_component_long_ab.py
+          python3 benchmarks/rust_core/tools/quprs_mpfr_fused_component_long_ab.py \
+            --scout-report .research/feynman-long/scout-report.json \
+            --node-report .research/feynman-long/node-budget-report.json \
+            --corpus .research/feynman-long \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --trials 3 \
+            --report .research/feynman-long/fused-component-ab.json
       - name: Archive every source/solver outcome including censored cases
         if: always()
         uses: actions/upload-artifact@v4

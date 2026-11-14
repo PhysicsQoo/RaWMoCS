@@ -3,6 +3,7 @@
 //! frequency pivot and 10,000-entry exact-shape residual cache.
 //! Verify structure against main exact-rational solve before claiming parity.
 use rug::Float;
+use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap as StdHashMap};
 use hashbrown::HashMap as HbHashMap;
 use std::hash::{BuildHasher, Hash, Hasher};
@@ -77,13 +78,16 @@ struct Engine<'a> {
     cache: StdHashMap<Key, Outcome>,
     hb_cache: HbHashMap<Key, Outcome>,
     cache_policy: CachePolicy,
+    identity_mul: bool,
+    identity_skips: Cell<u64>,
     stats: Stats,
 }
 impl<'a> Engine<'a> {
     fn new(p: &'a Problem, bits: u32, cache_policy: CachePolicy) -> Engine<'a> {
         Engine {
             p, bits, cache: StdHashMap::new(), hb_cache: HbHashMap::new(),
-            cache_policy, stats: Stats::default(),
+            cache_policy, identity_mul: false, identity_skips: Cell::new(0),
+            stats: Stats::default(),
         }
     }
     fn borrowed_key_hash(&self, scope: &[usize], residual: &[Clause]) -> u64 {
@@ -92,6 +96,22 @@ impl<'a> Engine<'a> {
         scope.hash(&mut hasher);
         residual.hash(&mut hasher);
         hasher.finish()
+    }
+    fn multiply(&self, lhs: &C, rhs: &C) -> C {
+        // Opt-in research-only identity path. No approximate zero threshold:
+        // exactly 1+0i is the MPFR complex multiplicative identity.
+        // Keep the same precision; never substitute fused arithmetic.
+        if self.identity_mul {
+            if lhs.re == 1 && lhs.im == 0 {
+                self.identity_skips.set(self.identity_skips.get().saturating_add(1));
+                return rhs.clone();
+            }
+            if rhs.re == 1 && rhs.im == 0 {
+                self.identity_skips.set(self.identity_skips.get().saturating_add(1));
+                return lhs.clone();
+            }
+        }
+        lhs.mul(rhs, self.bits)
     }
     fn weight(&self, var: usize, positive: bool) -> &C {
         let w = &self.p.weights[var - 1];
@@ -155,14 +175,14 @@ impl<'a> Engine<'a> {
             }
             let Some(lit) = residual.iter().find(|c| c.len() == 1).map(|c| c[0]) else { break; };
             let var = lit.unsigned_abs() as usize;
-            prefix = prefix.mul(self.weight(var, lit > 0), self.bits);
+            prefix = self.multiply(&prefix, self.weight(var, lit > 0));
             remaining.retain(|&v| v != var);
             residual = assign(&residual, lit);
         }
         if residual.is_empty() {
             for var in remaining {
                 let w = &self.p.weights[var - 1];
-                prefix = prefix.mul(&w.positive.add(&w.negative, self.bits), self.bits);
+                prefix = self.multiply(&prefix, &w.positive.add(&w.negative, self.bits));
             }
             return Ok(self.save(key, Outcome { sat: true, count: prefix }));
         }
@@ -175,7 +195,7 @@ impl<'a> Engine<'a> {
             if frequency[var] != 0 { active.push(var); }
             else {
                 let w = &self.p.weights[var - 1];
-                prefix = prefix.mul(&w.positive.add(&w.negative, self.bits), self.bits);
+                prefix = self.multiply(&prefix, &w.positive.add(&w.negative, self.bits));
             }
         }
         if let Some(pieces) = split_components(&residual, &active, self.p.n) {
@@ -184,22 +204,22 @@ impl<'a> Engine<'a> {
             for (cls, sub_scope) in pieces {
                 let part = self.count(cls, sub_scope, depth + 1)?;
                 if !part.sat { return Ok(self.save(key, Outcome::unsat(self.bits))); }
-                value = value.mul(&part.count, self.bits);
+                value = self.multiply(&value, &part.count);
             }
             return Ok(self.save(key, Outcome {
-                sat: true, count: prefix.mul(&value, self.bits),
+                sat: true, count: self.multiply(&prefix, &value),
             }));
         }
         let var = *active.iter().max_by_key(|&&v| frequency[v]).ok_or("no active pivot")?;
         let child: Vec<_> = active.into_iter().filter(|&v| v != var).collect();
         let yes = self.count(assign(&residual, var as i32), child.clone(), depth + 1)?;
         let no = self.count(assign(&residual, -(var as i32)), child, depth + 1)?;
-        let yes_weighted = self.weight(var, true).mul(&yes.count, self.bits);
-        let no_weighted = self.weight(var, false).mul(&no.count, self.bits);
+        let yes_weighted = self.multiply(self.weight(var, true), &yes.count);
+        let no_weighted = self.multiply(self.weight(var, false), &no.count);
         let sum = yes_weighted.add(&no_weighted, self.bits);
         Ok(self.save(key, Outcome {
             sat: yes.sat || no.sat,
-            count: prefix.mul(&sum, self.bits),
+            count: self.multiply(&prefix, &sum),
         }))
     }
 }
@@ -305,20 +325,32 @@ fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
 }
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
-    let first = args.next().ok_or(
-        "usage: rawmocs-mpfr-research [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
+    let mut next = args.next().ok_or(
+        "usage: rawmocs-mpfr-research [--hashbrown-owned|--hashbrown-borrowed] [--identity-mul] DIGITS FILE"
     )?;
-    let cache_policy = match first.to_str() {
-        Some("--hashbrown-owned") => CachePolicy::HbOwned,
-        Some("--hashbrown-borrowed") => CachePolicy::HbBorrowed,
-        _ => CachePolicy::StdOwned,
-    };
-    let numeric = if matches!(cache_policy, CachePolicy::StdOwned) {
-        first
-    } else {
-        args.next().ok_or("missing MPFR precision")?
-    };
-    let digits: u32 = numeric.to_str().ok_or("non-UTF8 precision")?
+    let mut cache_policy = CachePolicy::StdOwned;
+    let mut selected_cache = false;
+    let mut identity_mul = false;
+    loop {
+        match next.to_str() {
+            Some("--hashbrown-owned") | Some("--hashbrown-borrowed") => {
+                if selected_cache {
+                    return Err("duplicate or conflicting cache policy".into());
+                }
+                selected_cache = true;
+                cache_policy = if next.to_str() == Some("--hashbrown-owned") {
+                    CachePolicy::HbOwned
+                } else { CachePolicy::HbBorrowed };
+            }
+            Some("--identity-mul") => {
+                if identity_mul { return Err("duplicate identity-mul flag".into()); }
+                identity_mul = true;
+            }
+            _ => break,
+        }
+        next = args.next().ok_or("precision missing after research mode flag")?;
+    }
+    let digits: u32 = next.to_str().ok_or("non-UTF8 precision")?
         .parse().map_err(|_| "bad precision")?;
     if !(30..=100).contains(&digits) { return Err("supported precision 30..100 digits".into()); }
     // Source GPMC/mpfr/mpreal.h uses this EXACT digits2bits conversion.
@@ -333,6 +365,7 @@ fn run() -> Result<(), String> {
     let parse_ns = t1.elapsed().as_nanos();
     let t2 = Instant::now();
     let mut engine = Engine::new(&p, bits, cache_policy);
+    engine.identity_mul = identity_mul;
     let answer = engine.count(p.clauses.clone(), (1..=p.n).collect(), 0)?;
     let solve_ns = t2.elapsed().as_nanos();
     let t3 = Instant::now();
@@ -346,6 +379,7 @@ fn run() -> Result<(), String> {
     eprintln!("RESEARCH_MPFR_PHASE_NS read={read_ns} parse={parse_ns} solve={solve_ns} output={output_ns} nodes={} cache_hits={} decompositions={} digits={digits} bits={bits}",
         engine.stats.nodes, engine.stats.cache_hits, engine.stats.decompositions);
     eprintln!("RESEARCH_MPFR_CACHE_POLICY {}", cache_policy.label());
+    eprintln!("RESEARCH_MPFR_IDENTITY_MUL_SKIPS {}", engine.identity_skips.get());
     Ok(())
 }
 fn main() {
@@ -414,6 +448,53 @@ mod tests {
             if let Some(expected) = &reference {
                 assert_eq!(&record, expected, "cache variant {}", mode.label());
             } else { reference = Some(record); }
+        }
+    }
+
+    #[test]
+    fn exact_identity_shortcut_preserves_mpfr_components() {
+        for bits in [100, 167, 333] {
+            let p = parse_emitted("p cnf 1 0\nc t wmc\n", bits).unwrap();
+            let mut engine = Engine::new(&p, bits, CachePolicy::HbBorrowed);
+            engine.identity_mul = true;
+            let one = C::one(bits);
+            let values = [
+                C::decimal(bits, "0.123456789012345678", "-0.777777777777777").unwrap(),
+                C::decimal(bits, "-0.125", "0.375").unwrap(),
+                C::decimal(bits, "0", "0").unwrap(),
+                one.clone(),
+            ];
+            for value in &values {
+                let reference_left = one.mul(value, bits);
+                let reference_right = value.mul(&one, bits);
+                let left = engine.multiply(&one, value);
+                let right = engine.multiply(value, &one);
+                assert_eq!(left.re, reference_left.re);
+                assert_eq!(left.im, reference_left.im);
+                assert_eq!(right.re, reference_right.re);
+                assert_eq!(right.im, reference_right.im);
+            }
+            assert!(engine.identity_skips.get() > 0);
+        }
+    }
+
+    #[test]
+    fn identity_mode_preserves_dpll_structure_and_full_wmc() {
+        let source = "p cnf 3 3\nc t wmc\nc p weight 1 0.5 0.25 0\nc p weight -1 1 0 0\nc p weight 2 -0.75 0.125 0\nc p weight -2 1 0 0\n1 2 0\n-1 3 0\n-2 3 0\n";
+        for bits in [100, 333] {
+            let p = parse_emitted(source, bits).unwrap();
+            let mut baseline = Engine::new(&p, bits, CachePolicy::HbBorrowed);
+            let normal = baseline.count(p.clauses.clone(), (1..=p.n).collect(), 0).unwrap();
+            let mut optimized = Engine::new(&p, bits, CachePolicy::HbBorrowed);
+            optimized.identity_mul = true;
+            let fast = optimized.count(p.clauses.clone(), (1..=p.n).collect(), 0).unwrap();
+            assert_eq!(normal.sat, fast.sat);
+            assert_eq!(normal.count.re, fast.count.re);
+            assert_eq!(normal.count.im, fast.count.im);
+            assert_eq!(baseline.stats.nodes, optimized.stats.nodes);
+            assert_eq!(baseline.stats.cache_hits, optimized.stats.cache_hits);
+            assert_eq!(baseline.stats.decompositions, optimized.stats.decompositions);
+            assert!(optimized.identity_skips.get() > 0);
         }
     }
 

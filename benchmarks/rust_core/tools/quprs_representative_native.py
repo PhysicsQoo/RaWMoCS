@@ -86,6 +86,13 @@ def guarded_execution(command: list[str], tool: str) -> dict[str, Any]:
                 ))
                 record["mpfr_precision_digits"] = numbers[7]
                 record["mpfr_precision_bits"] = numbers[8]
+                identity_skips = re.search(
+                    r"^RESEARCH_MPFR_IDENTITY_MUL_SKIPS (\d+)$",
+                    result.stderr, flags=re.MULTILINE,
+                )
+                record["mpfr_identity_mul_skips"] = (
+                    int(identity_skips.group(1)) if identity_skips else None
+                )
             else:
                 record["mpfr_profile_status"] = "UNAVAILABLE"
         if tool == "rawmocs":

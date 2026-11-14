@@ -153,6 +153,8 @@ jobs:
             --features canonical-mul-research \
             --example quprs_encoder_research_cli
       - name: Same-runner source-identical original-vs-optimized Rust exact A/B
+        env:
+          RAWMOCS_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           python3 -m py_compile benchmarks/rust_core/tools/quprs_optimizer_paired.py
           python3 benchmarks/rust_core/tools/quprs_optimizer_paired.py \

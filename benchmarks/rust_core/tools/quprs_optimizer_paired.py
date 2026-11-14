@@ -11,6 +11,7 @@ import argparse
 from fractions import Fraction
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
 import statistics
 import subprocess
@@ -19,7 +20,10 @@ from typing import Any
 from quprs_representative_native import timed_execution
 
 BASELINE_COMMIT = "45d71e9f5e302a53732b6f678898404c9c8a20e9"
-CASES = ("qft3", "grover2", "feynman_mod5_4", "feynman_qft_4")
+CASES = (
+    "ghz2", "ghz3", "ghz4", "graph3", "bv3", "qft2",
+    "qft3", "grover2", "qaoa3", "feynman_mod5_4", "feynman_qft_4",
+)
 ACCEPTED = {"ORACLE_VERIFIED_PAIRED", "SOLVER_AGREEMENT_ONLY"}
 
 
@@ -55,14 +59,22 @@ def main() -> None:
     report: dict[str, Any] = {
         "source_quprs_sha": source["source_commit"],
         "baseline_rawmocs_sha": baseline_sha,
-        "candidate_rawmocs_sha": subprocess.check_output(
+        "candidate_checkout_sha": subprocess.check_output(
             ["git", "rev-parse", "HEAD"], text=True
         ).strip(),
+        "candidate_source_head_sha": os.environ.get("RAWMOCS_HEAD_SHA") or None,
         "precision_contract": "exact finite printed decimal rational on both arms",
         "scope": "same input bytes, alternating native processes, 8s/2GiB bounds",
         "gpmc_contract": "GPMC MPFR30 is compared separately in original representative report",
         "rows": [],
     }
+    source_head_sha = report["candidate_source_head_sha"]
+    if source_head_sha:
+        subprocess.run(
+            ["git", "merge-base", "--is-ancestor", source_head_sha,
+             report["candidate_checkout_sha"]],
+            check=True, capture_output=True,
+        )
     invalid = False
     for case in CASES:
         input_file = args.corpus / f"{case}-gpmc.cnf"

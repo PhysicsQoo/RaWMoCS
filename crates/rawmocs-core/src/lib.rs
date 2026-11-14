@@ -1182,7 +1182,7 @@ mod assignment_substitution_tests {
     fn reference(clauses: &[Clause], selected: i32) -> Vec<Clause> {
         clauses
             .iter()
-            .filter(|c| !c.iter().any(|&lit| lit == selected))
+            .filter(|c| !c.contains(&selected))
             .map(|c| c.iter().copied().filter(|&lit| lit != -selected).collect())
             .collect()
     }

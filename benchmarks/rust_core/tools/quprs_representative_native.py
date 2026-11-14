@@ -63,12 +63,29 @@ def guarded_execution(command: list[str], tool: str) -> dict[str, Any]:
             return {"tool": tool, "status": "INVALID_NATIVE_OUTPUT", "detail": str(exc)}
         # GNU time reports maximum resident set in KiB; elapsed WallTime
         # needs a monotonic host sample, not an empirical CPU Simulation.
-        return {
+        record = {
             "tool": tool, "status": "COMPLETED",
             "sat": sat, "real": str(count[0]), "imag": str(count[1]),
             "peak_rss_kib": rss, "native_stdout_sha256": sha256(result.stdout.encode()).hexdigest(),
             "native_stdout_bytes": len(result.stdout.encode("utf8")),
         }
+        if tool == "rawmocs":
+            phase = re.search(
+                r"^RESEARCH_PHASE_NS read=(\d+) parse=(\d+) solve=(\d+) output=(\d+) "
+                r"nodes=(\d+) cache_hits=(\d+) decompositions=(\d+)$",
+                result.stderr, flags=re.MULTILINE,
+            )
+            if phase:
+                numbers = [int(value) for value in phase.groups()]
+                record["rawmocs_phase_ns"] = dict(zip(
+                    ("read", "parse", "solve", "output"), numbers[:4]
+                ))
+                record["rawmocs_stats"] = dict(zip(
+                    ("nodes", "cache_hits", "decompositions"), numbers[4:]
+                ))
+            else:
+                record["rawmocs_phase_status"] = "UNAVAILABLE"
+        return record
 
 
 def timed_execution(command: list[str], tool: str) -> dict[str, Any]:
@@ -222,6 +239,18 @@ def main() -> None:
                     tool: statistics.median(s["peak_rss_kib"] for s in records)
                     for tool, records in completed.items()
                 }
+                profiled = [
+                    sample["rawmocs_phase_ns"]
+                    for sample in completed["rawmocs"]
+                    if "rawmocs_phase_ns" in sample
+                ]
+                if len(profiled) == args.trials:
+                    row["rawmocs_phase_ns_median"] = {
+                        phase: statistics.median(record[phase] for record in profiled)
+                        for phase in ("read", "parse", "solve", "output")
+                    }
+                else:
+                    row["rawmocs_phase_status"] = "INCOMPLETE"
         print(f"RESEARCH_HOLDOUT_CASE case={case} vars={n} clauses={m} status={row['status']}")
         report["rows"].append(row)
     args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf8")

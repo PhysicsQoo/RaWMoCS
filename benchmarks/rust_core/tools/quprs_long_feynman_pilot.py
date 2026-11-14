@@ -66,16 +66,26 @@ def native(command: list[str], tool: str) -> dict[str, Any]:
             rss = int(rss_path.read_text().strip())
         except (ValueError, OSError) as error:
             return {"status": "INVALID_NATIVE_OUTPUT", "tool": tool, "error": str(error)}
-        return {
+        phase = re.search(
+            r"^RESEARCH_MPFR_PHASE_NS read=(\d+) parse=(\d+) solve=(\d+) "
+            r"output=(\d+) nodes=(\d+) cache_hits=(\d+) decompositions=(\d+) "
+            r"digits=(\d+) bits=(\d+)$",
+            run.stderr, flags=re.MULTILINE,
+        ) if tool == "rawmocs_mpfr" else None
+        record = {
             "status": "COMPLETED", "tool": tool, "sat": sat,
             "real": str(counts[0]), "imag": str(counts[1]),
             "wall_ns": wall_ns, "peak_rss_kib": rss,
             "stdout_sha256": sha256(run.stdout.encode("utf-8")).hexdigest(),
-            "mpfr_precision_bits": (
-                int(m.group(1)) if
-                (m := re.search(r"\bbits=(\d+)\b", run.stderr)) else None
-            ) if tool == "rawmocs_mpfr" else None,
+            "mpfr_precision_bits": int(phase.group(9)) if phase else None,
         }
+        if phase:
+            fields = [int(x) for x in phase.groups()]
+            record["solve_ns"] = fields[2]
+            record["dpll_nodes"] = fields[4]
+            record["cache_hits"] = fields[5]
+            record["component_splits"] = fields[6]
+        return record
 
 
 def numerically_agree(a: Fraction, b: Fraction, digits: int) -> bool:

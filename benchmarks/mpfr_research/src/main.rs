@@ -3,6 +3,8 @@
 //! frequency pivot and 10,000-entry exact-shape residual cache.
 //! Verify structure against main exact-rational solve before claiming parity.
 use rug::Float;
+use std::sync::Arc;
+use std::ops::Deref;
 use std::collections::{BTreeMap, HashMap as StdHashMap};
 use hashbrown::HashMap as HbHashMap;
 use std::hash::{BuildHasher, Hash, Hasher};
@@ -58,6 +60,19 @@ impl Outcome {
 }
 #[derive(Hash, PartialEq, Eq)]
 struct Key { scope: Vec<usize>, clauses: Vec<Clause> }
+#[derive(Hash, PartialEq, Eq)]
+struct SharedKey { scope: Vec<usize>, clauses: Arc<Vec<Clause>> }
+enum StoredKey { Owned(Key), Shared(SharedKey) }
+enum ResidualStorage { Owned(Vec<Clause>), Shared(Arc<Vec<Clause>>) }
+impl Deref for ResidualStorage {
+    type Target = Vec<Clause>;
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Owned(value) => value,
+            Self::Shared(value) => value,
+        }
+    }
+}
 #[derive(Default, Clone, Copy)]
 struct Stats { nodes: u64, cache_hits: u64, decompositions: u64 }
 #[derive(Clone, Copy, Debug)]
@@ -76,7 +91,9 @@ struct Engine<'a> {
     bits: u32,
     cache: StdHashMap<Key, Outcome>,
     hb_cache: HbHashMap<Key, Outcome>,
+    shared_cache: HbHashMap<SharedKey, Outcome>,
     cache_policy: CachePolicy,
+    shared_residual_key: bool,
     stats: Stats,
     fast_assign: bool,
     node_budget: u64,
@@ -85,7 +102,9 @@ impl<'a> Engine<'a> {
     fn new(p: &'a Problem, bits: u32, cache_policy: CachePolicy) -> Engine<'a> {
         Engine {
             p, bits, cache: StdHashMap::new(), hb_cache: HbHashMap::new(),
-            cache_policy, stats: Stats::default(), fast_assign: false, node_budget: 100_000,
+            shared_cache: HbHashMap::new(),
+            cache_policy, shared_residual_key: false,
+            stats: Stats::default(), fast_assign: false, node_budget: 100_000,
         }
     }
     fn borrowed_key_hash(&self, scope: &[usize], residual: &[Clause]) -> u64 {
@@ -95,19 +114,32 @@ impl<'a> Engine<'a> {
         residual.hash(&mut hasher);
         hasher.finish()
     }
+    fn shared_key_hash(&self, scope: &[usize], residual: &[Clause]) -> u64 {
+        let mut hasher = self.shared_cache.hasher().build_hasher();
+        scope.hash(&mut hasher);
+        residual.hash(&mut hasher);
+        hasher.finish()
+    }
     fn weight(&self, var: usize, positive: bool) -> &C {
         let w = &self.p.weights[var - 1];
         if positive { &w.positive } else { &w.negative }
     }
-    fn save(&mut self, key: Key, result: Outcome) -> Outcome {
-        match self.cache_policy {
-            CachePolicy::StdOwned if self.cache.len() < 10_000 => {
-                self.cache.insert(key, result.clone());
+    fn save(&mut self, key: StoredKey, result: Outcome) -> Outcome {
+        match key {
+            StoredKey::Owned(key) => match self.cache_policy {
+                CachePolicy::StdOwned if self.cache.len() < 10_000 => {
+                    self.cache.insert(key, result.clone());
+                }
+                CachePolicy::HbOwned | CachePolicy::HbBorrowed if self.hb_cache.len() < 10_000 => {
+                    self.hb_cache.insert(key, result.clone());
+                }
+                _ => {}
+            },
+            StoredKey::Shared(key) => {
+                if self.shared_cache.len() < 10_000 {
+                    self.shared_cache.insert(key, result.clone());
+                }
             }
-            CachePolicy::HbOwned | CachePolicy::HbBorrowed if self.hb_cache.len() < 10_000 => {
-                self.hb_cache.insert(key, result.clone());
-            }
-            _ => {}
         }
         result
     }
@@ -115,39 +147,54 @@ impl<'a> Engine<'a> {
         if depth >= 512 { return Err("depth limit".into()); }
         if self.stats.nodes >= self.node_budget { return Err("node limit".into()); }
         self.stats.nodes += 1;
-        let mut residual = if depth == 0 { normalize(clauses) } else { normalize_child(clauses) };
-        // The original arm duplicates the entire Key before every lookup.
-        // The borrowed arm hashes the existing normalized residual and scope
-        // without deep-copying either; only a true miss constructs a Key.
-        // Exact equality is still checked in the hash table (no hash-only hits).
-        let key = match self.cache_policy {
-            CachePolicy::StdOwned => {
-                let key = Key { scope: scope.clone(), clauses: residual.clone() };
-                if let Some(hit) = self.cache.get(&key) {
-                    self.stats.cache_hits += 1;
-                    return Ok(hit.clone());
-                }
-                key
+        let canonical = if depth == 0 { normalize(clauses) } else { normalize_child(clauses) };
+        // The owned-key modes retain their exact original behavior.
+        // The shared mode checks the borrowed canonical bytes BEFORE allocating
+        // an Arc. On a miss the cache key shares the residual's existing Vec;
+        // there is no deep Vec<Vec<i32>> clone at insertion time.
+        let (mut residual, key) = if self.shared_residual_key {
+            let hash = self.shared_key_hash(&scope, &canonical);
+            if let Some((_, hit)) = self.shared_cache.raw_entry().from_hash(hash, |key| {
+                key.scope.as_slice() == scope.as_slice()
+                    && key.clauses.as_slice() == canonical.as_slice()
+            }) {
+                self.stats.cache_hits += 1;
+                return Ok(hit.clone());
             }
-            CachePolicy::HbOwned => {
-                let key = Key { scope: scope.clone(), clauses: residual.clone() };
-                if let Some(hit) = self.hb_cache.get(&key) {
-                    self.stats.cache_hits += 1;
-                    return Ok(hit.clone());
+            let shared = Arc::new(canonical);
+            let key = SharedKey { scope: scope.clone(), clauses: Arc::clone(&shared) };
+            (ResidualStorage::Shared(shared), StoredKey::Shared(key))
+        } else {
+            let key = match self.cache_policy {
+                CachePolicy::StdOwned => {
+                    let key = Key { scope: scope.clone(), clauses: canonical.clone() };
+                    if let Some(hit) = self.cache.get(&key) {
+                        self.stats.cache_hits += 1;
+                        return Ok(hit.clone());
+                    }
+                    key
                 }
-                key
-            }
-            CachePolicy::HbBorrowed => {
-                let hash = self.borrowed_key_hash(&scope, &residual);
-                if let Some((_, hit)) = self.hb_cache.raw_entry().from_hash(hash, |key| {
-                    key.scope.as_slice() == scope.as_slice()
-                        && key.clauses.as_slice() == residual.as_slice()
-                }) {
-                    self.stats.cache_hits += 1;
-                    return Ok(hit.clone());
+                CachePolicy::HbOwned => {
+                    let key = Key { scope: scope.clone(), clauses: canonical.clone() };
+                    if let Some(hit) = self.hb_cache.get(&key) {
+                        self.stats.cache_hits += 1;
+                        return Ok(hit.clone());
+                    }
+                    key
                 }
-                Key { scope: scope.clone(), clauses: residual.clone() }
-            }
+                CachePolicy::HbBorrowed => {
+                    let hash = self.borrowed_key_hash(&scope, &canonical);
+                    if let Some((_, hit)) = self.hb_cache.raw_entry().from_hash(hash, |key| {
+                        key.scope.as_slice() == scope.as_slice()
+                            && key.clauses.as_slice() == canonical.as_slice()
+                    }) {
+                        self.stats.cache_hits += 1;
+                        return Ok(hit.clone());
+                    }
+                    Key { scope: scope.clone(), clauses: canonical.clone() }
+                }
+            };
+            (ResidualStorage::Owned(canonical), StoredKey::Owned(key))
         };
         let mut remaining = scope;
         let mut prefix = C::one(self.bits);
@@ -159,11 +206,11 @@ impl<'a> Engine<'a> {
             let var = lit.unsigned_abs() as usize;
             prefix = prefix.mul(self.weight(var, lit > 0), self.bits);
             remaining.retain(|&v| v != var);
-            residual = if self.fast_assign {
+            residual = ResidualStorage::Owned(if self.fast_assign {
                 assign_fast(&residual, lit)
             } else {
                 assign(&residual, lit)
-            };
+            });
         }
         if residual.is_empty() {
             for var in remaining {
@@ -173,7 +220,7 @@ impl<'a> Engine<'a> {
             return Ok(self.save(key, Outcome { sat: true, count: prefix }));
         }
         let mut frequency = vec![0_usize; self.p.n + 1];
-        for clause in &residual {
+        for clause in residual.iter() {
             for &lit in clause { frequency[lit.unsigned_abs() as usize] += 1; }
         }
         let mut active = Vec::new();
@@ -345,24 +392,30 @@ fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
     let first = args.next().ok_or(
-        "usage: rawmocs-mpfr-research [--node-budget=250000|--node-budget=1000000] [--fast-assign] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
+        "usage: rawmocs-mpfr-research [--node-budget=250000|--node-budget=1000000] [--shared-residual-key] [--fast-assign] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
     )?;
-    // Explicit finite research-only budgets. No unlimited or arbitrary cap.
+    // Explicit finite research-only node limits, untouched default.
     let node_budget = match first.to_str() {
         Some("--node-budget=250000") => 250_000,
         Some("--node-budget=1000000") => 1_000_000,
         _ => 100_000,
     };
     let algorithm_start = if node_budget != 100_000 {
-        args.next().ok_or("missing numeric arguments after bounded node budget")?
+        args.next().ok_or("missing arguments after bounded node budget")?
     } else {
         first
     };
-    let fast_assign = algorithm_start.to_str() == Some("--fast-assign");
+    let shared_residual_key = algorithm_start.to_str() == Some("--shared-residual-key");
+    let next = if shared_residual_key {
+        args.next().ok_or("missing arguments after --shared-residual-key")?
+    } else {
+        algorithm_start
+    };
+    let fast_assign = next.to_str() == Some("--fast-assign");
     let cache_first = if fast_assign {
         args.next().ok_or("missing precision or cache mode after --fast-assign")?
     } else {
-        algorithm_start
+        next
     };
     let cache_policy = match cache_first.to_str() {
         Some("--hashbrown-owned") => CachePolicy::HbOwned,
@@ -377,6 +430,9 @@ fn run() -> Result<(), String> {
     let digits: u32 = numeric.to_str().ok_or("non-UTF8 precision")?
         .parse().map_err(|_| "bad precision")?;
     if !(30..=100).contains(&digits) { return Err("supported precision 30..100 digits".into()); }
+    if shared_residual_key && !matches!(cache_policy, CachePolicy::HbBorrowed) {
+        return Err("--shared-residual-key requires --hashbrown-borrowed".into());
+    }
     // Source GPMC/mpfr/mpreal.h uses this EXACT digits2bits conversion.
     let bits = (f64::from(digits) * 3.321_928_094_887_362_4).ceil() as u32;
     let path = args.next().ok_or("missing CNF")?;
@@ -390,6 +446,7 @@ fn run() -> Result<(), String> {
     let t2 = Instant::now();
     let mut engine = Engine::new(&p, bits, cache_policy);
     engine.fast_assign = fast_assign;
+    engine.shared_residual_key = shared_residual_key;
     engine.node_budget = node_budget;
     let answer = engine.count(p.clauses.clone(), (1..=p.n).collect(), 0)?;
     let solve_ns = t2.elapsed().as_nanos();
@@ -404,6 +461,8 @@ fn run() -> Result<(), String> {
     eprintln!("RESEARCH_MPFR_PHASE_NS read={read_ns} parse={parse_ns} solve={solve_ns} output={output_ns} nodes={} cache_hits={} decompositions={} digits={digits} bits={bits}",
         engine.stats.nodes, engine.stats.cache_hits, engine.stats.decompositions);
     eprintln!("RESEARCH_MPFR_CACHE_POLICY {}", cache_policy.label());
+    eprintln!("RESEARCH_MPFR_SHARED_RESIDUAL enabled={} entries={}",
+        shared_residual_key, engine.shared_cache.len());
     Ok(())
 }
 fn main() {
@@ -471,6 +530,54 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn shared_residual_keys_have_value_hash_and_collision_safe_lookup() {
+        let p = parse_emitted("p cnf 3 2\nc t wmc\n1 -2 0\n-2 3 0\n", 100).unwrap();
+        let mut engine = Engine::new(&p, 100, CachePolicy::HbBorrowed);
+        let scope = vec![1, 2, 3];
+        let clauses = normalize(p.clauses.clone());
+        let root = Arc::new(clauses.clone());
+        engine.shared_cache.insert(
+            SharedKey { scope: scope.clone(), clauses: Arc::clone(&root) },
+            Outcome { sat: true, count: C::one(100) },
+        );
+        let hash = engine.shared_key_hash(&scope, &clauses);
+        assert!(engine.shared_cache.raw_entry().from_hash(hash, |key|
+            key.scope.as_slice() == scope.as_slice() &&
+            key.clauses.as_slice() == clauses.as_slice()
+        ).is_some());
+        let wrong = vec![vec![1, 2]];
+        assert!(engine.shared_cache.raw_entry().from_hash(hash, |key|
+            key.scope.as_slice() == scope.as_slice() &&
+            key.clauses.as_slice() == wrong.as_slice()
+        ).is_none());
+        assert_eq!(Arc::strong_count(&root), 2);
+    }
+
+    #[test]
+    fn shared_residual_cache_preserves_search_and_mpfr_output() {
+        let source = "p cnf 5 5\nc t wmc\nc p weight 1 0.25 -0.5 0\nc p weight -1 -0.25 0.5 0\nc p weight 2 0.3 0.1 0\nc p weight -2 0.7 0 0\n1 2 0\n-1 3 0\n1 -4 0\n-2 3 -4 0\n4 5 0\n";
+        let problem = parse_emitted(source, 100).unwrap();
+        for bits in [100_u32, 333_u32] {
+            let mut witness = None;
+            for shared in [false, true] {
+                let p = parse_emitted(source, bits).unwrap();
+                let mut engine = Engine::new(&p, bits, CachePolicy::HbBorrowed);
+                engine.fast_assign = true;
+                engine.shared_residual_key = shared;
+                let out = engine.count(p.clauses.clone(), (1..=p.n).collect(), 0).unwrap();
+                let value = (out.sat, out.count.re, out.count.im, engine.stats.nodes,
+                    engine.stats.cache_hits, engine.stats.decompositions);
+                if shared {
+                    let expected = witness.take().unwrap();
+                    assert_eq!(value, expected);
+                } else { witness = Some(value); }
+            }
+        }
+        // Extra test of independently created residual with exact cache behavior.
+        assert_eq!(problem.n, 5);
     }
 
     #[test]

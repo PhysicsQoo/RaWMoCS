@@ -47,7 +47,7 @@ count. Time is not CodSpeed Simulation.
 | GHZ3 | 7 | 4.855 ms | 3.895 ms | independent exhaustive oracle |
 | GHZ4 | 9 | 4.859 ms | 3.875 ms | independent exhaustive oracle |
 | graph3 | 11 | 10.514 ms | 4.378 ms | independent exhaustive oracle |
-| BV3 | 17 | 10.637 ms | 4.641 ms | cross-solver agreement only |
+| BV3 | 17 | 10.637 ms | 4.641 ms | independent exhaustive oracle |
 | QFT2 | 7 | 10.374 ms | 4.299 ms | independent exhaustive oracle |
 | QFT3 | 12 | 10.604 ms | 4.459 ms | independent exhaustive oracle |
 | Grover2 | 23 | 10.378 ms | 7.154 ms | cross-solver agreement only |
@@ -76,8 +76,8 @@ and to compare like-for-like numeric guarantees.
 
 - **PASS:** Original emitted input and phase-source capture, two solver
   dialect consistency, source SHA, independent SAT/printed WMC for all
-  six original cases and representative cases with at most 12 CNF vars.
-- **PARTIAL:** Five multi-variable representative circuits (17–154 vars)
+  six original cases and representative cases with at most 17 CNF vars.
+- **PARTIAL:** Four larger representative circuits (23–154 vars)
   have **cross-solver agreement only**, not an independently enumerated
   Full WMC certificate.
 - **NOT CLAIMED:** Quantum equivalence/fidelity, source-phase exactness,

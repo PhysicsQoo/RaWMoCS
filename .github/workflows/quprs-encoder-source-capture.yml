@@ -38,6 +38,8 @@ jobs:
       - name: RaWMoCS benchmark research source
         uses: actions/checkout@v4
         with:
+          # Need both synthetic PR merge and actual head parent for provenance.
+          fetch-depth: 2
           persist-credentials: false
       - name: Exact original QuPRS Rust encoder exporter source
         uses: actions/checkout@v4

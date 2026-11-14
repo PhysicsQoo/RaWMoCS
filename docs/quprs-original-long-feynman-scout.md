@@ -52,3 +52,38 @@ microsecond synthetic fixtures. Continue with longer cases only
 when source and numerical admissibility are established.
 
 Public repository text contains no private work-tracker IDs.
+
+## First original four-case source scout and follow-up
+
+[First bounded native run #43594920329](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/43594920329)
+successfully emitted all **four original unmodified Feynman QASMs**
+and verified original QASM/CNF/phase provenance.
+
+| Source case | CNF vars / clauses | GPMC 100-bit median | Rust research 100-bit | Scientific status |
+| --- | ---: | ---: | ---: | --- |
+| Grover5 | 607 / 1,121 | 16.618 s | 100k node cap | `CENSORED_NODE_BUDGET` |
+| HWB6 | 297 / 827 | 135.579 ms | 100k node cap | `CENSORED_NODE_BUDGET` |
+| Barenco Toffoli5 | 97 / 180 | 11.203 ms | 17.387 ms | `SOLVER_AGREEMENT_ONLY` |
+| Modular Multiplier55 | 91 / 192 | 10.440 ms | 24.240 ms | `SOLVER_AGREEMENT_ONLY` |
+
+The QFT4 cohort was not large enough to characterize actual
+multi-second QuPRS workloads. Both Grover5 and HWB6 have a
+**known node-cap stop** from the research-only Rust MPFR engine,
+not an observed native timeout or UNSAT verdict.
+
+This follow-up introduces only two **explicit and finite** research
+flags: `--node-budget=250000` and
+`--node-budget=1000000`. The original 100,000-node default
+remains exactly unchanged. Every solver process still has
+30 seconds and 2 GiB virtual address space. Each higher cap
+is tested twice. If Rust successfully completes under a finite
+cap, two new alternating native GPMC/Rust same-100-bit
+process comparisons are performed against the identical
+original weighted CNF, with separate SAT and predeclared
+numerical agreement gates. If no cap completes, the case
+is explicitly **`CENSORED_NO_SAFE_COMPLETION_UP_TO_1M_NODES`**.
+
+Neither source coherence nor floating agreement alone implies an
+independent exact Full WMC certificate for 297/607-variable CNFs.
+No private tracking IDs or solver default changes enter the
+public repository.

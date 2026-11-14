@@ -6,6 +6,8 @@ on:
       - ".github/workflows/quprs-feynman-long-source-scout.yml"
       - "benchmarks/rust_core/tools/quprs_long_feynman_reference.rs"
       - "benchmarks/rust_core/tools/quprs_long_feynman_pilot.py"
+      - "benchmarks/rust_core/tools/quprs_feynman_node_budget_ab.py"
+      - "benchmarks/mpfr_research/src/main.rs"
   workflow_dispatch:
 
 permissions:
@@ -98,6 +100,15 @@ jobs:
             --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
             --trials 2 \
             --report .research/feynman-long/scout-report.json
+      - name: Bounded 250k and 1M node-cap experiment on original long Feynman CNFs
+        run: |
+          python3 -m py_compile benchmarks/rust_core/tools/quprs_feynman_node_budget_ab.py
+          python3 benchmarks/rust_core/tools/quprs_feynman_node_budget_ab.py \
+            --scout-report .research/feynman-long/scout-report.json \
+            --corpus .research/feynman-long \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --report .research/feynman-long/node-budget-report.json
       - name: Archive every source/solver outcome including censored cases
         if: always()
         uses: actions/upload-artifact@v4

@@ -152,7 +152,7 @@ def main() -> None:
             print(f"RESEARCH_HOLDOUT_CENSORED case={case} reason=RESOURCE_SCOPE_REJECTED")
             continue
         oracle = None
-        if n <= 12:
+        if n <= 17:
             n_check, clauses, weights = exact_printed_cnf(input_path)
             oracle = independent_wmc(n_check, clauses, weights)
             row["oracle_sat"] = oracle[0]

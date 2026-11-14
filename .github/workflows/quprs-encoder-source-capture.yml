@@ -10,6 +10,7 @@ on:
       - "benchmarks/rust_core/tools/quprs_optimizer_paired.py"
       - "benchmarks/rust_core/tools/quprs_precision_sweep.py"
       - "benchmarks/rust_core/tools/quprs_mpfr_matched.py"
+      - "benchmarks/rust_core/tools/quprs_mpfr_propagation_ab.py"
       - "benchmarks/mpfr_research/**"
       - "benchmarks/rust_core/examples/quprs_encoder_research_cli.rs"
   push:
@@ -201,6 +202,15 @@ jobs:
             --rawmocs-mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
             --trials 3 \
             --report .research/quprs-mpfr-matched-long.json
+      - name: Isolated MPFR unit scan and clause assignment study on long QuPRS CNFs
+        run: |
+          python3 -m py_compile benchmarks/rust_core/tools/quprs_mpfr_propagation_ab.py
+          python3 benchmarks/rust_core/tools/quprs_mpfr_propagation_ab.py \
+            --matched-reference .research/quprs-mpfr-matched-long.json \
+            --corpus .research/quprs-representative \
+            --rawmocs-mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --trials 5 \
+            --report .research/quprs-mpfr-propagation-ab.json
       - name: Archive real encoder bytes, raw phase sidecars and SHA256 provenance
         if: always()
         uses: actions/upload-artifact@v4
@@ -215,6 +225,7 @@ jobs:
             .research/quprs-optimizer-ab.json
             .research/quprs-gpmc-precision-sweep.json
             .research/quprs-mpfr-matched-long.json
+            .research/quprs-mpfr-propagation-ab.json
             .research/mpfr-research-lock.sha256
             benchmarks/mpfr_research/Cargo.lock
           if-no-files-found: warn

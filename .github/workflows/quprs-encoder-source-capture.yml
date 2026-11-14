@@ -1,0 +1,74 @@
+name: QOO-226 original QuPRS encoder-emitted CNF capture
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/quprs-encoder-source-capture.yml"
+      - "benchmarks/rust_core/tools/qoo226_validate_encoder_capture.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/quprs-encoder-source-capture.yml"
+      - "benchmarks/rust_core/tools/qoo226_validate_encoder_capture.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qoo226-quprs-encoder-source-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  real-encoder-source-capture:
+    name: Original Rust PathSum/WmcManager source CNF provenance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      QUPRS_SOLVER_PROVISION: external
+    steps:
+      - name: RaWMoCS benchmark research source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Exact original QuPRS Rust encoder exporter source
+        uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/QuPRS
+          ref: 0b28736651b3740ed3b201edd2efdef3da541e0d
+          path: .upstream/quprs
+          persist-credentials: false
+      - name: Confirm untouched original QuPRS exporter Git blob
+        run: |
+          test "$(git -C .upstream/quprs rev-parse HEAD)" = "0b28736651b3740ed3b201edd2efdef3da541e0d"
+          test "$(git -C .upstream/quprs hash-object rust/quprs/examples/interval_cnf_reference.rs)" = "f9b0bb4afba35a9a67a1b9d2844be3b77884b27a"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .upstream/quprs/rust -> target
+          key: qoo226-pinned-quprs-exporter-0b287366
+      - name: Build and run real QuPRS miter PathSum/WmcManager exporter
+        run: |
+          mkdir -p .research/qoo226-encoder
+          cargo run --locked --release --no-default-features \
+            --manifest-path .upstream/quprs/rust/Cargo.toml \
+            -p quprs --example interval_cnf_reference -- \
+            "$GITHUB_WORKSPACE/.research/qoo226-encoder" \
+            | tee .research/qoo226-encoder/exporter.log
+      - name: Validate all six real emitted GPMC/Ganak dialects and raw phase records
+        run: |
+          python3 -m py_compile benchmarks/rust_core/tools/qoo226_validate_encoder_capture.py
+          python3 benchmarks/rust_core/tools/qoo226_validate_encoder_capture.py \
+            --quprs .upstream/quprs \
+            --corpus .research/qoo226-encoder \
+            --manifest .research/qoo226-encoder-manifest.json
+      - name: Archive real encoder bytes, raw phase sidecars and SHA256 provenance
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qoo226-real-quprs-wmcmanager-emitted-native
+          path: |
+            .research/qoo226-encoder/
+            .research/qoo226-encoder-manifest.json
+          if-no-files-found: warn
+          retention-days: 30

@@ -182,11 +182,13 @@ jobs:
             --gpmc .upstream/gpmc/build/gpmc \
             --trials 3 \
             --report .research/quprs-gpmc-precision-sweep.json
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/mpfr_research -> target
+          key: research-matched-mpfr-100-167-333
       - name: Build and test isolated Rust MPFR 100/167/333-bit reference engine
-        env:
-          GMP_MPFR_SYS_USE_SYSTEM_LIBS: "1"
         run: |
-          cargo test --manifest-path benchmarks/mpfr_research/Cargo.toml
+          cargo test --release --manifest-path benchmarks/mpfr_research/Cargo.toml
           cargo build --release --manifest-path benchmarks/mpfr_research/Cargo.toml
           sha256sum benchmarks/mpfr_research/Cargo.lock > .research/mpfr-research-lock.sha256
       - name: Source-identical long-CNF GPMC vs Rust at matched MPFR precision

@@ -83,3 +83,89 @@ propagation on every retained source at the same original
 solve time, peak RSS, SAT, complete output and search stats.
 Keep Grover5 censored at 1M nodes. No production default
 promotion is permitted merely from threshold tuning.
+
+## Qualified original-Feynman four-arm observations
+
+The [original long-Feynman same-runner qualification
+#43611425306](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/43611425306)
+passed **6/6 original source × precision groups** at unchanged
+100- and 333-bit GPMC/Rust MPFR precision. All three Rust
+configurations have the same **byte-for-byte native complex WMC
+stdout, SAT verdict, DPLL nodes/cache hits/component decompositions**.
+Each point is the median of three rotating fresh processes under
+the same 30-second/2-GiB address-space bound. Source files,
+uncensored raw trials, original QASM/CNF hashes and all censored
+outcomes remain in the GitHub Actions artifact.
+
+| Original Feynman CNF | Precision | GPMC C++ WallTime (ms) | Shared Rust control (ms) | Always indexed (ms) | Indexed after 8192 nodes (ms) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| HWB6 (297v/827c) | 100-bit | 213.311 | 1799.512 | **1316.554** | **1358.327** |
+| HWB6 | 333-bit | 237.863 | 1899.150 | **1423.905** | **1468.312** |
+| Barenco Toffoli5 (97v) | 100-bit | 12.774 | 22.223 | 24.811 | 23.281 |
+| Barenco Toffoli5 | 333-bit | 12.484 | 22.406 | 24.959 | 22.510 |
+| Modular Multiplier55 (91v) | 100-bit | 12.134 | 29.947 | 32.369 | 30.208 |
+| Modular Multiplier55 | 333-bit | 12.206 | 31.048 | 32.732 | 32.127 |
+
+The primary original HWB6 instance completes **273,928 DPLL
+nodes, 116,315 cache hits and 42,464 component decompositions**.
+Work-admitted indexed propagation improves native WallTime
+by **24.5%** at 100 bits and **22.7%** at 333 bits versus
+the prior shared-Residual Rust implementation, with no
+change in counted assignments or number of search nodes.
+The always-indexed arm is 2–3% faster than the admitted arm
+on this case but regresses small controls more.
+
+HWB6 peak RSS (KiB) at 100 bits is GPMC 18,484,
+shared Rust 71,608, always-indexed Rust 72,036, admitted
+Rust 72,000. At 333 bits those values are 19,468,
+72,184, 72,720 and 72,676. Thus admitted mode increases
+RSS by about **0.55–0.68%** over existing Rust.
+
+Although the selected admitted mode is substantially faster,
+GPMC C++ still wins at HWB6 by **6.37×** at 100 bits and
+**6.17×** at 333 bits. GPMC and Rust use the same
+original weighted CNF and MPFR mantissa width, but not
+necessarily the same floating-point summation order.
+The large original CNFs have **cross-solver numerical agreement**,
+not an independent exhaustive Full WMC oracle.
+
+The [five-trial QFT4 cohort
+#43611425162](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/43611425162)
+passed 10/10 source × precision cohorts and 14 Rust tests.
+At 100 bits the native process medians (shared /
+unconditional / admitted) were QFT4 **60.128 / 59.490 /
+60.358 ms** and mod5_4 **7.359 / 7.753 / 7.369 ms**.
+Admitted mode avoids the unconditional small-case penalty.
+The modest differences among admitted and shared modes on
+those cases, and 3-trial Barenco/ModMult fluctuations, are
+not evidence of reproducible speed differences when the
+8,192-node gate was never crossed.
+
+## Decision and remaining limits
+
+[Research PR #68](https://github.com/PhysicsQoo/RaWMoCS/pull/68)
+merged only an **optional, disabled-by-default** indexed unit
+propagation feature and the 8,192-node work-admission
+candidate. This is **not** a QuPRS production solver change,
+nor a promotion to the default Rust exact-rational algorithm.
+
+The 8,192 threshold was selected using knowledge of these
+cases and has not been independently tuned or certified on
+held-out SATLIB, other QuPRS circuits or alternative CPUs.
+No universal speedup or robust small-case equivalence in
+physical WallTime is claimed. An independent exhaustive
+complex Full WMC witness is infeasible for the large cases
+in this study. Grover5 (607 CNF variables/1,121 clauses)
+remains **censored at the 1M-node budget** with no valid
+Rust-vs-GPMC performance ranking.
+
+Next algorithm-level work should seek source-correct
+**watched-literal binary propagation and bounded conflict
+learning**, consistent with the GPMC architecture, and
+component/cache sharing across explored search branches.
+Any new strategy must separately preserve Boolean SAT
+versus zero WMC, complex MPFR precision, original phase
+provenance, finite resource safety and unchanged default
+SolverAdapter. Extra benchmarks should include truly
+independent long CNFs to test generalization.
+

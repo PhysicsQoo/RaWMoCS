@@ -62,6 +62,8 @@ struct Key { scope: Vec<usize>, clauses: Vec<Clause> }
 struct Stats { nodes: u64, cache_hits: u64, decompositions: u64 }
 #[derive(Clone, Copy, Debug)]
 enum CachePolicy { StdOwned, HbOwned, HbBorrowed }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NormalizePolicy { Legacy, Unstable, CheckSorted }
 impl CachePolicy {
     fn label(self) -> &'static str {
         match self {
@@ -79,12 +81,17 @@ struct Engine<'a> {
     cache_policy: CachePolicy,
     stats: Stats,
     fast_assign: bool,
+    normalize_policy: NormalizePolicy,
+    normalized_children: u64,
+    skipped_resorts: u64,
 }
 impl<'a> Engine<'a> {
     fn new(p: &'a Problem, bits: u32, cache_policy: CachePolicy) -> Engine<'a> {
         Engine {
             p, bits, cache: StdHashMap::new(), hb_cache: HbHashMap::new(),
             cache_policy, stats: Stats::default(), fast_assign: false,
+            normalize_policy: NormalizePolicy::Legacy,
+            normalized_children: 0, skipped_resorts: 0,
         }
     }
     fn borrowed_key_hash(&self, scope: &[usize], residual: &[Clause]) -> u64 {
@@ -114,7 +121,12 @@ impl<'a> Engine<'a> {
         if depth >= 512 { return Err("depth limit".into()); }
         if self.stats.nodes >= 100_000 { return Err("node limit".into()); }
         self.stats.nodes += 1;
-        let mut residual = if depth == 0 { normalize(clauses) } else { normalize_child(clauses) };
+        let mut residual = if depth == 0 {
+            normalize(clauses)
+        } else {
+            self.normalized_children += 1;
+            normalize_child_variant(clauses, self.normalize_policy, &mut self.skipped_resorts)
+        };
         // The original arm duplicates the entire Key before every lookup.
         // The borrowed arm hashes the existing normalized residual and scope
         // without deep-copying either; only a true miss constructs a Key.
@@ -233,6 +245,27 @@ fn normalize_child(mut cls: Vec<Clause>) -> Vec<Clause> {
     cls.dedup();
     cls
 }
+/// Research-only canonical residual normalization alternatives. All three
+/// produce identical lexicographically ordered and deduplicated clause lists.
+fn normalize_child_variant(
+    mut clauses: Vec<Clause>,
+    policy: NormalizePolicy,
+    skipped_resorts: &mut u64,
+) -> Vec<Clause> {
+    match policy {
+        NormalizePolicy::Legacy => clauses.sort(),
+        NormalizePolicy::Unstable => clauses.sort_unstable(),
+        NormalizePolicy::CheckSorted => {
+            if clauses.is_sorted() {
+                *skipped_resorts += 1;
+            } else {
+                clauses.sort_unstable();
+            }
+        }
+    }
+    clauses.dedup();
+    clauses
+}
 fn assign(clauses: &[Clause], lit: i32) -> Vec<Clause> {
     clauses.iter().filter(|c| !c.contains(&lit))
         .map(|c| c.iter().copied().filter(|&x| x != -lit).collect()).collect()
@@ -344,13 +377,23 @@ fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
     let first = args.next().ok_or(
-        "usage: rawmocs-mpfr-research [--fast-assign] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
+        "usage: rawmocs-mpfr-research [--norm-unstable|--norm-check-sorted] [--fast-assign] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
     )?;
-    let fast_assign = first.to_str() == Some("--fast-assign");
+    let normalize_policy = match first.to_str() {
+        Some("--norm-unstable") => NormalizePolicy::Unstable,
+        Some("--norm-check-sorted") => NormalizePolicy::CheckSorted,
+        _ => NormalizePolicy::Legacy,
+    };
+    let next = if normalize_policy == NormalizePolicy::Legacy {
+        first
+    } else {
+        args.next().ok_or("missing arguments after normalization research flag")?
+    };
+    let fast_assign = next.to_str() == Some("--fast-assign");
     let cache_first = if fast_assign {
         args.next().ok_or("missing precision or cache mode after --fast-assign")?
     } else {
-        first
+        next
     };
     let cache_policy = match cache_first.to_str() {
         Some("--hashbrown-owned") => CachePolicy::HbOwned,
@@ -378,6 +421,7 @@ fn run() -> Result<(), String> {
     let t2 = Instant::now();
     let mut engine = Engine::new(&p, bits, cache_policy);
     engine.fast_assign = fast_assign;
+    engine.normalize_policy = normalize_policy;
     let answer = engine.count(p.clauses.clone(), (1..=p.n).collect(), 0)?;
     let solve_ns = t2.elapsed().as_nanos();
     let t3 = Instant::now();
@@ -391,6 +435,8 @@ fn run() -> Result<(), String> {
     eprintln!("RESEARCH_MPFR_PHASE_NS read={read_ns} parse={parse_ns} solve={solve_ns} output={output_ns} nodes={} cache_hits={} decompositions={} digits={digits} bits={bits}",
         engine.stats.nodes, engine.stats.cache_hits, engine.stats.decompositions);
     eprintln!("RESEARCH_MPFR_CACHE_POLICY {}", cache_policy.label());
+    eprintln!("RESEARCH_MPFR_NORMALIZATION calls={} skipped_resorts={} policy={:?}",
+        engine.normalized_children, engine.skipped_resorts, engine.normalize_policy);
     Ok(())
 }
 fn main() {
@@ -456,6 +502,59 @@ mod tests {
                 } else {
                     reference = Some(observed);
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn all_residual_normalizers_produce_identical_canonical_clause_bytes() {
+        let fixture = normalize(vec![
+            vec![1, -3], vec![2, 4], vec![-1, 3, 4],
+            vec![3], vec![-2, 4, 5], vec![-5, 3], vec![1, 2],
+        ]);
+        let mut inputs = vec![
+            vec![], vec![vec![]], vec![vec![1], vec![1]],
+            vec![vec![1, 2], vec![-2, 3], vec![1, 2], vec![]],
+            fixture.clone(),
+        ];
+        for first in -5_i32..=5 {
+            if first == 0 { continue; }
+            let residual = assign_fast(&fixture, first);
+            inputs.push(residual.clone());
+            for second in -5_i32..=5 {
+                if second == 0 { continue; }
+                inputs.push(assign_fast(&residual, second));
+            }
+        }
+        for clauses in inputs {
+            let expected = normalize_child(clauses.clone());
+            for policy in [NormalizePolicy::Legacy, NormalizePolicy::Unstable, NormalizePolicy::CheckSorted] {
+                let mut skipped = 0;
+                let actual = normalize_child_variant(clauses.clone(), policy, &mut skipped);
+                assert_eq!(actual, expected, "normalization policy {policy:?}");
+                assert_eq!(skipped, u64::from(policy == NormalizePolicy::CheckSorted && clauses.is_sorted()));
+            }
+        }
+    }
+
+    #[test]
+    fn normalization_policy_preserves_exact_mpfr_result_and_search_stats() {
+        let raw = "p cnf 4 4\nc t wmc\nc p weight 1 0.25 -0.5 0\nc p weight -1 -0.25 0.5 0\nc p weight 2 0.3 0.1 0\nc p weight -2 0.7 0 0\n1 2 0\n-1 3 0\n1 -4 0\n-2 3 -4 0\n";
+        let problem = parse_emitted(raw, 100).unwrap();
+        let mut reference = None;
+        for policy in [NormalizePolicy::Legacy, NormalizePolicy::Unstable, NormalizePolicy::CheckSorted] {
+            for cache in [CachePolicy::StdOwned, CachePolicy::HbBorrowed] {
+                let mut engine = Engine::new(&problem, 100, cache);
+                engine.fast_assign = true;
+                engine.normalize_policy = policy;
+                let outcome = engine.count(problem.clauses.clone(), (1..=problem.n).collect(), 0).unwrap();
+                let result = (
+                    outcome.sat, outcome.count.re, outcome.count.im,
+                    engine.stats.nodes, engine.stats.cache_hits, engine.stats.decompositions,
+                );
+                if let Some(ref expected) = reference {
+                    assert_eq!(&result, expected, "same MPFR arithmetic and residual keys");
+                } else { reference = Some(result); }
             }
         }
     }

@@ -32,9 +32,14 @@ def parse_out(stdout: str, tool: str) -> tuple[bool, tuple[Fraction, Fraction]]:
         if len(observed) != 1:
             raise ValueError("RaWMoCS missing exact rational Full WMC output")
         return sat, tuple(Fraction(item) for item in observed[0])
+    if tool == "rawmocs_mpfr":
+        observed = re.findall(r"^c r mpfr (\\S+) (\\S+)\\s*$", stdout, re.MULTILINE)
+        if len(observed) != 1:
+            raise ValueError("research Rust MPFR output missing or ambiguous")
+        return sat, tuple(Fraction(item) for item in observed[0])
     if not sat:
         return sat, (Fraction(0), Fraction(0))
-    observed = re.findall(r"^c s exact double prec-sci (.+?)\s*$", stdout, re.MULTILINE)
+    observed = re.findall(r"^c s exact double prec-sci (.+?)\\s*$", stdout, re.MULTILINE)
     if len(observed) != 1:
         raise ValueError("GPMC missing complex WMC output")
     match = COMPLEX.fullmatch(observed[0].strip())

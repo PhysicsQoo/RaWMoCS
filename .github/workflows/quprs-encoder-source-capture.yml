@@ -12,6 +12,7 @@ on:
       - "benchmarks/rust_core/tools/quprs_mpfr_matched.py"
       - "benchmarks/rust_core/tools/quprs_mpfr_cache_ab.py"
       - "benchmarks/rust_core/tools/quprs_mpfr_composed_ab.py"
+      - "benchmarks/rust_core/tools/quprs_mpfr_normalization_ab.py"
       - "benchmarks/mpfr_research/**"
       - "benchmarks/rust_core/examples/quprs_encoder_research_cli.rs"
   push:
@@ -231,6 +232,16 @@ jobs:
             --rust-mode borrowed_assign \
             --trials 5 \
             --report .research/quprs-mpfr-matched-optimized.json
+      - name: Matched-MPFR long-QuPRS CNF residual normalization A/B
+        run: |
+          python3 -m py_compile benchmarks/rust_core/tools/quprs_mpfr_normalization_ab.py
+          python3 benchmarks/rust_core/tools/quprs_mpfr_normalization_ab.py \
+            --source-report .research/quprs-representative-native.json \
+            --matched-reference .research/quprs-mpfr-matched-long.json \
+            --corpus .research/quprs-representative \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --trials 5 \
+            --report .research/quprs-mpfr-normalization-ab.json
       - name: Archive real encoder bytes, raw phase sidecars and SHA256 provenance
         if: always()
         uses: actions/upload-artifact@v4
@@ -248,6 +259,7 @@ jobs:
             .research/quprs-mpfr-cache-ab.json
             .research/quprs-mpfr-composed-ab.json
             .research/quprs-mpfr-matched-optimized.json
+            .research/quprs-mpfr-normalization-ab.json
             .research/mpfr-research-lock.sha256
             benchmarks/mpfr_research/Cargo.lock
           if-no-files-found: warn

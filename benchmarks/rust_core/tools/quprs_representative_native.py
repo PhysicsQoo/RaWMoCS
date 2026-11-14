@@ -88,6 +88,18 @@ def guarded_execution(command: list[str], tool: str) -> dict[str, Any]:
                 record["mpfr_precision_bits"] = numbers[8]
             else:
                 record["mpfr_profile_status"] = "UNAVAILABLE"
+        if tool == "rawmocs_mpfr":
+            normalized = re.search(
+                r"^RESEARCH_MPFR_NORMALIZATION calls=(\d+) skipped_resorts=(\d+) "
+                r"policy=(Legacy|Unstable|CheckSorted)$",
+                result.stderr, flags=re.MULTILINE,
+            )
+            if normalized:
+                record["mpfr_normalization"] = {
+                    "calls": int(normalized.group(1)),
+                    "skipped_resorts": int(normalized.group(2)),
+                    "policy": normalized.group(3),
+                }
         if tool == "rawmocs":
             phase = re.search(
                 r"^RESEARCH_PHASE_NS read=(\d+) parse=(\d+) solve=(\d+) output=(\d+) "

@@ -79,7 +79,7 @@ struct Engine<'a> {
     cache_policy: CachePolicy,
     stats: Stats,
 }
-impl Engine<'_> {
+impl<'a> Engine<'a> {
     fn new(p: &'a Problem, bits: u32, cache_policy: CachePolicy) -> Engine<'a> {
         Engine {
             p, bits, cache: StdHashMap::new(), hb_cache: HbHashMap::new(),

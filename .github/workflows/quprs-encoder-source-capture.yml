@@ -1,23 +1,25 @@
-name: QuPRS encoder comparison original QuPRS encoder-emitted CNF capture
+name: QuPRS original encoder-emitted weighted-CNF study
 
 on:
   pull_request:
     paths:
       - ".github/workflows/quprs-encoder-source-capture.yml"
-      - "benchmarks/rust_core/tools/quprs_validate_encoder_capture.py"
+      - "benchmarks/rust_core/tools/quprs_encoder_validate.py"
       - "benchmarks/rust_core/tools/quprs_paired_encoder.py"
   push:
     branches: [main]
     paths:
       - ".github/workflows/quprs-encoder-source-capture.yml"
-      - "benchmarks/rust_core/tools/quprs_validate_encoder_capture.py"
+      - "benchmarks/rust_core/tools/quprs_encoder_validate.py"
+      - "benchmarks/rust_core/tools/quprs_encoder_paired.py"
+      - "benchmarks/rust_core/tools/quprs_representative_reference.rs"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: quprs-quprs-encoder-source-${{ github.event.pull_request.number || github.ref }}
+  group: quprs-encoder-source-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -58,8 +60,8 @@ jobs:
             | tee .research/quprs-encoder/exporter.log
       - name: Validate all six real emitted GPMC/Ganak dialects and raw phase records
         run: |
-          python3 -m py_compile benchmarks/rust_core/tools/quprs_validate_encoder_capture.py
-          python3 benchmarks/rust_core/tools/quprs_validate_encoder_capture.py \
+          python3 -m py_compile benchmarks/rust_core/tools/quprs_encoder_validate.py
+          python3 benchmarks/rust_core/tools/quprs_encoder_validate.py \
             --quprs .upstream/quprs \
             --corpus .research/quprs-encoder \
             --manifest .research/quprs-encoder-manifest.json
@@ -95,7 +97,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: quprs-real-quprs-wmcmanager-emitted-native
+          name: quprs-emitted-cnf-native-parity
           path: |
             .research/quprs-encoder/
             .research/quprs-encoder-manifest.json

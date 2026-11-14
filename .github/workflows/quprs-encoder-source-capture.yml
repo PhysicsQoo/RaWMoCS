@@ -5,6 +5,7 @@ on:
     paths:
       - ".github/workflows/quprs-encoder-source-capture.yml"
       - "benchmarks/rust_core/tools/qoo226_validate_encoder_capture.py"
+      - "benchmarks/rust_core/tools/qoo226_paired_encoder.py"
   push:
     branches: [main]
     paths:
@@ -62,6 +63,34 @@ jobs:
             --quprs .upstream/quprs \
             --corpus .research/qoo226-encoder \
             --manifest .research/qoo226-encoder-manifest.json
+      - name: Checkout pinned released GPMC native C++ source
+        uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/GPMC
+          ref: 89bbc89d0de918e7a5385740355df55765039230
+          path: .upstream/gpmc
+          submodules: recursive
+          persist-credentials: false
+      - name: Native GPMC/GMP/MPFR and RSS measurement dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build libgmp-dev libmpfr-dev zlib1g-dev time
+      - name: Build unchanged native GPMC C++ solver
+        run: |
+          cmake -S .upstream/gpmc -B .upstream/gpmc/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build .upstream/gpmc/build --target gpmc-bin --parallel 2
+      - name: Build native RaWMoCS printed-decimal exact-rational solver
+        run: |
+          cargo build --locked --release --manifest-path benchmarks/rust_core/Cargo.toml --example quprs_native_cli
+      - name: Independent exhaustive oracle plus same-runner native GPMC/Rust process WallTime RSS
+        run: |
+          python3 -m py_compile benchmarks/rust_core/tools/qoo226_paired_encoder.py
+          python3 benchmarks/rust_core/tools/qoo226_paired_encoder.py \
+            --corpus .research/qoo226-encoder \
+            --manifest .research/qoo226-encoder-manifest.json \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --rawmocs benchmarks/rust_core/target/release/examples/quprs_native_cli \
+            --trials 3 --report .research/qoo226-encoder-native-paired.json
       - name: Archive real encoder bytes, raw phase sidecars and SHA256 provenance
         if: always()
         uses: actions/upload-artifact@v4
@@ -70,5 +99,6 @@ jobs:
           path: |
             .research/qoo226-encoder/
             .research/qoo226-encoder-manifest.json
+            .research/qoo226-encoder-native-paired.json
           if-no-files-found: warn
           retention-days: 30

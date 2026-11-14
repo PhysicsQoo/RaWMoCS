@@ -97,11 +97,14 @@ case "$mode" in
     # Real run: distinct private 64 MiB leaves for positive and negative
     # workloads, source SHA, independent local OOM evidence and teardown.
     evidence="$RUNNER_TEMP/rawmocs-memory-$$-evidence.json"
+    internal_log="$RUNNER_TEMP/rawmocs-delegated-internal.log"
     python3 "$GITHUB_WORKSPACE/benchmarks/rust_core/tools/delegated_host_evidence.py" \
       --delegated-run "$subtree" --output "$evidence" --confirm \
-      > "$RUNNER_TEMP/rawmocs-delegated-internal.log" 2>&1 || {
-      echo "DELEGATED_CI_REAL_ENFORCEMENT=NOT_VALIDATED" >&2
-      echo "DELEGATED_CI_FAILURE=REVIEW_PRIVATE_LOCAL_EVIDENCE" >&2
+      > "$internal_log" 2>&1 || {
+      # The private JSON and raw stderr can include cgroup host paths.
+      # The diagnostic tool emits ONLY predefined, path-free categories.
+      python3 "$GITHUB_WORKSPACE/benchmarks/rust_core/tools/ci_delegated_diagnostics.py" \
+        --report "$evidence" --internal-log "$internal_log" >&2
       exit 1
     }
     # Emit only a sanitized, strictly typed status. Never upload the JSON

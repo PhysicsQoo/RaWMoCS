@@ -5,6 +5,7 @@ on:
     paths:
       - ".github/workflows/real-delegated-memory.yml"
       - "benchmarks/rust_core/tools/ci_delegated_memory.sh"
+      - "benchmarks/rust_core/tools/ci_delegated_diagnostics.py"
       - "benchmarks/rust_core/tools/delegated_host_evidence.py"
       - "benchmarks/rust_core/examples/delegated_cgroup_contract.rs"
   push:
@@ -12,6 +13,7 @@ on:
     paths:
       - ".github/workflows/real-delegated-memory.yml"
       - "benchmarks/rust_core/tools/ci_delegated_memory.sh"
+      - "benchmarks/rust_core/tools/ci_delegated_diagnostics.py"
       - "benchmarks/rust_core/tools/delegated_host_evidence.py"
       - "benchmarks/rust_core/examples/delegated_cgroup_contract.rs"
   workflow_dispatch:
@@ -40,6 +42,7 @@ jobs:
           set -euo pipefail
           bash -n benchmarks/rust_core/tools/ci_delegated_memory.sh
           bash benchmarks/rust_core/tools/ci_delegated_memory.sh --check
+          python benchmarks/rust_core/tools/ci_delegated_diagnostics.py --self-test
           python benchmarks/rust_core/tools/delegated_host_evidence.py --self-test
       - name: Refuse global cgroup mount as a delegation root
         shell: bash

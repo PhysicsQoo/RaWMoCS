@@ -101,6 +101,7 @@ struct Engine<'a> {
     node_budget: u64,
     indexed_unit_propagation: bool,
     indexed_activation_node: u64,
+    fused_frequency_components: bool,
 }
 impl<'a> Engine<'a> {
     fn new(p: &'a Problem, bits: u32, cache_policy: CachePolicy) -> Engine<'a> {
@@ -110,6 +111,7 @@ impl<'a> Engine<'a> {
             cache_policy, shared_residual_key: false,
             stats: Stats::default(), fast_assign: false, node_budget: 100_000,
             indexed_unit_propagation: false, indexed_activation_node: 0,
+            fused_frequency_components: false,
         }
     }
     fn borrowed_key_hash(&self, scope: &[usize], residual: &[Clause]) -> u64 {
@@ -237,9 +239,22 @@ impl<'a> Engine<'a> {
             }
             return Ok(self.save(key, Outcome { sat: true, count: prefix }));
         }
+        // Optional research arm: compute literal frequencies and DSU
+        // components in one traversal of the same normalized residual.
+        // The union sequence is identical to split_components().
+        let mut component_parent = self.fused_frequency_components
+            .then(|| (0..=self.p.n).collect::<Vec<_>>());
         let mut frequency = vec![0_usize; self.p.n + 1];
         for clause in residual.iter() {
             for &lit in clause { frequency[lit.unsigned_abs() as usize] += 1; }
+            if let Some(parent) = component_parent.as_mut() {
+                let first = clause[0].unsigned_abs() as usize;
+                for &lit in &clause[1..] {
+                    let a = root(parent, first);
+                    let b = root(parent, lit.unsigned_abs() as usize);
+                    parent[b] = a;
+                }
+            }
         }
         let mut active = Vec::new();
         for var in remaining {
@@ -249,7 +264,12 @@ impl<'a> Engine<'a> {
                 prefix = prefix.mul(&w.positive.add(&w.negative, self.bits), self.bits);
             }
         }
-        if let Some(pieces) = split_components(&residual, &active, self.p.n) {
+        let pieces = if let Some(parent) = component_parent.as_mut() {
+            split_components_prebuilt_parent(&residual, &active, parent)
+        } else {
+            split_components(&residual, &active, self.p.n)
+        };
+        if let Some(pieces) = pieces {
             self.stats.decompositions += 1;
             let mut value = C::one(self.bits);
             for (cls, sub_scope) in pieces {
@@ -409,6 +429,25 @@ fn root(parent: &mut [usize], mut x: usize) -> usize {
     }
     x
 }
+/// Group a residual using the exact DSU already built by the preceding
+/// frequency scan. Sorted BTreeMap roots, variable order and clause order
+/// match the unmodified split_components() implementation.
+fn split_components_prebuilt_parent(
+    clauses: &[Clause], scope: &[usize], parent: &mut [usize]
+) -> Option<Vec<(Vec<Clause>, Vec<usize>)>> {
+    let &first = scope.first()?;
+    let first_root = root(parent, first);
+    if scope.iter().all(|&v| root(parent, v) == first_root) { return None; }
+    let mut groups: BTreeMap<usize, (Vec<usize>, Vec<Clause>)> = BTreeMap::new();
+    for &var in scope {
+        groups.entry(root(parent, var)).or_default().0.push(var);
+    }
+    for clause in clauses {
+        let r = root(parent, clause[0].unsigned_abs() as usize);
+        groups.get_mut(&r).expect("scope contains clause var").1.push(clause.clone());
+    }
+    Some(groups.into_values().map(|(vars, cs)| (cs, vars)).collect())
+}
 fn split_components(
     clauses: &[Clause], scope: &[usize], variables: usize
 ) -> Option<Vec<(Vec<Clause>, Vec<usize>)>> {
@@ -485,7 +524,7 @@ fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
     let first = args.next().ok_or(
-        "usage: rawmocs-mpfr-research [--node-budget=250000|--node-budget=1000000] [--indexed-unit-prop|--indexed-unit-prop-after-8192] [--shared-residual-key] [--fast-assign] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
+        "usage: rawmocs-mpfr-research [--node-budget=250000|--node-budget=1000000] [--fused-frequency-components] [--indexed-unit-prop|--indexed-unit-prop-after-8192] [--shared-residual-key] [--fast-assign] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
     )?;
     // Explicit finite research-only node limits, untouched default.
     let node_budget = match first.to_str() {
@@ -498,6 +537,10 @@ fn run() -> Result<(), String> {
     } else {
         first
     };
+    let fused_frequency_components = algorithm_start.to_str() == Some("--fused-frequency-components");
+    let algorithm_start = if fused_frequency_components {
+        args.next().ok_or("missing arguments after --fused-frequency-components")?
+    } else { algorithm_start };
     let indexed_unit_propagation = matches!(
         algorithm_start.to_str(),
         Some("--indexed-unit-prop" | "--indexed-unit-prop-after-8192")
@@ -555,6 +598,7 @@ fn run() -> Result<(), String> {
     engine.node_budget = node_budget;
     engine.indexed_unit_propagation = indexed_unit_propagation;
     engine.indexed_activation_node = indexed_activation_node;
+    engine.fused_frequency_components = fused_frequency_components;
     let answer = engine.count(p.clauses.clone(), (1..=p.n).collect(), 0)?;
     let solve_ns = t2.elapsed().as_nanos();
     let t3 = Instant::now();
@@ -571,6 +615,7 @@ fn run() -> Result<(), String> {
     eprintln!("RESEARCH_MPFR_SHARED_RESIDUAL enabled={} entries={}",
         shared_residual_key, engine.shared_cache.len());
     eprintln!("RESEARCH_MPFR_UNIT_PROP_INDEXED enabled={indexed_unit_propagation} activation_node={indexed_activation_node}");
+    eprintln!("RESEARCH_MPFR_FUSED_FREQUENCY_COMPONENTS enabled={fused_frequency_components}");
     Ok(())
 }
 fn main() {
@@ -803,6 +848,72 @@ mod tests {
                     "unchanged search topology for {case}, {bits}"
                 );
             }
+        }
+    }
+
+
+    #[test]
+    fn fused_frequency_components_preserve_full_mpfr_and_search_parity() {
+        let cases = [
+            concat!(
+                "p cnf 7 6\nc t wmc\n",
+                "c p weight 2 0.3 0.1 0\nc p weight -2 -0.2 0.5 0\n",
+                "c p weight 4 -0.1 0.2 0\nc p weight -4 0.8 -0.1 0\n",
+                "1 2 0\n-1 2 0\n3 4 0\n-3 4 0\n5 6 0\n-5 6 0\n"
+            ),
+            concat!(
+                "p cnf 5 5\nc t wmc\n",
+                "c p weight 1 0 0 0\nc p weight -1 0.5 0.5 0\n",
+                "1 2 0\n-1 3 0\n2 -3 0\n4 -5 0\n-4 5 0\n"
+            ),
+            "p cnf 3 2\nc t wmc\n1 0\n-1 0\n",
+        ];
+        for text in cases {
+            for bits in [100_u32, 333_u32] {
+                let p = parse_emitted(text, bits).unwrap();
+                for indexed in [false, true] {
+                    let mut witness = None;
+                    for fused in [false, true] {
+                        let mut engine = Engine::new(&p, bits, CachePolicy::HbBorrowed);
+                        engine.fast_assign = true;
+                        engine.shared_residual_key = true;
+                        engine.indexed_unit_propagation = indexed;
+                        engine.fused_frequency_components = fused;
+                        let answer = engine.count(p.clauses.clone(), (1..=p.n).collect(), 0).unwrap();
+                        let observed = (
+                            answer.sat, answer.count.re, answer.count.im,
+                            engine.stats.nodes, engine.stats.cache_hits, engine.stats.decompositions
+                        );
+                        if let Some(expected) = witness.take() {
+                            assert_eq!(observed, expected, "fusing scans must not change WMC or structure");
+                        } else { witness = Some(observed); }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fused_frequency_matches_original_union_find_on_component_order() {
+        let inputs = [
+            vec![vec![1, 4], vec![2, 6], vec![3, 5]],
+            vec![vec![1, 2], vec![-2, 3], vec![4, 5]],
+            vec![vec![1, 2], vec![2, 3], vec![3, 4]],
+        ];
+        for clauses in inputs {
+            let scope = (1..=6).collect::<Vec<_>>();
+            let original = split_components(&clauses, &scope, 6);
+            let mut parent = (0..=6).collect::<Vec<_>>();
+            for clause in &clauses {
+                let first = clause[0].unsigned_abs() as usize;
+                for &lit in &clause[1..] {
+                    let a = root(&mut parent, first);
+                    let b = root(&mut parent, lit.unsigned_abs() as usize);
+                    parent[b] = a;
+                }
+            }
+            let fused = split_components_prebuilt_parent(&clauses, &scope, &mut parent);
+            assert_eq!(fused, original, "component ordering and clause order");
         }
     }
 

@@ -89,7 +89,7 @@ fn run() -> Result<(), String> {
     let first = args
         .next()
         .ok_or("usage: quprs_encoder_research_cli [--canonical] FILE.cnf")?;
-    let canonical = first == "--canonical";
+    let canonical = first.to_str() == Some("--canonical");
     let filename = if canonical {
         args.next().ok_or("missing CNF after --canonical")?
     } else {

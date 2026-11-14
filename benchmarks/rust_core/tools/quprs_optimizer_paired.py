@@ -45,7 +45,7 @@ def main() -> None:
     if source["source_commit"] != "0b28736651b3740ed3b201edd2efdef3da541e0d":
         raise SystemExit("unverified QuPRS exporter source")
     original_rows = {r["case"]: r for r in source["rows"]}
-    base_root = args.baseline.resolve().parents[4]
+    base_root = args.baseline.resolve().parents[5]
     baseline_sha = subprocess.check_output(
         ["git", "-C", str(base_root), "rev-parse", "HEAD"], text=True
     ).strip()

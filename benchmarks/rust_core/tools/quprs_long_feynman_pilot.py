@@ -73,7 +73,7 @@ def native(command: list[str], tool: str) -> dict[str, Any]:
             "stdout_sha256": sha256(run.stdout.encode("utf-8")).hexdigest(),
             "mpfr_precision_bits": (
                 int(m.group(1)) if
-                (m := re.search(r"\\bbits=(\\d+)\\b", run.stderr)) else None
+                (m := re.search(r"\bbits=(\d+)\b", run.stderr)) else None
             ) if tool == "rawmocs_mpfr" else None,
         }
 

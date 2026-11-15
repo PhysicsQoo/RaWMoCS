@@ -159,6 +159,8 @@ struct Engine<'a> {
     indexed_unit_propagation: bool,
     indexed_activation_node: u64,
     indexed_unit_csr: bool,
+    reuse_frequency_scratch: bool,
+    frequency_scratch: Vec<usize>,
 }
 impl<'a> Engine<'a> {
     fn new(p: &'a Problem, bits: u32, cache_policy: CachePolicy) -> Engine<'a> {
@@ -171,6 +173,8 @@ impl<'a> Engine<'a> {
             stats: Stats::default(), fast_assign: false, node_budget: 100_000,
             indexed_unit_propagation: false, indexed_activation_node: 0,
             indexed_unit_csr: false,
+            reuse_frequency_scratch: false,
+            frequency_scratch: vec![0; p.n + 1],
         }
     }
     fn borrowed_key_hash(&self, scope: &[usize], residual: &[Clause]) -> u64 {
@@ -363,7 +367,16 @@ impl<'a> Engine<'a> {
             }
             return Ok(self.save(key, Outcome { sat: true, count: prefix }));
         }
-        let mut frequency = vec![0_usize; self.p.n + 1];
+        // Research-only reusable per-node frequency arena. In the opt-in
+        // variant, return this arena to Engine BEFORE any recursive call.
+        // Only variables in the active scope can occur in the canonical
+        // residual; all touched entries are cleared on both recursion paths.
+        let mut frequency = if self.reuse_frequency_scratch {
+            std::mem::take(&mut self.frequency_scratch)
+        } else {
+            vec![0_usize; self.p.n + 1]
+        };
+        debug_assert_eq!(frequency.len(), self.p.n + 1);
         for clause in residual.iter() {
             for &lit in clause { frequency[lit.unsigned_abs() as usize] += 1; }
         }
@@ -376,6 +389,11 @@ impl<'a> Engine<'a> {
             }
         }
         if let Some(pieces) = split_components(&residual, &active, self.p.n) {
+            if self.reuse_frequency_scratch {
+                // Recursion must receive an intact, zeroed scratch arena.
+                for &v in &active { frequency[v] = 0; }
+                self.frequency_scratch = frequency;
+            }
             self.stats.decompositions += 1;
             let mut value = C::one(self.bits);
             for (cls, sub_scope) in pieces {
@@ -388,6 +406,10 @@ impl<'a> Engine<'a> {
             }));
         }
         let var = *active.iter().max_by_key(|&&v| frequency[v]).ok_or("no active pivot")?;
+        if self.reuse_frequency_scratch {
+            for &v in &active { frequency[v] = 0; }
+            self.frequency_scratch = frequency;
+        }
         let child: Vec<_> = active.into_iter().filter(|&v| v != var).collect();
         let yes_clauses = if self.fast_assign {
             assign_fast(&residual, var as i32)
@@ -699,7 +721,7 @@ fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
     let first = args.next().ok_or(
-        "usage: rawmocs-mpfr-research [--node-budget=250000|--node-budget=1000000] [--cache-limit=25000|--cache-limit=50000|--cache-limit=100000] [--indexed-unit-prop|--indexed-unit-prop-after-8192|--indexed-unit-prop-csr|--indexed-unit-prop-csr-after-8192] [--shared-residual-key|--packed-residual-key|--packed-residual-key-fast|--packed-residual-key-hash-only|--packed-residual-key-bypass-only] [--fast-assign] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
+        "usage: rawmocs-mpfr-research [--node-budget=250000|--node-budget=1000000] [--cache-limit=25000|--cache-limit=50000|--cache-limit=100000] [--indexed-unit-prop|--indexed-unit-prop-after-8192|--indexed-unit-prop-csr|--indexed-unit-prop-csr-after-8192] [--shared-residual-key|--packed-residual-key|--packed-residual-key-fast|--packed-residual-key-hash-only|--packed-residual-key-bypass-only] [--fast-assign] [--reuse-frequency-scratch] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
     )?;
     // Explicit finite research-only node limits, untouched default.
     let node_budget = match first.to_str() {
@@ -760,6 +782,10 @@ fn run() -> Result<(), String> {
     } else {
         next
     };
+    let reuse_frequency_scratch = cache_first.to_str() == Some("--reuse-frequency-scratch");
+    let cache_first = if reuse_frequency_scratch {
+        args.next().ok_or("missing cache mode or precision after --reuse-frequency-scratch")?
+    } else { cache_first };
     let cache_policy = match cache_first.to_str() {
         Some("--hashbrown-owned") => CachePolicy::HbOwned,
         Some("--hashbrown-borrowed") => CachePolicy::HbBorrowed,
@@ -799,6 +825,7 @@ fn run() -> Result<(), String> {
     engine.node_budget = node_budget;
     engine.indexed_unit_propagation = indexed_unit_propagation;
     engine.indexed_unit_csr = indexed_unit_csr;
+    engine.reuse_frequency_scratch = reuse_frequency_scratch;
     engine.indexed_activation_node = indexed_activation_node;
     let answer = engine.count(p.clauses.clone(), (1..=p.n).collect(), 0)?;
     let solve_ns = t2.elapsed().as_nanos();
@@ -827,6 +854,8 @@ fn run() -> Result<(), String> {
         engine.stats.packed_full_misses);
     eprintln!("RESEARCH_MPFR_UNIT_PROP_INDEXED enabled={indexed_unit_propagation} activation_node={indexed_activation_node}");
     eprintln!("RESEARCH_MPFR_UNIT_PROP_CSR enabled={indexed_unit_csr} activation_node={indexed_activation_node}");
+    eprintln!("RESEARCH_MPFR_FREQ_SCRATCH enabled={reuse_frequency_scratch} capacity={}",
+        engine.frequency_scratch.len());
     // Native WallTime includes engine destruction, unlike solve_ns. Isolate
     // this time so a Cache-optimized process is not misread as faster DPLL.
     let release_start = Instant::now();
@@ -1412,6 +1441,54 @@ mod tests {
                         assert_eq!(candidate.stats.packed_full_misses, candidate.stats.nodes);
                         assert!(candidate.packed_cache.is_empty());
                     }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bounded_frequency_scratch_matches_original_packed_fast_wmc_and_tree() {
+        let cases = [
+            "p cnf 6 9\nc t wmc\n1 2 3 0\n-1 4 0\n-2 5 0\n-3 6 0\n-4 -5 0\n-5 -6 0\n1 -4 0\n2 -6 0\n-1 -2 0\n",
+            "p cnf 5 4\nc t wmc\n1 2 0\n-1 3 0\n-2 4 0\n-4 5 0\n",
+            "p cnf 2 1\nc t wmc\nc p weight 1 0 0 0\nc p weight -1 0 0 0\n1 0\n",
+            "p cnf 3 2\nc t wmc\n1 0\n-1 0\n",
+        ];
+        for bits in [100_u32, 333_u32] {
+            for case in cases {
+                let p = parse_emitted(case, bits).unwrap();
+                for cap in [0_usize, 1, 10, 10_000, 50_000] {
+                    let mut original = Engine::new(&p, bits, CachePolicy::HbBorrowed);
+                    original.fast_assign = true;
+                    original.packed_residual_key = true;
+                    original.packed_fast_admission = true;
+                    original.indexed_unit_propagation = true;
+                    original.indexed_unit_csr = true;
+                    original.cache_limit = cap;
+                    let a = original.count(p.clauses.clone(), (1..=p.n).collect(), 0).unwrap();
+
+                    let mut scratch = Engine::new(&p, bits, CachePolicy::HbBorrowed);
+                    scratch.fast_assign = true;
+                    scratch.packed_residual_key = true;
+                    scratch.packed_fast_admission = true;
+                    scratch.indexed_unit_propagation = true;
+                    scratch.indexed_unit_csr = true;
+                    scratch.reuse_frequency_scratch = true;
+                    scratch.cache_limit = cap;
+                    let ptr = scratch.frequency_scratch.as_ptr();
+                    let b = scratch.count(p.clauses.clone(), (1..=p.n).collect(), 0).unwrap();
+
+                    assert_eq!((a.sat, &a.count.re, &a.count.im),
+                               (b.sat, &b.count.re, &b.count.im));
+                    assert_eq!(
+                        (original.stats.nodes, original.stats.cache_hits, original.stats.decompositions),
+                        (scratch.stats.nodes, scratch.stats.cache_hits, scratch.stats.decompositions),
+                        "frequency scratch must not alter search topology"
+                    );
+                    assert_eq!(scratch.packed_cache.len(), original.packed_cache.len());
+                    assert_eq!(scratch.frequency_scratch.len(), p.n + 1);
+                    assert!(scratch.frequency_scratch.iter().all(|&x| x == 0));
+                    assert_eq!(scratch.frequency_scratch.as_ptr(), ptr, "arena must be reused");
                 }
             }
         }

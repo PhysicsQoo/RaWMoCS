@@ -899,13 +899,27 @@ mod tests {
                 candidate.shared_residual_key = true;
                 candidate.indexed_unit_propagation = true;
                 let observed = candidate.count(p.clauses.clone(), (1..=5).collect(), 0).unwrap();
-                assert_eq!((expected.sat, expected.count.re, expected.count.im),
-                           (observed.sat, observed.count.re, observed.count.im),
+                assert_eq!((expected.sat, &expected.count.re, &expected.count.im),
+                           (observed.sat, &observed.count.re, &observed.count.im),
                            "case {case}, bits {bits}");
                 assert_eq!(
                     (baseline.stats.nodes, baseline.stats.cache_hits, baseline.stats.decompositions),
                     (candidate.stats.nodes, candidate.stats.cache_hits, candidate.stats.decompositions),
                     "unchanged search topology for {case}, {bits}"
+                );
+                let mut csr = Engine::new(&p, bits, CachePolicy::HbBorrowed);
+                csr.fast_assign = true;
+                csr.shared_residual_key = true;
+                csr.indexed_unit_propagation = true;
+                csr.indexed_unit_csr = true;
+                let actual = csr.count(p.clauses.clone(), (1..=5).collect(), 0).unwrap();
+                assert_eq!((actual.sat, &actual.count.re, &actual.count.im),
+                           (expected.sat, &expected.count.re, &expected.count.im),
+                           "CSR numeric output parity for {case}, {bits}");
+                assert_eq!(
+                    (csr.stats.nodes, csr.stats.cache_hits, csr.stats.decompositions),
+                    (candidate.stats.nodes, candidate.stats.cache_hits, candidate.stats.decompositions),
+                    "CSR structural parity for {case}, {bits}"
                 );
             }
         }

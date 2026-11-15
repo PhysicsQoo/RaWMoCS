@@ -29,10 +29,10 @@ ORIGINAL_MQT = {
     "mqt_qpeexact_8": "qpeexact_nativegates_ibm_qiskit_opt0_8.qasm",
 }
 DIGITS_TO_BITS = {30: 100, 100: 333}
-ARMS = ("gpmc", "packed", "fast")
+ARMS = ("gpmc", "packed", "fast", "scratch")
 MAX_SOURCE_BYTES = 2_000_000
-MAX_ROTATION_ELIGIBLE_WALL_NS = 10_000_000_000  # No 9x30s slow case
-TRIALS = 3
+MAX_ROTATION_ELIGIBLE_WALL_NS = 10_000_000_000  # Do not multiply slow native processes
+TRIALS = 4
 
 
 def invoke(case: str, digits: int, cnf: Path, budget: int, gpmc: Path, mpfr: Path, arm: str) -> dict:
@@ -42,8 +42,11 @@ def invoke(case: str, digits: int, cnf: Path, budget: int, gpmc: Path, mpfr: Pat
     else:
         command = [str(mpfr.resolve()), "--node-budget=1000000", "--cache-limit=50000",
                    "--indexed-unit-prop-csr-after-8192",
-                   "--packed-residual-key-fast" if arm == "fast" else "--packed-residual-key",
-                   "--fast-assign", "--hashbrown-borrowed", str(digits), str(cnf.resolve())]
+                   "--packed-residual-key-fast" if arm in ("fast", "scratch") else "--packed-residual-key",
+                   "--fast-assign"]
+        if arm == "scratch":
+            command.append("--reuse-frequency-scratch")
+        command += ["--hashbrown-borrowed", str(digits), str(cnf.resolve())]
         tool = "rawmocs_mpfr"
     result = native(command, tool)
     result["arm"] = arm
@@ -91,10 +94,10 @@ def certify(samples: list[dict], bits: int, digits: int) -> str:
         return "FAIL_PHASE_TIMING"
     # Comparisons are at exactly the same 50k capacity and original CNF.
     stats = {arm: {(s.get("dpll_nodes"), s.get("cache_hits"), s.get("component_splits"))
-                   for s in rust if s["arm"] == arm} for arm in ("packed", "fast")}
+                   for s in rust if s["arm"] == arm} for arm in ("packed", "fast", "scratch")}
     if any(len(x) != 1 or None in next(iter(x)) for x in stats.values()):
         return "FAIL_DETERMINISTIC_SEARCH"
-    if stats["packed"] != stats["fast"]:
+    if stats["packed"] != stats["fast"] or stats["fast"] != stats["scratch"]:
         return "FAIL_SAME_CAP_SEARCH_TOPOLOGY"
     if not all(complex_relative_witness(gpmc[0], s, digits)["pass"] for s in samples):
         return "FAIL_EQUAL_MPFR_GPMC_NUMERIC"
@@ -128,7 +131,7 @@ def main() -> None:
         "cache_capacity": 50_000,
         "node_budget": 1_000_000,
         "native_bounds": "30s / 2GiB individually per process",
-        "statistical_design": "3 fresh native trials per arm in balanced rotation when eligible; otherwise censored",
+        "statistical_design": "4 fresh native trials per arm in complete balanced rotation when eligible; otherwise censored",
         "oracle_caveat": "Original circuit and encoder provenance plus solver numeric agreement, NOT independent Full WMC certification",
         "cases": [],
     }
@@ -212,11 +215,21 @@ def main() -> None:
                 }
                 result["median_solve_ns"] = {
                     arm: statistics.median(x["solve_ns"] for x in samples if x["arm"] == arm)
-                    for arm in ("packed", "fast")
+                    for arm in ("packed", "fast", "scratch")
                 }
                 result["paired_fast_solve_speedup"] = statistics.median(
                     next(x["solve_ns"] for x in samples if x["arm"] == "packed" and x["trial"] == t)
                     / next(x["solve_ns"] for x in samples if x["arm"] == "fast" and x["trial"] == t)
+                    for t in range(TRIALS)
+                )
+                result["paired_scratch_solve_speedup"] = statistics.median(
+                    next(x["solve_ns"] for x in samples if x["arm"] == "fast" and x["trial"] == t)
+                    / next(x["solve_ns"] for x in samples if x["arm"] == "scratch" and x["trial"] == t)
+                    for t in range(TRIALS)
+                )
+                result["paired_scratch_wall_speedup"] = statistics.median(
+                    next(x["wall_ns"] for x in samples if x["arm"] == "fast" and x["trial"] == t)
+                    / next(x["wall_ns"] for x in samples if x["arm"] == "scratch" and x["trial"] == t)
                     for t in range(TRIALS)
                 )
                 print(
@@ -225,7 +238,10 @@ def main() -> None:
                     + " " + " ".join(f"{arm}_rss_kib={result['median_peak_rss_kib'][arm]}" for arm in ARMS)
                     + f" packed_solve_ms={result['median_solve_ns']['packed']/1e6:.3f}"
                     + f" fast_solve_ms={result['median_solve_ns']['fast']/1e6:.3f}"
+                    + f" scratch_solve_ms={result['median_solve_ns']['scratch']/1e6:.3f}"
                     + f" paired_fast_solve={result['paired_fast_solve_speedup']:.4f}"
+                    + f" paired_scratch_solve={result['paired_scratch_solve_speedup']:.4f}"
+                    + f" paired_scratch_wall={result['paired_scratch_wall_speedup']:.4f}"
                 )
             else:
                 print(f"MQT_CNF_CENSORED case={case} bits={bits} status={status} rotations={trial_count}")
@@ -234,7 +250,7 @@ def main() -> None:
         report["cases"].append(item)
     args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf8")
     if complete == 0:
-        raise SystemExit("NO_COMPLETE_MQT_NATIVE_3_ARM_COMPARISON: no speed claim; inspect archived source/solver evidence")
+        raise SystemExit("NO_COMPLETE_MQT_NATIVE_4_ARM_COMPARISON: no speed claim; inspect archived source/solver evidence")
     fatal = [r for c in report["cases"] for r in c["results"] if r["status"].startswith("FAIL_")]
     if fatal:
         raise SystemExit("MQT NUMERIC / SEARCH PARITY FAILURE: no speed claim")

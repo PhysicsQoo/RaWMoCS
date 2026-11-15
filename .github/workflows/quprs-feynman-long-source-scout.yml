@@ -11,6 +11,7 @@ on:
       - "benchmarks/rust_core/tools/quprs_mpfr_indexed_unit_long_ab.py"
       - "benchmarks/rust_core/tools/quprs_mpfr_csr_unit_long_ab.py"
       - "benchmarks/rust_core/tools/quprs_mpfr_csr_cache_factorial_long_ab.py"
+      - "benchmarks/rust_core/tools/quprs_mpfr_packed_cache_long_ab.py"
       - "benchmarks/rust_core/tools/quprs_mpfr_cache_capacity_long_ab.py"
       - "benchmarks/mpfr_research/src/main.rs"
   workflow_dispatch:
@@ -170,6 +171,17 @@ jobs:
             --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
             --trials 7 \
             --report .research/feynman-long/csr-cache-factorial-ab.json
+      - name: Original Feynman equal-MPFR exact flat packed residual Cache memory and WallTime A/B
+        run: |
+          python3 -m py_compile benchmarks/rust_core/tools/quprs_mpfr_packed_cache_long_ab.py
+          python3 benchmarks/rust_core/tools/quprs_mpfr_packed_cache_long_ab.py \
+            --scout-report .research/feynman-long/scout-report.json \
+            --node-report .research/feynman-long/node-budget-report.json \
+            --corpus .research/feynman-long \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --trials 7 \
+            --report .research/feynman-long/packed-residual-cache-ab.json
       - name: Archive every source/solver outcome including censored cases
         if: always()
         uses: actions/upload-artifact@v4

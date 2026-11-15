@@ -168,7 +168,7 @@ jobs:
             --corpus .research/feynman-long \
             --gpmc .upstream/gpmc/build/gpmc \
             --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
-            --trials 5 \
+            --trials 7 \
             --report .research/feynman-long/csr-cache-factorial-ab.json
       - name: Archive every source/solver outcome including censored cases
         if: always()

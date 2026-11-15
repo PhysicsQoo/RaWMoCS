@@ -64,7 +64,46 @@ impl Outcome {
 struct Key { scope: Vec<usize>, clauses: Vec<Clause> }
 #[derive(Hash, PartialEq, Eq)]
 struct SharedKey { scope: Vec<usize>, clauses: Arc<Vec<Clause>> }
-enum StoredKey { Owned(Key), Shared(SharedKey) }
+// Research-only exact key: zero is a clause separator, never a DIMACS
+// literal. A separator is also emitted for each empty clause, preserving
+// clause boundaries, order, and duplicate literals without loss.
+#[derive(PartialEq, Eq)]
+struct PackedKey { scope: Vec<usize>, literals: Vec<i32> }
+impl PackedKey {
+    fn from_residual(scope: Vec<usize>, residual: &[Clause]) -> Self {
+        let length = residual.iter().map(|clause| clause.len() + 1).sum();
+        let mut literals = Vec::with_capacity(length);
+        for clause in residual {
+            debug_assert!(clause.iter().all(|&lit| lit != 0));
+            literals.extend_from_slice(clause);
+            literals.push(0);
+        }
+        Self { scope, literals }
+    }
+    fn matches_residual(&self, scope: &[usize], residual: &[Clause]) -> bool {
+        if self.scope.as_slice() != scope { return false; }
+        let mut pos = 0;
+        for clause in residual {
+            let end = pos + clause.len();
+            if self.literals.get(pos..end) != Some(clause.as_slice()) ||
+                self.literals.get(end) != Some(&0) {
+                return false;
+            }
+            pos = end + 1;
+        }
+        pos == self.literals.len()
+    }
+}
+// Encode the *same* exact hash stream for owned and borrowed inputs.
+// Deliberately avoid depending on optimized slice-hash specializations.
+impl Hash for PackedKey {
+    fn hash<H: Hasher>(&self, hasher: &mut H) {
+        self.scope.hash(hasher);
+        self.literals.len().hash(hasher);
+        for &lit in &self.literals { lit.hash(hasher); }
+    }
+}
+enum StoredKey { Owned(Key), Shared(SharedKey), Packed(SharedKey) }
 enum ResidualStorage { Owned(Vec<Clause>), Shared(Arc<Vec<Clause>>) }
 impl Deref for ResidualStorage {
     type Target = Vec<Clause>;
@@ -94,8 +133,10 @@ struct Engine<'a> {
     cache: StdHashMap<Key, Outcome>,
     hb_cache: HbHashMap<Key, Outcome>,
     shared_cache: HbHashMap<SharedKey, Outcome>,
+    packed_cache: HbHashMap<PackedKey, Outcome>,
     cache_policy: CachePolicy,
     shared_residual_key: bool,
+    packed_residual_key: bool,
     cache_limit: usize,
     stats: Stats,
     fast_assign: bool,
@@ -108,8 +149,9 @@ impl<'a> Engine<'a> {
     fn new(p: &'a Problem, bits: u32, cache_policy: CachePolicy) -> Engine<'a> {
         Engine {
             p, bits, cache: StdHashMap::new(), hb_cache: HbHashMap::new(),
-            shared_cache: HbHashMap::new(),
-            cache_policy, shared_residual_key: false, cache_limit: 10_000,
+            shared_cache: HbHashMap::new(), packed_cache: HbHashMap::new(),
+            cache_policy, shared_residual_key: false, packed_residual_key: false,
+            cache_limit: 10_000,
             stats: Stats::default(), fast_assign: false, node_budget: 100_000,
             indexed_unit_propagation: false, indexed_activation_node: 0,
             indexed_unit_csr: false,
@@ -126,6 +168,17 @@ impl<'a> Engine<'a> {
         let mut hasher = self.shared_cache.hasher().build_hasher();
         scope.hash(&mut hasher);
         residual.hash(&mut hasher);
+        hasher.finish()
+    }
+    fn packed_key_hash(&self, scope: &[usize], residual: &[Clause]) -> u64 {
+        let mut hasher = self.packed_cache.hasher().build_hasher();
+        scope.hash(&mut hasher);
+        let length: usize = residual.iter().map(|clause| clause.len() + 1).sum();
+        length.hash(&mut hasher);
+        for clause in residual {
+            for &lit in clause { lit.hash(&mut hasher); }
+            0_i32.hash(&mut hasher);
+        }
         hasher.finish()
     }
     fn weight(&self, var: usize, positive: bool) -> &C {
@@ -148,6 +201,14 @@ impl<'a> Engine<'a> {
                     self.shared_cache.insert(key, result.clone());
                 }
             }
+            StoredKey::Packed(key) => {
+                // Only pack on *actual* admission. No flat key allocation
+                // occurs on a borrowed lookup hit or after capacity fills.
+                if self.packed_cache.len() < self.cache_limit {
+                    let key = PackedKey::from_residual(key.scope, key.clauses.as_slice());
+                    self.packed_cache.insert(key, result.clone());
+                }
+            }
         }
         result
     }
@@ -160,7 +221,18 @@ impl<'a> Engine<'a> {
         // The shared mode checks the borrowed canonical bytes BEFORE allocating
         // an Arc. On a miss the cache key shares the residual's existing Vec;
         // there is no deep Vec<Vec<i32>> clone at insertion time.
-        let (mut residual, key) = if self.shared_residual_key {
+        let (mut residual, key) = if self.packed_residual_key {
+            let hash = self.packed_key_hash(&scope, &canonical);
+            if let Some((_, hit)) = self.packed_cache.raw_entry().from_hash(hash, |key| {
+                key.matches_residual(&scope, &canonical)
+            }) {
+                self.stats.cache_hits += 1;
+                return Ok(hit.clone());
+            }
+            let shared = Arc::new(canonical);
+            let key = SharedKey { scope: scope.clone(), clauses: Arc::clone(&shared) };
+            (ResidualStorage::Shared(shared), StoredKey::Packed(key))
+        } else if self.shared_residual_key {
             let hash = self.shared_key_hash(&scope, &canonical);
             if let Some((_, hit)) = self.shared_cache.raw_entry().from_hash(hash, |key| {
                 key.scope.as_slice() == scope.as_slice()
@@ -583,7 +655,7 @@ fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
     let first = args.next().ok_or(
-        "usage: rawmocs-mpfr-research [--node-budget=250000|--node-budget=1000000] [--cache-limit=25000|--cache-limit=50000|--cache-limit=100000] [--indexed-unit-prop|--indexed-unit-prop-after-8192|--indexed-unit-prop-csr|--indexed-unit-prop-csr-after-8192] [--shared-residual-key] [--fast-assign] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
+        "usage: rawmocs-mpfr-research [--node-budget=250000|--node-budget=1000000] [--cache-limit=25000|--cache-limit=50000|--cache-limit=100000] [--indexed-unit-prop|--indexed-unit-prop-after-8192|--indexed-unit-prop-csr|--indexed-unit-prop-csr-after-8192] [--shared-residual-key|--packed-residual-key] [--fast-assign] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
     )?;
     // Explicit finite research-only node limits, untouched default.
     let node_budget = match first.to_str() {
@@ -626,7 +698,8 @@ fn run() -> Result<(), String> {
         algorithm_start
     };
     let shared_residual_key = storage_start.to_str() == Some("--shared-residual-key");
-    let next = if shared_residual_key {
+    let packed_residual_key = storage_start.to_str() == Some("--packed-residual-key");
+    let next = if shared_residual_key || packed_residual_key {
         args.next().ok_or("missing arguments after --shared-residual-key")?
     } else {
         storage_start
@@ -650,8 +723,9 @@ fn run() -> Result<(), String> {
     let digits: u32 = numeric.to_str().ok_or("non-UTF8 precision")?
         .parse().map_err(|_| "bad precision")?;
     if !(30..=100).contains(&digits) { return Err("supported precision 30..100 digits".into()); }
-    if shared_residual_key && !matches!(cache_policy, CachePolicy::HbBorrowed) {
-        return Err("--shared-residual-key requires --hashbrown-borrowed".into());
+    if (shared_residual_key || packed_residual_key) &&
+        !matches!(cache_policy, CachePolicy::HbBorrowed) {
+        return Err("shared/packed residual keys require --hashbrown-borrowed".into());
     }
     // Source GPMC/mpfr/mpreal.h uses this EXACT digits2bits conversion.
     let bits = (f64::from(digits) * 3.321_928_094_887_362_4).ceil() as u32;
@@ -667,6 +741,7 @@ fn run() -> Result<(), String> {
     let mut engine = Engine::new(&p, bits, cache_policy);
     engine.fast_assign = fast_assign;
     engine.shared_residual_key = shared_residual_key;
+    engine.packed_residual_key = packed_residual_key;
     engine.cache_limit = cache_limit;
     engine.node_budget = node_budget;
     engine.indexed_unit_propagation = indexed_unit_propagation;
@@ -689,6 +764,8 @@ fn run() -> Result<(), String> {
         shared_residual_key, engine.shared_cache.len());
     eprintln!("RESEARCH_MPFR_CACHE_LIMIT capacity={} shared_entries={} owned_entries={}",
         cache_limit, engine.shared_cache.len(), engine.hb_cache.len() + engine.cache.len());
+    eprintln!("RESEARCH_MPFR_PACKED_RESIDUAL enabled={} entries={}",
+        packed_residual_key, engine.packed_cache.len());
     eprintln!("RESEARCH_MPFR_UNIT_PROP_INDEXED enabled={indexed_unit_propagation} activation_node={indexed_activation_node}");
     eprintln!("RESEARCH_MPFR_UNIT_PROP_CSR enabled={indexed_unit_csr} activation_node={indexed_activation_node}");
     Ok(())

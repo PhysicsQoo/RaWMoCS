@@ -957,8 +957,8 @@ mod tests {
                 watched.shared_residual_key = true;
                 watched.watched_unit_propagation = true;
                 let answer = watched.count(p.clauses.clone(), (1..=5).collect(), 0).unwrap();
-                assert_eq!((answer.sat, answer.count.re, answer.count.im),
-                           (expected.sat, expected.count.re, expected.count.im),
+                assert_eq!((answer.sat, &answer.count.re, &answer.count.im),
+                           (expected.sat, &expected.count.re, &expected.count.im),
                            "watched parity for {case}, {bits}");
                 assert_eq!(
                     (watched.stats.nodes, watched.stats.cache_hits, watched.stats.decompositions),

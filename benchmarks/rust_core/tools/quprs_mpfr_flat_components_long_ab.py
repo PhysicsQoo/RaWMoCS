@@ -158,7 +158,7 @@ def main() -> None:
                         + " " + " ".join(f"{a}_solve_ms={row['rust_solve_ns_median'][a]/1e6:.3f}" for a in ARMS[1:])
                         + " " + " ".join(f"{a}_rss_kib={row['peak_rss_kib_median'][a]:.0f}" for a in ARMS)
                         + " " + " ".join(f"{a}_drop_ms={row['engine_drop_ns_median'][a]/1e6:.3f}" for a in ARMS[1:])
-                        + " " + " ".join(f"{a}_solve_paired={row['paired_solve_speedup_vs_fast'][a]:.4f}" for a in ARMS[1:] if a != "scratch")
+                        + " " + " ".join(f"{a}_solve_paired={row['paired_solve_speedup_vs_scratch'][a]:.4f}" for a in ARMS[1:] if a != "scratch")
                         + " " + " ".join(f"{a}_nodes={row['search_stats'][a]['nodes']}" for a in ARMS[1:])
                     )
             if row["status"] != "MATCHED_MPFR_SOURCE_AGREEMENT_ONLY":

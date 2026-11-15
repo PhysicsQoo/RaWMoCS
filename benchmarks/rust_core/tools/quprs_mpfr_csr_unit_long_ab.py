@@ -29,11 +29,11 @@ def main() -> None:
     ap.add_argument("--corpus", type=Path, required=True)
     ap.add_argument("--gpmc", type=Path, required=True)
     ap.add_argument("--mpfr", type=Path, required=True)
-    ap.add_argument("--trials", type=int, default=3)
+    ap.add_argument("--trials", type=int, default=5)
     ap.add_argument("--report", type=Path, required=True)
     args = ap.parse_args()
-    if args.trials != 3:
-        raise SystemExit("research cohort requires three alternating independent trials")
+    if args.trials != 5:
+        raise SystemExit("validation cohort requires five alternating independent process trials")
     scout = json.loads(args.scout_report.read_text(encoding="utf8"))
     node = json.loads(args.node_report.read_text(encoding="utf8"))
     if scout["quprs_source_sha"] != SOURCE_SHA or node["source_quprs_sha"] != SOURCE_SHA:
@@ -133,9 +133,23 @@ def main() -> None:
                         arm: statistics.median(s["solve_ns"] for s in rust if s["arm"] == arm)
                         for arm in ("admitted", "csr")
                     }
+                    row["paired_csr_wall_speedups"] = [
+                        next(s["wall_ns"] for s in trials if s["arm"] == "admitted" and s["trial"] == trial)
+                        / next(s["wall_ns"] for s in trials if s["arm"] == "csr" and s["trial"] == trial)
+                        for trial in range(args.trials)
+                    ]
+                    row["paired_csr_speedup_median"] = statistics.median(
+                        row["paired_csr_wall_speedups"]
+                    )
+                    row["wall_ns_mad"] = {
+                        arm: statistics.median(
+                            abs(s["wall_ns"] - row["wall_ns_median"][arm])
+                            for s in trials if s["arm"] == arm
+                        )
+                        for arm in ARMS
+                    }
                     row["baseline_over_arm"] = {
-                        arm: row["wall_ns_median"]["admitted"] / row["wall_ns_median"][arm]
-                        for arm in ("csr",)
+                        "csr": row["wall_ns_median"]["admitted"] / row["wall_ns_median"]["csr"]
                     }
                     row["gpmc_over_arm"] = {
                         arm: row["wall_ns_median"][arm] / row["wall_ns_median"]["gpmc"]
@@ -148,6 +162,15 @@ def main() -> None:
                             f"{arm}_ms={row['wall_ns_median'][arm]/1e6:.3f}"
                             for arm in ARMS
                         )
+                        + " ".join(
+                            f" {arm}_rss_kib={row['peak_rss_kib_median'][arm]:.0f}"
+                            for arm in ARMS
+                        )
+                        + " ".join(
+                            f" {arm}_solve_ms={row['rust_solve_ns_median'][arm]/1e6:.3f}"
+                            for arm in ("admitted", "csr")
+                        )
+                        + f" paired_speedup_median={row['paired_csr_speedup_median']:.4f}"
                         + f" nodes={row['search_stats']['nodes']}"
                     )
             if row["status"] != "MATCHED_MPFR_SOURCE_AGREEMENT_ONLY":

@@ -144,7 +144,7 @@ jobs:
             --corpus .research/feynman-long \
             --gpmc .upstream/gpmc/build/gpmc \
             --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
-            --trials 3 \
+            --trials 5 \
             --report .research/feynman-long/csr-occurrence-ab.json
       - name: Archive every source/solver outcome including censored cases
         if: always()

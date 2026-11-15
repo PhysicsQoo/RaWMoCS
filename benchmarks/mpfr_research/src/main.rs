@@ -1046,6 +1046,62 @@ mod tests {
         }
     }
     #[test]
+    fn csr_and_cache_capacity_composition_preserves_mpfr_and_search() {
+        // A factorial control: Cache limits may alter the tree, but CSR and
+        // indexed propagation must have the SAME tree at each fixed limit.
+        // Different limits must preserve the full rounded complex WMC bytes.
+        let fixtures = [
+            concat!(
+                "p cnf 6 7\nc t wmc\n",
+                "c p weight 1 0.3 0.1 0\nc p weight -1 -0.2 0.4 0\n",
+                "c p weight 2 0.6 -0.1 0\nc p weight -2 0.2 0.3 0\n",
+                "1 2 0\n-1 3 0\n-2 4 0\n3 5 0\n",
+                "-3 6 0\n-4 -5 0\n-5 -6 0\n"
+            ),
+            "p cnf 3 2\nc t wmc\n1 0\n-1 0\n",
+            "p cnf 2 1\nc t wmc\nc p weight 1 0 0 0\nc p weight -1 0 0 0\n1 0\n",
+        ];
+        for bits in [100_u32, 333_u32] {
+            for source in fixtures {
+                let p = parse_emitted(source, bits).unwrap();
+                let mut cross_capacity: Option<Outcome> = None;
+                for capacity in [1_usize, 10_000, 25_000, 50_000] {
+                    let mut structural_pair = None;
+                    for csr in [false, true] {
+                        let mut engine = Engine::new(&p, bits, CachePolicy::HbBorrowed);
+                        engine.fast_assign = true;
+                        engine.shared_residual_key = true;
+                        engine.indexed_unit_propagation = true;
+                        engine.indexed_unit_csr = csr;
+                        engine.cache_limit = capacity;
+                        // Activate on the first node to cover actual CSR logic.
+                        engine.indexed_activation_node = 0;
+                        let outcome = engine.count(p.clauses.clone(), (1..=p.n).collect(), 0)
+                            .expect("composed factorial fixture must complete");
+                        let witness = (outcome.sat, outcome.count.re.clone(),
+                            outcome.count.im.clone(), engine.stats.nodes,
+                            engine.stats.cache_hits, engine.stats.decompositions);
+                        if let Some(ref expected) = structural_pair {
+                            assert_eq!(&witness, expected,
+                                "CSR/indexed topology differs for {bits} bits at cap {capacity}");
+                        } else {
+                            structural_pair = Some(witness);
+                        }
+                        if let Some(ref expected) = cross_capacity {
+                            assert_eq!(outcome.sat, expected.sat);
+                            assert_eq!(&outcome.count.re, &expected.count.re);
+                            assert_eq!(&outcome.count.im, &expected.count.im);
+                        } else {
+                            cross_capacity = Some(outcome.clone());
+                        }
+                        assert!(engine.shared_cache.len() <= capacity);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn node_budget_is_bounded_and_default_is_unchanged() {
         let p = parse_emitted("p cnf 2 1\nc t wmc\n1 2 0\n", 100).unwrap();
         let mut default = Engine::new(&p, 100, CachePolicy::HbBorrowed);

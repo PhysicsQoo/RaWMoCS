@@ -944,8 +944,8 @@ mod tests {
                 candidate.shared_residual_key = true;
                 candidate.indexed_unit_propagation = true;
                 let observed = candidate.count(p.clauses.clone(), (1..=5).collect(), 0).unwrap();
-                assert_eq!((expected.sat, expected.count.re, expected.count.im),
-                           (observed.sat, observed.count.re, observed.count.im),
+                assert_eq!((expected.sat, &expected.count.re, &expected.count.im),
+                           (observed.sat, &observed.count.re, &observed.count.im),
                            "case {case}, bits {bits}");
                 assert_eq!(
                     (baseline.stats.nodes, baseline.stats.cache_hits, baseline.stats.decompositions),

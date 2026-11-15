@@ -583,7 +583,7 @@ fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
     let first = args.next().ok_or(
-        "usage: rawmocs-mpfr-research [--node-budget=250000|--node-budget=1000000] [--cache-limit=25000|--cache-limit=50000|--cache-limit=100000] [--indexed-unit-prop|--indexed-unit-prop-after-8192|--indexed-unit-prop-csr|--indexed-unit-prop-csr-after-8192] [--shared-residual-key] [--fast-assign] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
+        "usage: rawmocs-mpfr-research [--node-budget=250000|--node-budget=1000000] [--skip-cache-teardown] [--cache-limit=25000|--cache-limit=50000|--cache-limit=100000] [--indexed-unit-prop|--indexed-unit-prop-after-8192|--indexed-unit-prop-csr|--indexed-unit-prop-csr-after-8192] [--shared-residual-key] [--fast-assign] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
     )?;
     // Explicit finite research-only node limits, untouched default.
     let node_budget = match first.to_str() {
@@ -596,6 +596,13 @@ fn run() -> Result<(), String> {
     } else {
         first
     };
+    // Opt-in one-shot CLI experiment: when enabled, the OS reclaims the
+    // cache at process exit. Never use this policy in a reusable library.
+    // The default continues to invoke normal Rust destructors.
+    let skip_cache_teardown = algorithm_start.to_str() == Some("--skip-cache-teardown");
+    let algorithm_start = if skip_cache_teardown {
+        args.next().ok_or("missing arguments after --skip-cache-teardown")?
+    } else { algorithm_start };
     // Finite research-only limits. The production and default MPFR
     // 10,000-entry cache policy is unchanged.
     let cache_limit = match algorithm_start.to_str() {
@@ -691,6 +698,22 @@ fn run() -> Result<(), String> {
         cache_limit, engine.shared_cache.len(), engine.hb_cache.len() + engine.cache.len());
     eprintln!("RESEARCH_MPFR_UNIT_PROP_INDEXED enabled={indexed_unit_propagation} activation_node={indexed_activation_node}");
     eprintln!("RESEARCH_MPFR_UNIT_PROP_CSR enabled={indexed_unit_csr} activation_node={indexed_activation_node}");
+    // Include post-solve cache destruction in the native process WallTime.
+    // This phase is outside RESEARCH_MPFR_PHASE_NS solve; never reclassify
+    // it as solver work. Explicitly measure default teardown and the opt-in
+    // one-shot exit experiment separately. The peak virtual memory remains
+    // bounded by the same external prlimit and RSS monitoring.
+    let teardown_start = Instant::now();
+    if skip_cache_teardown {
+        std::mem::forget(engine); // research CLI only, OS reclaims on exit
+    } else {
+        drop(engine);
+    }
+    let teardown_ns = teardown_start.elapsed().as_nanos();
+    eprintln!(
+        "RESEARCH_MPFR_CACHE_TEARDOWN_NS mode={} duration={teardown_ns}",
+        if skip_cache_teardown { "os-exit" } else { "rust-drop" }
+    );
     Ok(())
 }
 fn main() {

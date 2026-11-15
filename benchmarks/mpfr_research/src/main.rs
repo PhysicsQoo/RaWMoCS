@@ -101,6 +101,7 @@ struct Engine<'a> {
     node_budget: u64,
     indexed_unit_propagation: bool,
     indexed_activation_node: u64,
+    watched_unit_propagation: bool,
 }
 impl<'a> Engine<'a> {
     fn new(p: &'a Problem, bits: u32, cache_policy: CachePolicy) -> Engine<'a> {
@@ -110,6 +111,7 @@ impl<'a> Engine<'a> {
             cache_policy, shared_residual_key: false,
             stats: Stats::default(), fast_assign: false, node_budget: 100_000,
             indexed_unit_propagation: false, indexed_activation_node: 0,
+            watched_unit_propagation: false,
         }
     }
     fn borrowed_key_hash(&self, scope: &[usize], residual: &[Clause]) -> u64 {
@@ -203,12 +205,19 @@ impl<'a> Engine<'a> {
         };
         let mut remaining = scope;
         let mut prefix = C::one(self.bits);
-        if self.indexed_unit_propagation &&
+        if (self.indexed_unit_propagation || self.watched_unit_propagation) &&
             self.stats.nodes >= self.indexed_activation_node &&
             residual.iter().any(|c| c.len() == 1) {
-            let Some(reduced) = unit_propagate_indexed(
-                &residual, self.p.n, &self.p.weights, self.bits, &mut remaining, &mut prefix
-            ) else {
+            let reduced = if self.watched_unit_propagation {
+                unit_propagate_watched(
+                    &residual, self.p.n, &self.p.weights, self.bits, &mut remaining, &mut prefix
+                )
+            } else {
+                unit_propagate_indexed(
+                    &residual, self.p.n, &self.p.weights, self.bits, &mut remaining, &mut prefix
+                )
+            };
+            let Some(reduced) = reduced else {
                 return Ok(self.save(key, Outcome::unsat(self.bits)));
             };
             residual = ResidualStorage::Owned(reduced);
@@ -284,6 +293,140 @@ impl<'a> Engine<'a> {
         }))
     }
 }
+/// Sign-aware literal status under a local forced-assignment trail.
+/// 1=true, -1=false, 0=unassigned. The trail never survives this node.
+fn watched_lit_status(lit: i32, assignments: &[i8]) -> i8 {
+    let value = assignments[lit.unsigned_abs() as usize];
+    if lit > 0 { value } else { -value }
+}
+
+fn watched_literal_slot(lit: i32) -> usize {
+    2 * (lit.unsigned_abs() as usize) + usize::from(lit < 0)
+}
+
+/// Research-only local two-watched-literal propagation.
+///
+/// Watches are created once per residual node, rather than an occurrence
+/// list entry for every literal. A falsified watched literal examines only
+/// its watching clauses; a replacement is chosen in original literal order.
+/// The minimum-heap of source clause indices retains the *same first-unit*
+/// selection as the legacy scanner, including separately rounded MPFR weight
+/// multiplication order. No global watch state outlives a recursive branch.
+/// SAT with numerically zero WMC remains distinct from Boolean UNSAT.
+fn unit_propagate_watched(
+    clauses: &[Clause],
+    variables: usize,
+    weights: &[Weights],
+    bits: u32,
+    remaining: &mut Vec<usize>,
+    prefix: &mut C,
+) -> Option<Vec<Clause>> {
+    let mut watchlists: Vec<Vec<usize>> = vec![Vec::new(); 2 * (variables + 1)];
+    let mut positions: Vec<(usize, usize)> = Vec::with_capacity(clauses.len());
+    let mut satisfied = vec![false; clauses.len()];
+    let mut assignments = vec![0_i8; variables + 1];
+    let mut unit = BinaryHeap::<Reverse<usize>>::new();
+
+    for (cid, clause) in clauses.iter().enumerate() {
+        if clause.is_empty() { return None; }
+        let other = usize::from(clause.len() > 1);
+        positions.push((0, other));
+        watchlists[watched_literal_slot(clause[0])].push(cid);
+        if other != 0 {
+            watchlists[watched_literal_slot(clause[other])].push(cid);
+        } else {
+            unit.push(Reverse(cid));
+        }
+    }
+
+    while let Some(Reverse(cid)) = unit.pop() {
+        if satisfied[cid] { continue; }
+        // Lazily validate a queued unit. Earlier assignments may have
+        // satisfied it or made it stale, but cannot create a false unit.
+        let mut forced = None;
+        let mut many = false;
+        let mut clause_true = false;
+        for &lit in &clauses[cid] {
+            match watched_lit_status(lit, &assignments) {
+                1 => { clause_true = true; break; }
+                0 => {
+                    if forced.replace(lit).is_some() {
+                        many = true;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if clause_true {
+            satisfied[cid] = true;
+            continue;
+        }
+        if many { continue; }
+        let lit = forced?;
+        let var = lit.unsigned_abs() as usize;
+        let weight = &weights[var - 1];
+        *prefix = prefix.mul(if lit > 0 { &weight.positive } else { &weight.negative }, bits);
+        assignments[var] = if lit > 0 { 1 } else { -1 };
+        remaining.retain(|&v| v != var);
+
+        let false_lit = -lit;
+        // Take the current bucket before iterating: replacements cannot
+        // point to the just-falsified literal, so no live entry is lost.
+        let pending = std::mem::take(&mut watchlists[watched_literal_slot(false_lit)]);
+        for index in pending {
+            if satisfied[index] { continue; }
+            let clause = &clauses[index];
+            let (left, right) = positions[index];
+            let left_false = clause[left] == false_lit;
+            let right_false = clause[right] == false_lit;
+            if !left_false && !right_false { continue; } // stale watch
+            let other = if left_false { right } else { left };
+            let other_lit = clause[other];
+            if watched_lit_status(other_lit, &assignments) == 1 {
+                satisfied[index] = true;
+                continue;
+            }
+            let replacement = clause.iter().enumerate()
+                .filter(|(i, _)| *i != left && *i != right)
+                .find(|(_, &candidate)| watched_lit_status(candidate, &assignments) != -1);
+            if let Some((position, &candidate)) = replacement {
+                if watched_lit_status(candidate, &assignments) == 1 {
+                    satisfied[index] = true;
+                } else {
+                    if left_false {
+                        positions[index].0 = position;
+                    } else {
+                        positions[index].1 = position;
+                    }
+                    watchlists[watched_literal_slot(candidate)].push(index);
+                }
+            } else {
+                match watched_lit_status(other_lit, &assignments) {
+                    -1 => return None, // genuinely empty clause
+                    0 => unit.push(Reverse(index)),
+                    _ => unreachable!("true other watch handled above"),
+                }
+            }
+        }
+    }
+
+    // Recreate the canonical child in unchanged clause and literal order.
+    let mut reduced = Vec::with_capacity(clauses.len());
+    for (cid, clause) in clauses.iter().enumerate() {
+        if satisfied[cid] { continue; }
+        if clause.iter().any(|&lit| watched_lit_status(lit, &assignments) == 1) {
+            continue;
+        }
+        let child: Vec<_> = clause.iter().copied().filter(
+            |&lit| watched_lit_status(lit, &assignments) == 0
+        ).collect();
+        if child.is_empty() { return None; }
+        reduced.push(child);
+    }
+    Some(reduced)
+}
+
 /// Research-only occurrence-indexed unit propagation within ONE normalized
 /// DPLL residual node. Unlike a global watched-literal index, these bounded
 /// local indices never outlive their source clause list or cache lookup.
@@ -485,7 +628,7 @@ fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
     let first = args.next().ok_or(
-        "usage: rawmocs-mpfr-research [--node-budget=250000|--node-budget=1000000] [--indexed-unit-prop|--indexed-unit-prop-after-8192] [--shared-residual-key] [--fast-assign] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
+        "usage: rawmocs-mpfr-research [--node-budget=250000|--node-budget=1000000] [--indexed-unit-prop|--indexed-unit-prop-after-8192|--watched-unit-prop|--watched-unit-prop-after-8192] [--shared-residual-key] [--fast-assign] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
     )?;
     // Explicit finite research-only node limits, untouched default.
     let node_budget = match first.to_str() {
@@ -502,11 +645,16 @@ fn run() -> Result<(), String> {
         algorithm_start.to_str(),
         Some("--indexed-unit-prop" | "--indexed-unit-prop-after-8192")
     );
-    let indexed_activation_node = if algorithm_start.to_str() == Some("--indexed-unit-prop-after-8192") {
-        8192
-    } else { 0 };
-    let storage_start = if indexed_unit_propagation {
-        args.next().ok_or("missing arguments after --indexed-unit-prop")?
+    let watched_unit_propagation = matches!(
+        algorithm_start.to_str(),
+        Some("--watched-unit-prop" | "--watched-unit-prop-after-8192")
+    );
+    let indexed_activation_node = if matches!(
+        algorithm_start.to_str(),
+        Some("--indexed-unit-prop-after-8192" | "--watched-unit-prop-after-8192")
+    ) { 8192 } else { 0 };
+    let storage_start = if indexed_unit_propagation || watched_unit_propagation {
+        args.next().ok_or("missing arguments after unit propagation mode")?
     } else {
         algorithm_start
     };
@@ -554,6 +702,7 @@ fn run() -> Result<(), String> {
     engine.shared_residual_key = shared_residual_key;
     engine.node_budget = node_budget;
     engine.indexed_unit_propagation = indexed_unit_propagation;
+    engine.watched_unit_propagation = watched_unit_propagation;
     engine.indexed_activation_node = indexed_activation_node;
     let answer = engine.count(p.clauses.clone(), (1..=p.n).collect(), 0)?;
     let solve_ns = t2.elapsed().as_nanos();
@@ -571,6 +720,7 @@ fn run() -> Result<(), String> {
     eprintln!("RESEARCH_MPFR_SHARED_RESIDUAL enabled={} entries={}",
         shared_residual_key, engine.shared_cache.len());
     eprintln!("RESEARCH_MPFR_UNIT_PROP_INDEXED enabled={indexed_unit_propagation} activation_node={indexed_activation_node}");
+    eprintln!("RESEARCH_MPFR_UNIT_PROP_WATCHED enabled={watched_unit_propagation} activation_node={indexed_activation_node}");
     Ok(())
 }
 fn main() {
@@ -802,10 +952,81 @@ mod tests {
                     (candidate.stats.nodes, candidate.stats.cache_hits, candidate.stats.decompositions),
                     "unchanged search topology for {case}, {bits}"
                 );
+                let mut watched = Engine::new(&p, bits, CachePolicy::HbBorrowed);
+                watched.fast_assign = true;
+                watched.shared_residual_key = true;
+                watched.watched_unit_propagation = true;
+                let answer = watched.count(p.clauses.clone(), (1..=5).collect(), 0).unwrap();
+                assert_eq!((answer.sat, answer.count.re, answer.count.im),
+                           (expected.sat, expected.count.re, expected.count.im),
+                           "watched parity for {case}, {bits}");
+                assert_eq!(
+                    (watched.stats.nodes, watched.stats.cache_hits, watched.stats.decompositions),
+                    (baseline.stats.nodes, baseline.stats.cache_hits, baseline.stats.decompositions),
+                    "watched search topology for {case}, {bits}"
+                );
             }
         }
     }
 
+
+    #[test]
+    fn watched_unit_order_and_relocation_match_source_scanner() {
+        let source = concat!(
+            "p cnf 7 7\nc t wmc\n",
+            "c p weight 1 0.11 0.21 0\nc p weight -1 0.4 0 0\n",
+            "c p weight 2 0.33 -0.3 0\nc p weight -2 -0.4 0.1 0\n",
+            "c p weight 3 0.51 0.13 0\nc p weight -3 0.19 0.13 0\n",
+            "1 2 3 0\n-1 4 0\n-4 5 0\n-5 6 0\n",
+            "-6 7 0\n-7 0\n2 3 0\n"
+        );
+        for bits in [100_u32, 333_u32] {
+            let p = parse_emitted(source, bits).unwrap();
+            let canonical = normalize(p.clauses.clone());
+            let mut expected = canonical.clone();
+            let mut scope = (1..=p.n).collect::<Vec<_>>();
+            let mut ref_prefix = C::one(bits);
+            loop {
+                if expected.iter().any(Vec::is_empty) { break; }
+                let Some(lit) = expected.iter().find(|c| c.len() == 1).map(|c| c[0]) else { break; };
+                let v = lit.unsigned_abs() as usize;
+                let w = &p.weights[v-1];
+                ref_prefix = ref_prefix.mul(if lit > 0 { &w.positive } else { &w.negative }, bits);
+                scope.retain(|&x| x != v);
+                expected = assign_fast(&expected, lit);
+            }
+            let mut watched_scope = (1..=p.n).collect::<Vec<_>>();
+            let mut watched_prefix = C::one(bits);
+            let observed = unit_propagate_watched(
+                &canonical, p.n, &p.weights, bits, &mut watched_scope, &mut watched_prefix
+            ).unwrap();
+            assert_eq!(observed, expected);
+            assert_eq!(watched_scope, scope);
+            assert_eq!(watched_prefix.re, ref_prefix.re);
+            assert_eq!(watched_prefix.im, ref_prefix.im);
+        }
+    }
+    #[test]
+    fn watched_handles_opposing_units_and_sat_zero() {
+        for bits in [100_u32, 333_u32] {
+            let unsat = parse_emitted("p cnf 2 2\nc t wmc\n1 0\n-1 0\n", bits).unwrap();
+            let mut scope = vec![1, 2];
+            let mut prefix = C::one(bits);
+            assert!(unit_propagate_watched(
+                &normalize(unsat.clauses), unsat.n, &unsat.weights, bits, &mut scope, &mut prefix
+            ).is_none());
+            let zero = parse_emitted(
+                "p cnf 2 1\nc t wmc\nc p weight 1 0 0 0\nc p weight -1 0 0 0\n1 0\n", bits
+            ).unwrap();
+            let mut engine = Engine::new(&zero, bits, CachePolicy::HbBorrowed);
+            engine.fast_assign = true;
+            engine.watched_unit_propagation = true;
+            let out = engine.count(zero.clauses.clone(), vec![1, 2], 0).unwrap();
+            assert!(out.sat);
+            assert_eq!(out.count.re, 0);
+            assert_eq!(out.count.im, 0);
+        }
+    }
     #[test]
     fn node_budget_is_bounded_and_default_is_unchanged() {
         let p = parse_emitted("p cnf 2 1\nc t wmc\n1 2 0\n", 100).unwrap();

@@ -30,11 +30,11 @@ def main() -> None:
     ap.add_argument("--corpus", type=Path, required=True)
     ap.add_argument("--gpmc", type=Path, required=True)
     ap.add_argument("--mpfr", type=Path, required=True)
-    ap.add_argument("--trials", type=int, default=5)
+    ap.add_argument("--trials", type=int, default=7)
     ap.add_argument("--report", type=Path, required=True)
     args = ap.parse_args()
-    if args.trials != 5:
-        raise SystemExit("research cohort requires five rotating independent trials")
+    if args.trials != len(ARMS):
+        raise SystemExit("factorial requires one full seven-arm rotation for balanced trial positions")
     scout = json.loads(args.scout_report.read_text(encoding="utf8"))
     node = json.loads(args.node_report.read_text(encoding="utf8"))
     if scout["quprs_source_sha"] != SOURCE_SHA or node["source_quprs_sha"] != SOURCE_SHA:
@@ -54,7 +54,7 @@ def main() -> None:
         "source_gpmc_sha": GPMC_SHA,
         "numeric_contract": "GPMC/Rust equal 100/333-bit MPFR; exact full Rust stdout; CSR/indexed tree parity within each capacity; cache may reduce nodes; 8192-node gate unchanged",
         "factors": {"propagation": ["indexed", "csr"], "cache_limits": [10000, 25000, 50000]},
-        "sampling": "five fresh processes per arm, rotated by trial within each original source and MPFR precision",
+        "sampling": "seven fresh processes per arm, one complete balanced seven-arm rotation within each original source and MPFR precision",
         "bounds": "30s/2GiB per native solver process, finite node caps only",
         "precision_caveat": "no independent exact Full WMC certificate for these >17-variable source CNFs; cross-solver agreement only",
         "Grover5": {"status": "CENSORED_NODE_BUDGET_AT_1000000", "variables": 607, "no_rank": True},

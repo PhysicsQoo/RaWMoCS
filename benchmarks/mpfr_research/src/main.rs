@@ -150,6 +150,8 @@ struct Engine<'a> {
     shared_residual_key: bool,
     packed_residual_key: bool,
     packed_fast_admission: bool,
+    packed_hash_only: bool,
+    packed_bypass_only: bool,
     cache_limit: usize,
     stats: Stats,
     fast_assign: bool,
@@ -164,7 +166,8 @@ impl<'a> Engine<'a> {
             p, bits, cache: StdHashMap::new(), hb_cache: HbHashMap::new(),
             shared_cache: HbHashMap::new(), packed_cache: HbHashMap::new(),
             cache_policy, shared_residual_key: false, packed_residual_key: false,
-            packed_fast_admission: false, cache_limit: 10_000,
+            packed_fast_admission: false, packed_hash_only: false,
+            packed_bypass_only: false, cache_limit: 10_000,
             stats: Stats::default(), fast_assign: false, node_budget: 100_000,
             indexed_unit_propagation: false, indexed_activation_node: 0,
             indexed_unit_csr: false,
@@ -258,7 +261,8 @@ impl<'a> Engine<'a> {
                 self.stats.cache_hits += 1;
                 return Ok(hit.clone());
             }
-            if self.packed_fast_admission && self.packed_cache.len() >= self.cache_limit {
+            if (self.packed_fast_admission || self.packed_bypass_only)
+                && self.packed_cache.len() >= self.cache_limit {
                 self.stats.packed_full_misses += 1;
                 // Cache still must be probed for hits, but once full a miss
                 // can never be admitted. Avoid allocating Arc and key scope.
@@ -266,7 +270,7 @@ impl<'a> Engine<'a> {
             } else {
                 let shared = Arc::new(canonical);
                 let key = SharedKey { scope: scope.clone(), clauses: Arc::clone(&shared) };
-                if self.packed_fast_admission {
+                if self.packed_fast_admission || self.packed_hash_only {
                     (ResidualStorage::Shared(shared), StoredKey::PackedFast { source: key, hash })
                 } else {
                     (ResidualStorage::Shared(shared), StoredKey::Packed(key))
@@ -695,7 +699,7 @@ fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
     let first = args.next().ok_or(
-        "usage: rawmocs-mpfr-research [--node-budget=250000|--node-budget=1000000] [--cache-limit=25000|--cache-limit=50000|--cache-limit=100000] [--indexed-unit-prop|--indexed-unit-prop-after-8192|--indexed-unit-prop-csr|--indexed-unit-prop-csr-after-8192] [--shared-residual-key|--packed-residual-key|--packed-residual-key-fast] [--fast-assign] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
+        "usage: rawmocs-mpfr-research [--node-budget=250000|--node-budget=1000000] [--cache-limit=25000|--cache-limit=50000|--cache-limit=100000] [--indexed-unit-prop|--indexed-unit-prop-after-8192|--indexed-unit-prop-csr|--indexed-unit-prop-csr-after-8192] [--shared-residual-key|--packed-residual-key|--packed-residual-key-fast|--packed-residual-key-hash-only|--packed-residual-key-bypass-only] [--fast-assign] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
     )?;
     // Explicit finite research-only node limits, untouched default.
     let node_budget = match first.to_str() {
@@ -739,8 +743,12 @@ fn run() -> Result<(), String> {
     };
     let shared_residual_key = storage_start.to_str() == Some("--shared-residual-key");
     let packed_fast_admission = storage_start.to_str() == Some("--packed-residual-key-fast");
+    // Factor-isolating, opt-in research controls. Keep original Packed and
+    // combined Fast CLI semantics unchanged.
+    let packed_hash_only = storage_start.to_str() == Some("--packed-residual-key-hash-only");
+    let packed_bypass_only = storage_start.to_str() == Some("--packed-residual-key-bypass-only");
     let packed_residual_key = storage_start.to_str() == Some("--packed-residual-key")
-        || packed_fast_admission;
+        || packed_fast_admission || packed_hash_only || packed_bypass_only;
     let next = if shared_residual_key || packed_residual_key {
         args.next().ok_or("missing arguments after --shared-residual-key")?
     } else {
@@ -785,6 +793,8 @@ fn run() -> Result<(), String> {
     engine.shared_residual_key = shared_residual_key;
     engine.packed_residual_key = packed_residual_key;
     engine.packed_fast_admission = packed_fast_admission;
+    engine.packed_hash_only = packed_hash_only;
+    engine.packed_bypass_only = packed_bypass_only;
     engine.cache_limit = cache_limit;
     engine.node_budget = node_budget;
     engine.indexed_unit_propagation = indexed_unit_propagation;
@@ -810,6 +820,10 @@ fn run() -> Result<(), String> {
     eprintln!("RESEARCH_MPFR_PACKED_RESIDUAL enabled={} entries={}",
         packed_residual_key, engine.packed_cache.len());
     eprintln!("RESEARCH_MPFR_PACKED_FAST_ADMISSION enabled={packed_fast_admission} full_misses={}",
+        engine.stats.packed_full_misses);
+    eprintln!("RESEARCH_MPFR_PACKED_FACTOR_ABLATION reuse_hash={} bypass_full_miss={} full_misses={}",
+        packed_fast_admission || packed_hash_only,
+        packed_fast_admission || packed_bypass_only,
         engine.stats.packed_full_misses);
     eprintln!("RESEARCH_MPFR_UNIT_PROP_INDEXED enabled={indexed_unit_propagation} activation_node={indexed_activation_node}");
     eprintln!("RESEARCH_MPFR_UNIT_PROP_CSR enabled={indexed_unit_csr} activation_node={indexed_activation_node}");
@@ -1397,6 +1411,62 @@ mod tests {
                     if capacity == 0 {
                         assert_eq!(candidate.stats.packed_full_misses, candidate.stats.nodes);
                         assert!(candidate.packed_cache.is_empty());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn packed_factor_ablation_modes_preserve_mpfr_sat_cache_and_search() {
+        // Small satisfiable, UNSAT and SAT-but-zero weighted controls.
+        let fixtures = [
+            "p cnf 4 3\nc t wmc\n1 2 0\n-1 3 0\n-3 4 0\n",
+            "p cnf 3 2\nc t wmc\n1 0\n-1 0\n",
+            "p cnf 2 1\nc t wmc\nc p weight 1 0 0 0\nc p weight -1 0 0 0\n1 0\n",
+        ];
+        for bits in [100_u32, 333_u32] {
+            for fixture in fixtures {
+                let p = parse_emitted(fixture, bits).unwrap();
+                for capacity in [0_usize, 1, 10, 10_000, 50_000] {
+                    let mut control = Engine::new(&p, bits, CachePolicy::HbBorrowed);
+                    control.fast_assign = true;
+                    control.packed_residual_key = true;
+                    control.indexed_unit_propagation = true;
+                    control.indexed_unit_csr = true;
+                    control.cache_limit = capacity;
+                    let expected = control.count(p.clauses.clone(), (1..=p.n).collect(), 0).unwrap();
+                    for (hash_only, bypass_only, fast) in [
+                        (true, false, false), (false, true, false), (false, false, true)
+                    ] {
+                        let mut candidate = Engine::new(&p, bits, CachePolicy::HbBorrowed);
+                        candidate.fast_assign = true;
+                        candidate.packed_residual_key = true;
+                        candidate.packed_hash_only = hash_only;
+                        candidate.packed_bypass_only = bypass_only;
+                        candidate.packed_fast_admission = fast;
+                        candidate.indexed_unit_propagation = true;
+                        candidate.indexed_unit_csr = true;
+                        candidate.cache_limit = capacity;
+                        let actual = candidate.count(p.clauses.clone(), (1..=p.n).collect(), 0).unwrap();
+                        assert_eq!(
+                            (actual.sat, &actual.count.re, &actual.count.im),
+                            (expected.sat, &expected.count.re, &expected.count.im),
+                            "bits={bits} capacity={capacity} hash_only={hash_only} bypass_only={bypass_only} fast={fast}"
+                        );
+                        assert_eq!(
+                            (candidate.stats.nodes, candidate.stats.cache_hits, candidate.stats.decompositions),
+                            (control.stats.nodes, control.stats.cache_hits, control.stats.decompositions),
+                            "search topology must not change"
+                        );
+                        assert_eq!(candidate.packed_cache.len(), control.packed_cache.len());
+                        assert!(candidate.packed_cache.len() <= capacity);
+                        if capacity == 0 && (bypass_only || fast) {
+                            assert_eq!(candidate.stats.packed_full_misses, candidate.stats.nodes);
+                        }
+                        if hash_only {
+                            assert_eq!(candidate.stats.packed_full_misses, 0);
+                        }
                     }
                 }
             }

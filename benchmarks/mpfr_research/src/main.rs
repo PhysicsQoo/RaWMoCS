@@ -96,6 +96,7 @@ struct Engine<'a> {
     shared_cache: HbHashMap<SharedKey, Outcome>,
     cache_policy: CachePolicy,
     shared_residual_key: bool,
+    cache_limit: usize,
     stats: Stats,
     fast_assign: bool,
     node_budget: u64,
@@ -108,7 +109,7 @@ impl<'a> Engine<'a> {
         Engine {
             p, bits, cache: StdHashMap::new(), hb_cache: HbHashMap::new(),
             shared_cache: HbHashMap::new(),
-            cache_policy, shared_residual_key: false,
+            cache_policy, shared_residual_key: false, cache_limit: 10_000,
             stats: Stats::default(), fast_assign: false, node_budget: 100_000,
             indexed_unit_propagation: false, indexed_activation_node: 0,
             indexed_unit_csr: false,
@@ -134,16 +135,16 @@ impl<'a> Engine<'a> {
     fn save(&mut self, key: StoredKey, result: Outcome) -> Outcome {
         match key {
             StoredKey::Owned(key) => match self.cache_policy {
-                CachePolicy::StdOwned if self.cache.len() < 10_000 => {
+                CachePolicy::StdOwned if self.cache.len() < self.cache_limit => {
                     self.cache.insert(key, result.clone());
                 }
-                CachePolicy::HbOwned | CachePolicy::HbBorrowed if self.hb_cache.len() < 10_000 => {
+                CachePolicy::HbOwned | CachePolicy::HbBorrowed if self.hb_cache.len() < self.cache_limit => {
                     self.hb_cache.insert(key, result.clone());
                 }
                 _ => {}
             },
             StoredKey::Shared(key) => {
-                if self.shared_cache.len() < 10_000 {
+                if self.shared_cache.len() < self.cache_limit {
                     self.shared_cache.insert(key, result.clone());
                 }
             }
@@ -582,7 +583,7 @@ fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
     let first = args.next().ok_or(
-        "usage: rawmocs-mpfr-research [--node-budget=250000|--node-budget=1000000] [--indexed-unit-prop|--indexed-unit-prop-after-8192|--indexed-unit-prop-csr|--indexed-unit-prop-csr-after-8192] [--shared-residual-key] [--fast-assign] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
+        "usage: rawmocs-mpfr-research [--node-budget=250000|--node-budget=1000000] [--cache-limit=25000|--cache-limit=50000|--cache-limit=100000] [--indexed-unit-prop|--indexed-unit-prop-after-8192|--indexed-unit-prop-csr|--indexed-unit-prop-csr-after-8192] [--shared-residual-key] [--fast-assign] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
     )?;
     // Explicit finite research-only node limits, untouched default.
     let node_budget = match first.to_str() {
@@ -595,6 +596,17 @@ fn run() -> Result<(), String> {
     } else {
         first
     };
+    // Finite research-only limits. The production and default MPFR
+    // 10,000-entry cache policy is unchanged.
+    let cache_limit = match algorithm_start.to_str() {
+        Some("--cache-limit=25000") => 25_000,
+        Some("--cache-limit=50000") => 50_000,
+        Some("--cache-limit=100000") => 100_000,
+        _ => 10_000,
+    };
+    let algorithm_start = if cache_limit != 10_000 {
+        args.next().ok_or("missing arguments after bounded cache limit")?
+    } else { algorithm_start };
     let indexed_unit_propagation = matches!(
         algorithm_start.to_str(),
         Some("--indexed-unit-prop" | "--indexed-unit-prop-after-8192"
@@ -655,6 +667,7 @@ fn run() -> Result<(), String> {
     let mut engine = Engine::new(&p, bits, cache_policy);
     engine.fast_assign = fast_assign;
     engine.shared_residual_key = shared_residual_key;
+    engine.cache_limit = cache_limit;
     engine.node_budget = node_budget;
     engine.indexed_unit_propagation = indexed_unit_propagation;
     engine.indexed_unit_csr = indexed_unit_csr;
@@ -674,6 +687,8 @@ fn run() -> Result<(), String> {
     eprintln!("RESEARCH_MPFR_CACHE_POLICY {}", cache_policy.label());
     eprintln!("RESEARCH_MPFR_SHARED_RESIDUAL enabled={} entries={}",
         shared_residual_key, engine.shared_cache.len());
+    eprintln!("RESEARCH_MPFR_CACHE_LIMIT capacity={} shared_entries={} owned_entries={}",
+        cache_limit, engine.shared_cache.len(), engine.hb_cache.len() + engine.cache.len());
     eprintln!("RESEARCH_MPFR_UNIT_PROP_INDEXED enabled={indexed_unit_propagation} activation_node={indexed_activation_node}");
     eprintln!("RESEARCH_MPFR_UNIT_PROP_CSR enabled={indexed_unit_csr} activation_node={indexed_activation_node}");
     Ok(())
@@ -925,6 +940,54 @@ mod tests {
         }
     }
 
+    #[test]
+    fn bounded_cache_admission_never_exceeds_capacity() {
+        let p = parse_emitted("p cnf 3 0\nc t wmc\n", 100).unwrap();
+        let mut engine = Engine::new(&p, 100, CachePolicy::HbBorrowed);
+        assert_eq!(engine.cache_limit, 10_000);
+        engine.cache_limit = 2;
+        let mut seen = Vec::new();
+        for n in 1..=4 {
+            let result = engine.save(
+                StoredKey::Shared(SharedKey {
+                    scope: vec![n], clauses: Arc::new(vec![vec![n as i32]])
+                }),
+                Outcome { sat: true, count: C::one(100) }
+            );
+            seen.push(result.sat);
+        }
+        assert_eq!(seen, vec![true, true, true, true]);
+        assert_eq!(engine.shared_cache.len(), 2);
+    }
+
+    #[test]
+    fn bounded_cache_variants_preserve_complete_mpfr_wmc() {
+        let source = concat!(
+            "p cnf 6 7\nc t wmc\n",
+            "c p weight 1 0.3 0.1 0\nc p weight -1 -0.2 0.4 0\n",
+            "c p weight 2 0.6 -0.1 0\nc p weight -2 0.2 0.3 0\n",
+            "1 2 0\n-1 3 0\n-2 4 0\n3 5 0\n",
+            "-3 6 0\n-4 -5 0\n-5 -6 0\n"
+        );
+        for bits in [100_u32, 333_u32] {
+            let p = parse_emitted(source, bits).unwrap();
+            let mut expected = None;
+            for capacity in [1_usize, 10_000, 25_000, 50_000, 100_000] {
+                let mut engine = Engine::new(&p, bits, CachePolicy::HbBorrowed);
+                engine.fast_assign = true;
+                engine.shared_residual_key = true;
+                engine.indexed_unit_propagation = true;
+                engine.indexed_activation_node = 8192;
+                engine.cache_limit = capacity;
+                let answer = engine.count(p.clauses.clone(), (1..=p.n).collect(), 0).unwrap();
+                let result = (answer.sat, answer.count.re, answer.count.im);
+                if let Some(ref witness) = expected {
+                    assert_eq!(&result, witness, "cache limit {capacity} at {bits} bits");
+                } else { expected = Some(result); }
+                assert!(engine.shared_cache.len() <= capacity);
+            }
+        }
+    }
 
     #[test]
     fn csr_occurrences_preserve_source_unit_order_and_mpfr() {

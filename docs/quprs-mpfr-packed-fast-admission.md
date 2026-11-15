@@ -76,7 +76,7 @@ per-entry exact key equality despite the raw-entry hash reuse.
   `SOLVER_AGREEMENT_ONLY`, not independently certified
   exact Full WMC / quantum phase equivalence.
 
-## First native qualification
+## Two independent native qualifications
 
 [GitHub Actions #43685451755](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/43685451755)
 at head `88a9c86963aa6066946bc00d236cb2514d69a54d`
@@ -108,8 +108,42 @@ mechanism.
 At HWB6 25k, the optimized mode reduces measured solve-only
 time by about **3.2–3.3%**; at 50k by **3.5%** for both precision
 groups. The full native WallTime moves in the same direction,
-unlike the earlier isolated Packed key redesign. A single
-cohort does not establish stable gains across all machines.
+unlike the earlier isolated Packed key redesign. A second
+independent source-locked cohort reproduced the direction of
+the solve-only and native WallTime improvements. These
+same-source, same-precision results do not establish a
+universal speedup on other hardware or source families.
+
+### Independent replication on the same code
+
+[GitHub Actions #43686602981](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/43686602981)
+at PR HEAD `7d43e999e73334547bb1c2c82e2567fef9a25fea`
+successfully repeated **24/24 MPFR Rust tests**, all six
+original source × precision comparisons, and every CI
+workflow. Only this research document changed since the first
+code-validated HEAD; the algorithm itself did not.
+
+| Bits | Cache | Packed solve | Fast solve | Packed WallTime | Fast WallTime |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 100 | 10k | 1283.137 | 1282.322 | 1293.188 | 1292.118 |
+| 100 | 25k | 1022.332 | **999.079** | 1042.799 | **1015.647** |
+| 100 | 50k | 931.788 | **901.643** | 955.045 | **926.191** |
+| 333 | 10k | 1413.966 | **1342.422** | 1425.632 | **1353.631** |
+| 333 | 25k | 1098.142 | **1063.387** | 1117.152 | **1080.737** |
+| 333 | 50k | 995.119 | **964.714** | 1018.333 | **990.866** |
+
+The replication maintains identical 25k/50k search trees and
+full complex WMC output across Packed/Fast. At 100-bit 50k,
+Fast measured 71,336 KiB native peak RSS vs Packed 71,352
+KiB; at 333-bit 50k, 74,260 vs 74,288 KiB. The tiny
+differences are not evidence of memory improvement or
+regression. Original Barenco and ModMult also repeated their
+solve-only reduction, without changing DPLL topology.
+
+The same-runner unchanged native GPMC C++ WallTime was
+**228.573 ms (100-bit) / 253.887 ms (333-bit)**, compared
+with Fast50k's **926.191 / 990.866 ms**. GPMC remains the
+faster source-locked, equal-MPFR implementation on HWB6.
 
 The 25k / 50k search trees are exactly **151,245 / 94,209
 DPLL nodes**, with identical Cache hit and component split
@@ -159,13 +193,16 @@ and against source-pinned GPMC C++ using matched precision.
 
 ## Scientific decision
 
-Retain Fast Admission as an **opt-in research candidate**.
-This first qualification establishes a real solve-only
-improvement at fixed MPFR precision on the original Feynman
-source cohorts; it does not justify a production default
-change. Repeat an independent native cohort before
-promoting any configuration further. The subsequent
-research priority is separate-factor attribution for
-hash reuse versus cache-full allocations, and then
-persistent original clause storage / reversible assignment
-trails to reduce the much larger remaining GPMC gap.
+Retain Fast Admission as an **opt-in, independently replicated
+research optimization**. Both separate native CI cohorts
+establish a ~2–3.5% solve-only improvement at 25k/50k on the
+original HWB6 source at identical 100/333-bit MPFR precision.
+This does **not** justify changing the production default,
+nor does it close the large gap to GPMC C++.
+
+The next research priority is to separately attribute the
+hash-reuse and cache-full allocation-bypass contributions,
+then investigate persistent original-clause storage and
+reversible assignment trails, with exact source, numeric and
+resource admission. Avoid inferring general multi-circuit
+performance from a single large source family.

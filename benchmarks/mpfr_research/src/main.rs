@@ -715,9 +715,7 @@ fn split_components(
 fn split_components_flat(
     clauses: &[Clause], scope: &[usize], parent: &mut [usize], slots: &mut [usize]
 ) -> Option<Vec<(Vec<Clause>, Vec<usize>)>> {
-    let mut roots: Vec<usize> = scope.iter()
-        .map(|&v| root(parent, v)).collect();
-    if roots.is_empty() { return None; }
+    if scope.is_empty() { return None; }
     for clause in clauses {
         let first = clause[0].unsigned_abs() as usize;
         for &lit in &clause[1..] {
@@ -726,10 +724,10 @@ fn split_components_flat(
             parent[b] = a;
         }
     }
-    // Recompute after union: group identities must reflect all clauses.
-    for (dst, &var) in roots.iter_mut().zip(scope.iter()) {
-        *dst = root(parent, var);
-    }
+    // Resolve each active scope root only AFTER unioning all clauses.
+    // Sorted roots reproduce BTreeMap::into_values() evaluation order.
+    let mut roots: Vec<usize> = scope.iter()
+        .map(|&var| root(parent, var)).collect();
     roots.sort_unstable();
     roots.dedup();
     if roots.len() == 1 { return None; }

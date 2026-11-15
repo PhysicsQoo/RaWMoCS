@@ -53,10 +53,12 @@ checks out exact source commits and invokes
   **identical clauses and exact printed weights**, and matching phase
   sidecars before running either solver.
 * Fresh native same-runner processes compare GPMC C++ vs the original
-  packed Cache and prior combined Fast solver at **100 and 333 MPFR
-  mantissa bits**. Both Rust arms use 50k Cache entries, the same CSR
-  unit propagation, and bounded 1M DPLL nodes.
-* Three order-balanced trial rotations per eligible source/precision
+  packed Cache, prior combined Fast solver, and optional Fast + reusable
+  DPLL frequency scratch at **100 and 333 MPFR mantissa bits**. All
+  three Rust arms use 50k Cache entries, the same CSR unit propagation,
+  and bounded 1M DPLL nodes. The opt-in scratch CLI flag is added
+  only in its own arm, preserving all existing control behavior.
+* Four order-balanced trial rotations per eligible source/precision
   pair; trials exceeding the pilot 10-second full-process threshold
   are explicitly marked as exploratory and **not performance ranked**.
   Individual native executions are capped at 30 seconds/2 GiB.
@@ -72,7 +74,7 @@ checks out exact source commits and invokes
   Report Rust solve-only separately from GPMC/Rust full-process
   WallTime and peak RSS.
 * Fail the workflow if no MQT input achieves a full qualified
-  three-arm comparison or if any numeric/structural failure occurs.
+  four-arm comparison or if any numeric/structural failure occurs.
   Export failures and independent process timeouts remain documented
   as censored observations, never reinterpreted as speed advantages.
 
@@ -108,3 +110,20 @@ full stdout bytes must still match. At MPFR333 bits this VQE source
 already passed the original numeric gate. The earlier failing job is
 retained as evidence; a new source-locked CI run must pass before
 merging these changes.
+
+## Cross-corpus validation of the optional DPLL scratch optimization
+
+A follow-up controlled study adds `scratch` as a fourth native arm.
+It is identical to Fast except for `--reuse-frequency-scratch`.
+The original Packed/Fast arms remain unchanged; all four arms are
+order-balanced in four fresh subprocess trials. The same MQT QASM and
+emitted CNF source SHA, MPFR precision, search topology, Rust complete
+complex output, and GPMC numeric reference must hold across **all**
+three Rust arms before any speedup is reported.
+
+For each MQT/precision pair, paired Fast-to-scratch solve-only and
+full-process WallTime ratios are recorded separately alongside all
+individual samples, RSS and exact numerical witnesses. The earlier
+source-locked MQT result at 7 circuits × 2 precisions is preserved,
+and any regression or low-millisecond start-up noise remains visible.
+This benchmark does not itself change the production solver default.

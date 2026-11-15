@@ -121,6 +121,8 @@ def main() -> None:
                     row["status"] = "FAIL_SAT_DISAGREEMENT"
                 elif len(hashes) != 1:
                     row["status"] = "FAIL_RUST_FULL_OUTPUT_PARITY"
+                elif any(s.get("engine_drop_ns") is None for s in rust):
+                    row["status"] = "FAIL_MISSING_EXPLICIT_ENGINE_TEARDOWN_TIMING"
                 elif any(len(stats) != 1 or None in next(iter(stats)) for stats in stats_by_arm.values()):
                     row["status"] = "FAIL_NONDETERMINISTIC_OR_MISSING_SEARCH_STATS"
                 elif any(
@@ -154,6 +156,10 @@ def main() -> None:
                     }
                     row["rust_solve_ns_median"] = {
                         arm: statistics.median(s["solve_ns"] for s in rust if s["arm"] == arm)
+                        for arm in ARMS[1:]
+                    }
+                    row["rust_engine_drop_ns_median"] = {
+                        arm: statistics.median(s["engine_drop_ns"] for s in rust if s["arm"] == arm)
                         for arm in ARMS[1:]
                     }
                     row["baseline_over_arm"] = {
@@ -235,6 +241,10 @@ def main() -> None:
                         )
                         + " " + " ".join(
                             f"{arm}_solve_ms={row['rust_solve_ns_median'][arm]/1e6:.3f}"
+                            for arm in ARMS[1:]
+                        )
+                        + " " + " ".join(
+                            f"{arm}_drop_ms={row['rust_engine_drop_ns_median'][arm]/1e6:.3f}"
                             for arm in ARMS[1:]
                         )
                         + " " + " ".join(

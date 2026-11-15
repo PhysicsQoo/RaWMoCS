@@ -102,6 +102,7 @@ struct Engine<'a> {
     node_budget: u64,
     indexed_unit_propagation: bool,
     indexed_activation_node: u64,
+    indexed_unit_csr: bool,
 }
 impl<'a> Engine<'a> {
     fn new(p: &'a Problem, bits: u32, cache_policy: CachePolicy) -> Engine<'a> {
@@ -111,6 +112,7 @@ impl<'a> Engine<'a> {
             cache_policy, shared_residual_key: false, cache_limit: 10_000,
             stats: Stats::default(), fast_assign: false, node_budget: 100_000,
             indexed_unit_propagation: false, indexed_activation_node: 0,
+            indexed_unit_csr: false,
         }
     }
     fn borrowed_key_hash(&self, scope: &[usize], residual: &[Clause]) -> u64 {
@@ -207,9 +209,16 @@ impl<'a> Engine<'a> {
         if self.indexed_unit_propagation &&
             self.stats.nodes >= self.indexed_activation_node &&
             residual.iter().any(|c| c.len() == 1) {
-            let Some(reduced) = unit_propagate_indexed(
-                &residual, self.p.n, &self.p.weights, self.bits, &mut remaining, &mut prefix
-            ) else {
+            let reduced = if self.indexed_unit_csr {
+                unit_propagate_indexed_csr(
+                    &residual, self.p.n, &self.p.weights, self.bits, &mut remaining, &mut prefix
+                )
+            } else {
+                unit_propagate_indexed(
+                    &residual, self.p.n, &self.p.weights, self.bits, &mut remaining, &mut prefix
+                )
+            };
+            let Some(reduced) = reduced else {
                 return Ok(self.save(key, Outcome::unsat(self.bits)));
             };
             residual = ResidualStorage::Owned(reduced);
@@ -285,6 +294,94 @@ impl<'a> Engine<'a> {
         }))
     }
 }
+/// A single CSR occurrence arena replaces thousands of per-literal Vec
+/// allocations. Offsets address both polarities of each numbered variable.
+fn occurrence_slot(lit: i32) -> usize {
+    2 * (lit.unsigned_abs() as usize) + usize::from(lit < 0)
+}
+
+/// Source-order-preserving CSR variant of local occurrence-indexed propagation.
+///
+/// Construct counts and prefix offsets in one pass, then fill a contiguous
+/// clause-ID array in ascending original clause order. The min-heap and all
+/// assignments preserve the original clause-index and individually rounded
+/// complex MPFR weight order. Boolean conflict remains separate from
+/// numerical zero WMC. No CSR arena survives its residual node.
+fn unit_propagate_indexed_csr(
+    clauses: &[Clause],
+    variables: usize,
+    weights: &[Weights],
+    bits: u32,
+    remaining: &mut Vec<usize>,
+    prefix: &mut C,
+) -> Option<Vec<Clause>> {
+    let slots = 2 * (variables + 1);
+    let mut occurrence_counts = vec![0_usize; slots];
+    let mut lengths = Vec::with_capacity(clauses.len());
+    let mut alive = vec![true; clauses.len()];
+    let mut unit = BinaryHeap::<Reverse<usize>>::new();
+    let mut assignments = vec![0_i8; variables + 1];
+    for (cid, clause) in clauses.iter().enumerate() {
+        if clause.is_empty() { return None; }
+        lengths.push(clause.len());
+        if clause.len() == 1 { unit.push(Reverse(cid)); }
+        for &lit in clause { occurrence_counts[occurrence_slot(lit)] += 1; }
+    }
+    let mut offsets = Vec::with_capacity(slots + 1);
+    offsets.push(0_usize);
+    for &count in &occurrence_counts {
+        offsets.push(offsets.last().copied().unwrap() + count);
+    }
+    let mut cursors = offsets[..slots].to_vec();
+    let mut indices = vec![0_usize; offsets[slots]];
+    for (cid, clause) in clauses.iter().enumerate() {
+        for &lit in clause {
+            let slot = occurrence_slot(lit);
+            indices[cursors[slot]] = cid;
+            cursors[slot] += 1;
+        }
+    }
+
+    while let Some(Reverse(cid)) = unit.pop() {
+        if !alive[cid] || lengths[cid] != 1 { continue; }
+        let lit = *clauses[cid].iter().find(|&&lit| {
+            assignments[lit.unsigned_abs() as usize] == 0
+        }).expect("active unit has one unassigned literal");
+        let var = lit.unsigned_abs() as usize;
+        let side = usize::from(lit < 0);
+        let w = &weights[var - 1];
+        *prefix = prefix.mul(if lit > 0 { &w.positive } else { &w.negative }, bits);
+        remaining.retain(|&v| v != var);
+        assignments[var] = if lit > 0 { 1 } else { -1 };
+
+        let satisfied_slot = 2 * var + side;
+        for &index in &indices[offsets[satisfied_slot]..offsets[satisfied_slot + 1]] {
+            alive[index] = false;
+        }
+        let falsified_slot = 2 * var + (1 - side);
+        for &index in &indices[offsets[falsified_slot]..offsets[falsified_slot + 1]] {
+            if !alive[index] { continue; }
+            lengths[index] -= 1;
+            if lengths[index] == 0 { return None; }
+            if lengths[index] == 1 { unit.push(Reverse(index)); }
+        }
+    }
+
+    let mut reduced = Vec::with_capacity(clauses.len());
+    for (cid, clause) in clauses.iter().enumerate() {
+        if !alive[cid] { continue; }
+        let mut next = Vec::with_capacity(lengths[cid]);
+        for &lit in clause {
+            if assignments[lit.unsigned_abs() as usize] == 0 {
+                next.push(lit);
+            }
+        }
+        debug_assert_eq!(next.len(), lengths[cid]);
+        reduced.push(next);
+    }
+    Some(reduced)
+}
+
 /// Research-only occurrence-indexed unit propagation within ONE normalized
 /// DPLL residual node. Unlike a global watched-literal index, these bounded
 /// local indices never outlive their source clause list or cache lookup.
@@ -486,7 +583,7 @@ fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
     let first = args.next().ok_or(
-        "usage: rawmocs-mpfr-research [--node-budget=250000|--node-budget=1000000] [--cache-limit=25000|--cache-limit=50000|--cache-limit=100000] [--indexed-unit-prop|--indexed-unit-prop-after-8192] [--shared-residual-key] [--fast-assign] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
+        "usage: rawmocs-mpfr-research [--node-budget=250000|--node-budget=1000000] [--cache-limit=25000|--cache-limit=50000|--cache-limit=100000] [--indexed-unit-prop|--indexed-unit-prop-after-8192|--indexed-unit-prop-csr|--indexed-unit-prop-csr-after-8192] [--shared-residual-key] [--fast-assign] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
     )?;
     // Explicit finite research-only node limits, untouched default.
     let node_budget = match first.to_str() {
@@ -512,11 +609,17 @@ fn run() -> Result<(), String> {
     } else { algorithm_start };
     let indexed_unit_propagation = matches!(
         algorithm_start.to_str(),
-        Some("--indexed-unit-prop" | "--indexed-unit-prop-after-8192")
+        Some("--indexed-unit-prop" | "--indexed-unit-prop-after-8192"
+            | "--indexed-unit-prop-csr" | "--indexed-unit-prop-csr-after-8192")
     );
-    let indexed_activation_node = if algorithm_start.to_str() == Some("--indexed-unit-prop-after-8192") {
-        8192
-    } else { 0 };
+    let indexed_unit_csr = matches!(
+        algorithm_start.to_str(),
+        Some("--indexed-unit-prop-csr" | "--indexed-unit-prop-csr-after-8192")
+    );
+    let indexed_activation_node = if matches!(
+        algorithm_start.to_str(),
+        Some("--indexed-unit-prop-after-8192" | "--indexed-unit-prop-csr-after-8192")
+    ) { 8192 } else { 0 };
     let storage_start = if indexed_unit_propagation {
         args.next().ok_or("missing arguments after --indexed-unit-prop")?
     } else {
@@ -567,6 +670,7 @@ fn run() -> Result<(), String> {
     engine.cache_limit = cache_limit;
     engine.node_budget = node_budget;
     engine.indexed_unit_propagation = indexed_unit_propagation;
+    engine.indexed_unit_csr = indexed_unit_csr;
     engine.indexed_activation_node = indexed_activation_node;
     let answer = engine.count(p.clauses.clone(), (1..=p.n).collect(), 0)?;
     let solve_ns = t2.elapsed().as_nanos();
@@ -586,6 +690,7 @@ fn run() -> Result<(), String> {
     eprintln!("RESEARCH_MPFR_CACHE_LIMIT capacity={} shared_entries={} owned_entries={}",
         cache_limit, engine.shared_cache.len(), engine.hb_cache.len() + engine.cache.len());
     eprintln!("RESEARCH_MPFR_UNIT_PROP_INDEXED enabled={indexed_unit_propagation} activation_node={indexed_activation_node}");
+    eprintln!("RESEARCH_MPFR_UNIT_PROP_CSR enabled={indexed_unit_csr} activation_node={indexed_activation_node}");
     Ok(())
 }
 fn main() {
@@ -809,13 +914,27 @@ mod tests {
                 candidate.shared_residual_key = true;
                 candidate.indexed_unit_propagation = true;
                 let observed = candidate.count(p.clauses.clone(), (1..=5).collect(), 0).unwrap();
-                assert_eq!((expected.sat, expected.count.re, expected.count.im),
-                           (observed.sat, observed.count.re, observed.count.im),
+                assert_eq!((expected.sat, &expected.count.re, &expected.count.im),
+                           (observed.sat, &observed.count.re, &observed.count.im),
                            "case {case}, bits {bits}");
                 assert_eq!(
                     (baseline.stats.nodes, baseline.stats.cache_hits, baseline.stats.decompositions),
                     (candidate.stats.nodes, candidate.stats.cache_hits, candidate.stats.decompositions),
                     "unchanged search topology for {case}, {bits}"
+                );
+                let mut csr = Engine::new(&p, bits, CachePolicy::HbBorrowed);
+                csr.fast_assign = true;
+                csr.shared_residual_key = true;
+                csr.indexed_unit_propagation = true;
+                csr.indexed_unit_csr = true;
+                let actual = csr.count(p.clauses.clone(), (1..=5).collect(), 0).unwrap();
+                assert_eq!((actual.sat, &actual.count.re, &actual.count.im),
+                           (expected.sat, &expected.count.re, &expected.count.im),
+                           "CSR numeric output parity for {case}, {bits}");
+                assert_eq!(
+                    (csr.stats.nodes, csr.stats.cache_hits, csr.stats.decompositions),
+                    (candidate.stats.nodes, candidate.stats.cache_hits, candidate.stats.decompositions),
+                    "CSR structural parity for {case}, {bits}"
                 );
             }
         }
@@ -870,6 +989,62 @@ mod tests {
         }
     }
 
+    #[test]
+    fn csr_occurrences_preserve_source_unit_order_and_mpfr() {
+        let source = concat!(
+            "p cnf 7 7\nc t wmc\n",
+            "c p weight 1 0.11 0.21 0\nc p weight -1 0.4 0 0\n",
+            "c p weight 2 0.33 -0.3 0\nc p weight -2 -0.4 0.1 0\n",
+            "c p weight 3 0.51 0.13 0\nc p weight -3 0.19 0.13 0\n",
+            "1 2 3 0\n-1 4 0\n-4 5 0\n-5 6 0\n",
+            "-6 7 0\n-7 0\n2 3 0\n"
+        );
+        for bits in [100_u32, 333_u32] {
+            let p = parse_emitted(source, bits).unwrap();
+            let residual = normalize(p.clauses.clone());
+            let mut control_scope = (1..=p.n).collect::<Vec<_>>();
+            let mut candidate_scope = control_scope.clone();
+            let mut control_prefix = C::one(bits);
+            let mut candidate_prefix = C::one(bits);
+            let control = unit_propagate_indexed(
+                &residual, p.n, &p.weights, bits, &mut control_scope, &mut control_prefix
+            );
+            let candidate = unit_propagate_indexed_csr(
+                &residual, p.n, &p.weights, bits, &mut candidate_scope, &mut candidate_prefix
+            );
+            assert_eq!(candidate, control);
+            assert_eq!(candidate_scope, control_scope);
+            assert_eq!(candidate_prefix.re, control_prefix.re);
+            assert_eq!(candidate_prefix.im, control_prefix.im);
+        }
+    }
+    #[test]
+    fn csr_search_parity_and_sat_zero_unsat_separation() {
+        let fixtures = [
+            "p cnf 3 2\nc t wmc\n1 0\n-1 0\n",
+            "p cnf 2 1\nc t wmc\nc p weight 1 0 0 0\nc p weight -1 0 0 0\n1 0\n",
+            "p cnf 6 4\nc t wmc\n1 2 0\n-1 3 0\n4 -5 0\n-4 6 0\n",
+        ];
+        for bits in [100_u32, 333_u32] {
+            for text in fixtures {
+                let p = parse_emitted(text, bits).unwrap();
+                let mut witness = None;
+                for csr in [false, true] {
+                    let mut engine = Engine::new(&p, bits, CachePolicy::HbBorrowed);
+                    engine.fast_assign = true;
+                    engine.shared_residual_key = true;
+                    engine.indexed_unit_propagation = true;
+                    engine.indexed_unit_csr = csr;
+                    let answer = engine.count(p.clauses.clone(), (1..=p.n).collect(), 0).unwrap();
+                    let value = (answer.sat, answer.count.re, answer.count.im,
+                        engine.stats.nodes, engine.stats.cache_hits, engine.stats.decompositions);
+                    if let Some(reference) = witness.take() {
+                        assert_eq!(value, reference);
+                    } else { witness = Some(value); }
+                }
+            }
+        }
+    }
     #[test]
     fn node_budget_is_bounded_and_default_is_unchanged() {
         let p = parse_emitted("p cnf 2 1\nc t wmc\n1 2 0\n", 100).unwrap();

@@ -112,7 +112,10 @@ impl Hash for PackedKey {
         debug_assert_eq!(start, self.literals.len());
     }
 }
-enum StoredKey { Owned(Key), Shared(SharedKey), Packed(SharedKey) }
+enum StoredKey {
+    Owned(Key), Shared(SharedKey), Packed(SharedKey),
+    PackedFast { source: SharedKey, hash: u64 }, NoCache,
+}
 enum ResidualStorage { Owned(Vec<Clause>), Shared(Arc<Vec<Clause>>) }
 impl Deref for ResidualStorage {
     type Target = Vec<Clause>;
@@ -124,7 +127,7 @@ impl Deref for ResidualStorage {
     }
 }
 #[derive(Default, Clone, Copy)]
-struct Stats { nodes: u64, cache_hits: u64, decompositions: u64 }
+struct Stats { nodes: u64, cache_hits: u64, decompositions: u64, packed_full_misses: u64 }
 #[derive(Clone, Copy, Debug)]
 enum CachePolicy { StdOwned, HbOwned, HbBorrowed }
 impl CachePolicy {
@@ -146,6 +149,7 @@ struct Engine<'a> {
     cache_policy: CachePolicy,
     shared_residual_key: bool,
     packed_residual_key: bool,
+    packed_fast_admission: bool,
     cache_limit: usize,
     stats: Stats,
     fast_assign: bool,
@@ -160,7 +164,7 @@ impl<'a> Engine<'a> {
             p, bits, cache: StdHashMap::new(), hb_cache: HbHashMap::new(),
             shared_cache: HbHashMap::new(), packed_cache: HbHashMap::new(),
             cache_policy, shared_residual_key: false, packed_residual_key: false,
-            cache_limit: 10_000,
+            packed_fast_admission: false, cache_limit: 10_000,
             stats: Stats::default(), fast_assign: false, node_budget: 100_000,
             indexed_unit_propagation: false, indexed_activation_node: 0,
             indexed_unit_csr: false,
@@ -206,13 +210,34 @@ impl<'a> Engine<'a> {
                 }
             }
             StoredKey::Packed(key) => {
-                // Only pack on *actual* admission. No flat key allocation
-                // occurs on a borrowed lookup hit or after capacity fills.
+                // Original packed control remains byte-for-byte unchanged.
                 if self.packed_cache.len() < self.cache_limit {
                     let key = PackedKey::from_residual(key.scope, key.clauses.as_slice());
                     self.packed_cache.insert(key, result.clone());
                 }
             }
+            StoredKey::PackedFast { source, hash } => {
+                if self.packed_cache.len() < self.cache_limit {
+                    let packed = PackedKey::from_residual(
+                        source.scope, source.clauses.as_slice()
+                    );
+                    // The miss was checked before recursion, but a child
+                    // could have inserted the same key. Resolve exact equality
+                    // here as well; never insert from hash alone.
+                    match self.packed_cache.raw_entry_mut()
+                        .from_hash(hash, |existing| existing == &packed) {
+                        hashbrown::hash_map::RawEntryMut::Occupied(mut occupied) => {
+                            occupied.insert(result.clone());
+                        }
+                        hashbrown::hash_map::RawEntryMut::Vacant(vacant) => {
+                            // Preserve the borrowed lookup hash, avoiding a
+                            // second complete nested-clause hash traversal.
+                            vacant.insert_hashed_nocheck(hash, packed, result.clone());
+                        }
+                    }
+                }
+            }
+            StoredKey::NoCache => {}
         }
         result
     }
@@ -233,9 +258,20 @@ impl<'a> Engine<'a> {
                 self.stats.cache_hits += 1;
                 return Ok(hit.clone());
             }
-            let shared = Arc::new(canonical);
-            let key = SharedKey { scope: scope.clone(), clauses: Arc::clone(&shared) };
-            (ResidualStorage::Shared(shared), StoredKey::Packed(key))
+            if self.packed_fast_admission && self.packed_cache.len() >= self.cache_limit {
+                self.stats.packed_full_misses += 1;
+                // Cache still must be probed for hits, but once full a miss
+                // can never be admitted. Avoid allocating Arc and key scope.
+                (ResidualStorage::Owned(canonical), StoredKey::NoCache)
+            } else {
+                let shared = Arc::new(canonical);
+                let key = SharedKey { scope: scope.clone(), clauses: Arc::clone(&shared) };
+                if self.packed_fast_admission {
+                    (ResidualStorage::Shared(shared), StoredKey::PackedFast { source: key, hash })
+                } else {
+                    (ResidualStorage::Shared(shared), StoredKey::Packed(key))
+                }
+            }
         } else if self.shared_residual_key {
             let hash = self.shared_key_hash(&scope, &canonical);
             if let Some((_, hit)) = self.shared_cache.raw_entry().from_hash(hash, |key| {
@@ -659,7 +695,7 @@ fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
     let first = args.next().ok_or(
-        "usage: rawmocs-mpfr-research [--node-budget=250000|--node-budget=1000000] [--cache-limit=25000|--cache-limit=50000|--cache-limit=100000] [--indexed-unit-prop|--indexed-unit-prop-after-8192|--indexed-unit-prop-csr|--indexed-unit-prop-csr-after-8192] [--shared-residual-key|--packed-residual-key] [--fast-assign] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
+        "usage: rawmocs-mpfr-research [--node-budget=250000|--node-budget=1000000] [--cache-limit=25000|--cache-limit=50000|--cache-limit=100000] [--indexed-unit-prop|--indexed-unit-prop-after-8192|--indexed-unit-prop-csr|--indexed-unit-prop-csr-after-8192] [--shared-residual-key|--packed-residual-key|--packed-residual-key-fast] [--fast-assign] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
     )?;
     // Explicit finite research-only node limits, untouched default.
     let node_budget = match first.to_str() {
@@ -702,7 +738,9 @@ fn run() -> Result<(), String> {
         algorithm_start
     };
     let shared_residual_key = storage_start.to_str() == Some("--shared-residual-key");
-    let packed_residual_key = storage_start.to_str() == Some("--packed-residual-key");
+    let packed_fast_admission = storage_start.to_str() == Some("--packed-residual-key-fast");
+    let packed_residual_key = storage_start.to_str() == Some("--packed-residual-key")
+        || packed_fast_admission;
     let next = if shared_residual_key || packed_residual_key {
         args.next().ok_or("missing arguments after --shared-residual-key")?
     } else {
@@ -746,6 +784,7 @@ fn run() -> Result<(), String> {
     engine.fast_assign = fast_assign;
     engine.shared_residual_key = shared_residual_key;
     engine.packed_residual_key = packed_residual_key;
+    engine.packed_fast_admission = packed_fast_admission;
     engine.cache_limit = cache_limit;
     engine.node_budget = node_budget;
     engine.indexed_unit_propagation = indexed_unit_propagation;
@@ -770,6 +809,8 @@ fn run() -> Result<(), String> {
         cache_limit, engine.shared_cache.len(), engine.hb_cache.len() + engine.cache.len());
     eprintln!("RESEARCH_MPFR_PACKED_RESIDUAL enabled={} entries={}",
         packed_residual_key, engine.packed_cache.len());
+    eprintln!("RESEARCH_MPFR_PACKED_FAST_ADMISSION enabled={packed_fast_admission} full_misses={}",
+        engine.stats.packed_full_misses);
     eprintln!("RESEARCH_MPFR_UNIT_PROP_INDEXED enabled={indexed_unit_propagation} activation_node={indexed_activation_node}");
     eprintln!("RESEARCH_MPFR_UNIT_PROP_CSR enabled={indexed_unit_csr} activation_node={indexed_activation_node}");
     // Native WallTime includes engine destruction, unlike solve_ns. Isolate
@@ -1302,6 +1343,79 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn packed_fast_admission_preserves_full_mpfr_and_search_counters() {
+        let mut seed = 0xfaca_de05_7a11_1234_u64;
+        for case in 0..96 {
+            let mut clauses = Vec::new();
+            for _ in 0..(4 + case % 10) {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let len = (seed as usize % 3) + 1;
+                let mut clause = Vec::new();
+                for _ in 0..len {
+                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    let var = (seed as usize % 6) + 1;
+                    clause.push(if seed & 0x400 == 0 { var as i32 } else { -(var as i32) });
+                }
+                clauses.push(clause);
+            }
+            for bits in [100_u32, 333_u32] {
+                let p = Problem {
+                    n: 6, clauses: clauses.clone(),
+                    weights: (0..6).map(|v| Weights {
+                        positive: C::decimal(bits, if v % 2 == 0 { "0.3" } else { "-0.2" }, "0.1").unwrap(),
+                        negative: C::decimal(bits, "0.25", "-0.5").unwrap(),
+                    }).collect(),
+                };
+                for capacity in [0_usize, 1, 10, 10_000, 50_000] {
+                    let mut control = Engine::new(&p, bits, CachePolicy::HbBorrowed);
+                    control.fast_assign = true;
+                    control.packed_residual_key = true;
+                    control.indexed_unit_propagation = true;
+                    control.indexed_unit_csr = true;
+                    control.cache_limit = capacity;
+                    let old = control.count(p.clauses.clone(), (1..=p.n).collect(), 0).unwrap();
+                    let mut candidate = Engine::new(&p, bits, CachePolicy::HbBorrowed);
+                    candidate.fast_assign = true;
+                    candidate.packed_residual_key = true;
+                    candidate.packed_fast_admission = true;
+                    candidate.indexed_unit_propagation = true;
+                    candidate.indexed_unit_csr = true;
+                    candidate.cache_limit = capacity;
+                    let new = candidate.count(p.clauses.clone(), (1..=p.n).collect(), 0).unwrap();
+                    assert_eq!((new.sat, &new.count.re, &new.count.im),
+                        (old.sat, &old.count.re, &old.count.im),
+                        "case={case} bits={bits} capacity={capacity}");
+                    assert_eq!(
+                        (candidate.stats.nodes, candidate.stats.cache_hits, candidate.stats.decompositions),
+                        (control.stats.nodes, control.stats.cache_hits, control.stats.decompositions),
+                        "same search topology for case={case} bits={bits} capacity={capacity}");
+                    assert_eq!(candidate.packed_cache.len(), control.packed_cache.len());
+                    assert!(candidate.packed_cache.len() <= capacity);
+                    if capacity == 0 {
+                        assert_eq!(candidate.stats.packed_full_misses, candidate.stats.nodes);
+                        assert!(candidate.packed_cache.is_empty());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn packed_fast_admission_never_hash_collides_to_false_cache_hit() {
+        let p = parse_emitted("p cnf 3 0\nc t wmc\n", 100).unwrap();
+        let scope = vec![1, 2, 3];
+        let clauses = vec![vec![1, -2], vec![3]];
+        let mut engine = Engine::new(&p, 100, CachePolicy::HbBorrowed);
+        let hash = engine.packed_key_hash(&scope, &clauses);
+        let key = PackedKey::from_residual(scope.clone(), &clauses);
+        engine.packed_cache.insert(key, Outcome { sat: true, count: C::one(100) });
+        let different = vec![vec![1], vec![-2, 3]];
+        assert!(engine.packed_cache.raw_entry().from_hash(hash, |candidate| {
+            candidate.matches_residual(&scope, &different)
+        }).is_none());
     }
 
     #[test]

@@ -15,7 +15,7 @@ import statistics
 import subprocess
 
 from quprs_encoder_validate import parse_cnf
-from quprs_long_feynman_pilot import native, numerically_agree, sha_file
+from quprs_long_feynman_pilot import native, sha_file
 
 QU_PRS_SHA = "0b28736651b3740ed3b201edd2efdef3da541e0d"
 GPMC_SHA = "89bbc89d0de918e7a5385740355df55765039230"
@@ -50,6 +50,32 @@ def invoke(case: str, digits: int, cnf: Path, budget: int, gpmc: Path, mpfr: Pat
     return result
 
 
+def complex_relative_witness(reference: dict, candidate: dict, digits: int) -> dict:
+    """Exact rational complex-parity witness; no binary float tolerance.
+
+    A tiny imaginary component must not be judged against an unrelated
+    absolute threshold when the same complex result has a much larger
+    real component. Apply the same decimal-relative guard to both
+    components, scaled by the maximum magnitude of EITHER component of
+    the complete complex output. Preserve absolute deltas in evidence.
+    """
+    gr, gi = Fraction(reference["real"]), Fraction(reference["imag"])
+    cr, ci = Fraction(candidate["real"]), Fraction(candidate["imag"])
+    scale = max(Fraction(1), abs(gr), abs(gi), abs(cr), abs(ci))
+    delta_real = abs(gr - cr)
+    delta_imag = abs(gi - ci)
+    relative = max(delta_real, delta_imag) / scale
+    guard = Fraction(1, 10 ** (digits - 6))
+    return {
+        "pass": relative <= guard,
+        "delta_real": str(delta_real),
+        "delta_imag": str(delta_imag),
+        "complex_component_scale": str(scale),
+        "max_scaled_component_delta": str(relative),
+        "relative_guard": f"1e-{digits - 6}",
+    }
+
+
 def certify(samples: list[dict], bits: int, digits: int) -> str:
     if any(s["status"] != "COMPLETED" for s in samples):
         return "CENSORED_NATIVE_OR_RESOURCE_LIMIT"
@@ -70,11 +96,7 @@ def certify(samples: list[dict], bits: int, digits: int) -> str:
         return "FAIL_DETERMINISTIC_SEARCH"
     if stats["packed"] != stats["fast"]:
         return "FAIL_SAME_CAP_SEARCH_TOPOLOGY"
-    if not all(
-        numerically_agree(Fraction(s["real"]), Fraction(gpmc[0]["real"]), digits)
-        and numerically_agree(Fraction(s["imag"]), Fraction(gpmc[0]["imag"]), digits)
-        for s in samples
-    ):
+    if not all(complex_relative_witness(gpmc[0], s, digits)["pass"] for s in samples):
         return "FAIL_EQUAL_MPFR_GPMC_NUMERIC"
     return "MATCHED_MPFR_SOURCE_AGREEMENT_ONLY"
 
@@ -169,6 +191,15 @@ def main() -> None:
                 status = "COMPLETED_SINGLE_TRIAL_NO_PERFORMANCE_RANK"
             result = {"digits": digits, "bits": bits, "status": status,
                       "completed_rotations": trial_count, "samples": samples}
+            if all(s["status"] == "COMPLETED" for s in samples):
+                gpmc_reference = next(s for s in samples if s["arm"] == "gpmc")
+                witnesses = [
+                    complex_relative_witness(gpmc_reference, s, digits)
+                    for s in samples if s["arm"] != "gpmc"
+                ]
+                result["worst_complex_numeric_witness"] = max(
+                    witnesses, key=lambda x: Fraction(x["max_scaled_component_delta"])
+                )
             if status == "MATCHED_MPFR_SOURCE_AGREEMENT_ONLY":
                 complete += 1
                 result["median_wall_ns"] = {

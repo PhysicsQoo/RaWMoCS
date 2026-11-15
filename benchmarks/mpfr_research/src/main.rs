@@ -161,6 +161,10 @@ struct Engine<'a> {
     indexed_unit_csr: bool,
     reuse_frequency_scratch: bool,
     frequency_scratch: Vec<usize>,
+    flat_component_groups: bool,
+    reuse_component_scratch: bool,
+    component_parent_scratch: Vec<usize>,
+    component_slot_scratch: Vec<usize>,
 }
 impl<'a> Engine<'a> {
     fn new(p: &'a Problem, bits: u32, cache_policy: CachePolicy) -> Engine<'a> {
@@ -175,6 +179,8 @@ impl<'a> Engine<'a> {
             indexed_unit_csr: false,
             reuse_frequency_scratch: false,
             frequency_scratch: vec![0; p.n + 1],
+            flat_component_groups: false, reuse_component_scratch: false,
+            component_parent_scratch: Vec::new(), component_slot_scratch: Vec::new(),
         }
     }
     fn borrowed_key_hash(&self, scope: &[usize], residual: &[Clause]) -> u64 {
@@ -388,7 +394,34 @@ impl<'a> Engine<'a> {
                 prefix = prefix.mul(&w.positive.add(&w.negative, self.bits), self.bits);
             }
         }
-        if let Some(pieces) = split_components(&residual, &active, self.p.n) {
+        // Flat-root grouping is opt-in research only. Restore any borrowed
+        // DSU workspaces before recursing into a component, so child calls
+        // can reuse the same allocation without affecting parent state.
+        let components = if self.flat_component_groups {
+            let mut parent = if self.reuse_component_scratch {
+                std::mem::take(&mut self.component_parent_scratch)
+            } else { Vec::new() };
+            let mut slots = if self.reuse_component_scratch {
+                std::mem::take(&mut self.component_slot_scratch)
+            } else { Vec::new() };
+            if parent.len() != self.p.n + 1 {
+                parent = (0..=self.p.n).collect();
+            } else {
+                for (index, value) in parent.iter_mut().enumerate() { *value = index; }
+            }
+            if slots.len() != self.p.n + 1 {
+                slots = vec![usize::MAX; self.p.n + 1];
+            }
+            let pieces = split_components_flat(&residual, &active, &mut parent, &mut slots);
+            if self.reuse_component_scratch {
+                self.component_parent_scratch = parent;
+                self.component_slot_scratch = slots;
+            }
+            pieces
+        } else {
+            split_components(&residual, &active, self.p.n)
+        };
+        if let Some(pieces) = components {
             if self.reuse_frequency_scratch {
                 // Recursion must receive an intact, zeroed scratch arena.
                 for &v in &active { frequency[v] = 0; }
@@ -670,6 +703,50 @@ fn split_components(
     }
     Some(groups.into_values().map(|(vars, cs)| (cs, vars)).collect())
 }
+/// Experimental, order-equivalent contiguous DSU component grouping.
+///
+/// Replaces BTreeMap's tree allocations with a sorted root list, a dense
+/// root->group index and adjacent component vectors. The ascending root
+/// ordering and the original scope/clause visitation order deliberately
+/// match split_components: MPFR multiplication order must not change.
+/// Caller resets `parent` to the identity before calling. `slots` may
+/// contain stale data for inactive roots; every accessed active root is
+/// overwritten at this invocation.
+fn split_components_flat(
+    clauses: &[Clause], scope: &[usize], parent: &mut [usize], slots: &mut [usize]
+) -> Option<Vec<(Vec<Clause>, Vec<usize>)>> {
+    let mut roots: Vec<usize> = scope.iter()
+        .map(|&v| root(parent, v)).collect();
+    if roots.is_empty() { return None; }
+    for clause in clauses {
+        let first = clause[0].unsigned_abs() as usize;
+        for &lit in &clause[1..] {
+            let a = root(parent, first);
+            let b = root(parent, lit.unsigned_abs() as usize);
+            parent[b] = a;
+        }
+    }
+    // Recompute after union: group identities must reflect all clauses.
+    for (dst, &var) in roots.iter_mut().zip(scope.iter()) {
+        *dst = root(parent, var);
+    }
+    roots.sort_unstable();
+    roots.dedup();
+    if roots.len() == 1 { return None; }
+    let mut groups: Vec<(Vec<usize>, Vec<Clause>)> = roots.iter()
+        .map(|_| (Vec::new(), Vec::new())).collect();
+    for (slot, &r) in roots.iter().enumerate() { slots[r] = slot; }
+    for &var in scope {
+        let slot = slots[root(parent, var)];
+        groups[slot].0.push(var);
+    }
+    for clause in clauses {
+        let slot = slots[root(parent, clause[0].unsigned_abs() as usize)];
+        groups[slot].1.push(clause.clone());
+    }
+    Some(groups.into_iter().map(|(vars, cls)| (cls, vars)).collect())
+}
+
 fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
     if raw.is_empty() || raw.len() > 2_000_000 { return Err("invalid source bytes".into()); }
     let mut lines = raw.lines().filter(|s| !s.trim().is_empty());
@@ -721,7 +798,7 @@ fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
     let first = args.next().ok_or(
-        "usage: rawmocs-mpfr-research [--node-budget=250000|--node-budget=1000000] [--cache-limit=25000|--cache-limit=50000|--cache-limit=100000] [--indexed-unit-prop|--indexed-unit-prop-after-8192|--indexed-unit-prop-csr|--indexed-unit-prop-csr-after-8192] [--shared-residual-key|--packed-residual-key|--packed-residual-key-fast|--packed-residual-key-hash-only|--packed-residual-key-bypass-only] [--fast-assign] [--reuse-frequency-scratch] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
+        "usage: rawmocs-mpfr-research [--node-budget=250000|--node-budget=1000000] [--cache-limit=25000|--cache-limit=50000|--cache-limit=100000] [--indexed-unit-prop|--indexed-unit-prop-after-8192|--indexed-unit-prop-csr|--indexed-unit-prop-csr-after-8192] [--shared-residual-key|--packed-residual-key|--packed-residual-key-fast|--packed-residual-key-hash-only|--packed-residual-key-bypass-only] [--fast-assign] [--reuse-frequency-scratch] [--flat-component-groups|--flat-component-groups-reuse] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
     )?;
     // Explicit finite research-only node limits, untouched default.
     let node_budget = match first.to_str() {
@@ -786,6 +863,12 @@ fn run() -> Result<(), String> {
     let cache_first = if reuse_frequency_scratch {
         args.next().ok_or("missing cache mode or precision after --reuse-frequency-scratch")?
     } else { cache_first };
+    let flat_component_groups = matches!(cache_first.to_str(),
+        Some("--flat-component-groups" | "--flat-component-groups-reuse"));
+    let reuse_component_scratch = cache_first.to_str() == Some("--flat-component-groups-reuse");
+    let cache_first = if flat_component_groups {
+        args.next().ok_or("missing cache mode or precision after --flat-component-groups")?
+    } else { cache_first };
     let cache_policy = match cache_first.to_str() {
         Some("--hashbrown-owned") => CachePolicy::HbOwned,
         Some("--hashbrown-borrowed") => CachePolicy::HbBorrowed,
@@ -826,6 +909,8 @@ fn run() -> Result<(), String> {
     engine.indexed_unit_propagation = indexed_unit_propagation;
     engine.indexed_unit_csr = indexed_unit_csr;
     engine.reuse_frequency_scratch = reuse_frequency_scratch;
+    engine.flat_component_groups = flat_component_groups;
+    engine.reuse_component_scratch = reuse_component_scratch;
     engine.indexed_activation_node = indexed_activation_node;
     let answer = engine.count(p.clauses.clone(), (1..=p.n).collect(), 0)?;
     let solve_ns = t2.elapsed().as_nanos();
@@ -856,6 +941,8 @@ fn run() -> Result<(), String> {
     eprintln!("RESEARCH_MPFR_UNIT_PROP_CSR enabled={indexed_unit_csr} activation_node={indexed_activation_node}");
     eprintln!("RESEARCH_MPFR_FREQ_SCRATCH enabled={reuse_frequency_scratch} capacity={}",
         engine.frequency_scratch.len());
+    eprintln!("RESEARCH_MPFR_FLAT_COMPONENTS enabled={flat_component_groups} reuse_arena={reuse_component_scratch} parent_capacity={} slot_capacity={}",
+        engine.component_parent_scratch.capacity(), engine.component_slot_scratch.capacity());
     // Native WallTime includes engine destruction, unlike solve_ns. Isolate
     // this time so a Cache-optimized process is not misread as faster DPLL.
     let release_start = Instant::now();
@@ -1440,6 +1527,91 @@ mod tests {
                     if capacity == 0 {
                         assert_eq!(candidate.stats.packed_full_misses, candidate.stats.nodes);
                         assert!(candidate.packed_cache.is_empty());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn flat_component_groups_are_identical_to_ordered_btreemap_groups() {
+        let examples: &[(Vec<Clause>, Vec<usize>, usize)] = &[
+            (vec![vec![1, 2], vec![3, 4], vec![5, 6]], (1..=6).collect(), 6),
+            (vec![vec![1, 2], vec![2, 3], vec![4, 5], vec![6, 7]], (1..=7).collect(), 7),
+            (vec![vec![1, 3], vec![2, 4], vec![5, 7], vec![6, 8]], (1..=8).collect(), 8),
+            (vec![vec![1, 2], vec![2, 3], vec![3, 4]], (1..=4).collect(), 4),
+            (vec![vec![1]], vec![1], 1),
+        ];
+        for (clauses, scope, n) in examples {
+            let mut parent: Vec<_> = (0..=*n).collect();
+            let mut slots = vec![usize::MAX; n + 1];
+            let baseline = split_components(clauses, scope, *n);
+            let flat = split_components_flat(clauses, scope, &mut parent, &mut slots);
+            assert_eq!(flat, baseline);
+        }
+    }
+
+    #[test]
+    fn flat_component_groups_preserve_complex_mpfr_wmc_and_dpll_tree() {
+        let mut seed = 0x24f9_a321_ce11_4422u64;
+        let fixtures = [
+            "p cnf 6 5\nc t wmc\n1 2 0\n2 3 0\n4 5 0\n5 6 0\n-1 -2 0\n",
+            "p cnf 6 6\nc t wmc\n1 2 0\n-1 3 0\n4 5 0\n-4 6 0\n2 3 0\n-5 -6 0\n",
+            "p cnf 2 1\nc t wmc\nc p weight 1 0 0 0\nc p weight -1 0 0 0\n1 0\n",
+            "p cnf 2 2\nc t wmc\n1 0\n-1 0\n",
+        ];
+        for bits in [100_u32, 333_u32] {
+            for case in 0..64 {
+                let clauses = if case < fixtures.len() {
+                    parse_emitted(fixtures[case], bits).unwrap().clauses
+                } else {
+                    let mut out = Vec::new();
+                    for _ in 0..(5 + case % 9) {
+                        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                        let len = (seed as usize % 3) + 1;
+                        let mut clause = Vec::new();
+                        for _ in 0..len {
+                            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                            let var = (seed as usize % 6) + 1;
+                            clause.push(if seed & 0x800 == 0 { var as i32 } else { -(var as i32) });
+                        }
+                        out.push(clause);
+                    }
+                    out
+                };
+                let p = Problem {
+                    n: 6, clauses,
+                    weights: (0..6).map(|v| Weights {
+                        positive: C::decimal(bits, if v % 2 == 0 { "0.3" } else { "-0.2" }, "0.1").unwrap(),
+                        negative: C::decimal(bits, "0.25", "-0.5").unwrap(),
+                    }).collect(),
+                };
+                for cap in [0_usize, 1, 10, 10_000, 50_000] {
+                    let mut witness = None;
+                    for mode in 0..3 {
+                        let mut engine = Engine::new(&p, bits, CachePolicy::HbBorrowed);
+                        engine.fast_assign = true;
+                        engine.packed_residual_key = true;
+                        engine.packed_fast_admission = true;
+                        engine.indexed_unit_propagation = true;
+                        engine.indexed_unit_csr = true;
+                        engine.reuse_frequency_scratch = true;
+                        engine.flat_component_groups = mode != 0;
+                        engine.reuse_component_scratch = mode == 2;
+                        engine.cache_limit = cap;
+                        let answer = engine.count(p.clauses.clone(), (1..=p.n).collect(), 0).unwrap();
+                        let state = (
+                            answer.sat, answer.count.re, answer.count.im,
+                            engine.stats.nodes, engine.stats.cache_hits,
+                            engine.stats.decompositions, engine.packed_cache.len(),
+                        );
+                        if let Some(ref old) = witness {
+                            assert_eq!(&state, old, "case={case} bits={bits} cap={cap} mode={mode}");
+                        } else { witness = Some(state); }
+                        if mode == 2 {
+                            assert_eq!(engine.component_parent_scratch.len(), p.n + 1);
+                            assert_eq!(engine.component_slot_scratch.len(), p.n + 1);
+                        }
                     }
                 }
             }

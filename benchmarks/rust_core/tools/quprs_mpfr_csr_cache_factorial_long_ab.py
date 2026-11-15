@@ -230,7 +230,16 @@ def main() -> None:
                             f"csr{capacity}_vs_idx{capacity}_paired={row['paired_csr_speedup_median'][str(capacity)]:.4f}"
                             for capacity in CAPACITIES
                         )
+                        + " " + " ".join(
+                            f"{arm}_solve_ms={row['rust_solve_ns_median'][arm]/1e6:.3f}"
+                            for arm in ARMS[1:]
+                        )
+                        + " " + " ".join(
+                            f"{arm}_wall_mad_ms={row['wall_ns_mad'][arm]/1e6:.3f}"
+                            for arm in ARMS
+                        )
                         + f" interaction_50k_over_10k={row['csr_interaction_wall_ratio_50k_over_10k']:.4f}"
+                        + f" pareto={','.join(row['candidate_pareto_frontier'])}"
                     )
             if row["status"] != "MATCHED_MPFR_SOURCE_AGREEMENT_ONLY":
                 error = True

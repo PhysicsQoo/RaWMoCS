@@ -94,13 +94,22 @@ impl PackedKey {
         pos == self.literals.len()
     }
 }
-// Encode the *same* exact hash stream for owned and borrowed inputs.
-// Deliberately avoid depending on optimized slice-hash specializations.
+// Recreate the exact original nested Vec<Vec<i32>> hash from the flat
+// representation, including per-clause length prefixes. Borrowed lookup
+// can therefore hash the original residual *directly*, without an extra
+// length-summing pass or materializing a temporary packed representation.
 impl Hash for PackedKey {
     fn hash<H: Hasher>(&self, hasher: &mut H) {
         self.scope.hash(hasher);
-        self.literals.len().hash(hasher);
-        for &lit in &self.literals { lit.hash(hasher); }
+        self.literals.iter().filter(|&&lit| lit == 0).count().hash(hasher);
+        let mut start = 0;
+        for (end, &lit) in self.literals.iter().enumerate() {
+            if lit == 0 {
+                self.literals[start..end].hash(hasher);
+                start = end + 1;
+            }
+        }
+        debug_assert_eq!(start, self.literals.len());
     }
 }
 enum StoredKey { Owned(Key), Shared(SharedKey), Packed(SharedKey) }
@@ -173,12 +182,7 @@ impl<'a> Engine<'a> {
     fn packed_key_hash(&self, scope: &[usize], residual: &[Clause]) -> u64 {
         let mut hasher = self.packed_cache.hasher().build_hasher();
         scope.hash(&mut hasher);
-        let length: usize = residual.iter().map(|clause| clause.len() + 1).sum();
-        length.hash(&mut hasher);
-        for clause in residual {
-            for &lit in clause { lit.hash(&mut hasher); }
-            0_i32.hash(&mut hasher);
-        }
+        residual.hash(&mut hasher);
         hasher.finish()
     }
     fn weight(&self, var: usize, positive: bool) -> &C {
@@ -768,6 +772,11 @@ fn run() -> Result<(), String> {
         packed_residual_key, engine.packed_cache.len());
     eprintln!("RESEARCH_MPFR_UNIT_PROP_INDEXED enabled={indexed_unit_propagation} activation_node={indexed_activation_node}");
     eprintln!("RESEARCH_MPFR_UNIT_PROP_CSR enabled={indexed_unit_csr} activation_node={indexed_activation_node}");
+    // Native WallTime includes engine destruction, unlike solve_ns. Isolate
+    // this time so a Cache-optimized process is not misread as faster DPLL.
+    let release_start = Instant::now();
+    drop(engine);
+    eprintln!("RESEARCH_MPFR_ENGINE_DROP_NS {}", release_start.elapsed().as_nanos());
     Ok(())
 }
 fn main() {
@@ -1212,6 +1221,10 @@ mod tests {
         assert!(key.matches_residual(&scope, &exact));
         assert_eq!(key.literals, vec![1, -2, 0, -3, 0, 0, 4, 4, 0]);
         let hash = engine.packed_key_hash(&scope, &exact);
+        let mut stored_hasher = engine.packed_cache.hasher().build_hasher();
+        key.hash(&mut stored_hasher);
+        assert_eq!(hash, stored_hasher.finish(),
+            "packed and borrowed nested-clause hash must be bit-identical");
         engine.packed_cache.insert(key, Outcome { sat: true, count: C::one(100) });
         assert!(engine.packed_cache.raw_entry().from_hash(hash, |key| {
             key.matches_residual(&scope, &exact)

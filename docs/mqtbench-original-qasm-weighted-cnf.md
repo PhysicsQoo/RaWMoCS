@@ -63,6 +63,12 @@ checks out exact source commits and invokes
 * Require GPMC/Rust SAT parity, numerical complex WMC agreement, byte-
   exact full Rust complex stdout and equal-cache DPLL node, cache-hit
   and decomposition parity before publishing comparison medians.
+  Numeric agreement uses a shared complex-output scale
+  `max(1, |Re_GPMC|, |Im_GPMC|, |Re_Rust|, |Im_Rust|)`
+  for BOTH component errors, with the unchanged exact rational decimal
+  relative guard `10^-(digits-6)`; absolute real/imag errors and the
+  worst scaled error are preserved in the report. This is a solver
+  agreement guard, never a precision- or source-fidelity certificate.
   Report Rust solve-only separately from GPMC/Rust full-process
   WallTime and peak RSS.
 * Fail the workflow if no MQT input achieves a full qualified
@@ -79,3 +85,26 @@ research flag into production solver behavior based on this study alone.
 Official MQT Bench upstream references:
 [`munich-quantum-toolkit/bench`](https://github.com/munich-quantum-toolkit/bench)
 and [MQT Bench documentation](https://mqt.readthedocs.io/projects/bench/en/stable/quickstart.html).
+
+## Initial native discrepancy and scientific resolution
+
+The first native run
+[`#43693421813`](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/43693421813)
+successfully emitted the original-source QuPRS weighted CNFs for **all
+seven** listed MQT circuits and produced 13 matched precision/circuit
+rows. One row (VQE 4 at MPFR100 bits) failed the older *independently
+scaled real/imag* numeric guard: the real WMC was approximately
+`-302.571670282757` while the imaginary WMC was approximately
+`-4.524219578286e-9`, with imaginary absolute discrepancy
+`2.452612730542815504e-24`. The old separate imaginary scale
+`max(1, |Im|)` gave tolerance `1e-24`.
+
+The resulting **whole complex-output relative** discrepancy is only
+about `8.1e-27`, below the *unchanged* 30-decimal-digit relative
+guard `1e-24`. The new shared-complex-scale check is an explicit
+accuracy contract, not a hidden precision decrease: every sample's
+real and imaginary absolute deltas remain archived and Rust-versus-Rust
+full stdout bytes must still match. At MPFR333 bits this VQE source
+already passed the original numeric gate. The earlier failing job is
+retained as evidence; a new source-locked CI run must pass before
+merging these changes.

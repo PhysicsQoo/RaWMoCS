@@ -6,6 +6,7 @@ on:
       - ".github/workflows/mqtbench-original-weighted-cnf.yml"
       - "benchmarks/rust_core/tools/quprs_mqtbench_original_cnf.rs"
       - "benchmarks/rust_core/tools/quprs_mqtbench_original_cnf_ab.py"
+      - "benchmarks/rust_core/tools/quprs_mqtbench_flat_components_ab.py"
       - "benchmarks/mpfr_research/src/main.rs"
   workflow_dispatch:
 
@@ -99,6 +100,16 @@ jobs:
             --gpmc .upstream/gpmc/build/gpmc \
             --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
             --report .research/mqtbench/mqtbench-native-report.json
+      - name: Original MQT source CNF flat component sorted-root grouping native A/B
+        run: |
+          python3 -m py_compile benchmarks/rust_core/tools/quprs_mqtbench_flat_components_ab.py
+          python3 benchmarks/rust_core/tools/quprs_mqtbench_flat_components_ab.py \
+            --source .upstream/quprs \
+            --gpmc-source .upstream/gpmc \
+            --corpus .research/mqtbench \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --report .research/mqtbench/flat-component-groups-ab.json
       - name: Archive source statuses and every paired/censored record
         if: always()
         uses: actions/upload-artifact@v4

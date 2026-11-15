@@ -1405,7 +1405,7 @@ mod tests {
 
     #[test]
     fn packed_fast_admission_never_hash_collides_to_false_cache_hit() {
-        let p = parse_emitted("p cnf 3 0\\nc t wmc\\n", 100).unwrap();
+        let p = parse_emitted("p cnf 3 0\nc t wmc\n", 100).unwrap();
         let scope = vec![1, 2, 3];
         let clauses = vec![vec![1, -2], vec![3]];
         let mut engine = Engine::new(&p, 100, CachePolicy::HbBorrowed);

@@ -85,6 +85,12 @@ def native(command: list[str], tool: str) -> dict[str, Any]:
             record["dpll_nodes"] = fields[4]
             record["cache_hits"] = fields[5]
             record["component_splits"] = fields[6]
+            release = re.search(
+                r"^RESEARCH_MPFR_ENGINE_DROP_NS (\d+)$",
+                run.stderr, flags=re.MULTILINE,
+            )
+            if release:
+                record["engine_drop_ns"] = int(release.group(1))
         return record
 
 

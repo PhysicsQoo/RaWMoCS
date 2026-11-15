@@ -64,7 +64,55 @@ impl Outcome {
 struct Key { scope: Vec<usize>, clauses: Vec<Clause> }
 #[derive(Hash, PartialEq, Eq)]
 struct SharedKey { scope: Vec<usize>, clauses: Arc<Vec<Clause>> }
-enum StoredKey { Owned(Key), Shared(SharedKey) }
+// Research-only exact key: zero is a clause separator, never a DIMACS
+// literal. A separator is also emitted for each empty clause, preserving
+// clause boundaries, order, and duplicate literals without loss.
+#[derive(PartialEq, Eq)]
+struct PackedKey { scope: Vec<usize>, literals: Vec<i32> }
+impl PackedKey {
+    fn from_residual(scope: Vec<usize>, residual: &[Clause]) -> Self {
+        let length = residual.iter().map(|clause| clause.len() + 1).sum();
+        let mut literals = Vec::with_capacity(length);
+        for clause in residual {
+            debug_assert!(clause.iter().all(|&lit| lit != 0));
+            literals.extend_from_slice(clause);
+            literals.push(0);
+        }
+        Self { scope, literals }
+    }
+    fn matches_residual(&self, scope: &[usize], residual: &[Clause]) -> bool {
+        if self.scope.as_slice() != scope { return false; }
+        let mut pos = 0;
+        for clause in residual {
+            let end = pos + clause.len();
+            if self.literals.get(pos..end) != Some(clause.as_slice()) ||
+                self.literals.get(end) != Some(&0) {
+                return false;
+            }
+            pos = end + 1;
+        }
+        pos == self.literals.len()
+    }
+}
+// Recreate the exact original nested Vec<Vec<i32>> hash from the flat
+// representation, including per-clause length prefixes. Borrowed lookup
+// can therefore hash the original residual *directly*, without an extra
+// length-summing pass or materializing a temporary packed representation.
+impl Hash for PackedKey {
+    fn hash<H: Hasher>(&self, hasher: &mut H) {
+        self.scope.hash(hasher);
+        self.literals.iter().filter(|&&lit| lit == 0).count().hash(hasher);
+        let mut start = 0;
+        for (end, &lit) in self.literals.iter().enumerate() {
+            if lit == 0 {
+                self.literals[start..end].hash(hasher);
+                start = end + 1;
+            }
+        }
+        debug_assert_eq!(start, self.literals.len());
+    }
+}
+enum StoredKey { Owned(Key), Shared(SharedKey), Packed(SharedKey) }
 enum ResidualStorage { Owned(Vec<Clause>), Shared(Arc<Vec<Clause>>) }
 impl Deref for ResidualStorage {
     type Target = Vec<Clause>;
@@ -94,8 +142,10 @@ struct Engine<'a> {
     cache: StdHashMap<Key, Outcome>,
     hb_cache: HbHashMap<Key, Outcome>,
     shared_cache: HbHashMap<SharedKey, Outcome>,
+    packed_cache: HbHashMap<PackedKey, Outcome>,
     cache_policy: CachePolicy,
     shared_residual_key: bool,
+    packed_residual_key: bool,
     cache_limit: usize,
     stats: Stats,
     fast_assign: bool,
@@ -108,8 +158,9 @@ impl<'a> Engine<'a> {
     fn new(p: &'a Problem, bits: u32, cache_policy: CachePolicy) -> Engine<'a> {
         Engine {
             p, bits, cache: StdHashMap::new(), hb_cache: HbHashMap::new(),
-            shared_cache: HbHashMap::new(),
-            cache_policy, shared_residual_key: false, cache_limit: 10_000,
+            shared_cache: HbHashMap::new(), packed_cache: HbHashMap::new(),
+            cache_policy, shared_residual_key: false, packed_residual_key: false,
+            cache_limit: 10_000,
             stats: Stats::default(), fast_assign: false, node_budget: 100_000,
             indexed_unit_propagation: false, indexed_activation_node: 0,
             indexed_unit_csr: false,
@@ -124,6 +175,12 @@ impl<'a> Engine<'a> {
     }
     fn shared_key_hash(&self, scope: &[usize], residual: &[Clause]) -> u64 {
         let mut hasher = self.shared_cache.hasher().build_hasher();
+        scope.hash(&mut hasher);
+        residual.hash(&mut hasher);
+        hasher.finish()
+    }
+    fn packed_key_hash(&self, scope: &[usize], residual: &[Clause]) -> u64 {
+        let mut hasher = self.packed_cache.hasher().build_hasher();
         scope.hash(&mut hasher);
         residual.hash(&mut hasher);
         hasher.finish()
@@ -148,6 +205,14 @@ impl<'a> Engine<'a> {
                     self.shared_cache.insert(key, result.clone());
                 }
             }
+            StoredKey::Packed(key) => {
+                // Only pack on *actual* admission. No flat key allocation
+                // occurs on a borrowed lookup hit or after capacity fills.
+                if self.packed_cache.len() < self.cache_limit {
+                    let key = PackedKey::from_residual(key.scope, key.clauses.as_slice());
+                    self.packed_cache.insert(key, result.clone());
+                }
+            }
         }
         result
     }
@@ -160,7 +225,18 @@ impl<'a> Engine<'a> {
         // The shared mode checks the borrowed canonical bytes BEFORE allocating
         // an Arc. On a miss the cache key shares the residual's existing Vec;
         // there is no deep Vec<Vec<i32>> clone at insertion time.
-        let (mut residual, key) = if self.shared_residual_key {
+        let (mut residual, key) = if self.packed_residual_key {
+            let hash = self.packed_key_hash(&scope, &canonical);
+            if let Some((_, hit)) = self.packed_cache.raw_entry().from_hash(hash, |key| {
+                key.matches_residual(&scope, &canonical)
+            }) {
+                self.stats.cache_hits += 1;
+                return Ok(hit.clone());
+            }
+            let shared = Arc::new(canonical);
+            let key = SharedKey { scope: scope.clone(), clauses: Arc::clone(&shared) };
+            (ResidualStorage::Shared(shared), StoredKey::Packed(key))
+        } else if self.shared_residual_key {
             let hash = self.shared_key_hash(&scope, &canonical);
             if let Some((_, hit)) = self.shared_cache.raw_entry().from_hash(hash, |key| {
                 key.scope.as_slice() == scope.as_slice()
@@ -583,7 +659,7 @@ fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
     let first = args.next().ok_or(
-        "usage: rawmocs-mpfr-research [--node-budget=250000|--node-budget=1000000] [--cache-limit=25000|--cache-limit=50000|--cache-limit=100000] [--indexed-unit-prop|--indexed-unit-prop-after-8192|--indexed-unit-prop-csr|--indexed-unit-prop-csr-after-8192] [--shared-residual-key] [--fast-assign] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
+        "usage: rawmocs-mpfr-research [--node-budget=250000|--node-budget=1000000] [--cache-limit=25000|--cache-limit=50000|--cache-limit=100000] [--indexed-unit-prop|--indexed-unit-prop-after-8192|--indexed-unit-prop-csr|--indexed-unit-prop-csr-after-8192] [--shared-residual-key|--packed-residual-key] [--fast-assign] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
     )?;
     // Explicit finite research-only node limits, untouched default.
     let node_budget = match first.to_str() {
@@ -626,7 +702,8 @@ fn run() -> Result<(), String> {
         algorithm_start
     };
     let shared_residual_key = storage_start.to_str() == Some("--shared-residual-key");
-    let next = if shared_residual_key {
+    let packed_residual_key = storage_start.to_str() == Some("--packed-residual-key");
+    let next = if shared_residual_key || packed_residual_key {
         args.next().ok_or("missing arguments after --shared-residual-key")?
     } else {
         storage_start
@@ -650,8 +727,9 @@ fn run() -> Result<(), String> {
     let digits: u32 = numeric.to_str().ok_or("non-UTF8 precision")?
         .parse().map_err(|_| "bad precision")?;
     if !(30..=100).contains(&digits) { return Err("supported precision 30..100 digits".into()); }
-    if shared_residual_key && !matches!(cache_policy, CachePolicy::HbBorrowed) {
-        return Err("--shared-residual-key requires --hashbrown-borrowed".into());
+    if (shared_residual_key || packed_residual_key) &&
+        !matches!(cache_policy, CachePolicy::HbBorrowed) {
+        return Err("shared/packed residual keys require --hashbrown-borrowed".into());
     }
     // Source GPMC/mpfr/mpreal.h uses this EXACT digits2bits conversion.
     let bits = (f64::from(digits) * 3.321_928_094_887_362_4).ceil() as u32;
@@ -667,6 +745,7 @@ fn run() -> Result<(), String> {
     let mut engine = Engine::new(&p, bits, cache_policy);
     engine.fast_assign = fast_assign;
     engine.shared_residual_key = shared_residual_key;
+    engine.packed_residual_key = packed_residual_key;
     engine.cache_limit = cache_limit;
     engine.node_budget = node_budget;
     engine.indexed_unit_propagation = indexed_unit_propagation;
@@ -689,8 +768,15 @@ fn run() -> Result<(), String> {
         shared_residual_key, engine.shared_cache.len());
     eprintln!("RESEARCH_MPFR_CACHE_LIMIT capacity={} shared_entries={} owned_entries={}",
         cache_limit, engine.shared_cache.len(), engine.hb_cache.len() + engine.cache.len());
+    eprintln!("RESEARCH_MPFR_PACKED_RESIDUAL enabled={} entries={}",
+        packed_residual_key, engine.packed_cache.len());
     eprintln!("RESEARCH_MPFR_UNIT_PROP_INDEXED enabled={indexed_unit_propagation} activation_node={indexed_activation_node}");
     eprintln!("RESEARCH_MPFR_UNIT_PROP_CSR enabled={indexed_unit_csr} activation_node={indexed_activation_node}");
+    // Native WallTime includes engine destruction, unlike solve_ns. Isolate
+    // this time so a Cache-optimized process is not misread as faster DPLL.
+    let release_start = Instant::now();
+    drop(engine);
+    eprintln!("RESEARCH_MPFR_ENGINE_DROP_NS {}", release_start.elapsed().as_nanos());
     Ok(())
 }
 fn main() {
@@ -1123,6 +1209,130 @@ mod tests {
         let error = capped.count(p.clauses.clone(), vec![1, 2], 0).err();
         assert_eq!(error.as_deref(), Some("node limit"));
         assert!(capped.stats.nodes <= 1);
+    }
+
+    #[test]
+    fn packed_residual_key_preserves_boundaries_order_scope_and_collision_equality() {
+        let p = parse_emitted("p cnf 4 1\nc t wmc\n1 -2 0\n", 100).unwrap();
+        let mut engine = Engine::new(&p, 100, CachePolicy::HbBorrowed);
+        let scope = vec![1, 2, 3, 4];
+        let exact = vec![vec![1, -2], vec![-3], vec![], vec![4, 4]];
+        let key = PackedKey::from_residual(scope.clone(), &exact);
+        assert!(key.matches_residual(&scope, &exact));
+        assert_eq!(key.literals, vec![1, -2, 0, -3, 0, 0, 4, 4, 0]);
+        let hash = engine.packed_key_hash(&scope, &exact);
+        let mut stored_hasher = engine.packed_cache.hasher().build_hasher();
+        key.hash(&mut stored_hasher);
+        assert_eq!(hash, stored_hasher.finish(),
+            "packed and borrowed nested-clause hash must be bit-identical");
+        engine.packed_cache.insert(key, Outcome { sat: true, count: C::one(100) });
+        assert!(engine.packed_cache.raw_entry().from_hash(hash, |key| {
+            key.matches_residual(&scope, &exact)
+        }).is_some(), "borrowed hash must identify the precisely stored packed key");
+        let mutants = [
+            vec![vec![1], vec![-2, -3], vec![], vec![4, 4]],
+            vec![vec![-3], vec![1, -2], vec![], vec![4, 4]],
+            vec![vec![1, -2], vec![-3], vec![4, 4]],
+            vec![vec![1, -2], vec![-3], vec![], vec![4, -4]],
+            vec![vec![1, -2], vec![-3], vec![], vec![4]],
+        ];
+        for candidate in mutants {
+            // An artificially forced identical hash cannot confer a false hit.
+            assert!(engine.packed_cache.raw_entry().from_hash(hash, |key| {
+                key.matches_residual(&scope, &candidate)
+            }).is_none());
+        }
+        assert!(engine.packed_cache.raw_entry().from_hash(hash, |key| {
+            key.matches_residual(&[2, 1, 3, 4], &exact)
+        }).is_none());
+    }
+
+    #[test]
+    fn packed_cache_matches_shared_full_mpfr_and_search_for_random_residuals() {
+        let mut seed = 0x6b6f_693c_5b0a_c830_u64;
+        for case in 0..96 {
+            let mut clauses = Vec::new();
+            for _ in 0..(3 + case % 9) {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let clause_size = (seed as usize % 3) + 1;
+                let mut clause = Vec::new();
+                for _ in 0..clause_size {
+                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    let var = (seed as usize % 6) + 1;
+                    clause.push(if seed & 0x8000 == 0 { var as i32 } else { -(var as i32) });
+                }
+                clauses.push(clause);
+            }
+            for bits in [100_u32, 333_u32] {
+                let p = Problem {
+                    n: 6, clauses: clauses.clone(),
+                    weights: (0..6).map(|v| Weights {
+                        positive: C::decimal(bits, if v % 2 == 0 { "0.3" } else { "-0.2" },
+                            if v % 2 == 0 { "0.1" } else { "-0.2" }).unwrap(),
+                        negative: C::decimal(bits, "0.25", "-0.5").unwrap(),
+                    }).collect()
+                };
+                for capacity in [1_usize, 10, 10_000, 50_000] {
+                    let mut shared = Engine::new(&p, bits, CachePolicy::HbBorrowed);
+                    shared.fast_assign = true;
+                    shared.shared_residual_key = true;
+                    shared.indexed_unit_propagation = true;
+                    shared.indexed_unit_csr = true;
+                    shared.cache_limit = capacity;
+                    let expected = shared.count(p.clauses.clone(), (1..=p.n).collect(), 0)
+                        .expect("shared original must terminate");
+                    let mut packed = Engine::new(&p, bits, CachePolicy::HbBorrowed);
+                    packed.fast_assign = true;
+                    packed.packed_residual_key = true;
+                    packed.indexed_unit_propagation = true;
+                    packed.indexed_unit_csr = true;
+                    packed.cache_limit = capacity;
+                    let actual = packed.count(p.clauses.clone(), (1..=p.n).collect(), 0)
+                        .expect("packed research mode must terminate");
+                    assert_eq!((actual.sat, &actual.count.re, &actual.count.im),
+                        (expected.sat, &expected.count.re, &expected.count.im),
+                        "case={case} precision={bits} capacity={capacity}");
+                    assert_eq!(
+                        (packed.stats.nodes, packed.stats.cache_hits, packed.stats.decompositions),
+                        (shared.stats.nodes, shared.stats.cache_hits, shared.stats.decompositions),
+                        "packed must not change search structure for case={case} precision={bits} capacity={capacity}"
+                    );
+                    assert_eq!(packed.packed_cache.len(), shared.shared_cache.len());
+                    assert!(packed.packed_cache.len() <= capacity);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn packed_cache_preserves_sat_zero_and_unsat_as_distinct_outcomes() {
+        let fixtures = [
+            "p cnf 3 2\nc t wmc\n1 0\n-1 0\n",
+            "p cnf 2 1\nc t wmc\nc p weight 1 0 0 0\nc p weight -1 0 0 0\n1 0\n",
+            "p cnf 5 3\nc t wmc\n1 2 0\n-1 3 0\n-4 5 0\n",
+        ];
+        for bits in [100_u32, 333_u32] {
+            for fixture in fixtures {
+                let p = parse_emitted(fixture, bits).unwrap();
+                let mut reference = None;
+                for packed_mode in [false, true] {
+                    let mut engine = Engine::new(&p, bits, CachePolicy::HbBorrowed);
+                    engine.fast_assign = true;
+                    engine.shared_residual_key = !packed_mode;
+                    engine.packed_residual_key = packed_mode;
+                    engine.indexed_unit_propagation = true;
+                    engine.indexed_unit_csr = true;
+                    let outcome = engine.count(p.clauses.clone(), (1..=p.n).collect(), 0).unwrap();
+                    let witness = (outcome.sat, outcome.count.re, outcome.count.im,
+                        engine.stats.nodes, engine.stats.cache_hits, engine.stats.decompositions);
+                    if let Some(reference) = reference.take() {
+                        assert_eq!(witness, reference);
+                    } else {
+                        reference = Some(witness);
+                    }
+                }
+            }
+        }
     }
 
     #[test]

@@ -1577,13 +1577,16 @@ mod tests {
                     }
                     out
                 };
-                let p = Problem {
-                    n: 6, clauses,
-                    weights: (0..6).map(|v| Weights {
-                        positive: C::decimal(bits, if v % 2 == 0 { "0.3" } else { "-0.2" }, "0.1").unwrap(),
-                        negative: C::decimal(bits, "0.25", "-0.5").unwrap(),
-                    }).collect(),
-                };
+                let mut weights: Vec<Weights> = (0..6).map(|v| Weights {
+                    positive: C::decimal(bits, if v % 2 == 0 { "0.3" } else { "-0.2" }, "0.1").unwrap(),
+                    negative: C::decimal(bits, "0.25", "-0.5").unwrap(),
+                }).collect();
+                if case == 2 {
+                    // SAT-but-zero, independently of the Boolean outcome.
+                    weights[0].positive = C::zero(bits);
+                    weights[0].negative = C::zero(bits);
+                }
+                let p = Problem { n: 6, clauses, weights };
                 for cap in [0_usize, 1, 10, 10_000, 50_000] {
                     let mut witness = None;
                     for mode in 0..3 {
@@ -1607,8 +1610,11 @@ mod tests {
                             assert_eq!(&state, old, "case={case} bits={bits} cap={cap} mode={mode}");
                         } else { witness = Some(state); }
                         if mode == 2 {
-                            assert_eq!(engine.component_parent_scratch.len(), p.n + 1);
-                            assert_eq!(engine.component_slot_scratch.len(), p.n + 1);
+                            // Unit-only leaves can finish before component
+                            // detection; no scratch allocation is required.
+                            let len = engine.component_parent_scratch.len();
+                            assert!(len == 0 || len == p.n + 1);
+                            assert_eq!(engine.component_slot_scratch.len(), len);
                         }
                     }
                 }

@@ -105,6 +105,9 @@ jobs:
             --factor benchmarks/mpfr_research/target/release/pathsum_factor_mpfr \
             --corpus .research/rr-mpfr \
             --trials 7 \
+            --include-holdouts \
+            --holdout-trials 2 \
+            --holdout-timeout 30 \
             --report .research/rr-mpfr/scientific-comparison.json
       - name: Preserve all matched/censored raw evidence
         if: always()

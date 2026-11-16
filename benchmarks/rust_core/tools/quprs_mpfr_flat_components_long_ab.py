@@ -45,7 +45,7 @@ def main() -> None:
     result = {
         "original_quprs_source_sha": SOURCE_SHA,
         "original_gpmc_source_sha": GPMC_SHA,
-        "purpose": "Sorted flat DSU component groups with and without scratch reuse vs unchanged Fast+frequency scratch control"
+        "purpose": "Sorted flat DSU component groups with and without scratch reuse vs unchanged Fast+frequency scratch control",
         "numeric_contract": "100/333-bit MPFR GPMC C++/Rust comparison, full Rust stdout equality, fixed-cap search parity",
         "resource_limit": "per native process 30s, 2GiB, fixed bounded DPLL nodes",
         "cache_limit": CAPACITY,

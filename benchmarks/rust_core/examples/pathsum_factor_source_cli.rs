@@ -138,8 +138,12 @@ fn run() -> Result<(), String> {
         "1" => true,
         _ => return Err("invalid oracle SAT flag".into()),
     };
-    let re = expected[2].parse::<i64>().map_err(|_| "invalid oracle real")?;
-    let im = expected[3].parse::<i64>().map_err(|_| "invalid oracle imaginary")?;
+    let re = expected[2]
+        .parse::<i64>()
+        .map_err(|_| "invalid oracle real")?;
+    let im = expected[3]
+        .parse::<i64>()
+        .map_err(|_| "invalid oracle imaginary")?;
     if result.satisfiable != expected_sat || result.count != Gaussian::integers(re, im) {
         return Err(format!(
             "SOURCE_ORACLE_MISMATCH sat={} count=({}, {})",

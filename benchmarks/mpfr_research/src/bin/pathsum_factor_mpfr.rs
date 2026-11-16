@@ -344,7 +344,7 @@ fn single_anf_walsh(p: &Model, bits: u32) -> Result<(Cell, Stats), String> {
     for equation in &p.outputs {
         let mut polynomial = BTreeSet::<Vec<usize>>::new();
         let mut toggle = |term: &[usize]| {
-            let mut key = sorted(term.iter().copied());
+            let key = sorted(term.iter().copied());
             if !polynomial.insert(key.clone()) {
                 polynomial.remove(&key);
             }
@@ -400,7 +400,7 @@ fn single_anf_walsh(p: &Model, bits: u32) -> Result<(Cell, Stats), String> {
         Cell {
             sat: models != 0,
             value: Complex {
-                re: Float::with_val(bits, models),
+                re: Float::with_val(bits, models as i64),
                 im: Float::with_val(bits, 0),
             },
         },

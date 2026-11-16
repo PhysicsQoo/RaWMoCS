@@ -856,6 +856,10 @@ fn run() -> Result<(), String> {
     let cache_first = if trail_fused_compact {
         args.next().ok_or("missing cache mode or precision after --trail-fused-compact")?
     } else { cache_first };
+    let trail_short_clause_pivot = cache_first.to_str() == Some("--trail-short-clause-pivot");
+    let cache_first = if trail_short_clause_pivot {
+        args.next().ok_or("missing cache policy or precision after --trail-short-clause-pivot")?
+    } else { cache_first };
     let cache_policy = match cache_first.to_str() {
         Some("--hashbrown-owned") => CachePolicy::HbOwned,
         Some("--hashbrown-borrowed") => CachePolicy::HbBorrowed,
@@ -892,6 +896,9 @@ fn run() -> Result<(), String> {
     }
     if trail_fused_compact && !trail_prehashed_cache {
         return Err("--trail-fused-compact requires --trail-count --trail-parent-ids --trail-compact-residual --trail-prehashed-cache".into());
+    }
+    if trail_short_clause_pivot && !trail_fused_compact {
+        return Err("--trail-short-clause-pivot requires the existing fused, prehashed, compact trail".into());
     }
     let path = args.next().ok_or("missing CNF")?;
     if args.next().is_some() { return Err("expected exactly one file".into()); }
@@ -932,8 +939,10 @@ fn run() -> Result<(), String> {
         trail.use_compact_residual = trail_compact_residual;
         trail.use_prehashed_cache = trail_prehashed_cache;
         trail.use_fused_compact = trail_fused_compact;
+        trail.use_short_clause_pivot = trail_short_clause_pivot;
         let outcome = trail.count(scope, 0)?;
-        (outcome, trail.stats, Some((trail.assignments, trail.cache_keys)))
+        (outcome, trail.stats,
+         Some((trail.assignments, trail.cache_keys, trail.first_pivot, trail.pivot_nodes)))
     } else {
         let outcome = engine.count(source.clauses.clone(), scope, 0)?;
         (outcome, engine.stats, None)
@@ -963,13 +972,15 @@ fn run() -> Result<(), String> {
     let (csr_slots, csr_literals, csr_clauses) = engine.csr_workspace.capacities();
     eprintln!("RESEARCH_MPFR_CSR_WORKSPACE enabled={} slots={} literals={} clauses={}",
         reuse_csr_workspace, csr_slots, csr_literals, csr_clauses);
-    let (trail_assignments, trail_cache_keys) = trail_profile.unwrap_or_default();
+    let (trail_assignments, trail_cache_keys, trail_first_pivot, trail_pivot_nodes) = trail_profile.unwrap_or_default();
     eprintln!("RESEARCH_MPFR_TRAIL enabled={} assignments={} cache_keys={}",
         trail_count, trail_assignments, trail_cache_keys);
     eprintln!("RESEARCH_MPFR_TRAIL_PARENT_IDS enabled={}", trail_parent_ids);
     eprintln!("RESEARCH_MPFR_TRAIL_COMPACT_RESIDUAL enabled={}", trail_compact_residual);
     eprintln!("RESEARCH_MPFR_TRAIL_PREHASHED_CACHE enabled={}", trail_prehashed_cache);
     eprintln!("RESEARCH_MPFR_TRAIL_FUSED_COMPACT enabled={}", trail_fused_compact);
+    eprintln!("RESEARCH_MPFR_TRAIL_SHORT_CLAUSE enabled={} first_pivot={} pivot_nodes={}",
+        trail_short_clause_pivot, trail_first_pivot.unwrap_or_default(), trail_pivot_nodes);
     eprintln!("RESEARCH_MPFR_CACHE_POLICY {}", cache_policy.label());
     eprintln!("RESEARCH_MPFR_SHARED_RESIDUAL enabled={} entries={}",
         shared_residual_key, engine.shared_cache.len());

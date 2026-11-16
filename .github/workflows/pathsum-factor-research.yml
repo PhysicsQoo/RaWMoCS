@@ -9,6 +9,8 @@ on:
       - .github/workflows/pathsum-factor-research.yml
       - docs/pathsum-factor-algebraic-research.md
       - benchmarks/rust_core/tools/quprs_pathsum_structural_probe.rs
+      - benchmarks/rust_core/tools/quprs_pathsum_factor_export.rs
+      - benchmarks/rust_core/examples/pathsum_factor_source_cli.rs
   workflow_dispatch:
 
 permissions:
@@ -31,6 +33,10 @@ jobs:
         run: cargo test --locked --manifest-path benchmarks/rust_core/Cargo.toml --features pathsum-factor-research pathsum_factor_research -- --nocapture
       - name: Research-only code lint
         run: cargo clippy --locked --manifest-path benchmarks/rust_core/Cargo.toml --features pathsum-factor-research --lib -- -D warnings
+      - name: Source factor parser independent tests
+        run: cargo test --locked --manifest-path benchmarks/rust_core/Cargo.toml --features pathsum-factor-research --example pathsum_factor_source_cli
+      - name: Source factor parser lint
+        run: cargo clippy --locked --manifest-path benchmarks/rust_core/Cargo.toml --features pathsum-factor-research --example pathsum_factor_source_cli -- -D warnings
 
   pinned-quprs-structure:
     timeout-minutes: 20
@@ -80,6 +86,46 @@ jobs:
           done
           cat .research/pathsum-structure/status.tsv
           grep -q 'PROBED' .research/pathsum-structure/status.tsv
+      - name: Build exact Gaussian-only source export and independent native DP
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp benchmarks/rust_core/tools/quprs_pathsum_factor_export.rs \
+             .upstream/quprs/rust/quprs/examples/quprs_pathsum_factor_export.rs
+          cargo build --locked --release --no-default-features \
+            --manifest-path .upstream/quprs/rust/Cargo.toml \
+            -p quprs --example quprs_pathsum_factor_export
+          cargo build --locked --release \
+            --manifest-path benchmarks/rust_core/Cargo.toml \
+            --features pathsum-factor-research \
+            --example pathsum_factor_source_cli
+      - name: QuPRS post-RR native factor exact oracle gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          exporter="$GITHUB_WORKSPACE/.upstream/quprs/rust/target/release/examples/quprs_pathsum_factor_export"
+          solver="$GITHUB_WORKSPACE/benchmarks/rust_core/target/release/examples/pathsum_factor_source_cli"
+          : > .research/pathsum-structure/factor-admission.tsv
+          for name in feynman_hwb6 feynman_qft4 mqt_qnn_4 mqt_grover_4 mqt_vqe_4; do
+            if timeout -k 2s 30s prlimit --as=2147483648 -- \
+               "$exporter" "$name" "$GITHUB_WORKSPACE/.upstream/quprs" \
+               ".research/pathsum-structure" \
+               > ".research/pathsum-structure/${name}-rr-factor-export.log" 2>&1; then
+              "$solver" \
+                ".research/pathsum-structure/${name}-rr-native-factor.txt" \
+                ".research/pathsum-structure/${name}-rr-native-factor-oracle.tsv" \
+                | tee ".research/pathsum-structure/${name}-rr-factor-match.log"
+              printf '%s\tEXACT_ORACLE_MATCH\n' "$name" \
+                 >> .research/pathsum-structure/factor-admission.tsv
+            else
+              printf '%s\tINELIGIBLE_OR_CENSORED\n' "$name" \
+                 >> .research/pathsum-structure/factor-admission.tsv
+              echo "SOURCE_FACTOR_UNQUALIFIED case=$name"
+            fi
+          done
+          cat .research/pathsum-structure/factor-admission.tsv
+          grep -q '^feynman_hwb6[[:space:]]EXACT_ORACLE_MATCH' \
+            .research/pathsum-structure/factor-admission.tsv
       - name: Archive immutable source-scoped profile and censored outcomes
         if: always()
         uses: actions/upload-artifact@v4

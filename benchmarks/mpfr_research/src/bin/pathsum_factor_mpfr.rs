@@ -1,7 +1,7 @@
 //! Exact-source-*printed* MPFR native-factor sum-product research.
- //! No GPMC search/heuristic reuse; factors are original QuPRS ANF and phases.
- //! This CLI consumes the SAME printed MPFR weights as GPMC's post-RR CNF.
- //! It is not a production solver and cannot certify transcendental phases.
+//! No GPMC search/heuristic reuse; factors are original QuPRS ANF and phases.
+//! This CLI consumes the SAME printed MPFR weights as GPMC's post-RR CNF.
+//! It is not a production solver and cannot certify transcendental phases.
 use rug::Float;
 use std::env;
 use std::fs;
@@ -108,7 +108,8 @@ const MAX_SCOPE: usize = 16;
 const MAX_CELLS: usize = 10_000_000;
 
 fn number(s: &str) -> Result<usize, String> {
-    s.parse::<usize>().map_err(|_| "malformed factor number".into())
+    s.parse::<usize>()
+        .map_err(|_| "malformed factor number".into())
 }
 fn float(s: &str, bits: u32) -> Result<Float, String> {
     let parsed = Float::parse(s).map_err(|_| "malformed source MPFR weight")?;
@@ -256,10 +257,9 @@ fn solve(p: &Model, bits: u32) -> Result<(Cell, Stats), String> {
                 .chain(equation.terms.iter().flat_map(|term| term.iter().copied())),
         );
         factors.push(table(scope, &mut stats, |a, scope| {
-            let expected = equation
-                .terms
-                .iter()
-                .fold(false, |acc, term| acc ^ term.iter().all(|&v| bit(scope, a, v)));
+            let expected = equation.terms.iter().fold(false, |acc, term| {
+                acc ^ term.iter().all(|&v| bit(scope, a, v))
+            });
             if bit(scope, a, equation.output) == expected {
                 Cell::one(bits)
             } else {
@@ -311,7 +311,9 @@ fn solve(p: &Model, bits: u32) -> Result<(Cell, Stats), String> {
                 acc.product(&factor.cells[project(a, vars, &factor.scope)], bits)
             })
         })?;
-        let pos = scope.binary_search(&pivot).map_err(|_| "missing pivot scope")?;
+        let pos = scope
+            .binary_search(&pivot)
+            .map_err(|_| "missing pivot scope")?;
         let mut projected_scope = scope;
         projected_scope.remove(pos);
         let projected = table(projected_scope, &mut stats, |a, _| {
@@ -324,9 +326,9 @@ fn solve(p: &Model, bits: u32) -> Result<(Cell, Stats), String> {
         pending.retain(|&v| v != pivot);
         stats.eliminations += 1;
     }
-    let result = factors.iter().fold(Cell::one(bits), |acc, t| {
-        acc.product(&t.cells[0], bits)
-    });
+    let result = factors
+        .iter()
+        .fold(Cell::one(bits), |acc, t| acc.product(&t.cells[0], bits));
     Ok((result, stats))
 }
 fn run() -> Result<(), String> {
@@ -412,7 +414,11 @@ mod tests {
         let vars = (0..18).map(|v| v.to_string()).collect::<Vec<_>>().join(" ");
         let text = format!("p pf 18\nh 1 0 18 {vars}\n");
         assert!(solve(&parse(&text, 100).unwrap(), 100).is_err());
-        for bad in ["p pf 1\nh NaN 0 0\n", "p pf 2\nh 1 0 2 0 5\n", "p pf 2\no 1 1\n"] {
+        for bad in [
+            "p pf 1\nh NaN 0 0\n",
+            "p pf 2\nh 1 0 2 0 5\n",
+            "p pf 2\no 1 1\n",
+        ] {
             assert!(parse(bad, 100).is_err());
         }
     }

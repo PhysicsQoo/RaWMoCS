@@ -104,7 +104,7 @@ jobs:
             --gpmc .upstream/gpmc/build/gpmc \
             --factor benchmarks/mpfr_research/target/release/pathsum_factor_mpfr \
             --corpus .research/rr-mpfr \
-            --trials 2 \
+            --trials 7 \
             --report .research/rr-mpfr/scientific-comparison.json
       - name: Preserve all matched/censored raw evidence
         if: always()

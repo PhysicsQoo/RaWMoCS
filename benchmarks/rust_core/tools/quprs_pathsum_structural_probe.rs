@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::path::Path;
+use std::time::Instant;
 
 fn source_path(case: &str) -> Option<&'static str> {
     match case {
@@ -73,14 +74,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let rel = source_path(case).ok_or("unsupported source case")?;
     let source = fs::read_to_string(Path::new(&root_os).join(rel))?;
+    let parse_start = Instant::now();
     let (ops, qubits) = qasm::parse_qasm_str(&source)?;
+    let qasm_parse_ns = parse_start.elapsed().as_nanos();
     if qubits == 0 || qubits > 12 {
         return Err("unsupported original QASM qubit count".into());
     }
+    let pathsum_start = Instant::now();
     let mut base = PathSum::new(qubits);
     // Only change the reduction setting — NEVER modify source gates.
     base.set_auto_reduce(mode == "rr");
     let ps = VerificationStrategy::Naive.run(base, &[], &ops);
+    let pathsum_build_ns = pathsum_start.elapsed().as_nanos();
+    let analysis_start = Instant::now();
 
     let mut ids: BTreeSet<u32> = ps.v.path_vars.iter().copied().collect();
     ids.extend((0..qubits).map(|x| x as u32));
@@ -138,9 +144,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         && max_phase_degree <= 2
         && max_anf_degree <= 1;
     let width_repr = width.map_or_else(|| "NA_WIDTH_BUDGET".to_owned(), |v| v.to_string());
+    let structure_ns = analysis_start.elapsed().as_nanos();
     let report = format!(
-        "case\tmode\tqubits\tgate_ops\tpath_vars\tstructural_vars\tphase_terms\tphase_nonempty\tphase_max_degree\tphase_radians\tphase_symbolic\tphase_nonsign\toutput_eqs\toutput_xor_links\toutput_and_terms\toutput_max_degree\tmax_native_factor_scope\tprimal_min_degree_width_upper\tsign_quadratic_candidate\n\
-         {case}\t{mode}\t{qubits}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{width_repr}\t{}\n",
+        "case\tmode\tqubits\tgate_ops\tpath_vars\tstructural_vars\tphase_terms\tphase_nonempty\tphase_max_degree\tphase_radians\tphase_symbolic\tphase_nonsign\toutput_eqs\toutput_xor_links\toutput_and_terms\toutput_max_degree\tmax_native_factor_scope\tprimal_min_degree_width_upper\tsign_quadratic_candidate\tqasm_parse_ns\tpathsum_build_ns\tstructural_analysis_ns\n\
+         {case}\t{mode}\t{qubits}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{width_repr}\t{}\t{qasm_parse_ns}\t{pathsum_build_ns}\t{structure_ns}\n",
         ops.len(),
         ps.v.path_vars.len(),
         ids.len(),
@@ -160,7 +167,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     fs::write(Path::new(&output_os), report.as_bytes())?;
     println!(
         "PATHSUM_STRUCTURE case={case} mode={mode} vars={} phases={} phase_degree={} \
-         output_anf_degree={} factor_scope={} width_upper={} sign_quadratic_candidate={}",
+         output_anf_degree={} factor_scope={} width_upper={} sign_quadratic_candidate={} \
+         pathsum_build_ns={pathsum_build_ns}",
         ids.len(),
         ps.p.terms.len(),
         max_phase_degree,

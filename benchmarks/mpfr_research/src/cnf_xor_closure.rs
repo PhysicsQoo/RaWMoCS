@@ -46,9 +46,10 @@ impl Row {
         self.bits[v / 64] & (1_u64 << (v % 64)) != 0
     }
     fn pivot(&self) -> Option<usize> {
-        self.bits.iter().enumerate().find_map(|(i, &word)| {
-            (word != 0).then(|| i * 64 + word.trailing_zeros() as usize + 1)
-        })
+        self.bits
+            .iter()
+            .enumerate()
+            .find_map(|(i, &word)| (word != 0).then(|| i * 64 + word.trailing_zeros() as usize + 1))
     }
     fn variables(&self) -> Vec<usize> {
         let mut result = Vec::new();
@@ -89,20 +90,22 @@ fn source_equations(clauses: &[Clause], n: usize) -> Vec<Row> {
             *v = lit.unsigned_abs() as usize;
         }
         vars[..k].sort_unstable();
-        if vars[0] == 0 || vars[k - 1] > n ||
-            vars[..k].windows(2).any(|pair| pair[0] == pair[1]) {
+        if vars[0] == 0 || vars[k - 1] > n || vars[..k].windows(2).any(|pair| pair[0] == pair[1]) {
             continue;
         }
         let mut forbidden = 0_u8;
         for &lit in clause {
             if lit < 0 {
-                let slot = vars[..k].iter()
+                let slot = vars[..k]
+                    .iter()
                     .position(|&v| v == lit.unsigned_abs() as usize)
                     .expect("all literals were sorted into the validated variable set");
                 forbidden |= 1 << slot;
             }
         }
-        groups.entry((k, vars)).and_modify(|mask| *mask |= 1 << forbidden)
+        groups
+            .entry((k, vars))
+            .and_modify(|mask| *mask |= 1 << forbidden)
             .or_insert(1 << forbidden);
     }
     let mut equations = Vec::new();
@@ -111,8 +114,9 @@ fn source_equations(clauses: &[Clause], n: usize) -> Vec<Row> {
         for parity in [0_u8, 1_u8] {
             let mut admitted = true;
             for assignment in 0..(1 << k) {
-                if (assignment as u8).count_ones() as u8 % 2 == parity &&
-                    mask & (1 << assignment) == 0 {
+                if (assignment as u8).count_ones() as u8 % 2 == parity
+                    && mask & (1 << assignment) == 0
+                {
                     admitted = false;
                     break;
                 }
@@ -172,27 +176,38 @@ pub(crate) fn implied_closure(clauses: &[Clause], n: usize) -> (Vec<Clause>, Xor
     for &pivot in pivots.iter().rev() {
         let lower = basis.get(&pivot).expect("source pivot").clone();
         for &earlier in &pivots {
-            if earlier >= pivot { break; }
-            if basis.get(&earlier).expect("earlier row").bit(pivot) &&
-                basis.get_mut(&earlier).expect("earlier row")
-                    .xor(&lower, &mut stats).is_err() {
+            if earlier >= pivot {
+                break;
+            }
+            if basis.get(&earlier).expect("earlier row").bit(pivot)
+                && basis
+                    .get_mut(&earlier)
+                    .expect("earlier row")
+                    .xor(&lower, &mut stats)
+                    .is_err()
+            {
                 stats.censored = true;
                 return (clauses.to_vec(), stats);
             }
         }
     }
     stats.rank = basis.len();
-    let mut known: BTreeSet<Clause> = clauses.iter().filter(|c| c.len() <= 2)
-        .map(|c| { let mut c = c.clone(); c.sort_unstable(); c }).collect();
+    let mut known: BTreeSet<Clause> = clauses
+        .iter()
+        .filter(|c| c.len() <= 2)
+        .map(|c| {
+            let mut c = c.clone();
+            c.sort_unstable();
+            c
+        })
+        .collect();
     let mut additions = Vec::new();
     for row in basis.values() {
         let vars = row.variables();
         let new_clauses: Vec<Clause> = match vars.as_slice() {
             [a] => vec![vec![if row.rhs { *a as i32 } else { -(*a as i32) }]],
-            [a, b] if row.rhs =>
-                vec![vec![*a as i32, *b as i32], vec![-(*a as i32), -(*b as i32)]],
-            [a, b] =>
-                vec![vec![-(*a as i32), *b as i32], vec![*a as i32, -(*b as i32)]],
+            [a, b] if row.rhs => vec![vec![*a as i32, *b as i32], vec![-(*a as i32), -(*b as i32)]],
+            [a, b] => vec![vec![-(*a as i32), *b as i32], vec![*a as i32, -(*b as i32)]],
             _ => continue,
         };
         for mut clause in new_clauses {
@@ -202,8 +217,11 @@ pub(crate) fn implied_closure(clauses: &[Clause], n: usize) -> (Vec<Clause>, Xor
                     stats.censored = true;
                     return (clauses.to_vec(), stats);
                 }
-                if clause.len() == 1 { stats.forced_units += 1; }
-                else { stats.binary_clauses += 1; }
+                if clause.len() == 1 {
+                    stats.forced_units += 1;
+                } else {
+                    stats.binary_clauses += 1;
+                }
                 additions.push(clause);
             }
         }
@@ -224,26 +242,30 @@ mod tests {
             if ((mask as u32).count_ones() % 2 == 1) == rhs {
                 continue;
             }
-            let clause = vars.iter().enumerate().map(|(i, &v)| {
-                if mask & (1 << i) != 0 { -v } else { v }
-            }).collect();
+            let clause = vars
+                .iter()
+                .enumerate()
+                .map(|(i, &v)| if mask & (1 << i) != 0 { -v } else { v })
+                .collect();
             result.push(clause);
         }
         result
     }
 
     fn sat(clauses: &[Clause], mask: usize) -> bool {
-        clauses.iter().all(|clause| clause.iter().any(|&lit| {
-            let bit = mask & (1 << (lit.unsigned_abs() as usize - 1)) != 0;
-            bit == (lit > 0)
-        }))
+        clauses.iter().all(|clause| {
+            clause.iter().any(|&lit| {
+                let bit = mask & (1 << (lit.unsigned_abs() as usize - 1)) != 0;
+                bit == (lit > 0)
+            })
+        })
     }
 
     #[test]
     fn complete_parities_and_gaussian_cancellation_produce_new_units() {
-        let mut clauses = parity_clauses(&[1,2,3], false);
-        clauses.extend(parity_clauses(&[1,2,4], true));
-        clauses.extend(parity_clauses(&[3,4], false));
+        let mut clauses = parity_clauses(&[1, 2, 3], false);
+        clauses.extend(parity_clauses(&[1, 2, 4], true));
+        clauses.extend(parity_clauses(&[3, 4], false));
         let (enhanced, stats) = implied_closure(&clauses, 4);
         assert!(!stats.censored);
         // x1 ^ x2 ^ x3 = 0; x1 ^ x2 ^ x4 = 1; x3 ^ x4 = 0
@@ -255,8 +277,8 @@ mod tests {
 
     #[test]
     fn rref_keeps_free_variables_and_discovers_two_variable_implications() {
-        let mut clauses = parity_clauses(&[1,2,3], false);
-        clauses.extend(parity_clauses(&[1,2,4], false));
+        let mut clauses = parity_clauses(&[1, 2, 3], false);
+        clauses.extend(parity_clauses(&[1, 2, 4], false));
         // cancellation derives x3 ^ x4 = 0; no variable is deleted.
         let (enhanced, stats) = implied_closure(&clauses, 4);
         assert!(!stats.contradiction);
@@ -268,9 +290,9 @@ mod tests {
 
     #[test]
     fn partial_xor_patterns_and_non_xor_background_never_justify_inference() {
-        let mut clauses = parity_clauses(&[1,2,3], true);
+        let mut clauses = parity_clauses(&[1, 2, 3], true);
         clauses.pop();
-        clauses.push(vec![-3,4]);
+        clauses.push(vec![-3, 4]);
         let (enhanced, stats) = implied_closure(&clauses, 4);
         assert_eq!(stats.equations, 0);
         assert_eq!(enhanced, clauses);
@@ -278,23 +300,34 @@ mod tests {
 
     #[test]
     fn preserve_all_small_weighted_cnf_assignment_sets_and_mpfr_counts() {
-        for bits in [100,333] {
+        for bits in [100, 333] {
             for seed in 0..30_usize {
-                let mut clauses = parity_clauses(&[1,2,3], seed & 1 != 0);
-                clauses.extend(parity_clauses(&[1,2,4], seed & 2 != 0));
+                let mut clauses = parity_clauses(&[1, 2, 3], seed & 1 != 0);
+                clauses.extend(parity_clauses(&[1, 2, 4], seed & 2 != 0));
                 if seed & 4 != 0 {
-                    clauses.extend(parity_clauses(&[3,4], seed & 8 != 0));
+                    clauses.extend(parity_clauses(&[3, 4], seed & 8 != 0));
                 }
                 // Include non-parity, unit, duplicated and irregular clauses.
-                if seed & 1 != 0 { clauses.push(vec![2, -5]); }
-                if seed & 2 != 0 { clauses.push(vec![5]); }
-                if seed & 8 != 0 { clauses.push(vec![-3, 6]); }
-                if seed & 16 != 0 { clauses.push(clauses[0].clone()); }
+                if seed & 1 != 0 {
+                    clauses.push(vec![2, -5]);
+                }
+                if seed & 2 != 0 {
+                    clauses.push(vec![5]);
+                }
+                if seed & 8 != 0 {
+                    clauses.push(vec![-3, 6]);
+                }
+                if seed & 16 != 0 {
+                    clauses.push(clauses[0].clone());
+                }
                 let (enhanced, stats) = implied_closure(&clauses, 6);
                 assert!(!stats.censored, "seed={seed}");
                 for x in 0..64 {
-                    assert_eq!(sat(&clauses, x), sat(&enhanced, x),
-                        "seed={seed}, assignment={x}");
+                    assert_eq!(
+                        sat(&clauses, x),
+                        sat(&enhanced, x),
+                        "seed={seed}, assignment={x}"
+                    );
                 }
                 let mut raw = format!("p cnf 6 {}\nc t wmc\n", clauses.len());
                 for v in 1..=6 {
@@ -302,28 +335,34 @@ mod tests {
                     raw.push_str(&format!("c p weight -{v} -0.125 0.25 0\n"));
                 }
                 for clause in &clauses {
-                    for lit in clause { raw.push_str(&format!("{lit} ")); }
+                    for lit in clause {
+                        raw.push_str(&format!("{lit} "));
+                    }
                     raw.push_str("0\n");
                 }
                 let problem = parse_emitted(&raw, bits).unwrap();
                 let mut original = Engine::new(&problem, bits, CachePolicy::StdOwned);
-                let a = original.count(clauses.clone(), (1..=6).collect(), 0).unwrap();
+                let a = original
+                    .count(clauses.clone(), (1..=6).collect(), 0)
+                    .unwrap();
                 let mut proposed = Engine::new(&problem, bits, CachePolicy::StdOwned);
                 let b = proposed.count(enhanced, (1..=6).collect(), 0).unwrap();
-                assert_eq!((a.sat, a.count.re, a.count.im),
-                           (b.sat, b.count.re, b.count.im),
-                           "seed={seed}, precision={bits}");
+                assert_eq!(
+                    (a.sat, a.count.re, a.count.im),
+                    (b.sat, b.count.re, b.count.im),
+                    "seed={seed}, precision={bits}"
+                );
             }
         }
     }
 
     #[test]
     fn strict_budget_and_negative_controls_do_not_modify_source() {
-        let clauses = parity_clauses(&[1,2,3], false);
+        let clauses = parity_clauses(&[1, 2, 3], false);
         let (same, stats) = implied_closure(&clauses, 1025);
         assert_eq!(same, clauses);
         assert!(stats.censored);
-        let (same, stats) = implied_closure(&vec![vec![1,2]; 5001], 2);
+        let (same, stats) = implied_closure(&vec![vec![1, 2]; 5001], 2);
         assert_eq!(same.len(), 5001);
         assert!(stats.censored);
     }

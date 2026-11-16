@@ -8,9 +8,9 @@
 //! This is NOT CDCL and does not perform weight-unsafe SAT simplification.
 use crate::{normalize, Clause, Outcome, PackedKey, Problem, Stats, C};
 use hashbrown::{hash_map::RawEntryMut, HashMap};
-use std::hash::BuildHasher;
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeMap, BinaryHeap};
+use std::hash::BuildHasher;
 
 pub(crate) struct TrailEngine<'a> {
     problem: &'a Problem,
@@ -299,7 +299,11 @@ impl<'a> TrailEngine<'a> {
             if self.use_prehashed_cache {
                 // Hash matches the HashMap's own hash builder; even in
                 // a hash collision, the complete PackedKey is compared.
-                match self.cache.raw_entry_mut().from_key_hashed_nocheck(key_hash, &key) {
+                match self
+                    .cache
+                    .raw_entry_mut()
+                    .from_key_hashed_nocheck(key_hash, &key)
+                {
                     RawEntryMut::Occupied(_) => {}
                     RawEntryMut::Vacant(entry) => {
                         entry.insert_hashed_nocheck(key_hash, key, outcome.clone());
@@ -468,7 +472,9 @@ impl<'a> TrailEngine<'a> {
         let pivot = active.iter().max_by_key(|&&var| frequency[var]).copied();
         self.frequency = frequency;
         if active.is_empty() {
-            return Ok(self.save(key, key_hash,
+            return Ok(self.save(
+                key,
+                key_hash,
                 Outcome {
                     sat: true,
                     count: prefix,
@@ -486,7 +492,9 @@ impl<'a> TrailEngine<'a> {
                 }
                 value = value.mul(&result.count, self.bits);
             }
-            return Ok(self.save(key, key_hash,
+            return Ok(self.save(
+                key,
+                key_hash,
                 Outcome {
                     sat: true,
                     count: prefix.mul(&value, self.bits),
@@ -521,7 +529,9 @@ impl<'a> TrailEngine<'a> {
         let yes_weighted = weights.positive.mul(&yes.count, self.bits);
         let no_weighted = weights.negative.mul(&no.count, self.bits);
         let value = prefix.mul(&yes_weighted.add(&no_weighted, self.bits), self.bits);
-        Ok(self.save(key, key_hash,
+        Ok(self.save(
+            key,
+            key_hash,
             Outcome {
                 sat: yes.sat || no.sat,
                 count: value,
@@ -693,8 +703,10 @@ mod tests {
                 once.use_compact_residual = true;
                 once.use_prehashed_cache = true;
                 let hashed = once.count((1..=5).collect(), 0).unwrap();
-                assert_eq!((hashed.sat, &hashed.count.re, &hashed.count.im),
-                    (compressed.sat, &compressed.count.re, &compressed.count.im));
+                assert_eq!(
+                    (hashed.sat, &hashed.count.re, &hashed.count.im),
+                    (compressed.sat, &compressed.count.re, &compressed.count.im)
+                );
                 assert_eq!(once.stats.nodes, compact.stats.nodes);
                 assert_eq!(once.stats.cache_hits, compact.stats.cache_hits);
                 assert_eq!(once.stats.decompositions, compact.stats.decompositions);

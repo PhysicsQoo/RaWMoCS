@@ -14,6 +14,8 @@ use std::io::Write;
 use std::path::Path;
 use std::time::Instant;
 
+mod weighted_equivalence;
+
 type Clause = Vec<i32>;
 
 #[derive(Clone)]
@@ -786,6 +788,12 @@ fn run() -> Result<(), String> {
     let cache_first = if reuse_frequency_scratch {
         args.next().ok_or("missing cache mode or precision after --reuse-frequency-scratch")?
     } else { cache_first };
+    // Opt-in source Weighted CNF signed-literal equivalence classes.
+    // Do not change any existing policy parsing or the production default.
+    let weighted_equivalence = cache_first.to_str() == Some("--weighted-equivalence");
+    let cache_first = if weighted_equivalence {
+        args.next().ok_or("missing cache policy or precision after --weighted-equivalence")?
+    } else { cache_first };
     let cache_policy = match cache_first.to_str() {
         Some("--hashbrown-owned") => CachePolicy::HbOwned,
         Some("--hashbrown-borrowed") => CachePolicy::HbBorrowed,
@@ -814,7 +822,16 @@ fn run() -> Result<(), String> {
     let p = parse_emitted(&raw, bits)?;
     let parse_ns = t1.elapsed().as_nanos();
     let t2 = Instant::now();
-    let mut engine = Engine::new(&p, bits, cache_policy);
+    let (reduced, reduction_stats) = if weighted_equivalence {
+        let (converted, scope, stats) = weighted_equivalence::reduce(&p, bits);
+        (Some((converted, scope)), stats)
+    } else {
+        (None, weighted_equivalence::EquivalenceStats::default())
+    };
+    let source = reduced.as_ref().map(|(problem, _)| problem).unwrap_or(&p);
+    let scope = reduced.as_ref().map(|(_, scope)| scope.clone())
+        .unwrap_or_else(|| (1..=p.n).collect());
+    let mut engine = Engine::new(source, bits, cache_policy);
     engine.fast_assign = fast_assign;
     engine.shared_residual_key = shared_residual_key;
     engine.packed_residual_key = packed_residual_key;
@@ -827,7 +844,7 @@ fn run() -> Result<(), String> {
     engine.indexed_unit_csr = indexed_unit_csr;
     engine.reuse_frequency_scratch = reuse_frequency_scratch;
     engine.indexed_activation_node = indexed_activation_node;
-    let answer = engine.count(p.clauses.clone(), (1..=p.n).collect(), 0)?;
+    let answer = engine.count(source.clauses.clone(), scope, 0)?;
     let solve_ns = t2.elapsed().as_nanos();
     let t3 = Instant::now();
     println!("s {}", if answer.sat { "SATISFIABLE" } else { "UNSATISFIABLE" });
@@ -839,6 +856,11 @@ fn run() -> Result<(), String> {
     let output_ns = t3.elapsed().as_nanos();
     eprintln!("RESEARCH_MPFR_PHASE_NS read={read_ns} parse={parse_ns} solve={solve_ns} output={output_ns} nodes={} cache_hits={} decompositions={} digits={digits} bits={bits}",
         engine.stats.nodes, engine.stats.cache_hits, engine.stats.decompositions);
+    eprintln!("RESEARCH_MPFR_WEIGHTED_EQ enabled={} binary={} eliminated={} removed_clauses={} representatives={} contradiction={} censored={}",
+        weighted_equivalence, reduction_stats.binary_clauses,
+        reduction_stats.eliminated_vars, reduction_stats.removed_clauses,
+        reduction_stats.representatives, reduction_stats.contradictory,
+        reduction_stats.censored);
     eprintln!("RESEARCH_MPFR_CACHE_POLICY {}", cache_policy.label());
     eprintln!("RESEARCH_MPFR_SHARED_RESIDUAL enabled={} entries={}",
         shared_residual_key, engine.shared_cache.len());

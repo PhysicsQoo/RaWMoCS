@@ -173,19 +173,14 @@ fn worst(a: Projection, b: Projection) -> usize {
 /// components, or one is Boolean contradictory and the other splits.
 /// Also require a >=20% improvement in worst retained component over the
 /// *actual* Frequency cofactor, with at least two variables of margin.
-fn worth_switching(
-    baseline: (Projection, Projection),
-    proposed: (Projection, Projection),
-) -> bool {
+fn worth_switching(baseline: (Projection, Projection), proposed: (Projection, Projection)) -> bool {
     let (yes, no) = proposed;
     let meaningful_split = (yes.components >= 2 && no.components >= 2)
         || (yes.contradiction && no.components >= 2)
         || (no.contradiction && yes.components >= 2);
     let before = worst(baseline.0, baseline.1);
     let after = worst(yes, no);
-    meaningful_split
-        && before >= 12
-        && after.saturating_add((before / 5).max(2)) <= before
+    meaningful_split && before >= 12 && after.saturating_add((before / 5).max(2)) <= before
 }
 
 /// Scan a bounded set of source-CNF high-frequency branch candidates.
@@ -233,9 +228,10 @@ pub(crate) fn choose(
             yes.largest.saturating_add(no.largest),
             usize::MAX - frequency[variable],
         );
-        if best.as_ref().is_none_or(|&(old, old_score)| {
-            (score, variable) < (old_score, old)
-        }) {
+        if best
+            .as_ref()
+            .is_none_or(|&(old, old_score)| (score, variable) < (old_score, old))
+        {
             best = Some((variable, score));
         }
     }
@@ -258,9 +254,12 @@ mod tests {
         // 1=true forces 2=true and 1=false forces 2=false.
         // Without unit propagation, the two groups connect through 2.
         let cnf: Vec<Clause> = vec![
-            vec![-1, 2], vec![1, -2],
-            vec![2, 3, 4], vec![-2, 5, 6],
-            vec![3, 4], vec![5, 6],
+            vec![-1, 2],
+            vec![1, -2],
+            vec![2, 3, 4],
+            vec![-2, 5, 6],
+            vec![3, 4],
+            vec![5, 6],
         ];
         let mut stats = ClosureStats::default();
         let yes = project(&cnf, 1, true, 6, &mut stats).unwrap();
@@ -283,18 +282,36 @@ mod tests {
     #[test]
     fn budgets_and_small_negative_controls_fall_back() {
         let cnf: Vec<Clause> = vec![
-            vec![1, 2], vec![-1, 3], vec![-3, 4],
-            vec![-4, 5], vec![-5, 6], vec![-6, 1],
+            vec![1, 2],
+            vec![-1, 3],
+            vec![-3, 4],
+            vec![-4, 5],
+            vec![-5, 6],
+            vec![-6, 1],
         ];
         let frequency = vec![0, 2, 1, 2, 2, 2, 2];
         let mut stats = ClosureStats {
             work: MAX_WORK - 1,
             ..Default::default()
         };
-        assert!(choose(&cnf, &(1..=6).collect::<Vec<_>>(), &frequency, 6, &mut stats).is_none());
+        assert!(choose(
+            &cnf,
+            &(1..=6).collect::<Vec<_>>(),
+            &frequency,
+            6,
+            &mut stats
+        )
+        .is_none());
         assert!(stats.censored);
         let unchanged_work = stats.work;
-        assert!(choose(&cnf, &(1..=6).collect::<Vec<_>>(), &frequency, 6, &mut stats).is_none());
+        assert!(choose(
+            &cnf,
+            &(1..=6).collect::<Vec<_>>(),
+            &frequency,
+            6,
+            &mut stats
+        )
+        .is_none());
         assert_eq!(stats.work, unchanged_work);
         let mut small = ClosureStats::default();
         assert!(choose(&cnf, &[1, 2, 3], &frequency, 6, &mut small).is_none());
@@ -316,8 +333,11 @@ mod tests {
                 if case == 1 {
                     for (i, weight) in p.weights.iter_mut().enumerate() {
                         weight.positive = crate::C::decimal(
-                            bits, if i % 2 == 0 { "0.25" } else { "-0.5" }, "0.125"
-                        ).unwrap();
+                            bits,
+                            if i % 2 == 0 { "0.25" } else { "-0.5" },
+                            "0.125",
+                        )
+                        .unwrap();
                         weight.negative = crate::C::decimal(bits, "-0.125", "0.25").unwrap();
                     }
                 }
@@ -325,7 +345,9 @@ mod tests {
                 let expected = base.count(p.clauses.clone(), (1..=6).collect(), 0).unwrap();
                 let mut alternative = Engine::new(&p, bits, CachePolicy::HbBorrowed);
                 alternative.unit_closure_pivot = true;
-                let actual = alternative.count(p.clauses.clone(), (1..=6).collect(), 0).unwrap();
+                let actual = alternative
+                    .count(p.clauses.clone(), (1..=6).collect(), 0)
+                    .unwrap();
                 assert_eq!(
                     (actual.sat, actual.count.re, actual.count.im),
                     (expected.sat, expected.count.re, expected.count.im),

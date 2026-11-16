@@ -365,7 +365,7 @@ fn run() -> Result<(), String> {
     };
     let header = "status\tvariables\tphase_terms\toutput_equations\tnontrivial_output_equations\tinput_anf_terms\tcanonical_trace_terms\tcanonical_literal_occurrences\tnaive_branch_upper_bound\tunique_dag_nodes\tshared_dag_nodes\tcross_output_shared_nodes\tshared_extra_edges\tmax_dag_fanout\tinterning_hits\tmask_visits\tmax_trace_terms_per_output\tmax_trace_degree\tparse_ns\tcompile_ns\tverify_ns\n";
     let line = format!(
-        "{status}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+        "{status}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
         problem.variables, problem.phase_terms, problem.equations.len(),
         report.nontrivial_outputs, report.input_terms, report.canonical_terms,
         report.literal_occurrences, report.naive_branch_bound,

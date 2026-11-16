@@ -76,15 +76,88 @@ Commands:
 GitHub workflow: .github/workflows/pathsum-factor-research.yml
 Linux, macOS and Windows CI must pass on final PR HEAD before TEST-qualified.
 
-**Not completed**: real post-reduction QuPRS PathSum export, source-exact
-phase handling, Feynman/MQT real E2E benchmarks, 100/333-bit MPFR comparison,
-Rank-width decomposition, ADD, arbitrary-angle soundness, and production
-backend router. No QuPRS solver default or RaWMoCS core is changed.
+**Still not completed**: general source-exact phase handling or an arbitrary-angle
+post-RR exporter, Feynman/MQT full E2E speed comparisons, 100/333-bit
+MPFR validation for generic complex factors, Rank-width decomposition,
+ADD, and the production backend router. No QuPRS solver default or
+RaWMoCS core is changed. A deliberately narrow exact-Gaussian RR source
+bridge and oracle are now implemented; see the source-scoped gate below.
 
 Next step: source-pinned post-RR exporter + empirical feature histogram on
 Feynman HWB6/QFT4 and MQT QNN4/Grover4/VQE4, then identical residuals
 through new algorithms and existing WMC oracles. Entire exporter, planner,
 evaluation and fallback time belongs in WallTime, with peak RSS and UNKNOWN.
+
+## First real original-QuPRS structural evidence (source-locked)
+
+Pinned QuPRS: https://github.com/PhysicsQoo/QuPRS/tree/0b28736651b3740ed3b201edd2efdef3da541e0d
+
+Research CI: https://github.com/PhysicsQoo/RaWMoCS/actions/runs/43787896672
+
+The new source probe copies a temporary example into an isolated
+immutable QuPRS checkout, then parses original Feynman/MQTBench QASM
+without transpilation or editing. It compares the same source under
+auto-reduction OFF (original WMC research baseline) and ON (fully
+reduced PathSum). Both are *research profiles*, not equivalent stage
+timing to an external solver.
+
+| Original QASM | Path variables raw -> RR | RR phase terms | RR phase degree | RR primal min-degree width upper |
+| --- | ---: | ---: | ---: | ---: |
+| Feynman HWB6 | 67 -> 7 | 0 | 0 | 6 |
+| Feynman QFT4 | 51 -> 35 | 78 | 4 | 5 |
+| MQT QNN4 | 52 -> 23 | 82 | 5 | 7 |
+| MQT Grover4 | 50 -> 11 | 36 | 6 | 7 |
+| MQT VQE4 | 52 -> 18 | 90 | 5 | 6 |
+
+All **10/10** raw/RR source profiles completed. RR output
+constraints MUST be included: for example HWB6 has 346 XOR-linked
+output ANF terms of maximum degree 6, despite zero remaining phase
+terms. Thus quadratic-sign Gauss sum is **ineligible** for these
+five full residuals; a phase-only classifier would be wrong.
+The width numbers are **heuristic graph elimination upper bounds**,
+not exact treewidth or rank-width measurements.
+
+## Exact-Gaussian source bridge and independent oracle
+
+A second temporary QuPRS example exports only cases whose **entire
+source phase** is exactly one of {1, i, -1, -i}, without radians or
+symbolic coefficients, and whose post-RR original variable count fits
+the explicit bound. Source data are serialized as native output-ANF
+and phase factors; NO Tseitin auxiliaries are introduced. A separate
+source-level exhaustive assignment oracle evaluates the exact value.
+
+- Source exporter: benchmarks/rust_core/tools/quprs_pathsum_factor_export.rs
+- Rust native DP consumer: benchmarks/rust_core/examples/pathsum_factor_source_cli.rs
+- Latest source bridge CI: https://github.com/PhysicsQoo/RaWMoCS/actions/runs/43788470394
+- **Feynman HWB6 RR**: 7 original variables, 7 output constraints,
+  no remaining phase terms, independent source witness **SAT=true,
+  Full WMC=4+0i**. Native factor DP reproduced the exact pair.
+  Under this CI run, research-kernel solve time observed **448,664 ns**,
+  1,165 visited factor cells. This is a single native CI observation,
+  **not** an end-to-end speedup or a GPMC same-CNF timing.
+- QFT4, QNN4, Grover4 and VQE4 do not all fit the fourth-root-only
+  source-exact gate; bridge records INELIGIBLE/CENSORED, not an invented
+  WMC value or acceleration. These need a separate precision-aware
+  generic Complex DP study.
+
+Raw HWB6 GPMC's ~189ms in an earlier same-precision study is **not a
+valid speedup denominator** for the ~0.45ms post-RR factor DP kernel:
+the input representation, preprocessing, encoder and process boundary
+are different. A fair next experiment must include parse + RR + factor
+planner + native execution or compare both solvers on the **same post-RR
+residual** with identical boundary definitions. Time and RSS gates
+must be collected for every arm before algorithm admission.
+
+### Follow-up gate: whole-pipeline costs
+
+The latest source probe and source-only exporter now instrument
+gate processing with/without RR, plus separate factor construction,
+brute-force oracle and DP solve; these are diagnostic stage timings,
+not yet a controlled native paired WallTime result. The next benchmark
+must use fixed source QASM, alternate fresh process orders, include
+RR and encoder cost, and preserve 100/333-bit source weight policy
+for general angles. Only then should this PoC be compared to GPMC.
+
 
 ## Literature
 

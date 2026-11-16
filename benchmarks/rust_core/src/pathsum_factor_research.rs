@@ -181,7 +181,7 @@ impl PathsumFactors {
         if self.variables > 48 || self.weights.len() != self.variables {
             return Err("invalid factor variable count or weights".into());
         }
-        let check = |vars: &[usize]| {
+        let check = |vars: &[usize]| -> Result<(), String> {
             if vars.iter().any(|&v| v >= self.variables) {
                 Err("factor variable outside declared range".into())
             } else {

@@ -68,6 +68,10 @@ name = "xor_native_admission_paired"
 required-features = ["branching-research"]
 
 [[example]]
+name = "anf_bitset_oracle"
+required-features = ["pathsum-factor-research"]
+
+[[example]]
 name = "anf_dag_profile"
 required-features = ["pathsum-factor-research"]
 

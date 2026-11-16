@@ -26,6 +26,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      - name: Canonical research source formatting
+        run: rustfmt --edition 2021 --check benchmarks/rust_core/examples/anf_dag_profile.rs benchmarks/rust_core/tools/quprs_pathsum_anf_dag_export.rs
       - name: GF2 ANF exact truth-table and resource admission tests
         run: cargo test --locked --manifest-path benchmarks/rust_core/Cargo.toml --features pathsum-factor-research --example anf_dag_profile
       - name: Research-only strict Clippy
@@ -83,7 +85,8 @@ jobs:
               sha256sum ".upstream/quprs/benchmarks/Feynman/$qasm"
               timeout -k 2s 30s prlimit --as=2147483648 -- \
                 "$exporter" "$name" "$GITHUB_WORKSPACE/.upstream/quprs" "$src"
-              timeout -k 2s 30s prlimit --as=2147483648 -- \
+              /usr/bin/time -f 'DAG_PROFILE_PEAK_RSS_KIB=%M' -o "${log}.rss" \
+                timeout -k 2s 30s prlimit --as=2147483648 -- \
                 "$profiler" "$src" "$result"
             } > "$log" 2>&1 || exit_code=$?
             if [ "$exit_code" -eq 0 ] && test -s "$result"; then
@@ -107,20 +110,3 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
-  rustfmt-candidates:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 8
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - name: Output canonical formatting for reviewed sources
-        shell: bash
-        run: |
-          set -euo pipefail
-          files=(benchmarks/rust_core/examples/anf_dag_profile.rs benchmarks/rust_core/tools/quprs_pathsum_anf_dag_export.rs)
-          rustfmt --edition 2021 "${files[@]}"
-          for file in "${files[@]}"; do
-            printf 'ANF_DAG_RUSTFMT_CANDIDATE %s %s\n' "$file" "$(base64 -w0 "$file")"
-          done

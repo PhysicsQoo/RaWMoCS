@@ -82,11 +82,7 @@ impl<'a> TrailEngine<'a> {
 
     /// One reversible variable assignment. Even if a clause becomes
     /// contradictory, finish the incidence updates so undo is exact.
-    fn apply(
-        &mut self,
-        lit: i32,
-        heap: Option<(&mut BinaryHeap<Reverse<usize>>, u64)>,
-    ) -> bool {
+    fn apply(&mut self, lit: i32, heap: Option<(&mut BinaryHeap<Reverse<usize>>, u64)>) -> bool {
         let var = lit.unsigned_abs() as usize;
         debug_assert_eq!(self.assigned[var], 0);
         self.assigned[var] = if lit > 0 { 1 } else { -1 };
@@ -174,7 +170,10 @@ impl<'a> TrailEngine<'a> {
                 .iter()
                 .find(|&&lit| self.assigned[lit.unsigned_abs() as usize] == 0)
                 .expect("live clause has an unassigned literal");
-            if scope.binary_search(&(first.unsigned_abs() as usize)).is_ok() {
+            if scope
+                .binary_search(&(first.unsigned_abs() as usize))
+                .is_ok()
+            {
                 ids.push(cid);
             }
         }
@@ -276,7 +275,11 @@ impl<'a> TrailEngine<'a> {
                 .expect("live unit has one unassigned literal");
             let var = lit.unsigned_abs() as usize;
             let weights = &self.problem.weights[var - 1];
-            let factor = if lit > 0 { &weights.positive } else { &weights.negative };
+            let factor = if lit > 0 {
+                &weights.positive
+            } else {
+                &weights.negative
+            };
             prefix = prefix.mul(factor, self.bits);
             if !self.apply(lit, Some((&mut heap, generation))) {
                 return Ok(self.save(key, Outcome::unsat(self.bits)));
@@ -313,7 +316,13 @@ impl<'a> TrailEngine<'a> {
         let pivot = active.iter().max_by_key(|&&var| frequency[var]).copied();
         self.frequency = frequency;
         if active.is_empty() {
-            return Ok(self.save(key, Outcome { sat: true, count: prefix }));
+            return Ok(self.save(
+                key,
+                Outcome {
+                    sat: true,
+                    count: prefix,
+                },
+            ));
         }
         let pieces = self.components(&ids, &active);
         if pieces.len() > 1 {
@@ -326,10 +335,13 @@ impl<'a> TrailEngine<'a> {
                 }
                 value = value.mul(&result.count, self.bits);
             }
-            return Ok(self.save(key, Outcome {
-                sat: true,
-                count: prefix.mul(&value, self.bits),
-            }));
+            return Ok(self.save(
+                key,
+                Outcome {
+                    sat: true,
+                    count: prefix.mul(&value, self.bits),
+                },
+            ));
         }
         let pivot = pivot.ok_or("missing trail pivot")?;
         let child: Vec<usize> = active.into_iter().filter(|&v| v != pivot).collect();
@@ -359,7 +371,13 @@ impl<'a> TrailEngine<'a> {
         let yes_weighted = weights.positive.mul(&yes.count, self.bits);
         let no_weighted = weights.negative.mul(&no.count, self.bits);
         let value = prefix.mul(&yes_weighted.add(&no_weighted, self.bits), self.bits);
-        Ok(self.save(key, Outcome { sat: yes.sat || no.sat, count: value }))
+        Ok(self.save(
+            key,
+            Outcome {
+                sat: yes.sat || no.sat,
+                count: value,
+            },
+        ))
     }
 }
 
@@ -422,7 +440,11 @@ mod tests {
                 for _ in 0..n {
                     seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
                     let var = 1 + (seed as usize % 5);
-                    clause.push(if seed & 4 == 0 { var as i32 } else { -(var as i32) });
+                    clause.push(if seed & 4 == 0 {
+                        var as i32
+                    } else {
+                        -(var as i32)
+                    });
                 }
                 clauses.push(clause);
             }
@@ -433,17 +455,27 @@ mod tests {
                     weights: (0..5)
                         .map(|i| crate::Weights {
                             positive: C::decimal(bits, "0.5", "-0.25").unwrap(),
-                            negative: C::decimal(bits, if i % 2 == 0 { "-0.25" } else { "0.125" }, "0.5").unwrap(),
+                            negative: C::decimal(
+                                bits,
+                                if i % 2 == 0 { "-0.25" } else { "0.125" },
+                                "0.5",
+                            )
+                            .unwrap(),
                         })
                         .collect(),
                 };
                 let mut baseline = Engine::new(&problem, bits, CachePolicy::HbBorrowed);
                 baseline.fast_assign = true;
-                let old = baseline.count(clauses.clone(), (1..=5).collect(), 0).unwrap();
+                let old = baseline
+                    .count(clauses.clone(), (1..=5).collect(), 0)
+                    .unwrap();
                 let mut trail = TrailEngine::new(&problem, bits, 256, 100_000);
                 let new = trail.count((1..=5).collect(), 0).unwrap();
-                assert_eq!((old.sat, old.count.re, old.count.im),
-                           (new.sat, new.count.re, new.count.im), "case {case} bits {bits}");
+                assert_eq!(
+                    (old.sat, old.count.re, old.count.im),
+                    (new.sat, new.count.re, new.count.im),
+                    "case {case} bits {bits}"
+                );
             }
         }
     }

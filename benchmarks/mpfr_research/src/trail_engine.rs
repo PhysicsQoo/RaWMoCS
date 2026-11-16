@@ -420,9 +420,9 @@ mod tests {
             assert_eq!(indexed.sat, actual.sat);
             assert_eq!(indexed.count.re, actual.count.re);
             assert_eq!(indexed.count.im, actual.count.im);
-            assert_eq!(indexed.stats.nodes, trail.stats.nodes);
-            assert_eq!(indexed.stats.cache_hits, trail.stats.cache_hits);
-            assert_eq!(indexed.stats.decompositions, trail.stats.decompositions);
+            assert_eq!(parent_indexed.stats.nodes, trail.stats.nodes);
+            assert_eq!(parent_indexed.stats.cache_hits, trail.stats.cache_hits);
+            assert_eq!(parent_indexed.stats.decompositions, trail.stats.decompositions);
             assert!(parent_indexed.assigned.iter().all(|&x| x == 0));
             assert_eq!(trail.trail.len(), 0);
             assert!(trail.assigned.iter().all(|&x| x == 0));
@@ -496,16 +496,16 @@ mod tests {
                 let mut trail = TrailEngine::new(&problem, bits, 256, 100_000);
                 let new = trail.count((1..=5).collect(), 0).unwrap();
                 assert_eq!(
-                    (old.sat, old.count.re, old.count.im),
-                    (new.sat, new.count.re, new.count.im),
+                    (old.sat, &old.count.re, &old.count.im),
+                    (new.sat, &new.count.re, &new.count.im),
                     "case {case} bits {bits}"
                 );
                 let mut incremental = TrailEngine::new(&problem, bits, 256, 100_000);
                 incremental.use_parent_ids = true;
                 let seen = incremental.count((1..=5).collect(), 0).unwrap();
                 assert_eq!(
-                    (old.sat, old.count.re, old.count.im),
-                    (seen.sat, seen.count.re, seen.count.im),
+                    (old.sat, &old.count.re, &old.count.im),
+                    (seen.sat, &seen.count.re, &seen.count.im),
                     "incremental clause ids case {case} bits {bits}"
                 );
                 assert_eq!(incremental.stats.nodes, trail.stats.nodes);

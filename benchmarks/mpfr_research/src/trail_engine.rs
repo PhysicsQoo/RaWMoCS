@@ -209,19 +209,33 @@ impl<'a> TrailEngine<'a> {
     // materializes only one contiguous literal arena (never child CNFs),
     // sorting small immutable spans of that arena instead.
     fn canonical_compact(
-        &self, scope: &[usize], parent_ids: Option<&[usize]>,
+        &self,
+        scope: &[usize],
+        parent_ids: Option<&[usize]>,
     ) -> Option<(Vec<usize>, Vec<i32>)> {
         #[derive(Clone, Copy)]
-        struct View { cid: usize, start: usize, end: usize }
+        struct View {
+            cid: usize,
+            start: usize,
+            end: usize,
+        }
         let mut flat = Vec::<i32>::new();
         let mut views = Vec::<View>::new();
         let mut visit = |cid: usize| {
-            if self.satisfied[cid] != 0 { return true; }
-            if self.live[cid] == 0 { return false; }
-            let first = self.clauses[cid].iter()
+            if self.satisfied[cid] != 0 {
+                return true;
+            }
+            if self.live[cid] == 0 {
+                return false;
+            }
+            let first = self.clauses[cid]
+                .iter()
                 .find(|&&lit| self.assigned[lit.unsigned_abs() as usize] == 0)
                 .expect("live clause has an unassigned literal");
-            if scope.binary_search(&(first.unsigned_abs() as usize)).is_err() {
+            if scope
+                .binary_search(&(first.unsigned_abs() as usize))
+                .is_err()
+            {
                 return true;
             }
             let start = flat.len();
@@ -231,13 +245,25 @@ impl<'a> TrailEngine<'a> {
                 }
             }
             debug_assert_eq!(flat.len() - start, self.live[cid]);
-            views.push(View { cid, start, end: flat.len() });
+            views.push(View {
+                cid,
+                start,
+                end: flat.len(),
+            });
             true
         };
         if let Some(parent) = parent_ids.filter(|_| self.use_parent_ids) {
-            for &cid in parent { if !visit(cid) { return None; } }
+            for &cid in parent {
+                if !visit(cid) {
+                    return None;
+                }
+            }
         } else {
-            for cid in 0..self.clauses.len() { if !visit(cid) { return None; } }
+            for cid in 0..self.clauses.len() {
+                if !visit(cid) {
+                    return None;
+                }
+            }
         }
         views.sort_unstable_by(|a, b| flat[a.start..a.end].cmp(&flat[b.start..b.end]));
         views.dedup_by(|a, b| flat[a.start..a.end] == flat[b.start..b.end]);
@@ -333,7 +359,13 @@ impl<'a> TrailEngine<'a> {
                 return Ok(Outcome::unsat(self.bits));
             };
             self.cache_keys += 1;
-            (ids, PackedKey { scope: scope.clone(), literals })
+            (
+                ids,
+                PackedKey {
+                    scope: scope.clone(),
+                    literals,
+                },
+            )
         } else {
             let Some(ids) = self.canonical_ids(&scope, parent_ids) else {
                 return Ok(Outcome::unsat(self.bits));
@@ -504,7 +536,10 @@ mod tests {
             assert_eq!(&compressed.count.im, &indexed.count.im);
             assert_eq!(compact.stats.nodes, parent_indexed.stats.nodes);
             assert_eq!(compact.stats.cache_hits, parent_indexed.stats.cache_hits);
-            assert_eq!(compact.stats.decompositions, parent_indexed.stats.decompositions);
+            assert_eq!(
+                compact.stats.decompositions,
+                parent_indexed.stats.decompositions
+            );
             assert!(compact.assigned.iter().all(|&x| x == 0));
             assert_eq!(indexed.sat, actual.sat);
             assert_eq!(indexed.count.re, actual.count.re);
@@ -609,7 +644,10 @@ mod tests {
                 assert_eq!(&compressed.count.im, &seen.count.im);
                 assert_eq!(compact.stats.nodes, incremental.stats.nodes);
                 assert_eq!(compact.stats.cache_hits, incremental.stats.cache_hits);
-                assert_eq!(compact.stats.decompositions, incremental.stats.decompositions);
+                assert_eq!(
+                    compact.stats.decompositions,
+                    incremental.stats.decompositions
+                );
                 assert_eq!(incremental.stats.nodes, trail.stats.nodes);
                 assert_eq!(incremental.stats.cache_hits, trail.stats.cache_hits);
                 assert_eq!(incremental.stats.decompositions, trail.stats.decompositions);

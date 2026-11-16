@@ -25,15 +25,19 @@ struct Problem {
 }
 
 fn integer(raw: &str) -> Result<usize, String> {
-    raw.parse::<usize>().map_err(|_| "invalid ANF integer".into())
+    raw.parse::<usize>()
+        .map_err(|_| "invalid ANF integer".into())
 }
 fn parse_problem(raw: &str) -> Result<Problem, String> {
     if raw.len() > 8_000_000 {
         return Err("ANF_SOURCE_BYTE_LIMIT".into());
     }
     let lines: Vec<&str> = raw.lines().filter(|line| !line.trim().is_empty()).collect();
-    let head: Vec<&str> = lines.first().ok_or("ANF_SOURCE_EMPTY")?
-        .split_whitespace().collect();
+    let head: Vec<&str> = lines
+        .first()
+        .ok_or("ANF_SOURCE_EMPTY")?
+        .split_whitespace()
+        .collect();
     if head.len() != 5 || head[0..2] != ["p", "anf"] {
         return Err("ANF_SOURCE_HEADER".into());
     }
@@ -47,8 +51,11 @@ fn parse_problem(raw: &str) -> Result<Problem, String> {
     let mut index = 1usize;
     let mut total_terms = 0;
     for _ in 0..equation_count {
-        let row: Vec<&str> = lines.get(index).ok_or("ANF_MISSING_EQUATION")?
-            .split_whitespace().collect();
+        let row: Vec<&str> = lines
+            .get(index)
+            .ok_or("ANF_MISSING_EQUATION")?
+            .split_whitespace()
+            .collect();
         index += 1;
         if row.len() != 3 || row[0] != "o" {
             return Err("ANF_EQUATION_HEADER".into());
@@ -61,8 +68,11 @@ fn parse_problem(raw: &str) -> Result<Problem, String> {
         }
         let mut terms = Vec::with_capacity(arity);
         for _ in 0..arity {
-            let fields: Vec<&str> = lines.get(index).ok_or("ANF_MISSING_MONOMIAL")?
-                .split_whitespace().collect();
+            let fields: Vec<&str> = lines
+                .get(index)
+                .ok_or("ANF_MISSING_MONOMIAL")?
+                .split_whitespace()
+                .collect();
             index += 1;
             if fields.len() < 2 || fields[0] != "m" {
                 return Err("ANF_MONOMIAL_HEADER".into());
@@ -71,7 +81,8 @@ fn parse_problem(raw: &str) -> Result<Problem, String> {
             if degree > variables || degree + 2 != fields.len() {
                 return Err("ANF_MONOMIAL_DEGREE".into());
             }
-            let term = fields[2..].iter()
+            let term = fields[2..]
+                .iter()
                 .map(|v| integer(v))
                 .collect::<Result<Vec<_>, _>>()?;
             if term.iter().any(|&v| v >= variables) {
@@ -84,7 +95,11 @@ fn parse_problem(raw: &str) -> Result<Problem, String> {
     if index != lines.len() {
         return Err("ANF_TRAILING_ROWS".into());
     }
-    Ok(Problem { variables, phase_terms, equations })
+    Ok(Problem {
+        variables,
+        phase_terms,
+        equations,
+    })
 }
 
 fn mask(vars: &[usize]) -> u64 {
@@ -120,8 +135,16 @@ impl Dag {
         Self {
             // 0 = zero; 1 = one. Reserved terminals have no edges.
             nodes: vec![
-                Node { variable: 0, low: 0, high: 0 },
-                Node { variable: 0, low: 0, high: 0 },
+                Node {
+                    variable: 0,
+                    low: 0,
+                    high: 0,
+                },
+                Node {
+                    variable: 0,
+                    low: 0,
+                    high: 0,
+                },
             ],
             unique: HashMap::new(),
             visits: 0,
@@ -129,28 +152,42 @@ impl Dag {
         }
     }
     fn compile(&mut self, terms: &[u64]) -> Result<u32, String> {
-        self.visits = self.visits.checked_add(terms.len())
+        self.visits = self
+            .visits
+            .checked_add(terms.len())
             .ok_or("ANF_WORK_COUNTER_OVERFLOW")?;
         if self.visits > MAX_MASK_VISITS {
             return Err("ANF_WORK_LIMIT".into());
         }
-        if terms.is_empty() { return Ok(0); }
-        if terms.len() == 1 && terms[0] == 0 { return Ok(1); }
-        let pivot = terms.iter().filter(|&&m| m != 0)
-            .map(|m| m.trailing_zeros() as usize).min()
+        if terms.is_empty() {
+            return Ok(0);
+        }
+        if terms.len() == 1 && terms[0] == 0 {
+            return Ok(1);
+        }
+        let pivot = terms
+            .iter()
+            .filter(|&&m| m != 0)
+            .map(|m| m.trailing_zeros() as usize)
+            .min()
             .ok_or("ANF_INVALID_MONOMIAL_SET")?;
         let bit = 1u64 << pivot;
         let mut lows = Vec::new();
         let mut highs = Vec::new();
         for &m in terms {
-            if m & bit == 0 { lows.push(m); }
-            else { highs.push(m ^ bit); }
+            if m & bit == 0 {
+                lows.push(m);
+            } else {
+                highs.push(m ^ bit);
+            }
         }
         // Both partitions preserve sortedness because bit-removal has
         // no collisions on the high branch for distinct original masks.
         let low = self.compile(&lows)?;
         let high = self.compile(&highs)?;
-        if high == 0 { return Ok(low); }
+        if high == 0 {
+            return Ok(low);
+        }
         let key = (pivot, low, high);
         if let Some(&id) = self.unique.get(&key) {
             self.reuse_hits += 1;
@@ -160,7 +197,11 @@ impl Dag {
             return Err("ANF_DAG_NODE_LIMIT".into());
         }
         let id = u32::try_from(self.nodes.len()).map_err(|_| "ANF_DAG_ID_LIMIT")?;
-        self.nodes.push(Node { variable: pivot, low, high });
+        self.nodes.push(Node {
+            variable: pivot,
+            low,
+            high,
+        });
         self.unique.insert(key, id);
         Ok(id)
     }
@@ -170,7 +211,9 @@ impl Dag {
             1 => true,
             _ => {
                 let i = root as usize;
-                if let Some(value) = memo[i] { return value; }
+                if let Some(value) = memo[i] {
+                    return value;
+                }
                 let node = self.nodes[i];
                 let result = self.evaluate(node.low, assignment, memo)
                     ^ ((assignment & (1u64 << node.variable) != 0)
@@ -220,7 +263,13 @@ fn profile(problem: &Problem) -> Result<(Dag, Profile), String> {
         canonical_terms += terms.len();
         max_monomials_per_output = max_monomials_per_output.max(terms.len());
         literal_occurrences += terms.iter().map(|m| m.count_ones() as usize).sum::<usize>();
-        max_degree = max_degree.max(terms.iter().map(|m| m.count_ones() as usize).max().unwrap_or(0));
+        max_degree = max_degree.max(
+            terms
+                .iter()
+                .map(|m| m.count_ones() as usize)
+                .max()
+                .unwrap_or(0),
+        );
         let root = dag.compile(&terms)?;
         nontrivial_outputs += usize::from(root != 0);
         roots.push(root);
@@ -246,7 +295,9 @@ fn profile(problem: &Problem) -> Result<(Dag, Profile), String> {
         let mut seen = vec![false; dag.nodes.len()];
         let mut stack = vec![root];
         while let Some(id) = stack.pop() {
-            if id < 2 || seen[id as usize] { continue; }
+            if id < 2 || seen[id as usize] {
+                continue;
+            }
             seen[id as usize] = true;
             output_references[id as usize] += 1;
             let n = dag.nodes[id as usize];
@@ -254,14 +305,23 @@ fn profile(problem: &Problem) -> Result<(Dag, Profile), String> {
             stack.push(n.high);
         }
     }
-    let cross_output_shared_nodes =
-        output_references.iter().skip(2).filter(|&&n| n > 1).count();
+    let cross_output_shared_nodes = output_references.iter().skip(2).filter(|&&n| n > 1).count();
     let result = Profile {
-        roots, input_terms, canonical_terms, literal_occurrences,
-        naive_branch_bound, nontrivial_outputs, max_monomials_per_output,
-        max_degree, shared_nodes, shared_edges, max_fanout,
-        cross_output_shared_nodes, node_count: dag.nodes.len() - 2,
-        reuse_hits: dag.reuse_hits, visits: dag.visits,
+        roots,
+        input_terms,
+        canonical_terms,
+        literal_occurrences,
+        naive_branch_bound,
+        nontrivial_outputs,
+        max_monomials_per_output,
+        max_degree,
+        shared_nodes,
+        shared_edges,
+        max_fanout,
+        cross_output_shared_nodes,
+        node_count: dag.nodes.len() - 2,
+        reuse_hits: dag.reuse_hits,
+        visits: dag.visits,
     };
     Ok((dag, result))
 }
@@ -281,9 +341,13 @@ fn verify(problem: &Problem, dag: &Dag, roots: &[u32], samples: usize) -> Result
 }
 fn run() -> Result<(), String> {
     let mut args = env::args_os().skip(1);
-    let path = args.next().ok_or("usage: anf_dag_profile INPUT.anfs [OUTPUT.tsv]")?;
+    let path = args
+        .next()
+        .ok_or("usage: anf_dag_profile INPUT.anfs [OUTPUT.tsv]")?;
     let output = args.next();
-    if args.next().is_some() { return Err("unexpected extra argument".into()); }
+    if args.next().is_some() {
+        return Err("unexpected extra argument".into());
+    }
     let t0 = Instant::now();
     let text = fs::read_to_string(path).map_err(|e| e.to_string())?;
     let problem = parse_problem(&text)?;
@@ -327,7 +391,8 @@ mod tests {
     use super::*;
     #[test]
     fn empty_zero_and_duplicate_monomials_cancel_in_gf2() {
-        let p = parse_problem("p anf 4 2 0\no 0 3\nm 1 0\nm 2 1 2\nm 2 2 1\no 3 2\nm 1 3\nm 0\n").unwrap();
+        let p = parse_problem("p anf 4 2 0\no 0 3\nm 1 0\nm 2 1 2\nm 2 2 1\no 3 2\nm 1 3\nm 0\n")
+            .unwrap();
         let (dag, result) = profile(&p).unwrap();
         assert_eq!(result.nontrivial_outputs, 1);
         assert_eq!(result.roots[0], 0);
@@ -351,13 +416,20 @@ mod tests {
                 }
                 equations.push(Equation { output, terms });
             }
-            let p = Problem { variables: 7, phase_terms: 0, equations };
+            let p = Problem {
+                variables: 7,
+                phase_terms: 0,
+                equations,
+            };
             let (dag, r) = profile(&p).unwrap();
             for assignment in 0..128u64 {
                 for (eq, &root) in p.equations.iter().zip(&r.roots) {
                     let mut memo = vec![None; dag.nodes.len()];
-                    assert_eq!(dag.evaluate(root, assignment, &mut memo),
-                               oracle(eq, assignment), "seed={seed}, assignment={assignment}");
+                    assert_eq!(
+                        dag.evaluate(root, assignment, &mut memo),
+                        oracle(eq, assignment),
+                        "seed={seed}, assignment={assignment}"
+                    );
                 }
             }
         }

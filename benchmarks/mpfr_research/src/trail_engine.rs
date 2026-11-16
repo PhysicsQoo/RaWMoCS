@@ -42,6 +42,12 @@ pub(crate) struct TrailEngine<'a> {
     // On compact keys, fuse scope admission and literal compaction into
     // one source-clause traversal rather than scanning twice per node.
     pub(crate) use_fused_compact: bool,
+    // Opt-in Jeroslow-Wang-style short-clause score on LIVE residuals.
+    // Exact WMC semantics do not depend on Shannon pivot order.
+    pub(crate) use_short_clause_pivot: bool,
+    short_clause_scores: Vec<u64>,
+    pub(crate) first_pivot: Option<usize>,
+    pub(crate) pivot_nodes: u64,
 }
 
 fn slot(lit: i32) -> usize {
@@ -93,6 +99,10 @@ impl<'a> TrailEngine<'a> {
             use_compact_residual: false,
             use_prehashed_cache: false,
             use_fused_compact: false,
+            use_short_clause_pivot: false,
+            short_clause_scores: vec![0; problem.n + 1],
+            first_pivot: None,
+            pivot_nodes: 0,
         }
     }
 
@@ -474,13 +484,32 @@ impl<'a> TrailEngine<'a> {
             frequency.resize(self.problem.n + 1, 0);
         }
         frequency.fill(0);
+        let mut short_scores = std::mem::take(&mut self.short_clause_scores);
+        if self.use_short_clause_pivot {
+            if short_scores.len() != self.problem.n + 1 {
+                short_scores.resize(self.problem.n + 1, 0);
+            }
+            short_scores.fill(0);
+        }
         for &cid in &ids {
             if self.satisfied[cid] != 0 {
                 continue;
             }
+            // Bounded integer Jeroslow-Wang weight: sum 2^(-clause_len).
+            // The common 2^16 scale means no floating-point heuristic
+            // arithmetic, and scores never affect MPFR WMC weights.
+            let clause_score = if self.use_short_clause_pivot {
+                1_u64 << (16 - self.live[cid].min(16))
+            } else {
+                0
+            };
             for &lit in &self.clauses[cid] {
-                if self.assigned[lit.unsigned_abs() as usize] == 0 {
-                    frequency[lit.unsigned_abs() as usize] += 1;
+                let var = lit.unsigned_abs() as usize;
+                if self.assigned[var] == 0 {
+                    frequency[var] += 1;
+                    if self.use_short_clause_pivot {
+                        short_scores[var] = short_scores[var].saturating_add(clause_score);
+                    }
                 }
             }
         }
@@ -496,8 +525,16 @@ impl<'a> TrailEngine<'a> {
                 prefix = prefix.mul(&w.positive.add(&w.negative, self.bits), self.bits);
             }
         }
-        let pivot = active.iter().max_by_key(|&&var| frequency[var]).copied();
+        let pivot = if self.use_short_clause_pivot {
+            // Stable deterministic ties: short-clause score, original
+            // frequency, then variable index (matching frequency fallback).
+            active.iter().max_by_key(|&&var|
+                (short_scores[var], frequency[var], var)).copied()
+        } else {
+            active.iter().max_by_key(|&&var| frequency[var]).copied()
+        };
         self.frequency = frequency;
+        self.short_clause_scores = short_scores;
         if active.is_empty() {
             return Ok(self.save(
                 key,
@@ -529,6 +566,10 @@ impl<'a> TrailEngine<'a> {
             ));
         }
         let pivot = pivot.ok_or("missing trail pivot")?;
+        if self.first_pivot.is_none() {
+            self.first_pivot = Some(pivot);
+        }
+        self.pivot_nodes += 1;
         let child: Vec<usize> = active.into_iter().filter(|&v| v != pivot).collect();
         let checkpoint = self.trail.len();
 
@@ -777,4 +818,94 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn short_clause_pivot_changes_branching_without_changing_signed_wmc() {
+        // Old frequency picks one of the four long-clause high-frequency
+        // variables. Bounded Jeroslow-Wang prefers variable 1, which occurs
+        // in the unique short clause and joins the long clauses via clause 5.
+        const SOURCE: &str = concat!(
+            "p cnf 6 5\nc t wmc\n",
+            "1 2 0\n",
+            "3 4 5 6 0\n",
+            "3 -4 -5 6 0\n",
+            "-3 4 -5 -6 0\n",
+            "1 3 4 5 6 0\n",
+        );
+        for bits in [100_u32, 333_u32] {
+            let problem = parse_emitted(SOURCE, bits).unwrap();
+            let mut reference = TrailEngine::new(&problem, bits, 128, 100_000);
+            reference.use_parent_ids = true;
+            reference.use_compact_residual = true;
+            reference.use_prehashed_cache = true;
+            reference.use_fused_compact = true;
+            let expected = reference.count((1..=problem.n).collect(), 0).unwrap();
+            let mut candidate = TrailEngine::new(&problem, bits, 128, 100_000);
+            candidate.use_parent_ids = true;
+            candidate.use_compact_residual = true;
+            candidate.use_prehashed_cache = true;
+            candidate.use_fused_compact = true;
+            candidate.use_short_clause_pivot = true;
+            let actual = candidate.count((1..=problem.n).collect(), 0).unwrap();
+            assert_ne!(reference.first_pivot, candidate.first_pivot);
+            assert_eq!(candidate.first_pivot, Some(1));
+            assert_eq!(actual.sat, expected.sat);
+            assert_eq!(actual.count.re, expected.count.re);
+            assert_eq!(actual.count.im, expected.count.im);
+            assert!(candidate.pivot_nodes > 0);
+            assert!(candidate.assigned.iter().all(|&x| x == 0));
+            assert!(candidate.trail.is_empty());
+            for (cid, clause) in candidate.clauses.iter().enumerate() {
+                assert_eq!(candidate.live[cid], clause.len());
+                assert_eq!(candidate.satisfied[cid], 0);
+            }
+        }
+    }
+
+    #[test]
+    fn short_clause_pivot_matches_dyadic_full_complex_counting() {
+        let mut seed = 0x9e3779b97f4a7c15_u64;
+        for bits in [100_u32, 333_u32] {
+            for case in 0..40 {
+                let mut clauses = Vec::new();
+                for _ in 0..(4 + case % 10) {
+                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    let n = 1 + (seed as usize % 4);
+                    let mut clause = Vec::new();
+                    for _ in 0..n {
+                        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                        let var = 1 + (seed as usize % 5);
+                        clause.push(if seed & 4 == 0 { var as i32 } else { -(var as i32) });
+                    }
+                    clauses.push(clause);
+                }
+                let problem = Problem {
+                    n: 5,
+                    clauses,
+                    weights: (0..5).map(|i| crate::Weights {
+                        positive: C::decimal(bits, "0.5", "-0.25").unwrap(),
+                        negative: C::decimal(bits,
+                            if i % 2 == 0 { "-0.25" } else { "0.125" }, "0.5").unwrap(),
+                    }).collect(),
+                };
+                let mut old = TrailEngine::new(&problem, bits, 128, 100_000);
+                old.use_parent_ids = true;
+                old.use_compact_residual = true;
+                old.use_prehashed_cache = true;
+                old.use_fused_compact = true;
+                let expected = old.count((1..=5).collect(), 0).unwrap();
+                let mut heuristic = TrailEngine::new(&problem, bits, 128, 100_000);
+                heuristic.use_parent_ids = true;
+                heuristic.use_compact_residual = true;
+                heuristic.use_prehashed_cache = true;
+                heuristic.use_fused_compact = true;
+                heuristic.use_short_clause_pivot = true;
+                let actual = heuristic.count((1..=5).collect(), 0).unwrap();
+                assert_eq!((actual.sat, actual.count.re, actual.count.im),
+                           (expected.sat, expected.count.re, expected.count.im),
+                           "source {case}, bits {bits}");
+                assert!(heuristic.assigned.iter().all(|&v| v == 0));
+            }
+        }
+    }
+
 }

@@ -178,8 +178,8 @@ def main() -> None:
     args = ap.parse_args()
     if not 2 <= args.trials <= 9:
         raise SystemExit("requires 2..9 alternating fresh-process trials")
-    if not 2 <= args.holdout_trials <= 5:
-        raise SystemExit("requires 2..5 alternating holdout trials")
+    if not 2 <= args.holdout_trials <= 9:
+        raise SystemExit("requires 2..9 alternating holdout trials")
     if not 5 <= args.holdout_timeout <= 60:
         raise SystemExit("holdout subprocess timeout must be 5..60s")
     check_source(args.quprs, QU_PRS)

@@ -67,6 +67,10 @@ name = "xor_native_admission_paired"
 # QOO-224 benchmark-only native study; not a public solver feature.
 required-features = ["branching-research"]
 
+[[example]]
+name = "pathsum_factor_source_cli"
+required-features = ["pathsum-factor-research"]
+
 [[bench]]
 name = "quprs_direct_cnf"
 harness = false

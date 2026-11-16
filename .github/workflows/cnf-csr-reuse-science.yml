@@ -1,0 +1,62 @@
+name: Original weighted-CNF MPFR reusable CSR workspace science
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/cnf-csr-reuse-science.yml
+      - benchmarks/mpfr_research/src/main.rs
+      - benchmarks/mpfr_research/src/csr_workspace.rs
+      - benchmarks/rust_core/tools/quprs_cnf_csr_reuse_ab.py
+      - docs/cnf-csr-reuse-research.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  exact-wmc-science:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/mpfr_research -> target
+          key: csr-reuse-source-CNF
+      - name: Exact complex WMC under CNF-only reusable CSR arena in weighted unit propagation at 100/333 bits
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --release --manifest-path benchmarks/mpfr_research/Cargo.toml
+      - name: Strict new-code Clippy with inherited legacy research allowances
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo clippy --manifest-path benchmarks/mpfr_research/Cargo.toml --all-targets -- -D warnings -A clippy::excessive_precision -A clippy::approx_constant -A clippy::manual_hash_one
+      - name: Canonical new-module formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustfmt --edition 2021 --check benchmarks/mpfr_research/src/csr_workspace.rs
+
+
+
+  format-candidate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Emit canonical Rustfmt source for review
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustfmt --edition 2021 benchmarks/mpfr_research/src/csr_workspace.rs
+          printf 'CSR_REUSE_RUSTFMT_SOURCE %s\n' "$(base64 -w0 benchmarks/mpfr_research/src/csr_workspace.rs)"

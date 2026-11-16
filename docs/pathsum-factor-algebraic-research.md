@@ -376,6 +376,93 @@ Next research gate: quantify Adder8 shared ANF subexpressions and
 factorization before investing in bounded source-aware DAG, ADD/BDD or
 rank-width compilation. Avoid increasing the dense table limit blindly.
 
+## Original Adder8: source-pinned canonical GF(2) ANF DAG structural evidence (2026-11-16)
+
+An independent, **research-only structural profiler** now examines the
+*original unchanged QASM* from QuPRS at
+0b28736651b3740ed3b201edd2efdef3da541e0d. The temporary QuPRS
+source example builds the original post-RR PathSum, then exports output
+trace ANF equations using a stable source-variable map. A separate
+RaWMoCS example compiles each equation under GF(2) into a canonical
+hash-consed ZDD-like polynomial DAG:
+
+    f(x) = low(x) XOR (x_v AND high(x))
+
+with identical (variable, low, high) triples interned across all
+outputs; duplicate monomials cancel modulo two and variables within
+AND monomials are idempotent. This representation preserves each
+Boolean *polynomial*, **not** the weighted model count of a conjunction
+of the output equalities. The tool does not change or approximate
+original gates, phase coefficients, QuPRS adapters, or GPMC.
+
+Research programs:
+- benchmarks/rust_core/tools/quprs_pathsum_anf_dag_export.rs
+  (copied only into the isolated immutable QuPRS checkout in CI);
+- benchmarks/rust_core/examples/anf_dag_profile.rs
+  (research-only Cargo feature pathsum-factor-research);
+- .github/workflows/quprs-anf-dag-research.yml
+  (Linux/macOS/Windows science and strict lint, original QASM source
+  profile, 30s / 2GiB virtual-AS per source experiment).
+
+Source structural CI: https://github.com/PhysicsQoo/RaWMoCS/actions/runs/43800553654
+
+| Post-RR original source | variables | original ANF terms | canonical trace terms after GF(2) | unique DAG nodes | multiply referenced DAG nodes | cross-output shared nodes | intern reuse hits |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Feynman Adder8 | 24 | **14,565** | **14,541** | **206** | 36 | 8 | 14,371 |
+| Feynman Toffoli10 | 19 | 28 | 9 | 54 | 0 | 0 | 0 |
+| Feynman Barenco10 | 19 | 20 | 1 | 10 | 0 | 0 | 0 |
+| Feynman HWB6 | 7 | 353 | 358 | 168 | 28 | 23 | 300 |
+
+Adder8 has 24 output equations of which **nine are nontrivial**;
+all tested four post-RR traces have zero remaining phase terms. The
+Adder8 canonical polynomial support contains **77,740 variable
+occurrences**. A deliberately defined naive non-shared branch upper
+bound is 92,281 entries, compared with 206 hash-consed DAG nodes.
+These quantities use *different representations*, not byte-identical
+memory accounting, and they do NOT imply a 447x solve acceleration
+or physical-RSS reduction. Interning 14,371 times reflects reused
+triples during construction, not an experimentally measured dynamic
+programming cache-hit rate for WMC.
+
+The initial pinned-source single Linux run observed Adder8 compiler
+time approximately **3.592 ms** and 256 deterministic original-ANF
+versus DAG assignment comparisons approximately **27.116 ms**
+(before the follow-up improvement sharing memoized evaluations across
+outputs per assignment). These are source-specific one-runner
+diagnostic costs, not controlled GPMC or QuPRS full pipeline numbers.
+
+Small independent science tests exhaust all assignments for multiple
+synthetic 7-variable multi-output ANF systems, including duplicate
+cancellation, constant terms, zero outputs and cross-output subgraph
+sharing. All first qualified Linux, macOS and Windows science / Clippy
+jobs passed. The source Adder8 probe compares 256 deterministic
+assignments with direct original source ANF evaluation, **not**
+exhaustive 2^24 enumeration; a dedicated mathematically independent
+source counting oracle remains to be built. Fail-closed input/work/
+node budgets are 8 MiB, 56 variables, 200k source monomials,
+4 million summed recursive monomial visits, 800k unique DAG nodes,
+and 30 seconds / 2 GiB virtual-AS for CI source operations.
+
+### Interpretation and admission gate
+
+The key result is **very strong polynomial representation sharing**
+for Adder8, while Toffoli10 and Barenco10 do not benefit from DAG
+hash-consing in the same way. This strongly motivates a *bounded
+joint trace-constraint decision-diagram counting experiment* rather
+than lifting Dense Factor DP width16 to width24 or applying the
+single-output <=20-monomial Walsh shortcut to 14k terms.
+
+However a small GF(2) polynomial DAG does not imply that a BDD/ADD
+for the **conjunction of nine nontrivial trace equalities** is also
+small. That second representation may blow up. Required next experiment:
+factor-aware Shannon cofactors or ADD/BDD over all output constraints,
+explicit variable order and a strict node/time/RSS cap, preserving the
+separate Boolean SAT bit and Full Complex WMC. Compare on the SAME
+post-RR source and independently verify the 24-variable phase-free
+result against a separately emitted exact GPMC CNF. Keep CENSORED
+and fallback statuses as scientific evidence. Production routing
+remains unchanged; this DAG profiler **does not solve Adder8 WMC**.
+
 ## Literature
 
 - Compilation and Fast Model Counting beyond CNF (IJCAI 2024):

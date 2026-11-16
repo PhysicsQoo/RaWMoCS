@@ -15,6 +15,7 @@ use std::path::Path;
 use std::time::Instant;
 
 mod weighted_equivalence;
+mod separator_lookahead;
 
 type Clause = Vec<i32>;
 
@@ -163,6 +164,8 @@ struct Engine<'a> {
     indexed_unit_csr: bool,
     reuse_frequency_scratch: bool,
     frequency_scratch: Vec<usize>,
+    separator_lookahead: bool,
+    separator_stats: separator_lookahead::SeparatorStats,
 }
 impl<'a> Engine<'a> {
     fn new(p: &'a Problem, bits: u32, cache_policy: CachePolicy) -> Engine<'a> {
@@ -177,6 +180,8 @@ impl<'a> Engine<'a> {
             indexed_unit_csr: false,
             reuse_frequency_scratch: false,
             frequency_scratch: vec![0; p.n + 1],
+            separator_lookahead: false,
+            separator_stats: separator_lookahead::SeparatorStats::default(),
         }
     }
     fn borrowed_key_hash(&self, scope: &[usize], residual: &[Clause]) -> u64 {
@@ -407,7 +412,16 @@ impl<'a> Engine<'a> {
                 sat: true, count: prefix.mul(&value, self.bits),
             }));
         }
-        let var = *active.iter().max_by_key(|&&v| frequency[v]).ok_or("no active pivot")?;
+        let normal_frequency = *active.iter()
+            .max_by_key(|&&v| frequency[v]).ok_or("no active pivot")?;
+        let var = if self.separator_lookahead {
+            separator_lookahead::choose(
+                &residual, &active, &frequency, self.p.n,
+                &mut self.separator_stats,
+            ).unwrap_or(normal_frequency)
+        } else {
+            normal_frequency
+        };
         if self.reuse_frequency_scratch {
             for &v in &active { frequency[v] = 0; }
             self.frequency_scratch = frequency;
@@ -794,6 +808,10 @@ fn run() -> Result<(), String> {
     let cache_first = if weighted_equivalence {
         args.next().ok_or("missing cache policy or precision after --weighted-equivalence")?
     } else { cache_first };
+    let separator_lookahead = cache_first.to_str() == Some("--separator-lookahead");
+    let cache_first = if separator_lookahead {
+        args.next().ok_or("missing cache policy or precision after --separator-lookahead")?
+    } else { cache_first };
     let cache_policy = match cache_first.to_str() {
         Some("--hashbrown-owned") => CachePolicy::HbOwned,
         Some("--hashbrown-borrowed") => CachePolicy::HbBorrowed,
@@ -843,6 +861,7 @@ fn run() -> Result<(), String> {
     engine.indexed_unit_propagation = indexed_unit_propagation;
     engine.indexed_unit_csr = indexed_unit_csr;
     engine.reuse_frequency_scratch = reuse_frequency_scratch;
+    engine.separator_lookahead = separator_lookahead;
     engine.indexed_activation_node = indexed_activation_node;
     let answer = engine.count(source.clauses.clone(), scope, 0)?;
     let solve_ns = t2.elapsed().as_nanos();
@@ -861,6 +880,11 @@ fn run() -> Result<(), String> {
         reduction_stats.eliminated_vars, reduction_stats.removed_clauses,
         reduction_stats.representatives, reduction_stats.contradictory,
         reduction_stats.censored);
+    eprintln!("RESEARCH_MPFR_SEPARATOR enabled={} scans={} candidates={} chosen={} no_split={} work={} censored={}",
+        separator_lookahead, engine.separator_stats.scans,
+        engine.separator_stats.candidates, engine.separator_stats.chosen,
+        engine.separator_stats.no_split, engine.separator_stats.work,
+        engine.separator_stats.censored);
     eprintln!("RESEARCH_MPFR_CACHE_POLICY {}", cache_policy.label());
     eprintln!("RESEARCH_MPFR_SHARED_RESIDUAL enabled={} entries={}",
         shared_residual_key, engine.shared_cache.len());

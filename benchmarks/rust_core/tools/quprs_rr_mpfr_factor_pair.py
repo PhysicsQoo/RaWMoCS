@@ -163,8 +163,8 @@ def main() -> None:
     ap.add_argument("--report", type=Path, required=True)
     ap.add_argument("--trials", type=int, default=3)
     args = ap.parse_args()
-    if not 2 <= args.trials <= 5:
-        raise SystemExit("requires 2..5 alternating fresh-process trials")
+    if not 2 <= args.trials <= 9:
+        raise SystemExit("requires 2..9 alternating fresh-process trials")
     check_source(args.quprs, QU_PRS)
     check_source(args.gpmc_source, GPMC)
     args.corpus.mkdir(parents=True, exist_ok=True)

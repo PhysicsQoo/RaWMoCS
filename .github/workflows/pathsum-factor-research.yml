@@ -72,7 +72,7 @@ jobs:
           mkdir -p .research/pathsum-structure
           probe="$GITHUB_WORKSPACE/.upstream/quprs/rust/target/release/examples/quprs_pathsum_structural_probe"
           : > .research/pathsum-structure/status.tsv
-          for name in feynman_hwb6 feynman_qft4 mqt_qnn_4 mqt_grover_4 mqt_vqe_4; do
+          for name in feynman_hwb6 feynman_qft4 mqt_qnn_4 mqt_grover_4 mqt_vqe_4 feynman_grover5 feynman_barenco5 feynman_modmult55; do
             for mode in raw rr; do
               target=".research/pathsum-structure/${name}-${mode}.tsv"
               if timeout -k 2s 30s prlimit --as=2147483648 -- \
@@ -108,7 +108,7 @@ jobs:
           exporter="$GITHUB_WORKSPACE/.upstream/quprs/rust/target/release/examples/quprs_pathsum_factor_export"
           solver="$GITHUB_WORKSPACE/benchmarks/rust_core/target/release/examples/pathsum_factor_source_cli"
           : > .research/pathsum-structure/factor-admission.tsv
-          for name in feynman_hwb6 feynman_qft4 mqt_qnn_4 mqt_grover_4 mqt_vqe_4; do
+          for name in feynman_hwb6 feynman_qft4 mqt_qnn_4 mqt_grover_4 mqt_vqe_4 feynman_grover5 feynman_barenco5 feynman_modmult55; do
             if timeout -k 2s 30s prlimit --as=2147483648 -- \
                "$exporter" "$name" "$GITHUB_WORKSPACE/.upstream/quprs" \
                ".research/pathsum-structure" \
@@ -128,6 +128,10 @@ jobs:
           cat .research/pathsum-structure/factor-admission.tsv
           grep -q '^feynman_hwb6[[:space:]]EXACT_ORACLE_MATCH' \
             .research/pathsum-structure/factor-admission.tsv
+          for case in feynman_grover5 feynman_barenco5 feynman_modmult55; do
+            grep -q "^$case[[:space:]]EXACT_ORACLE_MATCH" \
+              .research/pathsum-structure/factor-admission.tsv
+          done
       - name: Archive immutable source-scoped profile and censored outcomes
         if: always()
         uses: actions/upload-artifact@v4

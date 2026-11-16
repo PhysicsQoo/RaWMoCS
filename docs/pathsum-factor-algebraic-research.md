@@ -463,6 +463,70 @@ result against a separately emitted exact GPMC CNF. Keep CENSORED
 and fallback statuses as scientific evidence. Production routing
 remains unchanged; this DAG profiler **does not solve Adder8 WMC**.
 
+## Bounded multi-output ROBDD counting from source Adder8 (2026-11-16)
+
+Status: new source-scoped research algorithm has produced Adder8 exact
+integer **candidate**; independent GPMC same-RR full-count oracle is
+**PENDING**, so no production or generalized speedup admission.
+
+The previously validated 206-node ANF polynomial DAG is ZDD-like,
+representing XOR sums of square-free monomials, *not* the satisfying
+assignment BDD. The new opt-in "--joint-bdd" route converts it using
+the exact Shannon cofactors:
+
+    f = low XOR (x_v AND high)
+    BDD(f) = mk(v, BDD(low), XOR(BDD(low), BDD(high)))
+
+Each trace equality is f=0, so the solution ROBDD is the AND of the
+negated output polynomials. The solver hash-conses each (var,lo,hi)
+BDD node, drops redundant lo==hi nodes, memoizes bounded XOR/AND
+Apply, and sums 0/1 cofactors over all declared variables,
+including skipped/free variables.
+
+This standalone method is limited to **phase-free, unit-weight**
+Boolean WMC, in which the Full Complex count is the exact integer
+plus zero imaginary part. It does **not** support arbitrary-angle
+phase factors, complex source weights, MPFR rounding or a
+production router. Resource admission is 56 source variables;
+250,000 nonterminal BDD nodes; 3,000,000 Apply calls; 1,500,000
+Apply-cache entries; 30-second source CI process timeout and 2-GiB
+virtual address limit. All over-budget paths fail closed.
+
+First source-pinned CI at original QuPRS revision
+0b28736651b3740ed3b201edd2efdef3da541e0d:
+https://github.com/PhysicsQoo/RaWMoCS/actions/runs/43802083276
+
+The pinned source executable built and returned these results. The
+independent platform science jobs in that particular run failed
+Rustfmt before testing and have not been marked qualified.
+Canonical source formatting has since been applied.
+
+| Original source | ANF DAG nodes | Joint BDD nodes | Apply calls | SAT | Exact integer WMC |
+| --- | ---: | ---: | ---: | --- | --- |
+| Adder8 | 206 | **624** | **2,238** | true | **40960+0i (candidate)** |
+| Toffoli10 | 54 | 152 | 268 | true | 393216+0i |
+| Barenco10 | 10 | 20 | 32 | true | 523776+0i |
+| HWB6 | 168 | 479 | 1480 | true | 4+0i |
+
+Toffoli10, Barenco10 and HWB6 reproduce previously obtained independent
+original-source exact WMC oracles. Adder8 at 40960+0i has so far only
+source-profiled deterministic assignment cross-checks and the new
+integer-count recurrence, not an independently measured full
+model count. Count/validation stage in one Linux source run took
+approximately 0.407ms, excluding QASM parse, RR, source export,
+ANF DAG compilation and process startup. Never report this as
+a 0.4ms QuPRS E2E verified solver.
+
+A separate new GPMC oracle CI path attempts to emit original
+**phase-free GPMC weighted CNF** from the SAME post-RR PathSum,
+compares its second ANF export byte-for-byte to the original,
+then solves the CNF using the unchanged pinned GPMC C++ at
+30 decimal precision under a strict timeout and virtual-AS cap.
+If either arm is censored, Adder8 remains **PENDING**, not PASS.
+A complete oracle match must compare SAT and BOTH complex
+parts; only after this gate should controlled paired WallTime/RSS
+be evaluated for possible selective algorithm admission.
+
 ## Literature
 
 - Compilation and Fast Model Counting beyond CNF (IJCAI 2024):

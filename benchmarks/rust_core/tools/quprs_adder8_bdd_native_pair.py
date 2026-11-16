@@ -177,8 +177,14 @@ def main() -> None:
         raise SystemExit("MISSING_PINNED_ORIGINAL_RR_SOURCE")
     if not args.anf.read_text().startswith("p anf 24 24 0\n"):
         raise SystemExit("WRONG_ORIGINAL_RR_ANF")
-    if not args.cnf.read_text().startswith("c "):
-        raise SystemExit("WRONG_ORIGINAL_RR_CNF")
+    cnf_lines = args.cnf.read_text().splitlines()
+    headers = [line.split() for line in cnf_lines if line.startswith("p ")]
+    if len(headers) != 1 or len(headers[0]) != 4 or headers[0][:2] != ["p", "cnf"]:
+        raise SystemExit("WRONG_ORIGINAL_RR_CNF_HEADER")
+    if not all(token.isdigit() for token in headers[0][2:]):
+        raise SystemExit("WRONG_ORIGINAL_RR_CNF_COUNTS")
+    if int(headers[0][2]) < 24 or int(headers[0][3]) < 1:
+        raise SystemExit("WRONG_ORIGINAL_RR_CNF_DIMENSIONS")
     for file in (args.bdd, args.bitset, args.gpmc):
         if not file.is_file():
             raise SystemExit(f"MISSING_NATIVE_EXECUTABLE: {file}")

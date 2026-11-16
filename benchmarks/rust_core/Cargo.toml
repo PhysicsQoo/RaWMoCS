@@ -15,6 +15,8 @@ branching-research = ["rawmocs-core/branching-research", "cache-admission-resear
 canonical-mul-research = ["rawmocs-core/canonical-mul-research"]
 # Only paired original QuPRS test-defined CNF; exclude from standard CodSpeed IDs.
 quprs-gpmc-paired-research = []
+# Independent native Path-sum factor and sign-quadratic algorithm PoCs.
+pathsum-factor-research = []
 
 [workspace]
 

@@ -450,10 +450,10 @@ impl QuadraticSign {
             if let Some(row) = (at..rows.len()).find(|&r| rows[r].0 & (1 << col) != 0) {
                 rows.swap(at, row);
                 let pivot = rows[at];
-                for r in 0..rows.len() {
-                    if r != at && rows[r].0 & (1 << col) != 0 {
-                        rows[r].0 ^= pivot.0;
-                        rows[r].1 ^= pivot.1;
+                for (r, row) in rows.iter_mut().enumerate() {
+                    if r != at && row.0 & (1 << col) != 0 {
+                        row.0 ^= pivot.0;
+                        row.1 ^= pivot.1;
                     }
                 }
                 pivots.push(col);

@@ -16,6 +16,7 @@ use std::time::Instant;
 
 mod weighted_equivalence;
 mod unit_closure_pivot;
+mod csr_workspace;
 
 type Clause = Vec<i32>;
 
@@ -166,6 +167,8 @@ struct Engine<'a> {
     frequency_scratch: Vec<usize>,
     unit_closure_pivot: bool,
     unit_closure_stats: unit_closure_pivot::ClosureStats,
+    reuse_csr_workspace: bool,
+    csr_workspace: csr_workspace::Workspace,
 }
 impl<'a> Engine<'a> {
     fn new(p: &'a Problem, bits: u32, cache_policy: CachePolicy) -> Engine<'a> {
@@ -182,6 +185,8 @@ impl<'a> Engine<'a> {
             frequency_scratch: vec![0; p.n + 1],
             unit_closure_pivot: false,
             unit_closure_stats: unit_closure_pivot::ClosureStats::default(),
+            reuse_csr_workspace: false,
+            csr_workspace: csr_workspace::Workspace::default(),
         }
     }
     fn borrowed_key_hash(&self, scope: &[usize], residual: &[Clause]) -> u64 {
@@ -337,9 +342,22 @@ impl<'a> Engine<'a> {
             self.stats.nodes >= self.indexed_activation_node &&
             residual.iter().any(|c| c.len() == 1) {
             let reduced = if self.indexed_unit_csr {
-                unit_propagate_indexed_csr(
-                    &residual, self.p.n, &self.p.weights, self.bits, &mut remaining, &mut prefix
-                )
+                if self.reuse_csr_workspace {
+                    // Restore the reusable arena before child recursion, even
+                    // after a Boolean UNSAT cofactor. No workspace data is
+                    // allowed to enter a residual cache key or model result.
+                    let mut arena = std::mem::take(&mut self.csr_workspace);
+                    let outcome = csr_workspace::propagate(
+                        &residual, self.p.n, &self.p.weights, self.bits,
+                        &mut remaining, &mut prefix, &mut arena,
+                    );
+                    self.csr_workspace = arena;
+                    outcome
+                } else {
+                    unit_propagate_indexed_csr(
+                        &residual, self.p.n, &self.p.weights, self.bits, &mut remaining, &mut prefix
+                    )
+                }
             } else {
                 unit_propagate_indexed(
                     &residual, self.p.n, &self.p.weights, self.bits, &mut remaining, &mut prefix
@@ -812,6 +830,10 @@ fn run() -> Result<(), String> {
     let cache_first = if unit_closure_pivot {
         args.next().ok_or("missing cache policy or precision after --unit-closure-pivot")?
     } else { cache_first };
+    let reuse_csr_workspace = cache_first.to_str() == Some("--csr-reuse-workspace");
+    let cache_first = if reuse_csr_workspace {
+        args.next().ok_or("missing cache policy or precision after --csr-reuse-workspace")?
+    } else { cache_first };
     let cache_policy = match cache_first.to_str() {
         Some("--hashbrown-owned") => CachePolicy::HbOwned,
         Some("--hashbrown-borrowed") => CachePolicy::HbBorrowed,
@@ -831,6 +853,9 @@ fn run() -> Result<(), String> {
     }
     // Source GPMC/mpfr/mpreal.h uses this EXACT digits2bits conversion.
     let bits = (f64::from(digits) * 3.321_928_094_887_362_4).ceil() as u32;
+    if reuse_csr_workspace && !indexed_unit_csr {
+        return Err("--csr-reuse-workspace requires an indexed CSR unit propagation mode".into());
+    }
     let path = args.next().ok_or("missing CNF")?;
     if args.next().is_some() { return Err("expected exactly one file".into()); }
     let t0 = Instant::now();
@@ -862,6 +887,7 @@ fn run() -> Result<(), String> {
     engine.indexed_unit_csr = indexed_unit_csr;
     engine.reuse_frequency_scratch = reuse_frequency_scratch;
     engine.unit_closure_pivot = unit_closure_pivot;
+    engine.reuse_csr_workspace = reuse_csr_workspace;
     engine.indexed_activation_node = indexed_activation_node;
     let answer = engine.count(source.clauses.clone(), scope, 0)?;
     let solve_ns = t2.elapsed().as_nanos();
@@ -886,6 +912,9 @@ fn run() -> Result<(), String> {
         engine.unit_closure_stats.rejected, engine.unit_closure_stats.work,
         engine.unit_closure_stats.forced, engine.unit_closure_stats.contradictions,
         engine.unit_closure_stats.censored);
+    let (csr_slots, csr_literals, csr_clauses) = engine.csr_workspace.capacities();
+    eprintln!("RESEARCH_MPFR_CSR_WORKSPACE enabled={} slots={} literals={} clauses={}",
+        reuse_csr_workspace, csr_slots, csr_literals, csr_clauses);
     eprintln!("RESEARCH_MPFR_CACHE_POLICY {}", cache_policy.label());
     eprintln!("RESEARCH_MPFR_SHARED_RESIDUAL enabled={} entries={}",
         shared_residual_key, engine.shared_cache.len());

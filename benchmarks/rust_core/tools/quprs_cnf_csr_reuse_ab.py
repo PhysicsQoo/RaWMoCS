@@ -233,6 +233,24 @@ def main() -> None:
                 continue
             if len(records) != len(ARMS) * case_trials:
                 raise SystemExit("unbalanced native source trial count")
+            # Reusing temporary CSR storage is not a search algorithm.
+            # The two Rust weighted-equivalence arms must therefore return
+            # identical complete stdout bytes, SAT and full search topology,
+            # not merely agree approximately with original GPMC.
+            exact_fields = (
+                "sat", "real", "imag", "stdout_sha256",
+                "nodes", "cache_hits", "decompositions",
+            )
+            for trial in range(case_trials):
+                old = next(r for r in records
+                           if r["trial"] == trial and r["arm"] == "equivalence")
+                new = next(r for r in records
+                           if r["trial"] == trial and r["arm"] == "arena")
+                if any(old[field] != new[field] for field in exact_fields):
+                    cohort["status"] = "FAILED_RUST_EXACT_CSR_PARITY"
+                    cohort["parity_failure_trial"] = trial
+                    args.report.write_text(json.dumps(report, indent=2) + "\n")
+                    raise SystemExit("FAILED_CSR_STDOUT_SAT_SEARCH_OR_CACHE_PARITY")
             reference = next(r for r in records if r["arm"] == "gpmc")
             ref_real, ref_imag = Fraction(reference["real"]), Fraction(reference["imag"])
             agreement = all(

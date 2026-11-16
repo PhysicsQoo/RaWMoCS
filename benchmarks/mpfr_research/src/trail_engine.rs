@@ -440,7 +440,10 @@ mod tests {
             assert_eq!(indexed.count.im, actual.count.im);
             assert_eq!(parent_indexed.stats.nodes, trail.stats.nodes);
             assert_eq!(parent_indexed.stats.cache_hits, trail.stats.cache_hits);
-            assert_eq!(parent_indexed.stats.decompositions, trail.stats.decompositions);
+            assert_eq!(
+                parent_indexed.stats.decompositions,
+                trail.stats.decompositions
+            );
             assert!(parent_indexed.assigned.iter().all(|&x| x == 0));
             assert_eq!(trail.trail.len(), 0);
             assert!(trail.assigned.iter().all(|&x| x == 0));

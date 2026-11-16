@@ -120,23 +120,3 @@ jobs:
 
 
 
-  rustfmt-candidates:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 8
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - name: Output canonical formatting for source review
-        shell: bash
-        run: |
-          set -euo pipefail
-          files=(
-            benchmarks/mpfr_research/src/bin/pathsum_factor_mpfr.rs
-            benchmarks/rust_core/tools/quprs_rr_mpfr_paired_export.rs
-          )
-          rustfmt --edition 2021 "${files[@]}"
-          for file in "${files[@]}"; do
-            printf 'FORMATTED_CANDIDATE %s %s\n' "$file" "$(base64 -w0 "$file")"
-          done

@@ -1,0 +1,123 @@
+name: QuPRS Adder8 original RR BDD vs GPMC native pairing
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/quprs-adder8-bdd-native-paired.yml
+      - benchmarks/rust_core/tools/quprs_adder8_bdd_native_pair.py
+      - benchmarks/rust_core/examples/anf_dag_profile.rs
+      - benchmarks/rust_core/examples/anf_bitset_oracle.rs
+      - benchmarks/rust_core/tools/quprs_pathsum_anf_dag_export.rs
+      - docs/pathsum-factor-algebraic-research.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: adder8-bdd-pair-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  adder8-native-compare:
+    timeout-minutes: 35
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/QuPRS
+          ref: 0b28736651b3740ed3b201edd2efdef3da541e0d
+          path: .upstream/quprs
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/GPMC
+          ref: 89bbc89d0de918e7a5385740355df55765039230
+          path: .upstream/gpmc
+          submodules: recursive
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .upstream/quprs/rust -> target
+            benchmarks/rust_core -> target
+          key: original-adder8-bdd-paired
+      - name: Install pinned native prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build libgmp-dev libmpfr-dev zlib1g-dev pkg-config time
+      - name: Verify immutable sources and Python syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C .upstream/quprs rev-parse HEAD)" = 0b28736651b3740ed3b201edd2efdef3da541e0d
+          test "$(git -C .upstream/gpmc rev-parse HEAD)" = 89bbc89d0de918e7a5385740355df55765039230
+          python3 -m py_compile benchmarks/rust_core/tools/quprs_adder8_bdd_native_pair.py
+          sha256sum .upstream/quprs/benchmarks/Feynman/adder_8.qasm
+      - name: Compile unchanged QuPRS source exporter and three research solvers
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp benchmarks/rust_core/tools/quprs_pathsum_anf_dag_export.rs \
+             .upstream/quprs/rust/quprs/examples/quprs_pathsum_anf_dag_export.rs
+          cargo build --locked --release --no-default-features \
+            --manifest-path .upstream/quprs/rust/Cargo.toml \
+            -p quprs --example quprs_pathsum_anf_dag_export
+          cargo build --locked --release \
+            --manifest-path benchmarks/rust_core/Cargo.toml \
+            --features pathsum-factor-research \
+            --example anf_dag_profile \
+            --example anf_bitset_oracle
+      - name: Compile original unmodified GPMC C++
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S .upstream/gpmc -B .upstream/gpmc/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build .upstream/gpmc/build --target gpmc-bin --parallel 2
+      - name: Generate both representations from the same original post-RR QuPRS PathSum
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .research/adder8-paired
+          exporter="$GITHUB_WORKSPACE/.upstream/quprs/rust/target/release/examples/quprs_pathsum_anf_dag_export"
+          /usr/bin/time -f 'RR_SOURCE_PROCESS_PEAK_RSS_KIB=%M' \
+            -o .research/adder8-paired/source-rss.log \
+            timeout -k 2s 45s prlimit --as=2147483648 -- \
+            "$exporter" feynman_adder8 "$GITHUB_WORKSPACE/.upstream/quprs" \
+            .research/adder8-paired/feynman_adder8.anf \
+            .research/adder8-paired/feynman_adder8-gpmc.cnf \
+            > .research/adder8-paired/source-export.log 2>&1
+          sha256sum .research/adder8-paired/feynman_adder8.anf \
+                    .research/adder8-paired/feynman_adder8-gpmc.cnf \
+            > .research/adder8-paired/pinned-model-sha256.txt
+          cat .research/adder8-paired/source-export.log
+      - name: Seven interleaved fresh processes per algorithm and precision
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 benchmarks/rust_core/tools/quprs_adder8_bdd_native_pair.py \
+            --quprs .upstream/quprs \
+            --gpmc-repo .upstream/gpmc \
+            --anf .research/adder8-paired/feynman_adder8.anf \
+            --cnf .research/adder8-paired/feynman_adder8-gpmc.cnf \
+            --bdd benchmarks/rust_core/target/release/examples/anf_dag_profile \
+            --bitset benchmarks/rust_core/target/release/examples/anf_bitset_oracle \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --trials 7 \
+            --timeout 35 \
+            --output .research/adder8-paired/seven-trial-results.json \
+            | tee .research/adder8-paired/study.log
+      - name: Archive all source and censored negative evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: original-adder8-native-bdd-gpmc-bitset-paired
+          path: .research/adder8-paired/
+          retention-days: 30
+          if-no-files-found: warn

@@ -34,10 +34,20 @@ CASES = (
     "mqt_grover_4",
     "mqt_vqe_4",
 )
+HOLDOUT_CASES = (
+    "feynman_grover5",
+    "feynman_barenco5",
+    "feynman_modmult55",
+)
+# Do not broaden the legacy 7-trial cohort without explicitly qualifying the
+# additional original QuPRS inputs; short holdouts preserve censored cases.
 PRECISIONS = {30: 100, 100: 333}
 SOURCE_PATHS = {
     "feynman_hwb6": "benchmarks/Feynman/hwb6.qasm",
     "feynman_qft4": "benchmarks/Feynman/qft_4.qasm",
+    "feynman_grover5": "benchmarks/Feynman/grover_5.qasm",
+    "feynman_barenco5": "benchmarks/Feynman/barenco_tof_5.qasm",
+    "feynman_modmult55": "benchmarks/Feynman/mod_mult_55.qasm",
     "mqt_qnn_4": "benchmarks/MQTBench/qnn_nativegates_ibm_qiskit_opt0_4.qasm",
     "mqt_grover_4": "benchmarks/MQTBench/grover-noancilla_nativegates_ibm_qiskit_opt0_4.qasm",
     "mqt_vqe_4": "benchmarks/MQTBench/vqe_nativegates_ibm_qiskit_opt0_4.qasm",
@@ -162,15 +172,25 @@ def main() -> None:
     ap.add_argument("--corpus", type=Path, required=True)
     ap.add_argument("--report", type=Path, required=True)
     ap.add_argument("--trials", type=int, default=3)
+    ap.add_argument("--include-holdouts", action="store_true")
+    ap.add_argument("--holdout-trials", type=int, default=2)
+    ap.add_argument("--holdout-timeout", type=int, default=30)
     args = ap.parse_args()
     if not 2 <= args.trials <= 9:
         raise SystemExit("requires 2..9 alternating fresh-process trials")
+    if not 2 <= args.holdout_trials <= 5:
+        raise SystemExit("requires 2..5 alternating holdout trials")
+    if not 5 <= args.holdout_timeout <= 60:
+        raise SystemExit("holdout subprocess timeout must be 5..60s")
     check_source(args.quprs, QU_PRS)
     check_source(args.gpmc_source, GPMC)
     args.corpus.mkdir(parents=True, exist_ok=True)
     rows: list[dict] = []
     any_valid = False
-    for case in CASES:
+    for case in CASES + (HOLDOUT_CASES if args.include_holdouts else ()):
+        holdout = case in HOLDOUT_CASES
+        requested_trials = args.holdout_trials if holdout else args.trials
+        subprocess_timeout = args.holdout_timeout if holdout else 20
         source_qasm = args.quprs / SOURCE_PATHS[case]
         source_hash = digest(source_qasm)
         for digits, bits in PRECISIONS.items():
@@ -178,12 +198,15 @@ def main() -> None:
                 "case": case, "digits": digits, "bits": bits,
                 "source_qasm_sha256": source_hash,
                 "source_quprs_sha": QU_PRS, "source_gpmc_sha": GPMC,
+                "cohort": "holdout" if holdout else "original_five",
+                "requested_trials": requested_trials,
+                "per_child_timeout_s": subprocess_timeout,
             }
             cnf = args.corpus / f"{case}-{bits}-rr-gpmc.cnf"
             factor = args.corpus / f"{case}-{bits}-rr-factor.pf"
             prepared = []
             samples = []
-            for trial in range(args.trials):
+            for trial in range(requested_trials):
                 # Source exporter is run as an independent fresh process
                 # for each trial, and its wall is counted symmetrically
                 # for both algorithms. It constructs BOTH representations:
@@ -191,7 +214,7 @@ def main() -> None:
                 source = run_child([
                     str(args.source_executable.resolve()), case,
                     str(args.quprs.resolve()), str(args.corpus.resolve()), str(bits),
-                ], "quprs_source", 20)
+                ], "quprs_source", subprocess_timeout)
                 source["trial"] = trial
                 prepared.append(source)
                 if source["status"] != "COMPLETED":
@@ -218,15 +241,23 @@ def main() -> None:
                         else [str(args.factor.resolve()), str(digits),
                               str(factor.resolve())]
                     )
-                    sample = run_child(command, name, 20)
+                    sample = run_child(command, name, subprocess_timeout)
                     sample["trial"] = trial
                     samples.append(sample)
             header["source_preparation"] = prepared
             header["samples"] = samples
-            if len(prepared) != args.trials or len(samples) != args.trials * 2 or any(
-                s["status"] != "COMPLETED" for s in prepared + samples
-            ):
-                header["status"] = "CENSORED_INCOMPLETE"
+            failures = [
+                {"trial": trial.get("trial"), "arm": trial["label"],
+                 "status": trial["status"], "exit_code": trial.get("return_code"),
+                 "stderr_tail": trial.get("stderr_tail", "")[-300:]}
+                for trial in prepared + samples if trial["status"] != "COMPLETED"
+            ]
+            if len(prepared) != requested_trials or len(samples) != requested_trials * 2 or failures:
+                header["status"] = "CENSORED_HOLDOUT" if holdout else "CENSORED_BASELINE"
+                header["incomplete_reason"] = failures or [
+                    {"status": "MISSING_REQUIRED_TRIALS",
+                     "source_n": len(prepared), "solver_n": len(samples)}
+                ]
             else:
                 grouped = {
                     arm: [s for s in samples if s["label"] == arm]
@@ -287,7 +318,11 @@ def main() -> None:
                 "time_contract": "independent fresh subprocess wall incl startup and parse; common dual-format source preprocessing separately charged, not optimized E2E",
                 "rss_contract": "Linux GNU time observed maxRSS KiB; RLIMIT_AS=2GiB, not hard cgroup memory",
                 "completeness": "no speed ratios for CENSORED; source phase numeric agreement only, no mathematical arbitrary-angle certificate",
-                "trials": args.trials, "rows": rows,
+                "baseline_trials": args.trials,
+                "holdout_trials": args.holdout_trials if args.include_holdouts else 0,
+                "holdout_timeout_s": args.holdout_timeout,
+                "holdouts_included": args.include_holdouts,
+                "rows": rows,
             }, indent=2) + "\n")
     if not any_valid:
         raise SystemExit("no source-qualified paired MPFR observations")
@@ -298,6 +333,16 @@ def main() -> None:
         for r in rows
     ):
         raise SystemExit("source-pinned HWB6 independent oracle regression")
+    if args.include_holdouts:
+        for row in rows:
+            if row["cohort"] == "holdout":
+                print(
+                    "RR_HOLDOUT_ADMISSION "
+                    f"case={row['case']} bits={row['bits']} "
+                    f"status={row['status']} "
+                    f"failures={row.get('incomplete_reason', [])}",
+                    flush=True,
+                )
     print("RR_ALGORITHM_PAIR_STUDY_COMPLETE", flush=True)
 
 

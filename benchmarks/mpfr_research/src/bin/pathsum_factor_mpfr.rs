@@ -388,7 +388,11 @@ fn single_anf_walsh(p: &Model, bits: u32) -> Result<(Cell, Stats), String> {
                 walsh -= contribution;
             }
         }
-        let double = if negative { total - walsh } else { total + walsh };
+        let double = if negative {
+            total - walsh
+        } else {
+            total + walsh
+        };
         if double < 0 || double > 2 * total || double % 2 != 0 {
             return Err("ANF_WALSH_NONPHYSICAL_COUNT".into());
         }
@@ -415,9 +419,14 @@ fn single_anf_walsh(p: &Model, bits: u32) -> Result<(Cell, Stats), String> {
 
 fn run() -> Result<(), String> {
     let mut argv = env::args_os().skip(1);
-    let first = argv.next().ok_or("usage: [--anf-walsh] PRECISION_DIGITS FACTOR_FILE")?;
+    let first = argv
+        .next()
+        .ok_or("usage: [--anf-walsh] PRECISION_DIGITS FACTOR_FILE")?;
     let (use_walsh, precision) = if first == "--anf-walsh" {
-        (true, argv.next().ok_or("precision required after --anf-walsh")?)
+        (
+            true,
+            argv.next().ok_or("precision required after --anf-walsh")?,
+        )
     } else {
         (false, first)
     };
@@ -462,7 +471,11 @@ fn run() -> Result<(), String> {
     eprintln!(
         "RESEARCH_FACTOR_MPFR_PHASE_NS parse={parse_ns} solve={solve_ns} \
          bits={bits} method={} factors={} peak_scope={} visited_cells={} eliminations={}",
-        if use_walsh { "ANF_WALSH" } else { "NATIVE_FACTOR_DP" },
+        if use_walsh {
+            "ANF_WALSH"
+        } else {
+            "NATIVE_FACTOR_DP"
+        },
         problem.outputs.len() + problem.phases.len(),
         stats.peak_scope,
         stats.work_cells,
@@ -548,10 +561,7 @@ mod tests {
     fn walsh_rejects_phases_and_multiple_nontrivial_outputs() {
         let phase = parse("p pf 2\nh -1 0 1 0\n", 100).unwrap();
         assert!(single_anf_walsh(&phase, 100).is_err());
-        let multi = parse(
-            "p pf 3\no 0 1\nm 1 1\no 1 1\nm 1 2\n",
-            100,
-        ).unwrap();
+        let multi = parse("p pf 3\no 0 1\nm 1 1\no 1 1\nm 1 2\n", 100).unwrap();
         assert!(single_anf_walsh(&multi, 100).is_err());
         let tautology = parse("p pf 3\no 0 1\nm 1 0\n", 333).unwrap();
         let (result, _) = single_anf_walsh(&tautology, 333).unwrap();

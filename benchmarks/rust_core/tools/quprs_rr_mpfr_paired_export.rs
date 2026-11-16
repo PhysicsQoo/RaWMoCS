@@ -31,16 +31,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Err("unexpected extra argument".into());
     }
     let case = case_os.to_str().ok_or("non-UTF8 case")?;
-    let bits: usize = precision
-        .to_str()
-        .ok_or("non-UTF8 precision")?
-        .parse()?;
+    let bits: usize = precision.to_str().ok_or("non-UTF8 precision")?.parse()?;
     if !matches!(bits, 100 | 333) {
         return Err("research requires exactly 100 or 333 MPFR bits".into());
     }
-    let source = fs::read_to_string(Path::new(&root).join(
-        source_path(case).ok_or("unsupported original QASM source")?,
-    ))?;
+    let source = fs::read_to_string(
+        Path::new(&root).join(source_path(case).ok_or("unsupported original QASM source")?),
+    )?;
     let clock = Instant::now();
     let (ops, qubits) = qasm::parse_qasm_str(&source)?;
     if qubits == 0 || qubits > 12 {
@@ -90,8 +87,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if ids.len() > 256 {
         return Err("native source variable limit exceeded".into());
     }
-    let map: BTreeMap<u32, usize> =
-        ids.iter().enumerate().map(|(i, &source)| (source, i)).collect();
+    let map: BTreeMap<u32, usize> = ids
+        .iter()
+        .enumerate()
+        .map(|(i, &source)| (source, i))
+        .collect();
     let mut factor = format!("p pf {}\n", ids.len());
     for (output, equation) in ps.f.functions.iter().enumerate() {
         let mut terms: Vec<Vec<usize>> = equation
@@ -119,9 +119,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // ps.p.terms iteration order. Thus increasing z literal ID is the
     // original traversal order. Recheck phase count and monotonicity.
     let mut previous = 0i32;
-    for ((mono, coeff), (z, re, im)) in
-        ps.p.terms.iter().zip(positive_weights.iter())
-    {
+    for ((mono, coeff), (z, re, im)) in ps.p.terms.iter().zip(positive_weights.iter()) {
         if *z <= previous || !coeff.symbols.is_empty() {
             return Err("invalid phase order or unbound source symbol".into());
         }

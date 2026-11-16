@@ -113,7 +113,13 @@ fn parsed_model(text: &str) -> Result<PathsumFactors, String> {
 
 fn run() -> Result<(), String> {
     let mut args = env::args_os().skip(1);
-    let model_path = args.next().ok_or("usage: FACTORS ORACLE")?;
+    let first = args.next().ok_or("usage: [--monotone-ice] FACTORS ORACLE")?;
+    let monotone_ice = first.to_str() == Some("--monotone-ice");
+    let model_path = if monotone_ice {
+        args.next().ok_or("missing monotone source factors")?
+    } else {
+        first
+    };
     let oracle_path = args.next().ok_or("missing exact source oracle")?;
     if args.next().is_some() {
         return Err("unexpected argument after oracle".into());
@@ -125,6 +131,49 @@ fn run() -> Result<(), String> {
     let profile_start = Instant::now();
     let profile = problem.profile()?;
     let profile_ns = profile_start.elapsed().as_nanos();
+    if monotone_ice {
+        let start = Instant::now();
+        let outcome = problem.count_monotone_trace_bounded()?;
+        let solve_ns = start.elapsed().as_nanos();
+        let reference = fs::read_to_string(oracle_path).map_err(|e| e.to_string())?;
+        let expected: Vec<&str> = reference.split_whitespace().collect();
+        if expected.len() != 4 || expected[0] != "s" {
+            return Err("invalid monotone source oracle".into());
+        }
+        let expected_sat = match expected[1] {
+            "0" => false,
+            "1" => true,
+            _ => return Err("invalid monotone oracle SAT flag".into()),
+        };
+        let re = expected[2]
+            .parse::<i64>()
+            .map_err(|_| "invalid oracle real")?;
+        let im = expected[3]
+            .parse::<i64>()
+            .map_err(|_| "invalid oracle imaginary")?;
+        if outcome.satisfiable != expected_sat
+            || outcome.count != Gaussian::integers(re, im)
+        {
+            return Err(format!(
+                "SOURCE_MONOTONE_ORACLE_MISMATCH sat={} count=({}, {})",
+                outcome.satisfiable, outcome.count.real, outcome.count.imag
+            ));
+        }
+        println!(
+            "QU_PRS_RR_MONOTONE_MATCH vars={} constraints={} subsets={} \
+             sat={} real={} imag={} parse_ns={} profile_ns={} solve_ns={}",
+            problem.variables,
+            outcome.forbidden_conjunctions,
+            outcome.subsets_evaluated,
+            outcome.satisfiable,
+            outcome.count.real,
+            outcome.count.imag,
+            parsing_ns,
+            profile_ns,
+            solve_ns
+        );
+        return Ok(());
+    }
     let start = Instant::now();
     let result = problem.solve_bounded(FactorLimits::default())?;
     let solve_ns = start.elapsed().as_nanos();

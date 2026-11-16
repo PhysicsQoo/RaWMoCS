@@ -758,8 +758,10 @@ mod tests {
                 fused.use_prehashed_cache = true;
                 fused.use_fused_compact = true;
                 let candidate = fused.count((1..=5).collect(), 0).unwrap();
-                assert_eq!((candidate.sat, &candidate.count.re, &candidate.count.im),
-                    (hashed.sat, &hashed.count.re, &hashed.count.im));
+                assert_eq!(
+                    (candidate.sat, &candidate.count.re, &candidate.count.im),
+                    (hashed.sat, &hashed.count.re, &hashed.count.im)
+                );
                 assert_eq!(fused.stats.nodes, once.stats.nodes);
                 assert_eq!(fused.stats.cache_hits, once.stats.cache_hits);
                 assert_eq!(fused.stats.decompositions, once.stats.decompositions);

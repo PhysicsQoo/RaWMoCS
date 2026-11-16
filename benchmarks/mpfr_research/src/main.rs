@@ -139,6 +139,23 @@ impl CachePolicy {
         }
     }
 }
+
+/// Opt-in, CNF-only pivot ordering. The original frequency mode is left
+/// byte-identical. These heuristics inspect the residual clause lengths and
+/// literal polarity ONLY: there is no QASM, PathSum, or pre-emitted ANF input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PivotPolicy { Frequency, ShortClause, BalancedShortClause }
+impl PivotPolicy {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Frequency => "frequency",
+            Self::ShortClause => "short-clause",
+            Self::BalancedShortClause => "balanced-short-clause",
+        }
+    }
+}
+#[derive(Clone, Copy, Default)]
+struct LiteralScore { positive: usize, negative: usize }
 struct Engine<'a> {
     p: &'a Problem,
     bits: u32,
@@ -161,6 +178,8 @@ struct Engine<'a> {
     indexed_unit_csr: bool,
     reuse_frequency_scratch: bool,
     frequency_scratch: Vec<usize>,
+    pivot_policy: PivotPolicy,
+    short_clause_scratch: Vec<LiteralScore>,
 }
 impl<'a> Engine<'a> {
     fn new(p: &'a Problem, bits: u32, cache_policy: CachePolicy) -> Engine<'a> {
@@ -175,6 +194,8 @@ impl<'a> Engine<'a> {
             indexed_unit_csr: false,
             reuse_frequency_scratch: false,
             frequency_scratch: vec![0; p.n + 1],
+            pivot_policy: PivotPolicy::Frequency,
+            short_clause_scratch: vec![LiteralScore::default(); p.n + 1],
         }
     }
     fn borrowed_key_hash(&self, scope: &[usize], residual: &[Clause]) -> u64 {
@@ -377,8 +398,26 @@ impl<'a> Engine<'a> {
             vec![0_usize; self.p.n + 1]
         };
         debug_assert_eq!(frequency.len(), self.p.n + 1);
+        let mut short_scores = if self.pivot_policy == PivotPolicy::Frequency {
+            Vec::new()
+        } else if self.reuse_frequency_scratch {
+            std::mem::take(&mut self.short_clause_scratch)
+        } else {
+            vec![LiteralScore::default(); self.p.n + 1]
+        };
+        if self.pivot_policy != PivotPolicy::Frequency {
+            debug_assert_eq!(short_scores.len(), self.p.n + 1);
+        }
         for clause in residual.iter() {
-            for &lit in clause { frequency[lit.unsigned_abs() as usize] += 1; }
+            let weight = 1_usize << (12_usize.saturating_sub(clause.len().min(12)));
+            for &lit in clause {
+                let v = lit.unsigned_abs() as usize;
+                frequency[v] += 1;
+                if !short_scores.is_empty() {
+                    if lit > 0 { short_scores[v].positive += weight; }
+                    else { short_scores[v].negative += weight; }
+                }
+            }
         }
         let mut active = Vec::new();
         for var in remaining {
@@ -390,9 +429,17 @@ impl<'a> Engine<'a> {
         }
         if let Some(pieces) = split_components(&residual, &active, self.p.n) {
             if self.reuse_frequency_scratch {
-                // Recursion must receive an intact, zeroed scratch arena.
-                for &v in &active { frequency[v] = 0; }
+                // Recursion must receive intact, zeroed arenas.
+                for &v in &active {
+                    frequency[v] = 0;
+                    if !short_scores.is_empty() {
+                        short_scores[v] = LiteralScore::default();
+                    }
+                }
                 self.frequency_scratch = frequency;
+                if self.pivot_policy != PivotPolicy::Frequency {
+                    self.short_clause_scratch = short_scores;
+                }
             }
             self.stats.decompositions += 1;
             let mut value = C::one(self.bits);
@@ -405,10 +452,35 @@ impl<'a> Engine<'a> {
                 sat: true, count: prefix.mul(&value, self.bits),
             }));
         }
-        let var = *active.iter().max_by_key(|&&v| frequency[v]).ok_or("no active pivot")?;
+        let var = match self.pivot_policy {
+            PivotPolicy::Frequency => {
+                *active.iter().max_by_key(|&&v| frequency[v]).ok_or("no active pivot")?
+            }
+            PivotPolicy::ShortClause => {
+                *active.iter().max_by_key(|&&v| {
+                    let s = short_scores[v];
+                    (s.positive + s.negative, frequency[v])
+                }).ok_or("no active pivot")?
+            }
+            PivotPolicy::BalancedShortClause => {
+                *active.iter().max_by_key(|&&v| {
+                    let s = short_scores[v];
+                    (2 * s.positive.min(s.negative) + s.positive + s.negative,
+                     s.positive + s.negative, frequency[v])
+                }).ok_or("no active pivot")?
+            }
+        };
         if self.reuse_frequency_scratch {
-            for &v in &active { frequency[v] = 0; }
+            for &v in &active {
+                frequency[v] = 0;
+                if !short_scores.is_empty() {
+                    short_scores[v] = LiteralScore::default();
+                }
+            }
             self.frequency_scratch = frequency;
+            if self.pivot_policy != PivotPolicy::Frequency {
+                self.short_clause_scratch = short_scores;
+            }
         }
         let child: Vec<_> = active.into_iter().filter(|&v| v != var).collect();
         let yes_clauses = if self.fast_assign {
@@ -786,6 +858,14 @@ fn run() -> Result<(), String> {
     let cache_first = if reuse_frequency_scratch {
         args.next().ok_or("missing cache mode or precision after --reuse-frequency-scratch")?
     } else { cache_first };
+    let pivot_policy = match cache_first.to_str() {
+        Some("--pivot-short-clause") => PivotPolicy::ShortClause,
+        Some("--pivot-balanced-short-clause") => PivotPolicy::BalancedShortClause,
+        _ => PivotPolicy::Frequency,
+    };
+    let cache_first = if pivot_policy != PivotPolicy::Frequency {
+        args.next().ok_or("missing cache mode or precision after pivot policy")?
+    } else { cache_first };
     let cache_policy = match cache_first.to_str() {
         Some("--hashbrown-owned") => CachePolicy::HbOwned,
         Some("--hashbrown-borrowed") => CachePolicy::HbBorrowed,
@@ -826,6 +906,7 @@ fn run() -> Result<(), String> {
     engine.indexed_unit_propagation = indexed_unit_propagation;
     engine.indexed_unit_csr = indexed_unit_csr;
     engine.reuse_frequency_scratch = reuse_frequency_scratch;
+    engine.pivot_policy = pivot_policy;
     engine.indexed_activation_node = indexed_activation_node;
     let answer = engine.count(p.clauses.clone(), (1..=p.n).collect(), 0)?;
     let solve_ns = t2.elapsed().as_nanos();
@@ -854,6 +935,7 @@ fn run() -> Result<(), String> {
         engine.stats.packed_full_misses);
     eprintln!("RESEARCH_MPFR_UNIT_PROP_INDEXED enabled={indexed_unit_propagation} activation_node={indexed_activation_node}");
     eprintln!("RESEARCH_MPFR_UNIT_PROP_CSR enabled={indexed_unit_csr} activation_node={indexed_activation_node}");
+    eprintln!("RESEARCH_MPFR_PIVOT_POLICY {}", pivot_policy.label());
     eprintln!("RESEARCH_MPFR_FREQ_SCRATCH enabled={reuse_frequency_scratch} capacity={}",
         engine.frequency_scratch.len());
     // Native WallTime includes engine destruction, unlike solve_ns. Isolate
@@ -872,6 +954,54 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cnf_only_pivot_heuristics_preserve_exact_weighted_small_wmc() {
+        for bits in [100, 333] {
+            for seed in 0..36_usize {
+                let mut data = String::from("p cnf 7 9\nc t wmc\n");
+                for var in 1..=7 {
+                    data.push_str(&format!("c p weight {var} 0.25 0.125 0\n"));
+                    data.push_str(&format!("c p weight -{var} -0.125 0.25 0\n"));
+                }
+                for k in 0..9_usize {
+                    let x = (1 + ((seed * 3 + k) % 7)) as i32;
+                    let y = (1 + ((seed * 5 + k * 3 + 1) % 7)) as i32;
+                    let z = (1 + ((seed * 7 + k * 5 + 2) % 7)) as i32;
+                    let x = if (k + seed) % 2 == 0 { x } else { -x };
+                    let y = if (k + seed) % 3 == 0 { y } else { -y };
+                    data.push_str(&format!("{x} {y} {z} 0\n"));
+                }
+                let problem = parse_emitted(&data, bits).unwrap();
+                let mut expected = Engine::new(&problem, bits, CachePolicy::HbBorrowed);
+                let control = expected.count(problem.clauses.clone(), (1..=7).collect(), 0).unwrap();
+                for policy in [PivotPolicy::ShortClause, PivotPolicy::BalancedShortClause] {
+                    let mut engine = Engine::new(&problem, bits, CachePolicy::HbBorrowed);
+                    engine.pivot_policy = policy;
+                    engine.reuse_frequency_scratch = true;
+                    let actual = engine.count(problem.clauses.clone(), (1..=7).collect(), 0).unwrap();
+                    assert_eq!((control.sat, &control.count.re, &control.count.im),
+                               (actual.sat, &actual.count.re, &actual.count.im),
+                               "seed={seed} bits={bits} policy={}", policy.label());
+                }
+            }
+        }
+    }
+    #[test]
+    fn cnf_pivot_preserves_sat_even_when_complex_wmc_cancels() {
+        let source = "p cnf 3 2\nc t wmc\nc p weight 1 1 0 0\nc p weight -1 -1 0 0\n2 3 0\n-2 -3 0\n";
+        for policy in [PivotPolicy::Frequency, PivotPolicy::ShortClause, PivotPolicy::BalancedShortClause] {
+            let problem = parse_emitted(source, 333).unwrap();
+            let mut engine = Engine::new(&problem, 333, CachePolicy::HbBorrowed);
+            engine.pivot_policy = policy;
+            engine.reuse_frequency_scratch = true;
+            let answer = engine.count(problem.clauses.clone(), (1..=3).collect(), 0).unwrap();
+            assert!(answer.sat);
+            assert_eq!(answer.count.re, 0);
+            assert_eq!(answer.count.im, 0);
+        }
+    }
+
     #[test]
     fn gpmc_binary_precision_bits_match() {
         assert_eq!((30_f64 * 3.321_928_094_887_362_4).ceil() as u32, 100);

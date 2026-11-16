@@ -1,0 +1,35 @@
+name: Weighted CNF solver root-probing research science
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/cnf-root-probe-science.yml
+      - benchmarks/mpfr_research/src/main.rs
+      - benchmarks/rust_core/tools/quprs_cnf_root_probe_ab.py
+      - docs/quprs-cnf-root-probe-research.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  root-probe-science:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/mpfr_research -> target
+          key: same-cnf-root-probe-science
+      - name: Verify research-only MPFR 100/333-bit exact SAT and WMC
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked --release --manifest-path benchmarks/mpfr_research/Cargo.toml
+      - name: Verify no Rust compiler warnings or Clippy violations
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo clippy --locked --manifest-path benchmarks/mpfr_research/Cargo.toml --all-targets -- -D warnings

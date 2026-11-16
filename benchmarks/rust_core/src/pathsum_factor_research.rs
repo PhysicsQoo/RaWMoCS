@@ -392,6 +392,250 @@ impl PathsumFactors {
     }
 }
 
+/// Independent source-trace specialization for low-count monotone forbidden
+/// conjunctions. This does not expand ANF to generic SAT CNF or run CDCL.
+///
+/// The full trace condition is x_i = f_i(x) for every output i. XOR-cancel
+/// the left-hand x_i with the ANF right-hand side (idempotent monomials).
+/// Admit only: tautology, contradiction, or one remaining AND monomial
+/// that is required to be false. For forbidden monomials M_j, exact WMC
+/// over *unweighted* variables is:
+///
+///  sum_{S subset forbidden} (-1)^|S| * 2^(n - |union(M_j : j in S)|).
+///
+/// Unlike dense factor tables this is exponential in the number of
+/// effective forbidden conjunctions, NOT their degrees. All guards fail
+/// closed; phase terms, parity, and nonunit literal weights are rejected.
+#[derive(Clone, Debug)]
+pub struct MonotoneTraceReport {
+    pub satisfiable: bool,
+    pub count: Gaussian,
+    pub forbidden_conjunctions: usize,
+    pub subsets_evaluated: usize,
+}
+
+impl PathsumFactors {
+    pub fn count_monotone_trace_bounded(&self) -> Result<MonotoneTraceReport, String> {
+        self.validate()?;
+        if self.variables > 50 {
+            return Err("monotone trace variable budget exceeded".into());
+        }
+        if !self.parity.is_empty() || !self.phase.is_empty() {
+            return Err("monotone trace requires phase-free, parity-free inputs".into());
+        }
+        let one = Gaussian::one();
+        if self
+            .weights
+            .iter()
+            .any(|w| w.positive != one || w.negative != one)
+        {
+            return Err("monotone trace requires unit literal weights".into());
+        }
+
+        let mut forbidden = std::collections::BTreeSet::new();
+        for equation in &self.outputs {
+            // A Boolean monomial is AND-idempotent; parity of duplicate
+            // ANF monomials cancels in GF(2), even if source is unnormalized.
+            let mut parity: std::collections::BTreeSet<Vec<usize>> =
+                std::collections::BTreeSet::new();
+            let mut toggle = |mut term: Vec<usize>| {
+                term.sort_unstable();
+                term.dedup();
+                if !parity.insert(term.clone()) {
+                    parity.remove(&term);
+                }
+            };
+            toggle(vec![equation.output]);
+            for term in &equation.terms {
+                toggle(term.clone());
+            }
+            if equation.constant {
+                toggle(Vec::new());
+            }
+            if parity.is_empty() {
+                continue;
+            }
+            if parity.len() != 1 {
+                return Err("source ANF trace is not a monotone-conjunction subset".into());
+            }
+            let conjunction = parity
+                .into_iter()
+                .next()
+                .ok_or("internal parity count changed")?;
+            if conjunction.is_empty() {
+                return Ok(MonotoneTraceReport {
+                    satisfiable: false,
+                    count: Gaussian::zero(),
+                    forbidden_conjunctions: 1,
+                    subsets_evaluated: 0,
+                });
+            }
+            let mask = conjunction
+                .iter()
+                .fold(0u64, |bits, &var| bits | (1u64 << var));
+            forbidden.insert(mask);
+            if forbidden.len() > 20 {
+                return Err("monotone trace inclusion-exclusion budget exceeded".into());
+            }
+        }
+
+        let masks: Vec<u64> = forbidden.into_iter().collect();
+        let subsets = 1usize << masks.len();
+        let mut sum = 0i128;
+        for selected in 0..subsets {
+            let mut union = 0u64;
+            for (j, &mask) in masks.iter().enumerate() {
+                if selected & (1 << j) != 0 {
+                    union |= mask;
+                }
+            }
+            let free = self.variables - union.count_ones() as usize;
+            let term = 1i128 << free;
+            if selected.count_ones() % 2 == 0 {
+                sum += term;
+            } else {
+                sum -= term;
+            }
+        }
+        if !(0..=i64::MAX as i128).contains(&sum) {
+            return Err("monotone trace count outside admitted integer range".into());
+        }
+        Ok(MonotoneTraceReport {
+            satisfiable: sum > 0,
+            count: Gaussian::integers(sum as i64, 0).mul(&self.scalar),
+            forbidden_conjunctions: masks.len(),
+            subsets_evaluated: subsets,
+        })
+    }
+}
+
+#[cfg(test)]
+mod monotone_trace_tests {
+    use super::*;
+
+    fn sample(n: usize, output_equations: Vec<OutputEquality>) -> PathsumFactors {
+        PathsumFactors {
+            variables: n,
+            weights: vec![Weights::new(Gaussian::one(), Gaussian::one()); n],
+            parity: vec![],
+            phase: vec![],
+            outputs: output_equations,
+            scalar: Gaussian::one(),
+        }
+    }
+
+    fn brute_count(p: &PathsumFactors) -> i64 {
+        let mut count = 0;
+        for assignment in 0..(1usize << p.variables) {
+            let bit = |v: usize| assignment & (1usize << v) != 0;
+            if p.outputs.iter().all(|eq| {
+                bit(eq.output)
+                    == eq.terms.iter().fold(eq.constant, |acc, term| {
+                        acc ^ term.iter().all(|&v| bit(v))
+                    })
+            }) {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    #[test]
+    fn monotone_trace_matches_independent_truth_tables_and_parity_cancellation() {
+        for seed in 0usize..96 {
+            let n = 7;
+            let mut equations = Vec::new();
+            for j in 0..3 {
+                let output = (seed + j) % n;
+                let monomial: Vec<_> = (0..n)
+                    .filter(|&i| (seed.wrapping_mul(31) + j * 17 + i * 13) & (1 << i) != 0)
+                    .collect();
+                equations.push(OutputEquality {
+                    output,
+                    constant: false,
+                    terms: vec![vec![output], monomial],
+                });
+            }
+            let problem = sample(n, equations);
+            let actual = problem.count_monotone_trace_bounded().unwrap();
+            assert_eq!(
+                actual.count,
+                Gaussian::integers(brute_count(&problem), 0),
+                "seed {seed}"
+            );
+            assert_eq!(actual.satisfiable, brute_count(&problem) > 0);
+        }
+    }
+
+    #[test]
+    fn high_degree_source_trace_does_not_need_dense_factor_table() {
+        let p = sample(
+            19,
+            vec![OutputEquality {
+                output: 18,
+                constant: false,
+                terms: vec![vec![18], (0..19).collect()],
+            }],
+        );
+        assert!(p.solve_bounded(FactorLimits::default()).is_err());
+        let exact = p.count_monotone_trace_bounded().unwrap();
+        assert_eq!(exact.count, Gaussian::integers(524287, 0));
+        assert!(exact.satisfiable);
+        assert_eq!(exact.forbidden_conjunctions, 1);
+        assert_eq!(exact.subsets_evaluated, 2);
+    }
+
+    #[test]
+    fn source_phase_or_nonmonotone_anf_must_fail_closed() {
+        let mut p = sample(
+            4,
+            vec![OutputEquality {
+                output: 3,
+                constant: false,
+                terms: vec![vec![3], vec![0, 1], vec![1, 2]],
+            }],
+        );
+        assert!(p.count_monotone_trace_bounded().is_err());
+        p.outputs[0].terms.pop();
+        p.phase.push(PhaseMonomial {
+            variables: vec![0],
+            weight_if_true: Gaussian::integers(-1, 0),
+        });
+        assert!(p.count_monotone_trace_bounded().is_err());
+        p.phase.clear();
+        p.weights[0] = Weights::new(Gaussian::integers(0, 0), Gaussian::one());
+        assert!(p.count_monotone_trace_bounded().is_err());
+    }
+
+    #[test]
+    fn constant_contradiction_and_zero_scalar_preserve_sat_flag() {
+        let unsat = sample(
+            3,
+            vec![OutputEquality {
+                output: 0,
+                constant: true,
+                terms: vec![vec![0]],
+            }],
+        );
+        let a = unsat.count_monotone_trace_bounded().unwrap();
+        assert!(!a.satisfiable);
+        assert_eq!(a.count, Gaussian::zero());
+
+        let mut sat = sample(
+            3,
+            vec![OutputEquality {
+                output: 0,
+                constant: false,
+                terms: vec![vec![0], vec![1, 2]],
+            }],
+        );
+        sat.scalar = Gaussian::zero();
+        let b = sat.count_monotone_trace_bounded().unwrap();
+        assert!(b.satisfiable);
+        assert_eq!(b.count, Gaussian::zero());
+    }
+}
+
 /// Restricted sign-only quadratic phase: (-1)^(c + l.x + sum B_ij x_i x_j).
 /// Unlike a general Clifford+T phase, this supports only phases +1/-1.
 #[derive(Clone, Debug)]

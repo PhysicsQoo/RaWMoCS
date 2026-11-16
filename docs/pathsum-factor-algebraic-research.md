@@ -220,6 +220,117 @@ a fixed resource policy, and production fallback negative controls.
 Keep the research feature disabled by default until these gates pass.
 
 
+
+## Beyond the original five: source-exact holdouts and width-admission limits
+
+Source-pinned [Gaussian scientific oracle and structural CI](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/43794305755)
+and [seven-trial paired 16-cohort MPFR comparison](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/43794305712)
+qualify three additional original Feynman families. All three
+post-RR residuals admit source-level exhaustive enumeration independent
+of the exact Gaussian Rational Project-Join research code.
+
+| Original source | RR original vars | RR phase terms | SAT | Exact source WMC | 100-bit common-prep+GPMC / native DP p50 (ms) |
+| --- | ---: | ---: | --- | --- | --- |
+| Feynman Grover5 | 15 | 6 sign phases | TRUE | 0+0i | 5.455 / 4.807 |
+| Feynman Barenco5 | 9 | 0 | TRUE | 496+0i | 7.388 / 3.705 |
+| Feynman ModMult55 | 9 | 0 | TRUE | 32+0i | 8.574 / 3.963 |
+
+Grover5 is **SAT-but-zero by independent exact enumeration**, not
+UNSAT. Keeping SAT support separate from the complex count is mandatory.
+Each row also matched at 333 MPFR bits. These are small **after RR**,
+so they are not evidence of generic high-cost solver scalability.
+
+A second [19-24q source-only structural scout](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/43794760879)
+returned all six original raw/RR profiles successfully under a
+30-second/2GiB-virtual-address source cap:
+
+| Original source | qubits | RR original vars | RR phase terms | max native output-factor scope | primal min-degree width upper |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Barenco10 | 19 | 19 | 0 | 11 | 10 |
+| Toffoli10 | 19 | 19 | 0 | 19 | 18 |
+| Adder8 | 24 | 24 | 0 | 24 | 23 |
+
+The scope value is an observable *initial factor materialization*
+limitation for the research dense-table solver (max scope 16).
+The graph width estimate is only an upper bound, NOT a certified
+minimum width. Barenco10 was admitted into [seven-trial native
+GPMC/Factor DP comparison](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/43795267900):
+all 18/18 precision/case cohorts numerically matched. Source-level
+independent [exact oracle](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/43795268071)
+proves Barenco10 SAT=true, Full WMC=523776+0i (19 variables).
+At 100-bit: full native two-process common-prep+GPMC p50 7.722ms
+vs Native Factor DP 5.912ms (~1.31x). At 333-bit: 7.854ms
+vs 6.376ms (~1.23x). Still one Linux CI runner, seven trials/tool,
+and an experimental dual-format common-source-prep boundary.
+
+## Source-structural algorithm PoCs beyond dense factor width
+
+### Bounded monotone trace inclusion-exclusion — restricted
+
+After cancelling the same output variable on both sides of a trace
+equality over GF(2), one *single* surviving positive AND monomial
+M_i(x) required to be false is a forbidden conjunction. For a system
+of such independent **conjunction constraints** (not XORed together),
+the exact, unweighted model count is
+
+    SUM_{S subset [k]} (-1)^|S| * 2^(n - |union_{j in S} vars(M_j)|).
+
+Research implementation:
+PathsumFactors::count_monotone_trace_bounded(). Admission requires
+phase-free, parity-free, unit-weight original variables, <=50 variables
+and <=20 distinct forbidden conjunction constraints. This is exact
+Gaussian integer computation with separate SAT support, not a CDCL
+port, and may fail closed on nonmonotone trace equations.
+
+**Negative result matters**: the original Toffoli10 source is NOT a
+system of independently forbidden AND constraints. It has **one
+nontrivial output equality containing nine XOR-connected AND
+monomials**. Misinterpreting these as nine separate requirements
+would give the wrong count; the monotone route correctly refuses it.
+
+### Bounded single-ANF Walsh counting — admitted on Toffoli10
+
+Research implementation:
+PathsumFactors::count_single_anf_trace_bounded(). Its admission is
+strictly: phase-free, parity-free, all literal weights unit,
+<=50 variables, <=20 AND monomials, and at most one nontrivial
+output equation after GF(2) self-cancellation. Other outputs must be
+tautological. The global Gaussian scalar is retained.
+
+For a Boolean polynomial g(x) = c XOR m_1(x) XOR ... XOR m_r(x),
+the parity-even trace indicator has the exact representation
+
+    [g(x)=0] = [1 + (-1)^c * PRODUCT_j(1 - 2*m_j(x))] / 2
+    N = {2^n + (-1)^c *
+         SUM_{S subset [r]}(-2)^|S| * 2^(n-|union_{j in S} vars(m_j)|)} / 2.
+
+This uses **2^r subset terms** rather than a dense table over all
+variables touched by the original output equality. If multiple
+nontrivial equations, arbitrary phases, nonunit literal weights or
+an excessive term count are present, it returns an explicit rejection.
+
+The pinned original [Toffoli10 source and independent exact oracle](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/43797131554)
+produce 19 original variables, zero phases, one output ANF with
+nine nontrivial AND monomials. The old dense Factor DP would reject
+initial factor scope=19; **ANF Walsh exactly matches exhaustive
+2^19 original source assignments: SAT=true, Full Complex WMC=393216+0i**,
+with 512 subset terms. Observed **single kernel** solve time at that
+CI run: 33,861ns (about 34 microseconds). This is NOT a source-to-result
+WallTime, not a matched-precision or process-matched GPMC comparison,
+and does not imply 34us production QuPRS verification.
+
+The [final scientific source and cross-platform validation CI](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/43797229560)
+passed Linux, macOS, Windows research science / Rustfmt / Clippy
+and original source oracle at the code HEAD before this document
+update. Production Rust core, QuPRS Adapter and GPMC stay unchanged.
+
+**Adder8 remains unsupported** by both bounded dense Factor DP
+(scope24 >16) and single-ANF Walsh (14,541 linked output XOR terms
+and 14,482 nontrivial AND monomials). It is a strong negative
+scaling/control case for later shared ANF DAG / ADD / source-aware
+compilation work. Do not infer a result or quietly increase
+dense-table limits.
+
 ## Literature
 
 - Compilation and Fast Model Counting beyond CNF (IJCAI 2024):

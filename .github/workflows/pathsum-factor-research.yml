@@ -108,15 +108,22 @@ jobs:
           exporter="$GITHUB_WORKSPACE/.upstream/quprs/rust/target/release/examples/quprs_pathsum_factor_export"
           solver="$GITHUB_WORKSPACE/benchmarks/rust_core/target/release/examples/pathsum_factor_source_cli"
           : > .research/pathsum-structure/factor-admission.tsv
-          for name in feynman_hwb6 feynman_qft4 mqt_qnn_4 mqt_grover_4 mqt_vqe_4 feynman_grover5 feynman_barenco5 feynman_modmult55 feynman_barenco10; do
+          for name in feynman_hwb6 feynman_qft4 mqt_qnn_4 mqt_grover_4 mqt_vqe_4 feynman_grover5 feynman_barenco5 feynman_modmult55 feynman_barenco10 feynman_tof10; do
             if timeout -k 2s 30s prlimit --as=2147483648 -- \
                "$exporter" "$name" "$GITHUB_WORKSPACE/.upstream/quprs" \
                ".research/pathsum-structure" \
                > ".research/pathsum-structure/${name}-rr-factor-export.log" 2>&1; then
+              if [ "$name" = "feynman_tof10" ]; then
+                "$solver" --monotone-ice \
+                  ".research/pathsum-structure/${name}-rr-native-factor.txt" \
+                  ".research/pathsum-structure/${name}-rr-native-factor-oracle.tsv" \
+                  | tee ".research/pathsum-structure/${name}-rr-factor-match.log"
+              else
               "$solver" \
                 ".research/pathsum-structure/${name}-rr-native-factor.txt" \
                 ".research/pathsum-structure/${name}-rr-native-factor-oracle.tsv" \
                 | tee ".research/pathsum-structure/${name}-rr-factor-match.log"
+              fi
               printf '%s\tEXACT_ORACLE_MATCH\n' "$name" \
                  >> .research/pathsum-structure/factor-admission.tsv
             else
@@ -128,7 +135,7 @@ jobs:
           cat .research/pathsum-structure/factor-admission.tsv
           grep -q '^feynman_hwb6[[:space:]]EXACT_ORACLE_MATCH' \
             .research/pathsum-structure/factor-admission.tsv
-          for case in feynman_grover5 feynman_barenco5 feynman_modmult55 feynman_barenco10; do
+          for case in feynman_grover5 feynman_barenco5 feynman_modmult55 feynman_barenco10 feynman_tof10; do
             grep -q "^$case[[:space:]]EXACT_ORACLE_MATCH" \
               .research/pathsum-structure/factor-admission.tsv
           done

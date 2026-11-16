@@ -79,6 +79,82 @@ Reproduce using:
 - `benchmarks/mpfr_research/src/cnf_xor_closure.rs`
 - `benchmarks/rust_core/tools/quprs_cnf_xor_closure_ab.py`
 
+## Original QuPRS same-Weighted-CNF paired result (2026-11-16)
+
+**Qualified isolated science:** [100/333-bit Rust CI run 43824987830](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/43824987830):
+31/31 full research tests passed, zero failures, restricted legacy Clippy
+allowances and module Rustfmt check passed. This includes small-CNF
+independent full Boolean assignment-set enumeration and both signed
+complex MPFR WMC components. It is not an independent large-circuit
+WMC certificate.
+
+**Original same-CNF comparison:** [GPMC / Rust three-arm CI
+43824987808](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/43824987808)
+SUCCESS; archived original QuPRS input bytes, SHA-256, raw per-trial
+process WallTime/RSS, SAT/complex outputs and XOR inference diagnostics
+in artifact ID **14206507003**
+(`original-quprs-weighted-cnf-xor-closure-gpmc-three-arm`).
+Exactly 6/6 completed original circuit x precision cohorts
+agreed on SAT and both complex WMC components within matched
+source-decimal precision; each complete arm has **3 rotating fresh
+native subprocess trials**. The Grover5 baseline reaches a declared
+Rust 1M-node limit and is CENSORED, not ranked as an optimization.
+
+| Same original Weighted CNF | Bits | GPMC process p50 ms | Rust unmodified p50 ms | Rust XOR p50 ms | DPLL nodes before to after | XOR detected / derived units |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| HWB6 | 100 | 176.844 | 731.466 | 725.027 | 94209 to 94209 | 29 / 0 |
+| HWB6 | 333 | 195.405 | 781.678 | 779.799 | 94209 to 94209 | 29 / 0 |
+| Barenco5 | 100 | 11.851 | 18.349 | 18.179 | 4325 to 4325 | 4 / 0 |
+| Barenco5 | 333 | 11.538 | 19.443 | 19.649 | 4325 to 4325 | 4 / 0 |
+| **ModMult55** | **100** | 10.915 | 25.771 | **20.452** | **5699 to 4577** | **10 / 2** |
+| **ModMult55** | **333** | 10.888 | 27.393 | **21.922** | **5699 to 4577** | **10 / 2** |
+
+The genuine ModMult55 improvement is **19.7% fewer Rust DPLL nodes**,
+and **20.6% / 20.0% lower full Rust child-process p50 WallTime** at
+100/333 bits (control vs opt-in). Those results include GF(2) inference
+cost, unlike kernel-only timing. Associated ModMult55 Rust p50 observed
+peak RSS at 100 bits is 5928 KiB (control) versus 5428 KiB (XOR);
+at 333 bits 6040 vs 5488 KiB. The other two completed families
+have **no inferred units, no changed DPLL tree**; there is no qualified
+cross-corpus speedup.
+
+**GPMC remains faster on the positive case:** on identical ModMult55
+CNF it completed in 10.915 / 10.888 ms versus optimized Rust
+20.452 / 21.922 ms. This is a measured but insufficient algorithmic
+step towards GPMC performance, not a claim of solver victory.
+
+At 100 bits, Grover5 GPMC completed a *single* fresh child process
+in **21.943 s** with observed RSS 609188 KiB; the Rust control
+returned **node-limit CENSORED_EXIT** after 10.825 s with no
+completed output. The experiment intentionally stopped before
+comparing the candidate on that cohort. That case is neither an
+XOR-fast-path success nor a valid speed ranking.
+
+Per-case original Weighted CNF SHA-256 (all solver arms consume the
+same file bytes in each experiment):
+
+- HWB6: `e0381c270963e0715273530e48f159dc05b1cd96c9b85a556741a72a4289471d`
+- Barenco5: `f1fb459a058ba3dc17d2bd538a7e8b34e451383ae3384cb58a624bc8194499c3`
+- ModMult55: `f8c76d883923363a7fcb5e32d6c6d8914f8443af3582fbe3d2e1d9c0b99c35b7`
+- Grover5 (censored): `eeb8e82273b1e9dc105e004d73b3e59f1d48bb893fe768bb4034262224a780b0`
+
+The observed 2 GiB limit is `RLIMIT_AS` virtual address space,
+**not a kernel hard physical RSS cap**. Three measurements on one Linux
+runner are preliminary, not a portable or robust benchmark. Large
+non-exhaustively certified inputs retain the explicit
+`SOURCE_MPFR_AGREEMENT_ONLY` category; GPMC/Rust may evaluate
+complex products in different summation order. The source preparation
+is excluded from the timed solver children and must remain QuPRS-owned.
+
+**Decision: keep opt-in, no production promotion.** The source
+XOR extraction alone has real benefit on one original CNF, but no
+meaningful improvement on HWB6 or Barenco5; Grover5 remains
+unresolved. Next experiment should target derived low-support parity
+constraints that survive past root RREF, with **bounded branch-aware
+propagation** and explicit search/Cache cost accounting. Variable
+substitution must compensate all signed/complex literal weights and
+cannot simply reuse SAT-only elimination.
+
 ## Adoption gate
 
 No production default or automatic router change is warranted on

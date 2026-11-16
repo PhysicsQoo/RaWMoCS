@@ -54,10 +54,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if ids.len() > 56 {
         return Err("ANF_SOURCE_VARIABLE_LIMIT".into());
     }
-    let map: BTreeMap<u32, usize> = ids.iter()
-        .enumerate().map(|(i, &old)| (old, i)).collect();
-    let mut text = format!("p anf {} {} {}\n",
-        ids.len(), ps.f.functions.len(), ps.p.terms.len());
+    let map: BTreeMap<u32, usize> = ids.iter().enumerate().map(|(i, &old)| (old, i)).collect();
+    let mut text = format!(
+        "p anf {} {} {}\n",
+        ids.len(),
+        ps.f.functions.len(),
+        ps.p.terms.len()
+    );
     let mut total_terms = 0usize;
     let mut max_degree = 0usize;
     for (output, equation) in ps.f.functions.iter().enumerate() {
@@ -78,10 +81,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // No phase content is serialized; phase count explicitly signals
     // phase-bearing sources are *not* eligible for counting by this DAG.
     fs::write(target, text)?;
-    println!("PINNED_QU_PRS_ANF_EXPORT case={case} qubits={qubits} gates={} \
+    println!(
+        "PINNED_QU_PRS_ANF_EXPORT case={case} qubits={qubits} gates={} \
          rr_variables={} phase_terms={} output_equations={} source_anf_terms={} \
          source_max_degree={max_degree} source_rr_ns={rr_ns}",
-        ops.len(), ids.len(), ps.p.terms.len(), ps.f.functions.len(), total_terms);
+        ops.len(),
+        ids.len(),
+        ps.p.terms.len(),
+        ps.f.functions.len(),
+        total_terms
+    );
     Ok(())
 }
 fn main() {

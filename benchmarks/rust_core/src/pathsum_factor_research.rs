@@ -705,6 +705,7 @@ impl PathsumFactors {
             sign_negative = constant;
             nontrivial = Some(polynomial.into_iter().collect::<Vec<_>>());
         }
+        let nontrivial_equations = usize::from(nontrivial.is_some());
         let monomials = nontrivial.unwrap_or_default();
         let masks: Vec<u64> = monomials
             .iter()
@@ -743,7 +744,7 @@ impl PathsumFactors {
         Ok(AnfWalshReport {
             satisfiable: models > 0,
             count: Gaussian::integers(models as i64, 0).mul(&self.scalar),
-            nontrivial_equations: usize::from(nontrivial.is_some()),
+            nontrivial_equations,
             anf_monomials: masks.len(),
             subsets_evaluated: subsets,
         })

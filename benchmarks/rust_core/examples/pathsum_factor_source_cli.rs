@@ -113,7 +113,9 @@ fn parsed_model(text: &str) -> Result<PathsumFactors, String> {
 
 fn run() -> Result<(), String> {
     let mut args = env::args_os().skip(1);
-    let first = args.next().ok_or("usage: [--monotone-ice] FACTORS ORACLE")?;
+    let first = args
+        .next()
+        .ok_or("usage: [--monotone-ice] FACTORS ORACLE")?;
     let monotone_ice = first.to_str() == Some("--monotone-ice");
     let model_path = if monotone_ice {
         args.next().ok_or("missing monotone source factors")?
@@ -151,9 +153,7 @@ fn run() -> Result<(), String> {
         let im = expected[3]
             .parse::<i64>()
             .map_err(|_| "invalid oracle imaginary")?;
-        if outcome.satisfiable != expected_sat
-            || outcome.count != Gaussian::integers(re, im)
-        {
+        if outcome.satisfiable != expected_sat || outcome.count != Gaussian::integers(re, im) {
             return Err(format!(
                 "SOURCE_MONOTONE_ORACLE_MISMATCH sat={} count=({}, {})",
                 outcome.satisfiable, outcome.count.real, outcome.count.imag

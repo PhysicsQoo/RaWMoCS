@@ -848,6 +848,10 @@ fn run() -> Result<(), String> {
     let cache_first = if trail_compact_residual {
         args.next().ok_or("missing cache policy or precision after --trail-compact-residual")?
     } else { cache_first };
+    let trail_prehashed_cache = cache_first.to_str() == Some("--trail-prehashed-cache");
+    let cache_first = if trail_prehashed_cache {
+        args.next().ok_or("missing cache mode or precision after --trail-prehashed-cache")?
+    } else { cache_first };
     let cache_policy = match cache_first.to_str() {
         Some("--hashbrown-owned") => CachePolicy::HbOwned,
         Some("--hashbrown-borrowed") => CachePolicy::HbBorrowed,
@@ -878,6 +882,9 @@ fn run() -> Result<(), String> {
     }
     if trail_compact_residual && !trail_parent_ids {
         return Err("--trail-compact-residual requires --trail-count --trail-parent-ids".into());
+    }
+    if trail_prehashed_cache && !trail_compact_residual {
+        return Err("--trail-prehashed-cache requires --trail-count --trail-parent-ids --trail-compact-residual".into());
     }
     let path = args.next().ok_or("missing CNF")?;
     if args.next().is_some() { return Err("expected exactly one file".into()); }
@@ -916,6 +923,7 @@ fn run() -> Result<(), String> {
         let mut trail = trail_engine::TrailEngine::new(source, bits, cache_limit, node_budget);
         trail.use_parent_ids = trail_parent_ids;
         trail.use_compact_residual = trail_compact_residual;
+        trail.use_prehashed_cache = trail_prehashed_cache;
         let outcome = trail.count(scope, 0)?;
         (outcome, trail.stats, Some((trail.assignments, trail.cache_keys)))
     } else {
@@ -952,6 +960,7 @@ fn run() -> Result<(), String> {
         trail_count, trail_assignments, trail_cache_keys);
     eprintln!("RESEARCH_MPFR_TRAIL_PARENT_IDS enabled={}", trail_parent_ids);
     eprintln!("RESEARCH_MPFR_TRAIL_COMPACT_RESIDUAL enabled={}", trail_compact_residual);
+    eprintln!("RESEARCH_MPFR_TRAIL_PREHASHED_CACHE enabled={}", trail_prehashed_cache);
     eprintln!("RESEARCH_MPFR_CACHE_POLICY {}", cache_policy.label());
     eprintln!("RESEARCH_MPFR_SHARED_RESIDUAL enabled={} entries={}",
         shared_residual_key, engine.shared_cache.len());

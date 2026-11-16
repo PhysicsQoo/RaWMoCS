@@ -44,17 +44,3 @@ jobs:
           set -euo pipefail
           rustfmt --edition 2021 --check benchmarks/mpfr_research/src/cnf_xor_closure.rs
 
-  format-candidate:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - name: Canonical Rustfmt source for inspection and exact follow-up
-        shell: bash
-        run: |
-          set -euo pipefail
-          rustfmt --edition 2021 benchmarks/mpfr_research/src/cnf_xor_closure.rs
-          printf 'XOR_CLOSURE_RUSTFMT_SOURCE %s\n' "$(base64 -w0 benchmarks/mpfr_research/src/cnf_xor_closure.rs)"

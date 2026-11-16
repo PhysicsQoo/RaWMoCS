@@ -134,3 +134,26 @@ jobs:
           path: .research/pathsum-structure/
           retention-days: 30
           if-no-files-found: warn
+
+  rustfmt-candidate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Emit format-only canonical candidate for review
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(
+            benchmarks/rust_core/src/pathsum_factor_research.rs
+            benchmarks/rust_core/examples/pathsum_factor_source_cli.rs
+            benchmarks/rust_core/tools/quprs_pathsum_structural_probe.rs
+            benchmarks/rust_core/tools/quprs_pathsum_factor_export.rs
+          )
+          rustfmt --edition 2021 "${files[@]}"
+          for file in "${files[@]}"; do
+            printf 'FORMATTED_CANDIDATE %s %s\n' "$file" "$(base64 -w0 "$file")"
+          done

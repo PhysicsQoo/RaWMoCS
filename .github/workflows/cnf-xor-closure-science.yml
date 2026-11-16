@@ -1,0 +1,60 @@
+name: Weighted CNF-only XOR implied closure science
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/cnf-xor-closure-science.yml
+      - benchmarks/mpfr_research/src/main.rs
+      - benchmarks/mpfr_research/src/cnf_xor_closure.rs
+      - benchmarks/rust_core/tools/quprs_cnf_xor_closure_ab.py
+      - docs/cnf-xor-closure-research.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  exact-wmc-science:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/mpfr_research -> target
+          key: xor-closure-source-CNF
+      - name: Original-source only XOR scientific controls at 100/333 bits
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --release --manifest-path benchmarks/mpfr_research/Cargo.toml
+      - name: Strict new-code Clippy with inherited legacy research allowances
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo clippy --manifest-path benchmarks/mpfr_research/Cargo.toml --all-targets -- -D warnings -A clippy::excessive_precision -A clippy::approx_constant -A clippy::manual_hash_one
+      - name: Canonical new-module formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustfmt --edition 2021 --check benchmarks/mpfr_research/src/cnf_xor_closure.rs
+
+  format-candidate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Canonical Rustfmt source for inspection and exact follow-up
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustfmt --edition 2021 benchmarks/mpfr_research/src/cnf_xor_closure.rs
+          printf 'XOR_CLOSURE_RUSTFMT_SOURCE %s\n' "$(base64 -w0 benchmarks/mpfr_research/src/cnf_xor_closure.rs)"

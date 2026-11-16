@@ -132,6 +132,36 @@ jobs:
             grep -q "^$case[[:space:]]EXACT_ORACLE_MATCH" \
               .research/pathsum-structure/factor-admission.tsv
           done
+      - name: Wide original Feynman source-only structural scout (19-24 qubits)
+        shell: bash
+        run: |
+          set -euo pipefail
+          probe="$GITHUB_WORKSPACE/.upstream/quprs/rust/target/release/examples/quprs_pathsum_structural_probe"
+          : > .research/pathsum-structure/wide-scout-status.tsv
+          for name in feynman_barenco10 feynman_tof10 feynman_adder8; do
+            for mode in raw rr; do
+              target=".research/pathsum-structure/${name}-${mode}.tsv"
+              log=".research/pathsum-structure/${name}-${mode}.log"
+              result=0
+              timeout -k 2s 30s prlimit --as=2147483648 -- \
+                "$probe" "$name" "$GITHUB_WORKSPACE/.upstream/quprs" "$mode" "$target" \
+                > "$log" 2>&1 || result=$?
+              if [ "$result" -eq 0 ] && test -s "$target"; then
+                status="PROFILE_COMPLETED"
+                cat "$target"
+              elif [ "$result" -eq 124 ]; then
+                status="CENSORED_TIMEOUT"
+              elif [ "$result" -eq 137 ] || [ "$result" -eq 143 ]; then
+                status="CENSORED_RESOURCE_OR_SIGNAL"
+              else
+                status="CENSORED_SOURCE_ERROR"
+              fi
+              printf '%s\t%s\t%s\t%d\n' "$name" "$mode" "$status" "$result" \
+                >> .research/pathsum-structure/wide-scout-status.tsv
+              echo "WIDE_SOURCE_PROFILE case=$name mode=$mode status=$status exit=$result"
+            done
+          done
+          test "$(wc -l < .research/pathsum-structure/wide-scout-status.tsv)" -eq 6
       - name: Archive immutable source-scoped profile and censored outcomes
         if: always()
         uses: actions/upload-artifact@v4

@@ -103,7 +103,9 @@ jobs:
         uses: CodSpeedHQ/action@v5
         with:
           mode: simulation
-          run: codspeed run
+          # The Action invokes CodSpeed itself; the config discovers all exec targets.
+          # Do not nest `codspeed run` inside the CodSpeed Action.
+          config: codspeed.yml
       - name: Archive exact Weighted CNF source checksums
         if: always()
         uses: actions/upload-artifact@v4

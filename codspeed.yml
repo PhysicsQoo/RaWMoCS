@@ -1,0 +1,33 @@
+# Source-identical original QuPRS Weighted CNF profiler (research only).
+# The linked workflow pins QuPRS and GPMC, generates source CNFs once,
+# and builds both original native solver binaries before CodSpeed starts.
+# Simulation numbers across runtimes are diagnostic, NOT a replacement
+# for seven-trial matched native process WallTime and RSS.
+$schema: https://raw.githubusercontent.com/CodSpeedHQ/codspeed/refs/heads/main/schemas/codspeed.schema.json
+options:
+  max-time: "30s"
+benchmarks:
+  - name: "original_cnf/hwb6/gpmc_mpfr100"
+    exec: "./.upstream/gpmc/build/gpmc -mode=1 -prec=30 .research/codspeed-original-cnf/feynman_hwb6-gpmc.cnf"
+  - name: "original_cnf/hwb6/rust_frequency_mpfr100"
+    exec: "./benchmarks/mpfr_research/target/release/rawmocs-mpfr-research --node-budget=1000000 --cache-limit=50000 --indexed-unit-prop-csr-after-8192 --packed-residual-key-fast --fast-assign --reuse-frequency-scratch --hashbrown-borrowed 30 .research/codspeed-original-cnf/feynman_hwb6-gpmc.cnf"
+  - name: "original_cnf/hwb6/rust_equivalence_mpfr100"
+    exec: "./benchmarks/mpfr_research/target/release/rawmocs-mpfr-research --node-budget=1000000 --cache-limit=50000 --indexed-unit-prop-csr-after-8192 --packed-residual-key-fast --fast-assign --reuse-frequency-scratch --weighted-equivalence --hashbrown-borrowed 30 .research/codspeed-original-cnf/feynman_hwb6-gpmc.cnf"
+  - name: "original_cnf/hwb6/rust_unit_closure_mpfr100"
+    exec: "./benchmarks/mpfr_research/target/release/rawmocs-mpfr-research --node-budget=1000000 --cache-limit=50000 --indexed-unit-prop-csr-after-8192 --packed-residual-key-fast --fast-assign --reuse-frequency-scratch --weighted-equivalence --unit-closure-pivot --hashbrown-borrowed 30 .research/codspeed-original-cnf/feynman_hwb6-gpmc.cnf"
+  - name: "original_cnf/modmult55/gpmc_mpfr100"
+    exec: "./.upstream/gpmc/build/gpmc -mode=1 -prec=30 .research/codspeed-original-cnf/feynman_mod_mult_55-gpmc.cnf"
+  - name: "original_cnf/modmult55/rust_frequency_mpfr100"
+    exec: "./benchmarks/mpfr_research/target/release/rawmocs-mpfr-research --cache-limit=50000 --indexed-unit-prop-csr-after-8192 --packed-residual-key-fast --fast-assign --reuse-frequency-scratch --hashbrown-borrowed 30 .research/codspeed-original-cnf/feynman_mod_mult_55-gpmc.cnf"
+  - name: "original_cnf/modmult55/rust_equivalence_mpfr100"
+    exec: "./benchmarks/mpfr_research/target/release/rawmocs-mpfr-research --cache-limit=50000 --indexed-unit-prop-csr-after-8192 --packed-residual-key-fast --fast-assign --reuse-frequency-scratch --weighted-equivalence --hashbrown-borrowed 30 .research/codspeed-original-cnf/feynman_mod_mult_55-gpmc.cnf"
+  - name: "original_cnf/modmult55/rust_unit_closure_mpfr100"
+    exec: "./benchmarks/mpfr_research/target/release/rawmocs-mpfr-research --cache-limit=50000 --indexed-unit-prop-csr-after-8192 --packed-residual-key-fast --fast-assign --reuse-frequency-scratch --weighted-equivalence --unit-closure-pivot --hashbrown-borrowed 30 .research/codspeed-original-cnf/feynman_mod_mult_55-gpmc.cnf"
+  - name: "original_cnf/barenco5/gpmc_mpfr100"
+    exec: "./.upstream/gpmc/build/gpmc -mode=1 -prec=30 .research/codspeed-original-cnf/feynman_barenco_tof_5-gpmc.cnf"
+  - name: "original_cnf/barenco5/rust_frequency_mpfr100"
+    exec: "./benchmarks/mpfr_research/target/release/rawmocs-mpfr-research --cache-limit=50000 --indexed-unit-prop-csr-after-8192 --packed-residual-key-fast --fast-assign --reuse-frequency-scratch --hashbrown-borrowed 30 .research/codspeed-original-cnf/feynman_barenco_tof_5-gpmc.cnf"
+  - name: "original_cnf/barenco5/rust_equivalence_mpfr100"
+    exec: "./benchmarks/mpfr_research/target/release/rawmocs-mpfr-research --cache-limit=50000 --indexed-unit-prop-csr-after-8192 --packed-residual-key-fast --fast-assign --reuse-frequency-scratch --weighted-equivalence --hashbrown-borrowed 30 .research/codspeed-original-cnf/feynman_barenco_tof_5-gpmc.cnf"
+  - name: "original_cnf/barenco5/rust_unit_closure_mpfr100"
+    exec: "./benchmarks/mpfr_research/target/release/rawmocs-mpfr-research --cache-limit=50000 --indexed-unit-prop-csr-after-8192 --packed-residual-key-fast --fast-assign --reuse-frequency-scratch --weighted-equivalence --unit-closure-pivot --hashbrown-borrowed 30 .research/codspeed-original-cnf/feynman_barenco_tof_5-gpmc.cnf"

@@ -16,7 +16,9 @@ fn source_path(case: &str) -> Option<&'static str> {
         "feynman_mod_mult_55" => Some("benchmarks/Feynman/mod_mult_55.qasm"),
         "mqt_vqe_4" => Some("benchmarks/MQTBench/vqe_nativegates_ibm_qiskit_opt0_4.qasm"),
         "mqt_qnn_4" => Some("benchmarks/MQTBench/qnn_nativegates_ibm_qiskit_opt0_4.qasm"),
-        "mqt_grover_4" => Some("benchmarks/MQTBench/grover-noancilla_nativegates_ibm_qiskit_opt0_4.qasm"),
+        "mqt_grover_4" => {
+            Some("benchmarks/MQTBench/grover-noancilla_nativegates_ibm_qiskit_opt0_4.qasm")
+        }
         _ => None,
     }
 }
@@ -82,7 +84,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let pathsum_start = Instant::now();
     let mut base = PathSum::new(qubits);
-    // Only change the reduction setting — NEVER modify source gates.
+    // Only change the reduction setting â NEVER modify source gates.
     base.set_auto_reduce(mode == "rr");
     let ps = VerificationStrategy::Naive.run(base, &[], &ops);
     let pathsum_build_ns = pathsum_start.elapsed().as_nanos();

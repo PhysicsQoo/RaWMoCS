@@ -709,10 +709,7 @@ impl PathsumFactors {
         let monomials = nontrivial.unwrap_or_default();
         let masks: Vec<u64> = monomials
             .iter()
-            .map(|term| {
-                term.iter()
-                    .fold(0u64, |mask, &var| mask | (1u64 << var))
-            })
+            .map(|term| term.iter().fold(0u64, |mask, &var| mask | (1u64 << var)))
             .collect();
         let subsets = 1usize << masks.len();
         let mut walsh = 0i128;
@@ -776,12 +773,9 @@ mod anf_walsh_tests {
             let bit = |v: usize| assignment & (1 << v) != 0;
             if p.outputs.iter().all(|eq| {
                 bit(eq.output)
-                    == eq
-                        .terms
-                        .iter()
-                        .fold(eq.constant, |acc, monomial| {
-                            acc ^ monomial.iter().all(|&v| bit(v))
-                        })
+                    == eq.terms.iter().fold(eq.constant, |acc, monomial| {
+                        acc ^ monomial.iter().all(|&v| bit(v))
+                    })
             }) {
                 count += 1;
             }

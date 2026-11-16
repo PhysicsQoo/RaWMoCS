@@ -330,8 +330,8 @@ fn verify(problem: &Problem, dag: &Dag, roots: &[u32], samples: usize) -> Result
         let x = (k as u64)
             .wrapping_mul(0x9e3779b97f4a7c15)
             .wrapping_add(0xbf58476d1ce4e5b9);
+        let mut memo = vec![None; dag.nodes.len()];
         for (eq, &root) in problem.equations.iter().zip(roots) {
-            let mut memo = vec![None; dag.nodes.len()];
             if dag.evaluate(root, x, &mut memo) != oracle(eq, x) {
                 return Err("ANF_DAG_SOURCE_EVAL_MISMATCH".into());
             }
@@ -343,7 +343,7 @@ fn run() -> Result<(), String> {
     let mut args = env::args_os().skip(1);
     let path = args
         .next()
-        .ok_or("usage: anf_dag_profile INPUT.anfs [OUTPUT.tsv]")?;
+        .ok_or("usage: anf_dag_profile INPUT.anf [OUTPUT.tsv]")?;
     let output = args.next();
     if args.next().is_some() {
         return Err("unexpected extra argument".into());

@@ -164,23 +164,35 @@ impl<'a> TrailEngine<'a> {
     fn canonical_ids(&self, scope: &[usize], parent_ids: Option<&[usize]>) -> Option<Vec<usize>> {
         let mut ids = Vec::new();
         let mut visit = |cid: usize| {
-            if self.satisfied[cid] != 0 { return true; }
-            if self.live[cid] == 0 { return false; }
-            let first = self.clauses[cid].iter()
+            if self.satisfied[cid] != 0 {
+                return true;
+            }
+            if self.live[cid] == 0 {
+                return false;
+            }
+            let first = self.clauses[cid]
+                .iter()
                 .find(|&&lit| self.assigned[lit.unsigned_abs() as usize] == 0)
                 .expect("live clause has an unassigned literal");
-            if scope.binary_search(&(first.unsigned_abs() as usize)).is_ok() {
+            if scope
+                .binary_search(&(first.unsigned_abs() as usize))
+                .is_ok()
+            {
                 ids.push(cid);
             }
             true
         };
         if let Some(parent) = parent_ids.filter(|_| self.use_parent_ids) {
             for &cid in parent {
-                if !visit(cid) { return None; }
+                if !visit(cid) {
+                    return None;
+                }
             }
         } else {
             for cid in 0..self.clauses.len() {
-                if !visit(cid) { return None; }
+                if !visit(cid) {
+                    return None;
+                }
             }
         }
         ids.sort_unstable_by(|&a, &b| self.cmp_residual(a, b));
@@ -241,7 +253,10 @@ impl<'a> TrailEngine<'a> {
     }
 
     fn count_relevant(
-        &mut self, scope: Vec<usize>, depth: usize, parent_ids: Option<&[usize]>,
+        &mut self,
+        scope: Vec<usize>,
+        depth: usize,
+        parent_ids: Option<&[usize]>,
     ) -> Result<Outcome, String> {
         let checkpoint = self.trail.len();
         let answer = self.count_inner(scope, depth, parent_ids);
@@ -250,7 +265,10 @@ impl<'a> TrailEngine<'a> {
     }
 
     fn count_inner(
-        &mut self, scope: Vec<usize>, depth: usize, parent_ids: Option<&[usize]>,
+        &mut self,
+        scope: Vec<usize>,
+        depth: usize,
+        parent_ids: Option<&[usize]>,
     ) -> Result<Outcome, String> {
         if depth >= 512 {
             return Err("trail depth limit".into());

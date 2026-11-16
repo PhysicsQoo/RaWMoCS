@@ -9,7 +9,7 @@ use std::time::Instant;
 const MAX_VARIABLES: usize = 24;
 const MAX_TERMS: usize = 200_000;
 const MAX_BYTES: usize = 8_000_000;
-const MAX_TOGGLE_OPS: usize = 400_000_000;
+const MAX_TRANSFORM_OPS: usize = 250_000_000;
 
 struct Equation {
     output: usize,
@@ -21,7 +21,7 @@ struct Input {
 }
 struct ResultCount {
     count: u64,
-    toggles: usize,
+    work_ops: usize,
 }
 
 fn integer(value: &str) -> Result<usize, String> {
@@ -98,90 +98,70 @@ fn parse_source(text: &str) -> Result<Input, String> {
     Ok(Input { variables, outputs })
 }
 
-fn low_patterns() -> [u64; 64] {
-    let mut patterns = [0u64; 64];
-    for mask in 0..64usize {
-        for a in 0..64 {
-            if a & mask == mask {
-                patterns[mask] |= 1u64 << a;
-            }
-        }
-    }
-    patterns
-}
 
-fn toggle_term(
-    table: &mut [u64],
-    mask: u32,
-    patterns: &[u64; 64],
-    high_variables: usize,
-    visited: &mut usize,
-    limit: usize,
-) -> Result<(), String> {
-    let required_high = (mask >> 6) as usize;
-    let high_full = (1usize << high_variables) - 1;
-    let free = high_full ^ required_high;
-    let operations = 1usize << free.count_ones();
-    *visited = visited
-        .checked_add(operations)
-        .ok_or("ORACLE_TOGGLE_COUNTER_OVERFLOW")?;
-    if *visited > limit {
-        return Err("ORACLE_WORK_LIMIT".into());
-    }
-    let bits = patterns[(mask & 63) as usize];
-    let mut optional = free;
-    loop {
-        table[optional | required_high] ^= bits;
-        if optional == 0 {
-            break;
-        }
-        optional = (optional - 1) & free;
-    }
-    Ok(())
-}
+// Direct GF(2) Moebius transform, independent of the ROBDD solver.
+const LOW_ZETA_MASKS: [u64; 6] = [
+    0x5555_5555_5555_5555,
+    0x3333_3333_3333_3333,
+    0x0f0f_0f0f_0f0f_0f0f,
+    0x00ff_00ff_00ff_00ff,
+    0x0000_ffff_0000_ffff,
+    0x0000_0000_ffff_ffff,
+];
 
 fn solve_original_source(input: &Input, limit: usize) -> Result<ResultCount, String> {
     if input.variables > MAX_VARIABLES {
         return Err("ORACLE_VARIABLE_LIMIT".into());
     }
-    let high_vars = input.variables.saturating_sub(6);
-    let chunks = 1usize << high_vars;
-    let valid = if input.variables < 6 {
+    let word_count = 1usize << input.variables.saturating_sub(6);
+    let valid_mask = if input.variables < 6 {
         (1u64 << (1usize << input.variables)) - 1
     } else {
         u64::MAX
     };
-    let patterns = low_patterns();
-    let mut survivors = vec![valid; chunks];
-    let mut toggles = 0usize;
-    for eq in &input.outputs {
-        let mut polynomial = vec![0u64; chunks];
-        // Direct evaluation of the ORIGINAL source equation: the output
-        // literal must be XORed with its ANF right-hand side.
-        toggle_term(
-            &mut polynomial,
-            1u32 << eq.output,
-            &patterns,
-            high_vars,
-            &mut toggles,
-            limit,
-        )?;
-        for &term in &eq.terms {
-            toggle_term(
-                &mut polynomial,
-                term,
-                &patterns,
-                high_vars,
-                &mut toggles,
-                limit,
-            )?;
+    let mut allowed = vec![valid_mask; word_count];
+    let mut work_ops = 0usize;
+    for equation in &input.outputs {
+        let mut values = vec![0u64; word_count];
+        for monomial in std::iter::once(1u32 << equation.output)
+            .chain(equation.terms.iter().copied())
+        {
+            values[(monomial >> 6) as usize] ^= 1u64 << (monomial & 63);
         }
-        for (state, parity) in survivors.iter_mut().zip(polynomial.iter()) {
-            *state &= !parity;
+        for variable in 0..input.variables {
+            let step_ops = if variable < 6 { word_count } else { word_count / 2 };
+            work_ops = work_ops.checked_add(step_ops)
+                .ok_or("ORACLE_WORK_COUNTER_OVERFLOW")?;
+            if work_ops > limit {
+                return Err("ORACLE_TRANSFORM_WORK_LIMIT".into());
+            }
+            if variable < 6 {
+                let shift = 1usize << variable;
+                let filter = LOW_ZETA_MASKS[variable];
+                for word in &mut values {
+                    *word ^= (*word & filter) << shift;
+                }
+            } else {
+                let step = 1usize << (variable - 6);
+                for base in (0..word_count).step_by(2 * step) {
+                    for offset in 0..step {
+                        let low = values[base + offset];
+                        values[base + step + offset] ^= low;
+                    }
+                }
+            }
+        }
+        work_ops = work_ops.checked_add(word_count)
+            .ok_or("ORACLE_WORK_COUNTER_OVERFLOW")?;
+        if work_ops > limit {
+            return Err("ORACLE_TRANSFORM_WORK_LIMIT".into());
+        }
+        for (survivor, parity) in allowed.iter_mut().zip(&values) {
+            *survivor &= !parity;
         }
     }
-    let count = survivors.iter().map(|v| u64::from(v.count_ones())).sum();
-    Ok(ResultCount { count, toggles })
+    let count = allowed.iter().map(|v| u64::from(v.count_ones())).sum();
+    Ok(ResultCount { count, work_ops })
 }
 
 fn run() -> Result<(), String> {
@@ -196,16 +176,16 @@ fn run() -> Result<(), String> {
     let input = parse_source(&input_text)?;
     let parse_ns = start.elapsed().as_nanos();
     let solve_start = Instant::now();
-    let result = solve_original_source(&input, MAX_TOGGLE_OPS)?;
+    let result = solve_original_source(&input, MAX_TRANSFORM_OPS)?;
     let solve_ns = solve_start.elapsed().as_nanos();
-    let header = "status\tvariables\tphase_terms\toutput_equations\tsat\twc_real\twc_imag\ttoggle_ops\tparse_ns\tsolve_ns\n";
+    let header = "status\tvariables\tphase_terms\toutput_equations\tsat\twc_real\twc_imag\ttransform_word_ops\tparse_ns\tsolve_ns\n";
     let line = format!(
         "EXHAUSTIVE_ORIGINAL_ANF_COMPLETED\t{}\t0\t{}\t{}\t{}\t0\t{}\t{}\t{}\n",
         input.variables,
         input.outputs.len(),
         result.count != 0,
         result.count,
-        result.toggles,
+        result.work_ops,
         parse_ns,
         solve_ns,
     );
@@ -265,7 +245,7 @@ mod tests {
                     outputs,
                 };
                 assert_eq!(
-                    solve_original_source(&input, MAX_TOGGLE_OPS).unwrap().count,
+                    solve_original_source(&input, MAX_TRANSFORM_OPS).unwrap().count,
                     straightforward(&input),
                     "n={n}, seed={seed}",
                 );
@@ -279,12 +259,12 @@ mod tests {
             parse_source("p anf 6 2 0\no 0 3\nm 1 0\nm 2 2 3\nm 2 2 3\no 1 2\nm 1 2\nm 0\n")
                 .unwrap();
         assert_eq!(
-            solve_original_source(&input, MAX_TOGGLE_OPS).unwrap().count,
+            solve_original_source(&input, MAX_TRANSFORM_OPS).unwrap().count,
             32
         );
         let all_free = parse_source("p anf 7 0 0\n").unwrap();
         assert_eq!(
-            solve_original_source(&all_free, MAX_TOGGLE_OPS)
+            solve_original_source(&all_free, MAX_TRANSFORM_OPS)
                 .unwrap()
                 .count,
             128

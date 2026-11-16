@@ -331,6 +331,51 @@ scaling/control case for later shared ANF DAG / ADD / source-aware
 compilation work. Do not infer a result or quietly increase
 dense-table limits.
 
+## Matched original Toffoli10: independent ANF Walsh versus GPMC (2026-11-16)
+
+The original pinned QuPRS/Feynman Toffoli10 QASM exceeds dense native
+factor width admission (scope19 >16). An independent exact source-level
+enumeration previously verified **SAT=true; Full Complex WMC=393216+0i**,
+with 19 original Boolean variables and one nontrivial nine-monomial
+output ANF trace constraint.
+
+An independent research-only MPFR CLI option, --anf-walsh, now accepts
+only phase-free input, at most one nontrivial output ANF after GF(2)
+self cancellation, <=20 nontrivial monomials and <=50 variables. It uses
+512 exact Walsh subset terms, then converts the integer to 100/333-bit
+MPFR printed output. The ordinary bounded dense Factor DP remains
+unchanged; this is not an automatic production router.
+
+[Seven-trial same-source MPFR paired CI](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/43798429810)
+**SUCCESS**. All 20/20 original-source circuit/precision cohorts matched
+SAT and both complex WMC components, including Toffoli10 at 100/333 bits.
+Each original QuPRS RR residual is source-pinned and GPMC is original C++.
+Both arms run seven fresh child processes in alternating order, using the
+same QuPRS printed MPFR weights but different factor/CNF representations.
+
+| Toffoli10 | GPMC solver p50 ms | ANF Walsh p50 ms | Solver ratio | Shared source+GPMC p50 ms | Shared source+Walsh p50 ms | Combined ratio |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 100 bits | 6.808 | 1.694 | 4.02x | 8.990 | 3.869 | 2.32x |
+| 333 bits | 7.055 | 1.720 | 4.10x | 9.251 | 3.916 | 2.36x |
+
+Observed peak RSS KiB (p50): 100-bit GPMC 13,812 vs Walsh 3,200;
+333-bit GPMC 13,968 vs Walsh 3,144. RSS is observed GNU time data
+and the study only limits *virtual address space* to 2 GiB. The
+controlled source exporter builds **both** representations each trial:
+shared-preparation+solver is conservative research two-process wall,
+not optimized QuPRS production E2E or same-CNF-byte solver timing.
+
+**Negative results**: original Adder8 has 24 source variables, dense
+factor scope24 and over 14,000 nontrivial ANF monomials, exceeding
+both the width16 dense and Walsh term20 science gates. Phase-bearing,
+multiple-equation or nonunit-weight inputs are likewise not accepted
+by this restricted integer-counting Walsh method. They must stay
+explicitly ineligible or use separately verified complex DP/GPMC paths.
+
+Next research gate: quantify Adder8 shared ANF subexpressions and
+factorization before investing in bounded source-aware DAG, ADD/BDD or
+rank-width compilation. Avoid increasing the dense table limit blindly.
+
 ## Literature
 
 - Compilation and Fast Model Counting beyond CNF (IJCAI 2024):

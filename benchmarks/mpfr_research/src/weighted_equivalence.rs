@@ -150,7 +150,7 @@ pub(crate) fn reduce(p: &Problem, bits: u32) -> (Problem, Vec<usize>, Equivalenc
         let positive = scc[2 * (variable - 1)];
         let negative = scc[2 * (variable - 1) + 1];
         let key = (positive.min(negative), positive.max(negative));
-        let &rep = representatives.entry(key).or_insert(variable);
+        let rep = *representatives.entry(key).or_insert(variable);
         let rep_positive = scc[2 * (rep - 1)];
         let same = positive == rep_positive;
         // Same unordered SCC pair: either same polarity or opposite.

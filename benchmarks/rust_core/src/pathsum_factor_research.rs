@@ -213,8 +213,7 @@ impl PathsumFactors {
         }
         for e in &self.outputs {
             scopes.push(sorted_scope(
-                std::iter::once(e.output)
-                    .chain(e.terms.iter().flat_map(|m| m.iter().copied())),
+                std::iter::once(e.output).chain(e.terms.iter().flat_map(|m| m.iter().copied())),
             ));
         }
         scopes
@@ -269,7 +268,12 @@ impl PathsumFactors {
             parity_constraints: self.parity.len(),
             output_constraints: self.outputs.len(),
             phase_terms: self.phase.len(),
-            max_phase_degree: self.phase.iter().map(|p| p.variables.len()).max().unwrap_or(0),
+            max_phase_degree: self
+                .phase
+                .iter()
+                .map(|p| p.variables.len())
+                .max()
+                .unwrap_or(0),
             max_anf_degree: self
                 .outputs
                 .iter()
@@ -322,8 +326,7 @@ impl PathsumFactors {
         }
         for e in &self.outputs {
             let scope = sorted_scope(
-                std::iter::once(e.output)
-                    .chain(e.terms.iter().flat_map(|t| t.iter().copied())),
+                std::iter::once(e.output).chain(e.terms.iter().flat_map(|t| t.iter().copied())),
             );
             tables.push(build_table(scope, limits, &mut stats, |a, s| {
                 let mut expected = e.constant;
@@ -378,9 +381,9 @@ impl PathsumFactors {
             stats.eliminations += 1;
             tables = rest;
         }
-        let final_value = tables.iter().fold(Cell::one(), |acc, t| {
-            acc.product(&t.cells[0])
-        });
+        let final_value = tables
+            .iter()
+            .fold(Cell::one(), |acc, t| acc.product(&t.cells[0]));
         Ok(FactorReport {
             satisfiable: final_value.sat,
             count: final_value.count.mul(&self.scalar),
@@ -548,10 +551,8 @@ impl QuadraticSign {
                 while ls != 0 {
                     let w = ls.trailing_zeros() as usize;
                     ls &= ls - 1;
-                    let flip = ((edges[i] & (1 << v) != 0)
-                        && (edges[j] & (1 << w) != 0))
-                        ^ ((edges[i] & (1 << w) != 0)
-                            && (edges[j] & (1 << v) != 0));
+                    let flip = ((edges[i] & (1 << v) != 0) && (edges[j] & (1 << w) != 0))
+                        ^ ((edges[i] & (1 << w) != 0) && (edges[j] & (1 << v) != 0));
                     if flip {
                         edges[v] ^= 1 << w;
                         edges[w] ^= 1 << v;
@@ -590,15 +591,17 @@ mod tests {
         let mut sat = false;
         for mask in 0..(1usize << p.variables) {
             let bit = |v: usize| mask & (1 << v) != 0;
-            if p.parity.iter().any(|e| {
-                e.variables.iter().filter(|&&v| bit(v)).count() % 2 != usize::from(e.rhs)
-            }) {
+            if p.parity
+                .iter()
+                .any(|e| e.variables.iter().filter(|&&v| bit(v)).count() % 2 != usize::from(e.rhs))
+            {
                 continue;
             }
             if p.outputs.iter().any(|e| {
-                let value = e.terms.iter().fold(e.constant, |b, term| {
-                    b ^ term.iter().all(|&v| bit(v))
-                });
+                let value = e
+                    .terms
+                    .iter()
+                    .fold(e.constant, |b, term| b ^ term.iter().all(|&v| bit(v)));
                 value != bit(e.output)
             }) {
                 continue;
@@ -677,16 +680,23 @@ mod tests {
             outputs: vec![],
             scalar: Gaussian::one(),
         };
-        assert_eq!(p.solve_bounded(FactorLimits::default()).unwrap().count,
-                   Gaussian::integers(8, 0));
-        p.weights[0] = Weights::new(Gaussian::integers(1, 0),
-                                     Gaussian::integers(-1, 0));
+        assert_eq!(
+            p.solve_bounded(FactorLimits::default()).unwrap().count,
+            Gaussian::integers(8, 0)
+        );
+        p.weights[0] = Weights::new(Gaussian::integers(1, 0), Gaussian::integers(-1, 0));
         let a = p.solve_bounded(FactorLimits::default()).unwrap();
         assert!(a.satisfiable);
         assert_eq!(a.count, Gaussian::zero());
         p.parity = vec![
-            Parity { variables: vec![1], rhs: false },
-            Parity { variables: vec![1], rhs: true },
+            Parity {
+                variables: vec![1],
+                rhs: false,
+            },
+            Parity {
+                variables: vec![1],
+                rhs: true,
+            },
         ];
         let b = p.solve_bounded(FactorLimits::default()).unwrap();
         assert!(!b.satisfiable);
@@ -698,12 +708,18 @@ mod tests {
         let p = PathsumFactors {
             variables: 14,
             weights: unit_weights(14),
-            parity: vec![Parity { variables: (0..14).collect(), rhs: false }],
+            parity: vec![Parity {
+                variables: (0..14).collect(),
+                rhs: false,
+            }],
             phase: vec![],
             outputs: vec![],
             scalar: Gaussian::one(),
         };
-        let limits = FactorLimits { max_scope: 10, max_work_cells: 100000 };
+        let limits = FactorLimits {
+            max_scope: 10,
+            max_work_cells: 100000,
+        };
         assert!(p.solve_bounded(limits).is_err());
         assert_eq!(p.parity[0].variables.len(), 14);
         assert!(p.profile().unwrap().primal_minfill_width_upper >= 13);
@@ -714,7 +730,11 @@ mod tests {
         let mut sum = 0i64;
         for mask in 0..(1u64 << p.variables) {
             let legal = p.equations.iter().all(|e| {
-                e.variables.iter().filter(|&&v| mask & (1 << v) != 0).count() % 2
+                e.variables
+                    .iter()
+                    .filter(|&&v| mask & (1 << v) != 0)
+                    .count()
+                    % 2
                     == usize::from(e.rhs)
             });
             if legal {
@@ -747,13 +767,22 @@ mod tests {
                 }
             }
             if seed & 2 != 0 {
-                p.equations.push(Parity { variables: vec![0, 1, 2], rhs: seed & 4 != 0 });
+                p.equations.push(Parity {
+                    variables: vec![0, 1, 2],
+                    rhs: seed & 4 != 0,
+                });
             }
             if seed & 8 != 0 {
-                p.equations.push(Parity { variables: vec![2, 3, 5], rhs: seed & 16 != 0 });
+                p.equations.push(Parity {
+                    variables: vec![2, 3, 5],
+                    rhs: seed & 16 != 0,
+                });
             }
             if seed & 32 != 0 {
-                p.equations.push(Parity { variables: vec![0, 1, 2], rhs: seed & 4 == 0 });
+                p.equations.push(Parity {
+                    variables: vec![0, 1, 2],
+                    rhs: seed & 4 == 0,
+                });
             }
             let exact = quadratic_oracle(&p);
             let result = p.solve().unwrap();
@@ -765,7 +794,10 @@ mod tests {
     fn restricted_quadratic_phase_matches_factor_dp() {
         let q = QuadraticSign {
             variables: 4,
-            equations: vec![Parity { variables: vec![0, 2, 3], rhs: true }],
+            equations: vec![Parity {
+                variables: vec![0, 2, 3],
+                rhs: true,
+            }],
             constant: true,
             linear: vec![0, 1],
             quadratic: vec![(0, 2), (1, 3)],
@@ -775,11 +807,18 @@ mod tests {
             variables: 4,
             weights: unit_weights(4),
             parity: q.equations.clone(),
-            phase: q.linear.iter().map(|&v| PhaseMonomial {
-                variables: vec![v], weight_if_true: Gaussian::integers(-1, 0),
-            }).chain(q.quadratic.iter().map(|&(a, b)| PhaseMonomial {
-                variables: vec![a, b], weight_if_true: Gaussian::integers(-1, 0),
-            })).collect(),
+            phase: q
+                .linear
+                .iter()
+                .map(|&v| PhaseMonomial {
+                    variables: vec![v],
+                    weight_if_true: Gaussian::integers(-1, 0),
+                })
+                .chain(q.quadratic.iter().map(|&(a, b)| PhaseMonomial {
+                    variables: vec![a, b],
+                    weight_if_true: Gaussian::integers(-1, 0),
+                }))
+                .collect(),
             outputs: vec![],
             scalar: Gaussian::integers(-1, 0),
         };

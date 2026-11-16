@@ -96,3 +96,59 @@ numerical acceptance rule with independent dyadic exact fixtures.
 Future research if this isolation fails: incremental active-clause
 indexes / watched literals and count-safe component cache/learning,
 rather than repeated full scans to canonicalize every node.
+
+
+## First native experiment: negative, so no admission
+
+[Seven-trial original-source native GPMC/Rust run](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/43883081585)
+completed all six 100/333-bit HWB6, Barenco5, ModMult55
+Full Complex WMC cohorts with SAT and both weighted complex parts
+matching the unmodified GPMC.
+
+| Original CNF | bits | GPMC p50 ms | Rust original Eq p50 | Rust reversible trail p50 | Eq/trail DPLL nodes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| HWB6 | 100 | 176.743 | 603.231 | 779.037 | 81,594 / 81,594 |
+| HWB6 | 333 | 194.146 | 644.693 | 808.294 | 81,594 / 81,594 |
+| Barenco5 | 100 | 11.744 | 8.502 | 10.156 | 2,212 / 2,212 |
+| Barenco5 | 333 | 10.859 | 8.927 | 10.418 | 2,212 / 2,212 |
+| ModMult55 | 100 | 10.947 | 19.778 | 21.629 | 4,269 / 4,269 |
+| ModMult55 | 333 | 11.277 | 21.253 | 22.406 | 4,269 / 4,269 |
+
+[Raw observations and censored Grover5](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/43883081585/artifacts/14234415131).
+The first Trail architecture removes branch cofactor cloning but **regresses
+HWB6 100-bit full WallTime by ~29%** without reducing search nodes.
+This rules out the unsupported assertion that eliminating clause
+copies alone is sufficient. Its child still traverses **all original
+source clauses** to identify active clauses, then repeatedly sorts
+current reduced clause IDs to regenerate the canonical unit order
+and memoization key.
+
+## Second isolated optimization: monotone parent active-clause IDs
+
+Experimental `--trail-count --trail-parent-ids` changes **only**
+the clause-ID candidates considered in child `canonical_ids`.
+A recursive node receives the exact canonical source clause IDs from
+its parent. Under a monotone assignment trail, a clause that is
+satisfied or belongs to another already-separated component cannot
+become relevant deeper within that branch. The child still checks
+each candidate's actual live/satisfied state and sorts/deduplicates
+the **current reduced literals**. It cannot create a result from
+hashed fingerprints, assume false SAT conflict, change literal
+weights or skip a current active source clause.
+
+This is still distinct from fully incremental watched-literal unit
+queues or reusable component graph. The old complete-global-scan
+`--trail-count` arm remains in the executable for strict same-source
+A/B with a five-arm native runner (GPMC, original Frequency, signed
+equivalence DPLL, global-scan Trail, parent-clause-ID Trail).
+Every completed 100/333-bit cohort must preserve exact SAT, both WMC
+numbers **and identical stdout bytes, DPLL/cache/component counts
+between the two Trail variants**; no topology change is allowed
+from this local data-structure optimization. The 21-target original
+Weighted CNF CodSpeed research harness also includes three new
+`rust_equivalence_trail_parent_ids_mpfr100` names while retaining
+all preexisting 18 source-CNF and 68 formal-core benchmark identities.
+
+**Decision is pending fresh CI:** neither the first Trail nor
+parent-ID Trail may be selected as a default unless a clear end-to-end
+WallTime improvement and correct output/RSS are independently proven.

@@ -637,6 +637,218 @@ mod monotone_trace_tests {
     }
 }
 
+/// Exact Walsh-character expansion for a single nontrivial source ANF
+/// trace equation. This is a different algorithm from generic CNF/DPLL
+/// and extends the strictly monotone conjunction-only inclusion/exclusion.
+///
+/// Given g(x) = c XOR m_1(x) XOR ... XOR m_r(x), the indicator g(x)=0 is
+/// (1 + (-1)^c * PRODUCT_j (1 - 2*m_j(x))) / 2.
+/// Since every m_j is a positive AND monomial, expanding the product
+/// yields a 2^r sum indexed by unions of the original variable supports.
+/// This avoids allocating a dense 2^k table for the high-degree equality.
+/// Admit only unit literal weights, no other parity/phase factors, and at
+/// most one nontrivial output equation after GF(2) self-cancellation.
+#[derive(Clone, Debug)]
+pub struct AnfWalshReport {
+    pub satisfiable: bool,
+    pub count: Gaussian,
+    pub nontrivial_equations: usize,
+    pub anf_monomials: usize,
+    pub subsets_evaluated: usize,
+}
+
+impl PathsumFactors {
+    pub fn count_single_anf_trace_bounded(&self) -> Result<AnfWalshReport, String> {
+        self.validate()?;
+        if self.variables > 50 {
+            return Err("ANF Walsh variable cap exceeded".into());
+        }
+        if !self.parity.is_empty() || !self.phase.is_empty() {
+            return Err("ANF Walsh requires phase-free, parity-free input".into());
+        }
+        let one = Gaussian::one();
+        if self
+            .weights
+            .iter()
+            .any(|w| w.positive != one || w.negative != one)
+        {
+            return Err("ANF Walsh requires unit literal weights".into());
+        }
+        let mut nontrivial = None;
+        let mut sign_negative = false;
+        for equation in &self.outputs {
+            let mut polynomial = std::collections::BTreeSet::<Vec<usize>>::new();
+            let mut toggle = |mut monomial: Vec<usize>| {
+                monomial.sort_unstable();
+                monomial.dedup();
+                if !polynomial.insert(monomial.clone()) {
+                    polynomial.remove(&monomial);
+                }
+            };
+            toggle(vec![equation.output]);
+            for term in &equation.terms {
+                toggle(term.clone());
+            }
+            if equation.constant {
+                toggle(Vec::new());
+            }
+            let constant = polynomial.remove(&Vec::new());
+            if polynomial.is_empty() && !constant {
+                continue;
+            }
+            if nontrivial.is_some() {
+                return Err("ANF Walsh admits only one nontrivial trace equation".into());
+            }
+            if polynomial.len() > 20 {
+                return Err("ANF Walsh monomial budget exceeded".into());
+            }
+            sign_negative = constant;
+            nontrivial = Some(polynomial.into_iter().collect::<Vec<_>>());
+        }
+        let monomials = nontrivial.unwrap_or_default();
+        let masks: Vec<u64> = monomials
+            .iter()
+            .map(|term| {
+                term.iter()
+                    .fold(0u64, |mask, &var| mask | (1u64 << var))
+            })
+            .collect();
+        let subsets = 1usize << masks.len();
+        let mut walsh = 0i128;
+        for selected in 0..subsets {
+            let mut support = 0u64;
+            for (idx, &mask) in masks.iter().enumerate() {
+                if selected & (1 << idx) != 0 {
+                    support |= mask;
+                }
+            }
+            let free = self.variables - support.count_ones() as usize;
+            let term = (1i128 << selected.count_ones()) << free;
+            if selected.count_ones() % 2 == 0 {
+                walsh += term;
+            } else {
+                walsh -= term;
+            }
+        }
+        let total = 1i128 << self.variables;
+        let twice_models = if sign_negative {
+            total - walsh
+        } else {
+            total + walsh
+        };
+        if twice_models < 0 || twice_models % 2 != 0 || twice_models / 2 > total {
+            return Err("ANF Walsh nonphysical assignment total".into());
+        }
+        let models = twice_models / 2;
+        Ok(AnfWalshReport {
+            satisfiable: models > 0,
+            count: Gaussian::integers(models as i64, 0).mul(&self.scalar),
+            nontrivial_equations: usize::from(nontrivial.is_some()),
+            anf_monomials: masks.len(),
+            subsets_evaluated: subsets,
+        })
+    }
+}
+
+#[cfg(test)]
+mod anf_walsh_tests {
+    use super::*;
+
+    fn model(n: usize, monomials: Vec<Vec<usize>>, constant: bool) -> PathsumFactors {
+        PathsumFactors {
+            variables: n,
+            weights: vec![Weights::new(Gaussian::one(), Gaussian::one()); n],
+            parity: vec![],
+            phase: vec![],
+            outputs: vec![OutputEquality {
+                output: n - 1,
+                constant,
+                terms: std::iter::once(vec![n - 1]).chain(monomials).collect(),
+            }],
+            scalar: Gaussian::one(),
+        }
+    }
+
+    fn oracle(p: &PathsumFactors) -> i64 {
+        let mut count = 0;
+        for assignment in 0..(1usize << p.variables) {
+            let bit = |v: usize| assignment & (1 << v) != 0;
+            if p.outputs.iter().all(|eq| {
+                bit(eq.output)
+                    == eq
+                        .terms
+                        .iter()
+                        .fold(eq.constant, |acc, monomial| {
+                            acc ^ monomial.iter().all(|&v| bit(v))
+                        })
+            }) {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    #[test]
+    fn walsh_expansion_matches_independent_small_anf_oracle() {
+        for seed in 0usize..96 {
+            let mut terms = Vec::new();
+            for j in 0..5 {
+                let monomial = (0..7)
+                    .filter(|&i| ((seed * 37 + j * 19 + i * 11) >> (i % 5)) & 1 != 0)
+                    .collect();
+                terms.push(monomial);
+            }
+            let p = model(7, terms, seed & 1 != 0);
+            let result = p.count_single_anf_trace_bounded().unwrap();
+            let expected = oracle(&p);
+            assert_eq!(result.count, Gaussian::integers(expected, 0));
+            assert_eq!(result.satisfiable, expected > 0);
+        }
+    }
+
+    #[test]
+    fn toffoli10_shape_has_small_walsh_but_oversized_dense_scope() {
+        let terms = vec![
+            vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+            vec![2, 3, 4, 5, 6, 7, 8, 9, 10],
+            vec![3, 4, 5, 6, 7, 8, 9, 11],
+            vec![4, 5, 6, 7, 8, 9, 12],
+            vec![5, 6, 7, 8, 9, 13],
+            vec![6, 7, 8, 9, 14],
+            vec![7, 8, 9, 15],
+            vec![8, 9, 16],
+            vec![9, 17],
+        ];
+        let p = model(19, terms, false);
+        assert!(p.solve_bounded(FactorLimits::default()).is_err());
+        let result = p.count_single_anf_trace_bounded().unwrap();
+        assert_eq!(result.anf_monomials, 9);
+        assert_eq!(result.subsets_evaluated, 512);
+        assert!(result.satisfiable);
+        assert_eq!(result.count, Gaussian::integers(393216, 0));
+    }
+
+    #[test]
+    fn reject_multiple_nontrivial_outputs_phase_and_nonunit_weights() {
+        let mut p = model(4, vec![vec![0, 1], vec![1, 2]], false);
+        p.outputs.push(OutputEquality {
+            output: 0,
+            constant: false,
+            terms: vec![vec![0], vec![1]],
+        });
+        assert!(p.count_single_anf_trace_bounded().is_err());
+        p.outputs.pop();
+        p.phase.push(PhaseMonomial {
+            variables: vec![0],
+            weight_if_true: Gaussian::integers(-1, 0),
+        });
+        assert!(p.count_single_anf_trace_bounded().is_err());
+        p.phase.pop();
+        p.weights[0] = Weights::new(Gaussian::zero(), Gaussian::one());
+        assert!(p.count_single_anf_trace_bounded().is_err());
+    }
+}
+
 /// Restricted sign-only quadratic phase: (-1)^(c + l.x + sum B_ij x_i x_j).
 /// Unlike a general Clifford+T phase, this supports only phases +1/-1.
 #[derive(Clone, Debug)]

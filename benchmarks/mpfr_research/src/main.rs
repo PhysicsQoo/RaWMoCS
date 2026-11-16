@@ -14,6 +14,8 @@ use std::io::Write;
 use std::path::Path;
 use std::time::Instant;
 
+mod cnf_xor_closure;
+
 type Clause = Vec<i32>;
 
 #[derive(Clone)]
@@ -786,6 +788,13 @@ fn run() -> Result<(), String> {
     let cache_first = if reuse_frequency_scratch {
         args.next().ok_or("missing cache mode or precision after --reuse-frequency-scratch")?
     } else { cache_first };
+    // Opt-in CNF-native XOR implications only. This is deliberately after
+    // the standard search/Cache flags so every unchanged CLI keeps its
+    // original parsing behavior and solver policy.
+    let xor_implied_closure = cache_first.to_str() == Some("--xor-implied-closure");
+    let cache_first = if xor_implied_closure {
+        args.next().ok_or("missing cache mode or precision after --xor-implied-closure")?
+    } else { cache_first };
     let cache_policy = match cache_first.to_str() {
         Some("--hashbrown-owned") => CachePolicy::HbOwned,
         Some("--hashbrown-borrowed") => CachePolicy::HbBorrowed,
@@ -827,7 +836,12 @@ fn run() -> Result<(), String> {
     engine.indexed_unit_csr = indexed_unit_csr;
     engine.reuse_frequency_scratch = reuse_frequency_scratch;
     engine.indexed_activation_node = indexed_activation_node;
-    let answer = engine.count(p.clauses.clone(), (1..=p.n).collect(), 0)?;
+    let (root_clauses, xor_stats) = if xor_implied_closure {
+        cnf_xor_closure::implied_closure(&p.clauses, p.n)
+    } else {
+        (p.clauses.clone(), cnf_xor_closure::XorClosureStats::default())
+    };
+    let answer = engine.count(root_clauses, (1..=p.n).collect(), 0)?;
     let solve_ns = t2.elapsed().as_nanos();
     let t3 = Instant::now();
     println!("s {}", if answer.sat { "SATISFIABLE" } else { "UNSATISFIABLE" });
@@ -839,6 +853,10 @@ fn run() -> Result<(), String> {
     let output_ns = t3.elapsed().as_nanos();
     eprintln!("RESEARCH_MPFR_PHASE_NS read={read_ns} parse={parse_ns} solve={solve_ns} output={output_ns} nodes={} cache_hits={} decompositions={} digits={digits} bits={bits}",
         engine.stats.nodes, engine.stats.cache_hits, engine.stats.decompositions);
+    eprintln!("RESEARCH_MPFR_XOR_CLOSURE enabled={} equations={} rank={} units={} binary={} contradiction={} row_xors={} censored={}",
+        xor_implied_closure, xor_stats.equations, xor_stats.rank,
+        xor_stats.forced_units, xor_stats.binary_clauses,
+        xor_stats.contradiction, xor_stats.row_xors, xor_stats.censored);
     eprintln!("RESEARCH_MPFR_CACHE_POLICY {}", cache_policy.label());
     eprintln!("RESEARCH_MPFR_SHARED_RESIDUAL enabled={} entries={}",
         shared_residual_key, engine.shared_cache.len());

@@ -166,7 +166,7 @@ mod tests {
 
     #[test]
     fn chooses_bridge_variable_from_original_cnf_cofactors() {
-        let cnf = vec![
+        let cnf: Vec<Clause> = vec![
             vec![1, 2],
             vec![1, 3],
             vec![-1, 4],
@@ -236,7 +236,7 @@ mod tests {
 
     #[test]
     fn work_cap_falls_back_to_unmodified_frequency() {
-        let cnf = vec![vec![1, 2], vec![1, 3], vec![-1, 4], vec![-2, 5]];
+        let cnf: Vec<Clause> = vec![vec![1, 2], vec![1, 3], vec![-1, 4], vec![-2, 5]];
         let scope: Vec<usize> = (1..=5).collect();
         let mut frequency = vec![0; 6];
         for clause in &cnf {

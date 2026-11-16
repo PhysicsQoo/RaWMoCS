@@ -1,6 +1,6 @@
 # Native Path-sum factor elimination and quadratic sign-phase research
 
-Status: OPT-IN ALGORITHM PROTOTYPE — not production, not performance-qualified.
+Status: OPT-IN ALGORITHM PROTOTYPE — 7-trial same-RR MPFR comparison qualified on one Linux CI runner; not production or general-performance qualified.
 
 This study does not reproduce GPMC's CDCL search architecture. It uses
 QuPRS's original ANF/parity, AND monomials, phase factors, and trace/output
@@ -15,7 +15,7 @@ constraints before they are expanded into Tseitin CNF.
 - Output trace equalities and otherwise unused free Path-sum variables
   must remain in the full count.
 - Thus, native factor inference is a plausible independent alternative
-  to repeated generic CNF search, but no real QuPRS speedup is established.
+  to repeated generic CNF search. A limited same-RR QuPRS source cohort has now shown measured benefits; this is not yet a general QuPRS E2E admission.
 
 ## A. Opt-in bounded mixed-factor DP
 
@@ -41,7 +41,7 @@ not arbitrary source-exact trigonometric phases.
 The included structural profile reports original variable count, native XOR
 and output-equality counts, phase/ANF degrees, max scope, and a primal min-fill
 upper bound (not exact treewidth or cut-rank). The current solver also has
-no general CNF clause factor: a real QuPRS post-RR exporter is still required.
+no general CNF clause factor. Separate fixed-source post-RR Gaussian and MPFR exporters are now available in the research tools.
 
 ## B. Independent restricted quadratic sign-phase evaluator
 
@@ -76,17 +76,9 @@ Commands:
 GitHub workflow: .github/workflows/pathsum-factor-research.yml
 Linux, macOS and Windows CI must pass on final PR HEAD before TEST-qualified.
 
-**Still not completed**: general source-exact phase handling or an arbitrary-angle
-post-RR exporter, Feynman/MQT full E2E speed comparisons, 100/333-bit
-MPFR validation for generic complex factors, Rank-width decomposition,
-ADD, and the production backend router. No QuPRS solver default or
-RaWMoCS core is changed. A deliberately narrow exact-Gaussian RR source
-bridge and oracle are now implemented; see the source-scoped gate below.
+**Still not completed**: proof of arbitrary-angle source-exactness (versus finite-source-MPFR observation), production-optimized QuPRS E2E integration, expanded long-case holdouts, cross-runner comparisons, rank-width decomposition, ADD, and the production backend router. A separate research-only 100/333-bit MPFR native factor engine and same-RR source-pinned paired experiment have passed; the exact-Gaussian bridge remains as an independent small oracle. No QuPRS solver default or RaWMoCS core changes.
 
-Next step: source-pinned post-RR exporter + empirical feature histogram on
-Feynman HWB6/QFT4 and MQT QNN4/Grover4/VQE4, then identical residuals
-through new algorithms and existing WMC oracles. Entire exporter, planner,
-evaluation and fallback time belongs in WallTime, with peak RSS and UNKNOWN.
+Next step: expand source-pinned post-RR holdouts beyond the five already measured circuit families and introduce a cost-bounded routing experiment only for eligible low-width residuals. The source emitter, planner, evaluation and fallback costs belong in WallTime; preserve peak RSS and UNKNOWN outcomes.
 
 ## First real original-QuPRS structural evidence (source-locked)
 
@@ -150,13 +142,82 @@ must be collected for every arm before algorithm admission.
 
 ### Follow-up gate: whole-pipeline costs
 
-The latest source probe and source-only exporter now instrument
-gate processing with/without RR, plus separate factor construction,
-brute-force oracle and DP solve; these are diagnostic stage timings,
-not yet a controlled native paired WallTime result. The next benchmark
-must use fixed source QASM, alternate fresh process orders, include
-RR and encoder cost, and preserve 100/333-bit source weight policy
-for general angles. Only then should this PoC be compared to GPMC.
+A seven-trial, same-RR, 100/333-bit native-process experiment has now passed. Results are reported in the following section. The experimental source exporter creates BOTH representations, so its shared preparation cost is deliberately charged to either arm; this is an auditable, conservative two-process comparison, not optimized production QuPRS E2E.
+
+
+
+## Seven-trial matched-source MPFR algorithm experiment (2026-11-16)
+
+Source-pinned [full trial CI](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/43792555247);
+raw artifact: "rr-pathsum-mpfr-native-factor-vs-gpmc" (JSON and all 10
+source-emitted CNF/factor pairs). Original source revisions are fixed at
+QuPRS 0b28736651b3740ed3b201edd2efdef3da541e0d and
+GPMC 89bbc89d0de918e7a5385740355df55765039230.
+
+**Scientific admission**: all 10 of 10 case/precision rows returned
+MATCHED_SOURCE_MPFR_OBSERVATION. Each row uses **seven alternating
+fresh independent native processes per tool** on the same Linux CI runner.
+Both consume the **same RR PathSum** and **same QuPRS source-printed
+MPFR complex phase weights**. GPMC reads Tseitin CNF; the new Rust
+algorithm reads native output ANF and phase factors. Both use
+30 decimal -> 100 MPFR bits and 100 decimal -> 333 MPFR bits.
+SAT status and BOTH complex WMC components agreed under the
+predeclared finite-precision observation guard. HWB6 also matches
+the independently exhaustive original-RR SAT=true and WMC=4+0i.
+The MQT Grover4 RR case is **UNSAT** for both algorithms, not
+SAT-but-zero and not a proof of generic source-angle soundness.
+
+**Solver-only native full subprocess wall** includes process startup,
+input parse, algorithmic planning, count, output and process cleanup.
+Shared QuPRS source export is **separately timed**; the table's
+"source+solver" totals are paired sums across corresponding trials
+from this two-process research pipeline.
+
+| Original source | MPFR bits | GPMC solver p50 ms | Factor DP solver p50 ms | solver ratio GPMC/DP | Source+GPMC p50 ms | Source+DP p50 ms | combined ratio |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Feynman HWB6 | 100 | 137.229 | 3.190 | 43.01x | 144.000 | 9.564 | 15.06x |
+| Feynman HWB6 | 333 | 138.721 | 3.228 | 42.97x | 144.920 | 9.064 | 15.99x |
+| Feynman QFT4 | 100 | 11.478 | 3.022 | 3.80x | 15.360 | 7.078 | 2.17x |
+| Feynman QFT4 | 333 | 11.694 | 3.164 | 3.70x | 15.778 | 7.339 | 2.15x |
+| MQT QNN4 | 100 | 16.838 | 4.513 | 3.73x | 21.109 | 8.823 | 2.39x |
+| MQT QNN4 | 333 | 17.629 | 5.552 | 3.18x | 22.389 | 10.096 | 2.22x |
+| MQT Grover4 (UNSAT) | 100 | 3.464 | 2.953 | 1.17x | 7.218 | 6.711 | 1.08x |
+| MQT Grover4 (UNSAT) | 333 | 3.419 | 3.096 | 1.10x | 7.180 | 6.818 | 1.05x |
+| MQT VQE4 | 100 | 14.078 | 3.628 | 3.88x | 18.348 | 7.772 | 2.36x |
+| MQT VQE4 | 333 | 14.131 | 3.874 | 3.65x | 18.326 | 8.166 | 2.24x |
+
+Peak RSS observed through Linux GNU time: for example HWB6
+100-bit GPMC 21,516 KiB versus Native DP 3,364 KiB (p50);
+QFT4 100-bit 14,060 KiB versus 3,196 KiB. RSS is observational
+and the experiment uses a 2-GiB **virtual-address** prlimit, not
+a cgroup hard RSS/memory limit.
+
+Interpretation:
+- The observed HWB6 factor benefit is **structural**: RR leaves
+  7 original variables and zero phase terms but nonlinear output
+  ANF up to degree 6; a generic Tseitin expansion has substantial
+  preprocessing/solver overhead. This does not establish a 43x
+  speedup over the *original un-reduced* GPMC workload, nor 43x
+  QuPRS production E2E.
+- QFT4, QNN4 and VQE4 consistently show 2.1–2.4x benefit in the
+  conservative two-process comparison at both numeric widths.
+  Grover4 is a valuable near-parity negative control.
+- The common exporter deliberately builds both representations,
+  creating an identical and **non-optimized** preparation charge
+  for each algorithm. Hardware, source SHAs and input equivalence
+  are controlled, but this remains a limited five-family,
+  one-runner seven-trial cohort with no large-case independent
+  Full Complex WMC proof beyond the exact HWB6 witness.
+- No GPMC code, CDCL implementation or heuristic has been copied.
+  The alternative is direct QuPRS-native bounded sum-product
+  elimination; GPMC and Rust search the same mathematical residual
+  through different representations.
+
+Next admission step: source-locked independent Feynman hard holdouts
+(Grover5, Barenco and ModMult when supported), paired full QuPRS
+RR/encoder/solver process wall, better planner overhead attribution,
+a fixed resource policy, and production fallback negative controls.
+Keep the research feature disabled by default until these gates pass.
 
 
 ## Literature
@@ -173,4 +234,4 @@ for general angles. Only then should this PoC be compared to GPMC.
   https://arxiv.org/abs/2610.00547
 
 SRC = pinned source observation; TEST = CI-proven small scientific validation;
-HYP = proposed effect for real QuPRS workloads, NOT a proven speedup.
+HYP = anticipated general/production benefit, NOT proved. EXP = matched source-scoped single-runner measurement; no cross-hardware or independent exact proof for large generic-angle cases.

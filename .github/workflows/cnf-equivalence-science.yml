@@ -45,17 +45,3 @@ jobs:
           rustfmt --edition 2021 --check benchmarks/mpfr_research/src/weighted_equivalence.rs
 
 
-  format-candidate:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - name: Emit canonical formatted module for source review
-        shell: bash
-        run: |
-          set -euo pipefail
-          rustfmt --edition 2021 benchmarks/mpfr_research/src/weighted_equivalence.rs
-          printf 'EQUIV_RUSTFMT_SOURCE %s\n' "$(base64 -w0 benchmarks/mpfr_research/src/weighted_equivalence.rs)"

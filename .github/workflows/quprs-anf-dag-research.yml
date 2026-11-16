@@ -101,6 +101,51 @@ jobs:
           grep -q '^feynman_adder8[[:space:]]COMPLETED[[:space:]]0' .research/anf-dag/status.tsv
           awk -F '\t' 'NR==2 { if ($2 != 24 || $6 < 14000 || $10 < 1) exit 1 }' \
             .research/anf-dag/feynman_adder8-profile.tsv
+      - name: Bounded multi-output ROBDD count with source-verified controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          profiler="$GITHUB_WORKSPACE/benchmarks/rust_core/target/release/examples/anf_dag_profile"
+          : > .research/anf-dag/joint-bdd-status.tsv
+          for name in feynman_adder8 feynman_tof10 feynman_barenco10 feynman_hwb6; do
+            src=".research/anf-dag/${name}.anf"
+            dst=".research/anf-dag/${name}-joint-bdd.tsv"
+            log=".research/anf-dag/${name}-joint-bdd.log"
+            code=0
+            /usr/bin/time -f 'JOINT_BDD_RSS_KIB=%M' -o "${log}.rss" \
+              timeout -k 2s 30s prlimit --as=2147483648 -- \
+              "$profiler" --joint-bdd "$src" "$dst" > "$log" 2>&1 || code=$?
+            if [ "$code" -eq 0 ] && test -s "$dst"; then
+              value="$(awk -F '\t' 'NR==2 {print $10}' "$dst")"
+              status="COMPLETED_NEEDS_INDEPENDENT_ORACLE"
+              case "$name" in
+                feynman_tof10)
+                  test "$value" = "393216"
+                  status="KNOWN_EXACT_ORACLE_MATCH"
+                  ;;
+                feynman_barenco10)
+                  test "$value" = "523776"
+                  status="KNOWN_EXACT_ORACLE_MATCH"
+                  ;;
+                feynman_hwb6)
+                  test "$value" = "4"
+                  status="KNOWN_EXACT_ORACLE_MATCH"
+                  ;;
+              esac
+              printf '%s\t%s\t0\n' "$name" "$status" \
+                >> .research/anf-dag/joint-bdd-status.tsv
+              cat "$dst"
+            else
+              printf '%s\tCENSORED\t%d\n' "$name" "$code" \
+                >> .research/anf-dag/joint-bdd-status.tsv
+              echo "ANF_JOINT_BDD_CENSORED case=$name exit=$code"
+            fi
+          done
+          cat .research/anf-dag/joint-bdd-status.tsv
+          for case in feynman_tof10 feynman_barenco10 feynman_hwb6; do
+            grep -q "^$case[[:space:]]KNOWN_EXACT_ORACLE_MATCH" \
+              .research/anf-dag/joint-bdd-status.tsv
+          done
       - name: Retain both negative and positive source evidence
         if: always()
         uses: actions/upload-artifact@v4

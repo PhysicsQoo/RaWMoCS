@@ -35,7 +35,7 @@ jobs:
 
   pinned-anf-source:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -146,6 +146,28 @@ jobs:
             grep -q "^$case[[:space:]]KNOWN_EXACT_ORACLE_MATCH" \
               .research/anf-dag/joint-bdd-status.tsv
           done
+      - name: Export independent GPMC CNF from exactly the same Adder8 RR source
+        shell: bash
+        run: |
+          set -euo pipefail
+          exporter="$GITHUB_WORKSPACE/.upstream/quprs/rust/target/release/examples/quprs_pathsum_anf_dag_export"
+          source=".research/anf-dag/feynman_adder8.anf"
+          secondary=".research/anf-dag/feynman_adder8-gpmc.anf"
+          cnf=".research/anf-dag/feynman_adder8-gpmc.cnf"
+          code=0
+          timeout -k 2s 45s prlimit --as=2147483648 -- \
+            "$exporter" feynman_adder8 "$GITHUB_WORKSPACE/.upstream/quprs" \
+            "$secondary" "$cnf" \
+            > .research/anf-dag/feynman_adder8-gpmc-export.log 2>&1 || code=$?
+          if [ "$code" -eq 0 ] && test -s "$cnf"; then
+            cmp "$source" "$secondary"
+            printf 'SAME_RR_EXPORTED\t0\n' > .research/anf-dag/gpmc-source-status.tsv
+            sha256sum "$source" "$cnf"
+          else
+            printf 'CENSORED_OR_UNSUPPORTED\t%d\n' "$code" \
+              > .research/anf-dag/gpmc-source-status.tsv
+            echo "INDEPENDENT_GPMC_SOURCE_CENSORED exit=$code"
+          fi
       - name: Retain both negative and positive source evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -155,19 +177,105 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
-
-  rustfmt-candidates:
+  independent-adder8-gpmc:
+    needs: pinned-anf-source
     runs-on: ubuntu-24.04
-    timeout-minutes: 8
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
-      - name: Emit canonical BDD source for review
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/GPMC
+          ref: 89bbc89d0de918e7a5385740355df55765039230
+          submodules: recursive
+          path: .upstream/gpmc
+          persist-credentials: false
+      - name: Download source-locked post-RR Adder8 evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: original-quprs-anf-dag-source-structural
+          path: .research/anf-dag/
+      - name: Check availability of independently generated GPMC CNF
+        id: cnf
         shell: bash
         run: |
           set -euo pipefail
-          file=benchmarks/rust_core/examples/anf_dag_profile.rs
-          rustfmt --edition 2021 "$file"
-          printf 'JOINT_BDD_FMT_CANDIDATE %s %s\n' "$file" "$(base64 -w0 "$file")"
+          test "$(git -C .upstream/gpmc rev-parse HEAD)" = 89bbc89d0de918e7a5385740355df55765039230
+          if test -s .research/anf-dag/feynman_adder8-gpmc.cnf; then
+            echo 'available=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'available=false' >> "$GITHUB_OUTPUT"
+            echo 'ADDER_GPMC_ORACLE_CENSORED_SOURCE'
+          fi
+      - name: Install GPMC build requirements
+        if: steps.cnf.outputs.available == 'true'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build libgmp-dev libmpfr-dev zlib1g-dev pkg-config time
+      - name: Build unchanged source-pinned GPMC C++ solver
+        if: steps.cnf.outputs.available == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S .upstream/gpmc -B .upstream/gpmc/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build .upstream/gpmc/build --target gpmc-bin --parallel 2
+      - name: Independently confirm SAT and exact integer with GPMC or preserve censoring
+        if: steps.cnf.outputs.available == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .research/gpmc-adder8
+          code=0
+          /usr/bin/time -f 'GPMC_PEAK_RSS_KIB=%M' -o .research/gpmc-adder8/rss.log \
+            timeout -k 2s 90s prlimit --as=2147483648 -- \
+            .upstream/gpmc/build/gpmc -mode=1 -prec=30 \
+            .research/anf-dag/feynman_adder8-gpmc.cnf \
+            > .research/gpmc-adder8/stdout.log \
+            2> .research/gpmc-adder8/stderr.log || code=$?
+          echo "$code" > .research/gpmc-adder8/exit.txt
+          if [ "$code" -ne 0 ]; then
+            echo "ADDER_GPMC_ORACLE_CENSORED_NATIVE_EXIT=$code" \
+              | tee .research/gpmc-adder8/status.txt
+            exit 0
+          fi
+          python3 - <<'PY'
+          from fractions import Fraction
+          from pathlib import Path
+          import json
+          import sys
+          sys.path.insert(0, "benchmarks/rust_core/tools")
+          from quprs_paired_native import parse_out
+          original = Path(".research/gpmc-adder8/stdout.log").read_text()
+          sat, (real, imag) = parse_out(original, "gpmc")
+          fields = Path(".research/anf-dag/feynman_adder8-joint-bdd.tsv").read_text().splitlines()[1].split("\t")
+          if len(fields) != 14 or fields[0] != "JOINT_BDD_COMPLETE":
+              raise SystemExit("INDEPENDENT_GPMC_BDD_CENSORED_OR_UNPARSABLE")
+          bdd_sat = fields[8] == "true"
+          bdd_real = Fraction(fields[9])
+          bdd_imag = Fraction(fields[10])
+          if sat != bdd_sat or real != bdd_real or imag != bdd_imag:
+              raise SystemExit(f"INDEPENDENT_GPMC_BDD_MISMATCH GPMC={sat,real,imag} BDD={bdd_sat,bdd_real,bdd_imag}")
+          Path(".research/gpmc-adder8/status.txt").write_text(
+              "EXACT_MATCHED_SAME_RR_GPMC_BDD\n"
+          )
+          Path(".research/gpmc-adder8/comparison.json").write_text(json.dumps({
+              "status":"EXACT_MATCHED_SAME_RR_GPMC_BDD",
+              "source_quprs_sha":"0b28736651b3740ed3b201edd2efdef3da541e0d",
+              "source_gpmc_sha":"89bbc89d0de918e7a5385740355df55765039230",
+              "sat":sat,"count_real":str(real),"count_imag":str(imag),
+              "counting_scope":"phase-free unit-weight original post-RR Adder8"
+          },indent=2)+"\n")
+          print("ADDER_GPMC_ROBDD_SOURCE_EXACT_MATCH", sat, real, imag)
+          PY
+      - name: Retain independent WMC evidence or censored result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: original-adder8-bounded-bdd-vs-gpmc-oracle
+          path: .research/gpmc-adder8/
+          retention-days: 30
+          if-no-files-found: warn

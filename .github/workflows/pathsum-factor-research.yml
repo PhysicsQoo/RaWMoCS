@@ -1,0 +1,32 @@
+name: Native Path-sum factor research
+
+on:
+  pull_request:
+    paths:
+      - benchmarks/rust_core/Cargo.toml
+      - benchmarks/rust_core/src/lib.rs
+      - benchmarks/rust_core/src/pathsum_factor_research.rs
+      - .github/workflows/pathsum-factor-research.yml
+      - docs/pathsum-factor-algebraic-research.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  research-science:
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Independent exact factor and restricted quadratic science tests
+        run: cargo test --locked --manifest-path benchmarks/rust_core/Cargo.toml --features pathsum-factor-research pathsum_factor_research -- --nocapture
+      - name: Research-only code lint
+        run: cargo clippy --locked --manifest-path benchmarks/rust_core/Cargo.toml --features pathsum-factor-research --lib -- -D warnings

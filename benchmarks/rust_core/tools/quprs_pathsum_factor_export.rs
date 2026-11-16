@@ -14,7 +14,9 @@ fn source_path(case: &str) -> Option<&'static str> {
         "feynman_qft4" => Some("benchmarks/Feynman/qft_4.qasm"),
         "mqt_qnn_4" => Some("benchmarks/MQTBench/qnn_nativegates_ibm_qiskit_opt0_4.qasm"),
         "mqt_vqe_4" => Some("benchmarks/MQTBench/vqe_nativegates_ibm_qiskit_opt0_4.qasm"),
-        "mqt_grover_4" => Some("benchmarks/MQTBench/grover-noancilla_nativegates_ibm_qiskit_opt0_4.qasm"),
+        "mqt_grover_4" => {
+            Some("benchmarks/MQTBench/grover-noancilla_nativegates_ibm_qiskit_opt0_4.qasm")
+        }
         _ => None,
     }
 }
@@ -57,11 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if ids.len() > 48 {
         return Err("INELIGIBLE_EXACT_FACTOR_DIMENSIONS".into());
     }
-    let map: BTreeMap<u32, usize> = ids
-        .iter()
-        .enumerate()
-        .map(|(idx, &id)| (id, idx))
-        .collect();
+    let map: BTreeMap<u32, usize> = ids.iter().enumerate().map(|(idx, &id)| (id, idx)).collect();
 
     // Whitelist source-exact fourth roots of unity only. An arbitrary Rz
     // (including exact rational radians) must not be silently rounded.
@@ -126,9 +124,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for assignment in 0..(1u64 << ids.len()) {
         let bit = |v: usize| assignment & (1u64 << v) != 0;
         if outputs.iter().any(|(output, terms)| {
-            let parity = terms.iter().fold(false, |p, term| {
-                p ^ term.iter().all(|&v| bit(v))
-            });
+            let parity = terms
+                .iter()
+                .fold(false, |p, term| p ^ term.iter().all(|&v| bit(v)));
             bit(*output) != parity
         }) {
             continue;

@@ -1,0 +1,50 @@
+name: Original weighted-CNF exact prehashed residual cache correctness
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/cnf-prehash-science.yml
+      - benchmarks/mpfr_research/src/main.rs
+      - benchmarks/mpfr_research/src/trail_engine.rs
+      - docs/cnf-prehash-research.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  science:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/mpfr_research -> target
+          key: weighted-prehash-mpfr
+      - name: Exact SAT, Complex WMC, deterministic dyadic source crosscheck at 100 and 333 bits
+        run: cargo test --manifest-path benchmarks/mpfr_research/Cargo.toml
+      - name: Strict Clippy for research solver
+        run: cargo clippy --manifest-path benchmarks/mpfr_research/Cargo.toml --all-targets -- -D warnings -A clippy::excessive_precision -A clippy::approx_constant -A clippy::manual_hash_one
+      - name: Check canonical source formatting
+        run: rustfmt --edition 2021 --check benchmarks/mpfr_research/src/trail_engine.rs
+
+  canonical-source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Emit exact Rustfmt source for reproducible review
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustfmt --edition 2021 benchmarks/mpfr_research/src/trail_engine.rs
+          printf 'PREHASH_RUSTFMT_SOURCE %s\n' "$(base64 -w0 benchmarks/mpfr_research/src/trail_engine.rs)"

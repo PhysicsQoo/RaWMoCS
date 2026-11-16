@@ -155,3 +155,19 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
+
+  rustfmt-candidates:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Emit canonical BDD source for review
+        shell: bash
+        run: |
+          set -euo pipefail
+          file=benchmarks/rust_core/examples/anf_dag_profile.rs
+          rustfmt --edition 2021 "$file"
+          printf 'JOINT_BDD_FMT_CANDIDATE %s %s\n' "$file" "$(base64 -w0 "$file")"

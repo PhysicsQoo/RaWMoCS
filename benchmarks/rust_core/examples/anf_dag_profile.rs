@@ -339,11 +339,255 @@ fn verify(problem: &Problem, dag: &Dag, roots: &[u32], samples: usize) -> Result
     }
     Ok(())
 }
+
+// Joint, *phase-free and unweighted* exact trace count via a bounded ROBDD.
+// The polynomial DAG above is NOT itself a Boolean solution-set BDD.
+const BDD_NODE_BUDGET: usize = 250_000;
+const BDD_APPLY_BUDGET: usize = 3_000_000;
+const BDD_CACHE_BUDGET: usize = 1_500_000;
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum BddOp {
+    Xor,
+    And,
+}
+
+#[derive(Clone, Copy)]
+struct BddNode {
+    variable: usize,
+    low: u32,
+    high: u32,
+}
+
+struct Bdd {
+    // BDD terminals: 0 = false, 1 = true.
+    nodes: Vec<BddNode>,
+    unique: HashMap<(usize, u32, u32), u32>,
+    apply_cache: HashMap<(BddOp, u32, u32), u32>,
+    polynomial_cache: HashMap<u32, u32>,
+    apply_calls: usize,
+    max_nodes: usize,
+    max_calls: usize,
+}
+
+impl Bdd {
+    fn new(max_nodes: usize, max_calls: usize) -> Self {
+        Self {
+            nodes: vec![
+                BddNode { variable: 0, low: 0, high: 0 },
+                BddNode { variable: 0, low: 0, high: 0 },
+            ],
+            unique: HashMap::new(),
+            apply_cache: HashMap::new(),
+            polynomial_cache: HashMap::new(),
+            apply_calls: 0,
+            max_nodes,
+            max_calls,
+        }
+    }
+    fn mk(&mut self, variable: usize, low: u32, high: u32) -> Result<u32, String> {
+        if low == high {
+            return Ok(low);
+        }
+        if let Some(&id) = self.unique.get(&(variable, low, high)) {
+            return Ok(id);
+        }
+        if self.nodes.len() - 2 >= self.max_nodes {
+            return Err("JOINT_BDD_NODE_LIMIT".into());
+        }
+        let id = u32::try_from(self.nodes.len()).map_err(|_| "JOINT_BDD_NODE_ID_LIMIT")?;
+        self.nodes.push(BddNode { variable, low, high });
+        self.unique.insert((variable, low, high), id);
+        Ok(id)
+    }
+    fn var(&self, id: u32) -> usize {
+        if id < 2 { usize::MAX } else { self.nodes[id as usize].variable }
+    }
+    fn cofactor(&self, id: u32, var: usize) -> (u32, u32) {
+        if self.var(id) == var {
+            let n = self.nodes[id as usize];
+            (n.low, n.high)
+        } else {
+            (id, id)
+        }
+    }
+    fn apply(&mut self, op: BddOp, mut a: u32, mut b: u32) -> Result<u32, String> {
+        self.apply_calls = self.apply_calls.checked_add(1)
+            .ok_or("JOINT_BDD_APPLY_OVERFLOW")?;
+        if self.apply_calls > self.max_calls {
+            return Err("JOINT_BDD_APPLY_LIMIT".into());
+        }
+        if a > b {
+            std::mem::swap(&mut a, &mut b);
+        }
+        let terminal = match op {
+            BddOp::And if a == 0 => Some(0),
+            BddOp::And if a == 1 => Some(b),
+            BddOp::And if a == b => Some(a),
+            BddOp::Xor if a == 0 => Some(b),
+            BddOp::Xor if a == b => Some(0),
+            _ => None,
+        };
+        if let Some(value) = terminal {
+            return Ok(value);
+        }
+        let key = (op, a, b);
+        if let Some(&value) = self.apply_cache.get(&key) {
+            return Ok(value);
+        }
+        if self.apply_cache.len() >= BDD_CACHE_BUDGET {
+            return Err("JOINT_BDD_CACHE_LIMIT".into());
+        }
+        let pivot = self.var(a).min(self.var(b));
+        if pivot == usize::MAX {
+            return Err("JOINT_BDD_INVALID_TERMINALS".into());
+        }
+        let (al, ah) = self.cofactor(a, pivot);
+        let (bl, bh) = self.cofactor(b, pivot);
+        let low = self.apply(op, al, bl)?;
+        let high = self.apply(op, ah, bh)?;
+        let result = self.mk(pivot, low, high)?;
+        self.apply_cache.insert(key, result);
+        Ok(result)
+    }
+    fn polynomial(&mut self, poly: &Dag, id: u32) -> Result<u32, String> {
+        if id < 2 {
+            return Ok(id);
+        }
+        if let Some(&bdd) = self.polynomial_cache.get(&id) {
+            return Ok(bdd);
+        }
+        let n = poly.nodes[id as usize];
+        let lo = self.polynomial(poly, n.low)?;
+        let hi = self.polynomial(poly, n.high)?;
+        // Polynomial cofactor identity:
+        // f[x_v=0] = low, f[x_v=1] = low XOR high.
+        let one = self.apply(BddOp::Xor, lo, hi)?;
+        let result = self.mk(n.variable, lo, one)?;
+        self.polynomial_cache.insert(id, result);
+        Ok(result)
+    }
+    fn evaluate(&self, mut id: u32, assignment: u64) -> bool {
+        while id >= 2 {
+            let n = self.nodes[id as usize];
+            id = if assignment & (1u64 << n.variable) == 0 {
+                n.low
+            } else {
+                n.high
+            };
+        }
+        id == 1
+    }
+    fn model_count(&self, root: u32, variables: usize) -> Result<u128, String> {
+        if variables > 56 {
+            return Err("JOINT_BDD_VARIABLE_LIMIT".into());
+        }
+        fn walk(
+            bdd: &Bdd,
+            id: u32,
+            depth: usize,
+            variables: usize,
+            cache: &mut HashMap<(u32, usize), u128>,
+        ) -> Result<u128, String> {
+            match id {
+                0 => return Ok(0),
+                1 => return Ok(1u128 << (variables - depth)),
+                _ => {}
+            }
+            if let Some(&v) = cache.get(&(id, depth)) {
+                return Ok(v);
+            }
+            let node = bdd.nodes[id as usize];
+            if node.variable < depth || node.variable >= variables {
+                return Err("JOINT_BDD_INVALID_ORDER".into());
+            }
+            let low = walk(bdd, node.low, node.variable + 1, variables, cache)?;
+            let high = walk(bdd, node.high, node.variable + 1, variables, cache)?;
+            let count = (low + high) << (node.variable - depth);
+            cache.insert((id, depth), count);
+            Ok(count)
+        }
+        walk(self, root, 0, variables, &mut HashMap::new())
+    }
+}
+
+struct JointCount {
+    count: u128,
+    sat: bool,
+    polynomial_nodes: usize,
+    bdd_nodes: usize,
+    apply_calls: usize,
+    cache_entries: usize,
+}
+
+fn joint_count(
+    problem: &Problem,
+    poly: &Dag,
+    roots: &[u32],
+    node_budget: usize,
+    apply_budget: usize,
+) -> Result<JointCount, String> {
+    // Explicit contract: all weights are unit and the phase is absent.
+    // For arbitrary phase/weight semantics there is NO certified shortcut.
+    if problem.phase_terms != 0 {
+        return Err("JOINT_BDD_PHASE_INELIGIBLE".into());
+    }
+    if problem.variables > MAX_VARIABLES {
+        return Err("JOINT_BDD_VARIABLE_LIMIT".into());
+    }
+    if roots.len() != problem.equations.len() {
+        return Err("JOINT_BDD_ROOT_CARDINALITY".into());
+    }
+    let mut bdd = Bdd::new(node_budget, apply_budget);
+    let mut conjunction = 1u32;
+    for &root in roots {
+        if root == 0 { continue; }
+        let polynomial = bdd.polynomial(poly, root)?;
+        let constraint = bdd.apply(BddOp::Xor, polynomial, 1)?;
+        conjunction = bdd.apply(BddOp::And, conjunction, constraint)?;
+        if conjunction == 0 { break; }
+    }
+    let count = bdd.model_count(conjunction, problem.variables)?;
+    // Sampled source witness catches severe variable remapping, complement,
+    // free-variable or conjunction errors. This is not the WMC oracle.
+    let trials = if problem.variables <= 12 {
+        1usize << problem.variables
+    } else {
+        512
+    };
+    for trial in 0..trials {
+        let assignment = if problem.variables <= 12 {
+            trial as u64
+        } else {
+            (trial as u64)
+                .wrapping_mul(0x9e3779b97f4a7c15)
+                .wrapping_add(0xbf58476d1ce4e5b9)
+        };
+        let expected = problem.equations.iter().all(|eq| !oracle(eq, assignment));
+        if bdd.evaluate(conjunction, assignment) != expected {
+            return Err("JOINT_BDD_DIRECT_SOURCE_DISAGREEMENT".into());
+        }
+    }
+    Ok(JointCount {
+        count,
+        sat: count != 0,
+        polynomial_nodes: poly.nodes.len() - 2,
+        bdd_nodes: bdd.nodes.len() - 2,
+        apply_calls: bdd.apply_calls,
+        cache_entries: bdd.apply_cache.len(),
+    })
+}
+
 fn run() -> Result<(), String> {
     let mut args = env::args_os().skip(1);
-    let path = args
+    let first = args
         .next()
-        .ok_or("usage: anf_dag_profile INPUT.anf [OUTPUT.tsv]")?;
+        .ok_or("usage: [--joint-bdd] INPUT.anf [OUTPUT.tsv]")?;
+    let (count_bdd, path) = if first == "--joint-bdd" {
+        (true, args.next().ok_or("JOINT_BDD_MISSING_SOURCE")?)
+    } else {
+        (false, first)
+    };
     let output = args.next();
     if args.next().is_some() {
         return Err("unexpected extra argument".into());
@@ -355,6 +599,27 @@ fn run() -> Result<(), String> {
     let start = Instant::now();
     let (dag, report) = profile(&problem)?;
     let compile_ns = start.elapsed().as_nanos();
+    if count_bdd {
+        let begin = Instant::now();
+        let result = joint_count(
+            &problem, &dag, &report.roots, BDD_NODE_BUDGET, BDD_APPLY_BUDGET,
+        )?;
+        let count_ns = begin.elapsed().as_nanos();
+        let header = "status\tvariables\tphase_terms\toutput_equations\tpolynomial_dag_nodes\tbdd_nodes\tapply_calls\tapply_cache_entries\tsat\twc_real\twc_imag\tsource_parse_ns\tpoly_compile_ns\tjoint_bdd_ns\n";
+        let row = format!(
+            "JOINT_BDD_COMPLETE\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t0\t{}\t{}\t{}\n",
+            problem.variables, problem.phase_terms, problem.equations.len(),
+            result.polynomial_nodes, result.bdd_nodes, result.apply_calls,
+            result.cache_entries, result.sat, result.count,
+            parse_ns, compile_ns, count_ns,
+        );
+        if let Some(output) = output {
+            fs::write(output, format!("{header}{row}"))
+                .map_err(|e| e.to_string())?;
+        }
+        print!("{header}{row}");
+        return Ok(());
+    }
     let start = Instant::now();
     verify(&problem, &dag, &report.roots, 256)?;
     let verify_ns = start.elapsed().as_nanos();
@@ -445,6 +710,56 @@ mod tests {
         ] {
             assert!(parse_problem(s).is_err(), "{s}");
         }
+    }
+    #[test]
+    fn joint_bdd_exact_independent_multiequation_counts() {
+        for seed in 0..30usize {
+            let mut equations = Vec::new();
+            for output in 0..5usize {
+                let mut terms = vec![vec![output]];
+                for k in 0..10usize {
+                    let variables: Vec<usize> = (0..7)
+                        .filter(|&v| ((seed * 31 + output * 17 + k * 13 + v * 7)
+                                    >> (v % 3)) & 1 == 1)
+                        .collect();
+                    terms.push(variables);
+                }
+                equations.push(Equation { output, terms });
+            }
+            let problem = Problem { variables: 7, phase_terms: 0, equations };
+            let (poly, profile) = profile(&problem).unwrap();
+            let result = joint_count(&problem, &poly, &profile.roots, 25_000, 250_000).unwrap();
+            let oracle_count = (0u64..128)
+                .filter(|&x| problem.equations.iter().all(|eq| !oracle(eq, x)))
+                .count() as u128;
+            assert_eq!(result.count, oracle_count, "seed={seed}");
+            assert_eq!(result.sat, oracle_count != 0);
+        }
+    }
+    #[test]
+    fn joint_bdd_tautology_constant_and_free_vars() {
+        let problem = parse_problem(
+            "p anf 6 2 0\no 0 1\nm 1 0\no 1 2\nm 1 2\nm 0\n",
+        ).unwrap();
+        let (poly, profile) = profile(&problem).unwrap();
+        let result = joint_count(&problem, &poly, &profile.roots, 2000, 5000).unwrap();
+        // x1 XOR x2 XOR 1 ==0 and the remaining 4 bits are free.
+        assert_eq!(result.count, 32);
+        assert!(result.sat);
+    }
+    #[test]
+    fn joint_bdd_rejects_phases_and_excess_node_budget() {
+        let p = parse_problem("p anf 4 1 1\no 0 1\nm 1 1\n").unwrap();
+        let (d, r) = profile(&p).unwrap();
+        assert!(joint_count(&p, &d, &r.roots, 100, 1000).is_err());
+        let p = parse_problem(
+            "p anf 4 2 0\no 0 2\nm 2 1 2\nm 2 2 3\no 1 1\nm 1 3\n",
+        ).unwrap();
+        let (d, r) = profile(&p).unwrap();
+        let error = joint_count(&p, &d, &r.roots, 1, 1000).err().unwrap();
+        assert_eq!(error, "JOINT_BDD_NODE_LIMIT");
+        let error = joint_count(&p, &d, &r.roots, 1000, 1).err().unwrap();
+        assert_eq!(error, "JOINT_BDD_APPLY_LIMIT");
     }
     #[test]
     fn hashcons_shares_suffix_polynomials() {

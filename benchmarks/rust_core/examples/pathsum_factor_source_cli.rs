@@ -115,9 +115,10 @@ fn run() -> Result<(), String> {
     let mut args = env::args_os().skip(1);
     let first = args
         .next()
-        .ok_or("usage: [--monotone-ice] FACTORS ORACLE")?;
+        .ok_or("usage: [--monotone-ice|--anf-walsh] FACTORS ORACLE")?;
     let monotone_ice = first.to_str() == Some("--monotone-ice");
-    let model_path = if monotone_ice {
+    let anf_walsh = first.to_str() == Some("--anf-walsh");
+    let model_path = if monotone_ice || anf_walsh {
         args.next().ok_or("missing monotone source factors")?
     } else {
         first
@@ -168,6 +169,47 @@ fn run() -> Result<(), String> {
             outcome.satisfiable,
             outcome.count.real,
             outcome.count.imag,
+            parsing_ns,
+            profile_ns,
+            solve_ns
+        );
+        return Ok(());
+    }
+    if anf_walsh {
+        let start = Instant::now();
+        let result = problem.count_single_anf_trace_bounded()?;
+        let solve_ns = start.elapsed().as_nanos();
+        let reference = fs::read_to_string(oracle_path).map_err(|e| e.to_string())?;
+        let expected: Vec<&str> = reference.split_whitespace().collect();
+        if expected.len() != 4 || expected[0] != "s" {
+            return Err("invalid ANF Walsh source oracle".into());
+        }
+        let expected_sat = match expected[1] {
+            "0" => false,
+            "1" => true,
+            _ => return Err("invalid ANF Walsh source SAT flag".into()),
+        };
+        let re = expected[2]
+            .parse::<i64>()
+            .map_err(|_| "invalid ANF source real")?;
+        let im = expected[3]
+            .parse::<i64>()
+            .map_err(|_| "invalid ANF source imaginary")?;
+        if result.satisfiable != expected_sat || result.count != Gaussian::integers(re, im) {
+            return Err(format!(
+                "SOURCE_ANF_WALSH_ORACLE_MISMATCH sat={} count=({}, {})",
+                result.satisfiable, result.count.real, result.count.imag
+            ));
+        }
+        println!(
+            "QU_PRS_RR_ANF_WALSH_MATCH vars={} monomials={} subsets={} \
+             sat={} real={} imag={} parse_ns={} profile_ns={} solve_ns={}",
+            problem.variables,
+            result.anf_monomials,
+            result.subsets_evaluated,
+            result.satisfiable,
+            result.count.real,
+            result.count.imag,
             parsing_ns,
             profile_ns,
             solve_ns

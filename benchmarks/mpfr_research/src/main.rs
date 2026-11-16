@@ -687,7 +687,7 @@ struct RootProbeStats {
     visits: usize,
     budget_censored: bool,
 }
-fn BooleanConflictProbe(
+fn boolean_conflict_probe(
     clauses: &[Clause],
     vars: usize,
     assumed: i32,
@@ -768,8 +768,8 @@ fn bounded_root_failed_literal_probe(
     let mut result = clauses.to_vec();
     for v in variables.into_iter().take(max_candidates) {
         stats.candidates += 1;
-        let positive = BooleanConflictProbe(clauses, vars, v as i32, &mut stats.visits, work_budget);
-        let negative = BooleanConflictProbe(clauses, vars, -(v as i32), &mut stats.visits, work_budget);
+        let positive = boolean_conflict_probe(clauses, vars, v as i32, &mut stats.visits, work_budget);
+        let negative = boolean_conflict_probe(clauses, vars, -(v as i32), &mut stats.visits, work_budget);
         let (Some(positive), Some(negative)) = (positive, negative) else {
             stats.budget_censored = true;
             return (clauses.to_vec(), stats);

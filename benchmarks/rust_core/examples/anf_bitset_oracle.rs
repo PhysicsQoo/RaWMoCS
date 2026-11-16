@@ -98,7 +98,6 @@ fn parse_source(text: &str) -> Result<Input, String> {
     Ok(Input { variables, outputs })
 }
 
-
 // Direct GF(2) Moebius transform, independent of the ROBDD solver.
 const LOW_ZETA_MASKS: [u64; 6] = [
     0x5555_5555_5555_5555,
@@ -123,14 +122,19 @@ fn solve_original_source(input: &Input, limit: usize) -> Result<ResultCount, Str
     let mut work_ops = 0usize;
     for equation in &input.outputs {
         let mut values = vec![0u64; word_count];
-        for monomial in std::iter::once(1u32 << equation.output)
-            .chain(equation.terms.iter().copied())
+        for monomial in
+            std::iter::once(1u32 << equation.output).chain(equation.terms.iter().copied())
         {
             values[(monomial >> 6) as usize] ^= 1u64 << (monomial & 63);
         }
         for variable in 0..input.variables {
-            let step_ops = if variable < 6 { word_count } else { word_count / 2 };
-            work_ops = work_ops.checked_add(step_ops)
+            let step_ops = if variable < 6 {
+                word_count
+            } else {
+                word_count / 2
+            };
+            work_ops = work_ops
+                .checked_add(step_ops)
                 .ok_or("ORACLE_WORK_COUNTER_OVERFLOW")?;
             if work_ops > limit {
                 return Err("ORACLE_TRANSFORM_WORK_LIMIT".into());
@@ -151,7 +155,8 @@ fn solve_original_source(input: &Input, limit: usize) -> Result<ResultCount, Str
                 }
             }
         }
-        work_ops = work_ops.checked_add(word_count)
+        work_ops = work_ops
+            .checked_add(word_count)
             .ok_or("ORACLE_WORK_COUNTER_OVERFLOW")?;
         if work_ops > limit {
             return Err("ORACLE_TRANSFORM_WORK_LIMIT".into());
@@ -245,7 +250,9 @@ mod tests {
                     outputs,
                 };
                 assert_eq!(
-                    solve_original_source(&input, MAX_TRANSFORM_OPS).unwrap().count,
+                    solve_original_source(&input, MAX_TRANSFORM_OPS)
+                        .unwrap()
+                        .count,
                     straightforward(&input),
                     "n={n}, seed={seed}",
                 );
@@ -259,7 +266,9 @@ mod tests {
             parse_source("p anf 6 2 0\no 0 3\nm 1 0\nm 2 2 3\nm 2 2 3\no 1 2\nm 1 2\nm 0\n")
                 .unwrap();
         assert_eq!(
-            solve_original_source(&input, MAX_TRANSFORM_OPS).unwrap().count,
+            solve_original_source(&input, MAX_TRANSFORM_OPS)
+                .unwrap()
+                .count,
             32
         );
         let all_free = parse_source("p anf 7 0 0\n").unwrap();

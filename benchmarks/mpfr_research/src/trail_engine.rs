@@ -7,7 +7,8 @@
 //!
 //! This is NOT CDCL and does not perform weight-unsafe SAT simplification.
 use crate::{normalize, Clause, Outcome, PackedKey, Problem, Stats, C};
-use hashbrown::HashMap;
+use hashbrown::{hash_map::RawEntryMut, HashMap};
+use std::hash::BuildHasher;
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeMap, BinaryHeap};
 
@@ -36,6 +37,8 @@ pub(crate) struct TrailEngine<'a> {
     // Research option: filter each reduced literal once into a dense arena,
     // then sort borrowed views and construct the same exact PackedKey.
     pub(crate) use_compact_residual: bool,
+    // Cached exact-key hash is an optimization only; collisions still compare keys.
+    pub(crate) use_prehashed_cache: bool,
 }
 
 fn slot(lit: i32) -> usize {
@@ -85,6 +88,7 @@ impl<'a> TrailEngine<'a> {
             cache_keys: 0,
             use_parent_ids: false,
             use_compact_residual: false,
+            use_prehashed_cache: false,
         }
     }
 
@@ -290,9 +294,20 @@ impl<'a> TrailEngine<'a> {
         }
         PackedKey { scope, literals }
     }
-    fn save(&mut self, key: PackedKey, outcome: Outcome) -> Outcome {
+    fn save(&mut self, key: PackedKey, key_hash: u64, outcome: Outcome) -> Outcome {
         if self.cache.len() < self.cache_limit {
-            self.cache.insert(key, outcome.clone());
+            if self.use_prehashed_cache {
+                // Hash matches the HashMap's own hash builder; even in
+                // a hash collision, the complete PackedKey is compared.
+                match self.cache.raw_entry_mut().from_key_hashed_nocheck(key_hash, &key) {
+                    RawEntryMut::Occupied(_) => {}
+                    RawEntryMut::Vacant(entry) => {
+                        entry.insert_hashed_nocheck(key_hash, key, outcome.clone());
+                    }
+                }
+            } else {
+                self.cache.insert(key, outcome.clone());
+            }
         }
         outcome
     }
@@ -373,7 +388,20 @@ impl<'a> TrailEngine<'a> {
             let key = self.key(scope.clone(), &ids);
             (ids, key)
         };
-        if let Some(hit) = self.cache.get(&key) {
+        let key_hash = if self.use_prehashed_cache {
+            self.cache.hasher().hash_one(&key)
+        } else {
+            0
+        };
+        let hit = if self.use_prehashed_cache {
+            self.cache
+                .raw_entry()
+                .from_key_hashed_nocheck(key_hash, &key)
+                .map(|(_, value)| value)
+        } else {
+            self.cache.get(&key)
+        };
+        if let Some(hit) = hit {
             self.stats.cache_hits += 1;
             return Ok(hit.clone());
         }
@@ -406,7 +434,7 @@ impl<'a> TrailEngine<'a> {
             };
             prefix = prefix.mul(factor, self.bits);
             if !self.apply(lit, Some((&mut heap, generation))) {
-                return Ok(self.save(key, Outcome::unsat(self.bits)));
+                return Ok(self.save(key, key_hash, Outcome::unsat(self.bits)));
             }
         }
 
@@ -440,8 +468,7 @@ impl<'a> TrailEngine<'a> {
         let pivot = active.iter().max_by_key(|&&var| frequency[var]).copied();
         self.frequency = frequency;
         if active.is_empty() {
-            return Ok(self.save(
-                key,
+            return Ok(self.save(key, key_hash,
                 Outcome {
                     sat: true,
                     count: prefix,
@@ -455,12 +482,11 @@ impl<'a> TrailEngine<'a> {
             for part in pieces {
                 let result = self.count_relevant(part, depth + 1, Some(&ids))?;
                 if !result.sat {
-                    return Ok(self.save(key, Outcome::unsat(self.bits)));
+                    return Ok(self.save(key, key_hash, Outcome::unsat(self.bits)));
                 }
                 value = value.mul(&result.count, self.bits);
             }
-            return Ok(self.save(
-                key,
+            return Ok(self.save(key, key_hash,
                 Outcome {
                     sat: true,
                     count: prefix.mul(&value, self.bits),
@@ -495,8 +521,7 @@ impl<'a> TrailEngine<'a> {
         let yes_weighted = weights.positive.mul(&yes.count, self.bits);
         let no_weighted = weights.negative.mul(&no.count, self.bits);
         let value = prefix.mul(&yes_weighted.add(&no_weighted, self.bits), self.bits);
-        Ok(self.save(
-            key,
+        Ok(self.save(key, key_hash,
             Outcome {
                 sat: yes.sat || no.sat,
                 count: value,

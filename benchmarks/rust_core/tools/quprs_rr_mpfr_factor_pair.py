@@ -39,6 +39,7 @@ HOLDOUT_CASES = (
     "feynman_barenco5",
     "feynman_modmult55",
     "feynman_barenco10",
+    "feynman_tof10",
 )
 # Do not broaden the legacy 7-trial cohort without explicitly qualifying the
 # additional original QuPRS inputs; short holdouts preserve censored cases.
@@ -50,6 +51,7 @@ SOURCE_PATHS = {
     "feynman_barenco5": "benchmarks/Feynman/barenco_tof_5.qasm",
     "feynman_modmult55": "benchmarks/Feynman/mod_mult_55.qasm",
     "feynman_barenco10": "benchmarks/Feynman/barenco_tof_10.qasm",
+    "feynman_tof10": "benchmarks/Feynman/tof_10.qasm",
     "mqt_qnn_4": "benchmarks/MQTBench/qnn_nativegates_ibm_qiskit_opt0_4.qasm",
     "mqt_grover_4": "benchmarks/MQTBench/grover-noancilla_nativegates_ibm_qiskit_opt0_4.qasm",
     "mqt_vqe_4": "benchmarks/MQTBench/vqe_nativegates_ibm_qiskit_opt0_4.qasm",
@@ -201,6 +203,7 @@ def main() -> None:
                 "source_qasm_sha256": source_hash,
                 "source_quprs_sha": QU_PRS, "source_gpmc_sha": GPMC,
                 "cohort": "holdout" if holdout else "original_five",
+                "native_method": "ANF_WALSH" if case == "feynman_tof10" else "FACTOR_DP",
                 "requested_trials": requested_trials,
                 "per_child_timeout_s": subprocess_timeout,
             }
@@ -240,8 +243,9 @@ def main() -> None:
                         [str(args.gpmc.resolve()), "-mode=1",
                          f"-prec={digits}", str(cnf.resolve())]
                         if name == "gpmc"
-                        else [str(args.factor.resolve()), str(digits),
-                              str(factor.resolve())]
+                        else [str(args.factor.resolve())]
+                        + (["--anf-walsh"] if case == "feynman_tof10" else [])
+                        + [str(digits), str(factor.resolve())]
                     )
                     sample = run_child(command, name, subprocess_timeout)
                     sample["trial"] = trial
@@ -277,6 +281,10 @@ def main() -> None:
                 # Standalone exact source oracle from prior study:
                 # only the original HWB6 post-RR model was exhaustively
                 # checked. This GPMC comparison must reproduce 4+0i.
+                if case == "feynman_tof10":
+                    coherent &= sat and near(exact_ref[0], Fraction(393216), digits) and near(
+                        exact_ref[1], Fraction(0), digits
+                    )
                 if case == "feynman_hwb6":
                     coherent &= sat and near(exact_ref[0], Fraction(4), digits) and near(
                         exact_ref[1], Fraction(0), digits

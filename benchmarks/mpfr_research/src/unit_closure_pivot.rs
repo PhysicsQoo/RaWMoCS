@@ -256,13 +256,25 @@ mod tests {
         // the groups. Branching on the artificial Frequency control 14
         // leaves a substantially larger connected residual.
         let cnf: Vec<Clause> = vec![
-            vec![-1, 2], vec![1, -2], vec![-1, 3], vec![1, -3],
-            vec![2, 4, 5], vec![-2, 10, 11],
-            vec![3, 6, 7], vec![-3, 12, 13],
-            vec![4, 5], vec![5, 6], vec![6, 7],
-            vec![7, 8], vec![8, 9],
-            vec![10, 11], vec![11, 12], vec![12, 13],
-            vec![13, 14], vec![14, 15], vec![15, 16],
+            vec![-1, 2],
+            vec![1, -2],
+            vec![-1, 3],
+            vec![1, -3],
+            vec![2, 4, 5],
+            vec![-2, 10, 11],
+            vec![3, 6, 7],
+            vec![-3, 12, 13],
+            vec![4, 5],
+            vec![5, 6],
+            vec![6, 7],
+            vec![7, 8],
+            vec![8, 9],
+            vec![10, 11],
+            vec![11, 12],
+            vec![12, 13],
+            vec![13, 14],
+            vec![14, 15],
+            vec![15, 16],
         ];
         let mut frequency = vec![1_usize; 17];
         // Scores are supplied explicitly to isolate the lookahead policy:
@@ -281,7 +293,13 @@ mod tests {
         assert!(worth_switching(before, after));
         let mut chosen = ClosureStats::default();
         assert_eq!(
-            choose(&cnf, &(1..=16).collect::<Vec<_>>(), &frequency, 16, &mut chosen),
+            choose(
+                &cnf,
+                &(1..=16).collect::<Vec<_>>(),
+                &frequency,
+                16,
+                &mut chosen
+            ),
             Some(1)
         );
         assert_eq!(chosen.chosen, 1);

@@ -16,6 +16,7 @@ fn source_path(case: &str) -> Option<&'static str> {
         "feynman_barenco5" => Some("benchmarks/Feynman/barenco_tof_5.qasm"),
         "feynman_modmult55" => Some("benchmarks/Feynman/mod_mult_55.qasm"),
         "feynman_barenco10" => Some("benchmarks/Feynman/barenco_tof_10.qasm"),
+        "feynman_tof10" => Some("benchmarks/Feynman/tof_10.qasm"),
         "mqt_qnn_4" => Some("benchmarks/MQTBench/qnn_nativegates_ibm_qiskit_opt0_4.qasm"),
         "mqt_vqe_4" => Some("benchmarks/MQTBench/vqe_nativegates_ibm_qiskit_opt0_4.qasm"),
         "mqt_grover_4" => {

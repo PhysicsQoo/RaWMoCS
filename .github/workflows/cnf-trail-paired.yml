@@ -93,7 +93,7 @@ jobs:
           cargo build --release \
             --manifest-path benchmarks/mpfr_research/Cargo.toml
           python3 -m py_compile benchmarks/mpfr_research/tools/quprs_cnf_trail_ab.py
-      - name: Paired original Weighted CNF GPMC versus baseline, equivalence and reversible trail Rust
+      - name: Paired original Weighted CNF GPMC versus baseline, equivalence, reversible trail and parent active-ID Rust
         shell: bash
         run: |
           set -euo pipefail
@@ -104,13 +104,13 @@ jobs:
             --gpmc .upstream/gpmc/build/gpmc \
             --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
             --trials 7 \
-            --report .research/weighted-cnf-trail/trail-four-arm.json \
+            --report .research/weighted-cnf-trail/trail-five-arm.json \
             | tee .research/weighted-cnf-trail/study.log
       - name: Preserve complete positive, negative and censored source evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: original-quprs-weighted-cnf-reversible-trail-gpmc-four-arm
+          name: original-quprs-weighted-cnf-reversible-trail-gpmc-five-arm
           path: .research/weighted-cnf-trail/
           retention-days: 30
           if-no-files-found: warn

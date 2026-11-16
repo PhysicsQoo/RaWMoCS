@@ -1,6 +1,6 @@
 //! Temporary pinned-QuPRS research example. Exports exact post-RR Boolean
 //! trace ANFs only; it does not solve WMC or change any release backend.
-use quprs::{qasm, PathSum, VerificationStrategy};
+use quprs::{qasm, wmc::WmcManager, PathSum, VerificationStrategy};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
@@ -21,6 +21,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let case = args.next().ok_or("case required")?;
     let root = args.next().ok_or("pinned source root required")?;
     let target = args.next().ok_or("source ANF output file required")?;
+    let cnf_target = args.next();
     if args.next().is_some() {
         return Err("unexpected extra arguments".into());
     }
@@ -81,6 +82,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // No phase content is serialized; phase count explicitly signals
     // phase-bearing sources are *not* eligible for counting by this DAG.
     fs::write(target, text)?;
+    if let Some(cnf_target) = cnf_target {
+        if !ps.p.terms.is_empty() {
+            return Err("ANF_SOURCE_CNF_REQUIRES_PHASE_FREE_RESIDUAL".into());
+        }
+        // Independently check the same post-RR PathSum with GPMC's own
+        // weighted CNF path; output ANF files are still source-only.
+        let mut manager = WmcManager::new(&ps);
+        manager.encode_trace(&ps)?;
+        fs::write(cnf_target, manager.to_dimacs_string("gpmc"))?;
+    }
     println!(
         "PINNED_QU_PRS_ANF_EXPORT case={case} qubits={qubits} gates={} \
          rr_variables={} phase_terms={} output_equations={} source_anf_terms={} \

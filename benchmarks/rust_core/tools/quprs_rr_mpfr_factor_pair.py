@@ -14,8 +14,10 @@ import argparse
 from fractions import Fraction
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
 import re
+import signal
 import statistics
 import subprocess
 import tempfile
@@ -64,19 +66,39 @@ def run_child(cmd: list[str], label: str, timeout: int) -> dict:
         ]
         start = time.perf_counter_ns()
         try:
-            p = subprocess.run(
-                command, text=True, capture_output=True, timeout=timeout,
-                check=False,
+            # Kill the whole child group on timeout, not just GNU time;
+            # a timed-out GPMC subprocess must not outlive its trial.
+            proc = subprocess.Popen(
+                command,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
             )
+        except OSError as exc:
+            return {
+                "status": "CENSORED_SPAWN_FAILURE",
+                "label": label,
+                "diagnostic": str(exc)[:250],
+            }
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
-            return {"status": "CENSORED_TIMEOUT", "label": label, "timeout": timeout}
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.communicate()
+            return {
+                "status": "CENSORED_TIMEOUT",
+                "label": label,
+                "timeout": timeout,
+                "wall_ns": time.perf_counter_ns() - start,
+            }
         elapsed = time.perf_counter_ns() - start
         result = {
             "label": label,
-            "status": "COMPLETED" if p.returncode == 0 else "CENSORED_NONZERO_EXIT",
-            "return_code": p.returncode,
+            "status": "COMPLETED" if proc.returncode == 0 else "CENSORED_NONZERO_EXIT",
+            "return_code": proc.returncode,
             "wall_ns": elapsed,
-            "stderr_tail": p.stderr[-700:],
+            "stderr_tail": stderr[-700:],
         }
         if peak_file.exists():
             try:
@@ -88,7 +110,7 @@ def run_child(cmd: list[str], label: str, timeout: int) -> dict:
         if result["status"] == "COMPLETED" and label in {"gpmc", "native_factor"}:
             try:
                 sat, value = parse_out(
-                    p.stdout, "gpmc" if label == "gpmc" else "rawmocs_mpfr"
+                    stdout, "gpmc" if label == "gpmc" else "rawmocs_mpfr"
                 )
                 result.update({
                     "sat": sat, "real": str(value[0]), "imag": str(value[1]),
@@ -100,7 +122,7 @@ def run_child(cmd: list[str], label: str, timeout: int) -> dict:
             matched = re.search(
                 r"RR_PRECISION_PAIR\s+case=(\S+)\s+bits=(\d+).*?"
                 r"rr_ns=(\d+)\s+cnf_encode_ns=(\d+)\s+prepare_ns=(\d+)",
-                p.stdout,
+                stdout,
                 re.DOTALL,
             )
             if result["status"] == "COMPLETED" and not matched:

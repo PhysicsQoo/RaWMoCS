@@ -1,0 +1,115 @@
+name: Source-pinned QuPRS RR MPFR factor versus GPMC
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/quprs-rr-mpfr-factor-paired.yml
+      - benchmarks/mpfr_research/src/bin/pathsum_factor_mpfr.rs
+      - benchmarks/rust_core/tools/quprs_rr_mpfr_paired_export.rs
+      - benchmarks/rust_core/tools/quprs_rr_mpfr_factor_pair.py
+      - docs/pathsum-factor-algebraic-research.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rr-factor-mpfr-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-pinned-factors:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Checkout pinned original QuPRS
+        uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/QuPRS
+          ref: 0b28736651b3740ed3b201edd2efdef3da541e0d
+          path: .upstream/quprs
+          persist-credentials: false
+      - name: Checkout pinned native GPMC
+        uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/GPMC
+          ref: 89bbc89d0de918e7a5385740355df55765039230
+          path: .upstream/gpmc
+          submodules: recursive
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .upstream/quprs/rust -> target
+            benchmarks/mpfr_research -> target
+          key: source-rr-factor-mpfr
+      - name: Install GMP / MPFR native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build libgmp-dev libmpfr-dev zlib1g-dev \
+            pkg-config time
+      - name: Verify fixed source versions and source syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C .upstream/quprs rev-parse HEAD)" = "0b28736651b3740ed3b201edd2efdef3da541e0d"
+          test "$(git -C .upstream/gpmc rev-parse HEAD)" = "89bbc89d0de918e7a5385740355df55765039230"
+          python3 -m py_compile benchmarks/rust_core/tools/quprs_rr_mpfr_factor_pair.py
+          rustfmt --edition 2021 --check \
+            benchmarks/mpfr_research/src/bin/pathsum_factor_mpfr.rs \
+            benchmarks/rust_core/tools/quprs_rr_mpfr_paired_export.rs
+      - name: Source MPFR factor science tests and strict lint
+        run: |
+          cargo test --locked --manifest-path benchmarks/mpfr_research/Cargo.toml \
+            --bin pathsum_factor_mpfr
+          cargo clippy --locked --manifest-path benchmarks/mpfr_research/Cargo.toml \
+            --bin pathsum_factor_mpfr -- -D warnings
+      - name: Build original QuPRS MPFR source emitter
+        shell: bash
+        env:
+          QUPRS_SOLVER_PROVISION: external
+        run: |
+          set -euo pipefail
+          cp benchmarks/rust_core/tools/quprs_rr_mpfr_paired_export.rs \
+             .upstream/quprs/rust/quprs/examples/quprs_rr_mpfr_paired_export.rs
+          cargo build --locked --release --manifest-path .upstream/quprs/rust/Cargo.toml \
+            -p quprs --no-default-features --features high-precision-gpmc \
+            --example quprs_rr_mpfr_paired_export
+      - name: Build unchanged GPMC C++ release
+        run: |
+          cmake -S .upstream/gpmc -B .upstream/gpmc/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build .upstream/gpmc/build --target gpmc-bin --parallel 2
+      - name: Build independent native MPFR factor elimination release
+        run: |
+          cargo build --locked --release --manifest-path benchmarks/mpfr_research/Cargo.toml \
+            --bin pathsum_factor_mpfr
+      - name: Matched-source 100/333-bit fresh-process study
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .research/rr-mpfr
+          python3 benchmarks/rust_core/tools/quprs_rr_mpfr_factor_pair.py \
+            --quprs .upstream/quprs \
+            --gpmc-source .upstream/gpmc \
+            --source-executable .upstream/quprs/rust/target/release/examples/quprs_rr_mpfr_paired_export \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --factor benchmarks/mpfr_research/target/release/pathsum_factor_mpfr \
+            --corpus .research/rr-mpfr \
+            --trials 2 \
+            --report .research/rr-mpfr/scientific-comparison.json
+      - name: Preserve all matched/censored raw evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rr-pathsum-mpfr-native-factor-vs-gpmc
+          path: .research/rr-mpfr/
+          retention-days: 30
+          if-no-files-found: warn

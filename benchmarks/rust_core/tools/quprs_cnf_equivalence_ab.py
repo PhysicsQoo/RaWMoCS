@@ -95,12 +95,12 @@ def sample(cmd: list[str], arm: str, precision: int) -> dict:
                     proc.stderr, re.MULTILINE,
                 )
                 if not phase or not probe:
-                    raise ValueError("missing Rust solve/probe diagnostic")
+                    raise ValueError("missing Rust solve/weighted equivalence diagnostic")
                 stats = [int(v) for v in phase.groups()]
                 if stats[7:] != [precision, BITS[precision]]:
                     raise ValueError("Rust binary MPFR precision drift")
                 if (probe.group(1) == "true") != (arm == "equivalence"):
-                    raise ValueError("Rust XOR closure arm drift")
+                    raise ValueError("Rust weighted equivalence arm drift")
                 row.update({
                     "solve_ns": stats[2],
                     "nodes": stats[4],
@@ -236,7 +236,7 @@ def main() -> None:
                 args.report.write_text(json.dumps(report, indent=2) + "\n")
                 raise SystemExit("FAILED_FULL_COMPLEX_WMC_OR_SAT")
             else:
-                cohort["status"] = ("SOURCE_MPFR_AGREEMENT_XOR_FALLBACK"
+                cohort["status"] = ("SOURCE_MPFR_AGREEMENT_EQ_FALLBACK"
                     if eq_fallback else "SOURCE_MPFR_AGREEMENT_ONLY")
                 qualified += 1
                 cohort["stats"] = {

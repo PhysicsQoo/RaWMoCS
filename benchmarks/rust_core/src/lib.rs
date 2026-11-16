@@ -8,6 +8,8 @@ pub mod cross_cancel_research;
 pub mod dubois_xor_certificate;
 pub mod expensive_reuse;
 pub mod irregular_holdout;
+#[cfg(feature = "pathsum-factor-research")]
+pub mod pathsum_factor_research;
 pub mod quprs_printed_cnf;
 pub mod satlib_provenance;
 pub mod scalability;

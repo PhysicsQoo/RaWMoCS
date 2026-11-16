@@ -840,6 +840,10 @@ fn run() -> Result<(), String> {
     let cache_first = if trail_count {
         args.next().ok_or("missing cache policy or precision after --trail-count")?
     } else { cache_first };
+    let trail_parent_ids = cache_first.to_str() == Some("--trail-parent-ids");
+    let cache_first = if trail_parent_ids {
+        args.next().ok_or("missing cache policy or precision after --trail-parent-ids")?
+    } else { cache_first };
     let cache_policy = match cache_first.to_str() {
         Some("--hashbrown-owned") => CachePolicy::HbOwned,
         Some("--hashbrown-borrowed") => CachePolicy::HbBorrowed,
@@ -864,6 +868,9 @@ fn run() -> Result<(), String> {
     }
     if trail_count && (unit_closure_pivot || reuse_csr_workspace) {
         return Err("--trail-count is an independent search arm and cannot combine with pivot/CSR arena".into());
+    }
+    if trail_parent_ids && !trail_count {
+        return Err("--trail-parent-ids requires --trail-count".into());
     }
     let path = args.next().ok_or("missing CNF")?;
     if args.next().is_some() { return Err("expected exactly one file".into()); }
@@ -900,6 +907,7 @@ fn run() -> Result<(), String> {
     engine.indexed_activation_node = indexed_activation_node;
     let (answer, solver_stats, trail_profile) = if trail_count {
         let mut trail = trail_engine::TrailEngine::new(source, bits, cache_limit, node_budget);
+        trail.use_parent_ids = trail_parent_ids;
         let outcome = trail.count(scope, 0)?;
         (outcome, trail.stats, Some((trail.assignments, trail.cache_keys)))
     } else {
@@ -934,6 +942,7 @@ fn run() -> Result<(), String> {
     let (trail_assignments, trail_cache_keys) = trail_profile.unwrap_or_default();
     eprintln!("RESEARCH_MPFR_TRAIL enabled={} assignments={} cache_keys={}",
         trail_count, trail_assignments, trail_cache_keys);
+    eprintln!("RESEARCH_MPFR_TRAIL_PARENT_IDS enabled={}", trail_parent_ids);
     eprintln!("RESEARCH_MPFR_CACHE_POLICY {}", cache_policy.label());
     eprintln!("RESEARCH_MPFR_SHARED_RESIDUAL enabled={} entries={}",
         shared_residual_key, engine.shared_cache.len());

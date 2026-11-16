@@ -33,7 +33,7 @@ SOURCE = {
     "feynman_grover_5": "benchmarks/Feynman/grover_5.qasm",
 }
 BITS = {30: 100, 100: 333}
-ARMS = ("gpmc", "control", "equivalence", "trail")
+ARMS = ("gpmc", "control", "equivalence", "trail", "parent_ids")
 BUDGET_S = 30
 AS_BYTES = 2147483648
 
@@ -101,14 +101,20 @@ def sample(cmd: list[str], arm: str, precision: int) -> dict:
                     r"assignments=(\d+) cache_keys=(\d+)$",
                     proc.stderr, re.MULTILINE,
                 )
-                if not phase or not probe or not trail:
+                parent_ids = re.search(
+                    r"^RESEARCH_MPFR_TRAIL_PARENT_IDS enabled=(true|false)$",
+                    proc.stderr, re.MULTILINE,
+                )
+                if not phase or not probe or not trail or not parent_ids:
                     raise ValueError("missing Rust solve/equivalence/trail diagnostics")
-                if (trail.group(1) == "true") != (arm == "trail"):
+                if (trail.group(1) == "true") != (arm in ("trail", "parent_ids")):
                     raise ValueError("trail selection arm did not match CLI")
+                if (parent_ids.group(1) == "true") != (arm == "parent_ids"):
+                    raise ValueError("parent clause-ID option does not match arm")
                 stats = [int(v) for v in phase.groups()]
                 if stats[7:] != [precision, BITS[precision]]:
                     raise ValueError("Rust binary MPFR precision drift")
-                if (probe.group(1) == "true") != (arm in ("equivalence", "trail")):
+                if (probe.group(1) == "true") != (arm in ("equivalence", "trail", "parent_ids")):
                     raise ValueError("Rust weighted equivalence arm drift")
                 row.update({
                     "solve_ns": stats[2],
@@ -127,6 +133,7 @@ def sample(cmd: list[str], arm: str, precision: int) -> dict:
                     "trail": {
                         "assignments": int(trail.group(2)),
                         "cache_keys": int(trail.group(3)),
+                        "parent_ids": parent_ids.group(1) == "true",
                     }
                 })
         except (ValueError, OSError) as error:
@@ -201,10 +208,12 @@ def main() -> None:
                                 "--indexed-unit-prop-csr-after-8192",
                                 "--packed-residual-key-fast",
                                 "--fast-assign", "--reuse-frequency-scratch"]
-                        if arm in ("equivalence", "trail"):
+                        if arm in ("equivalence", "trail", "parent_ids"):
                             cmd += ["--weighted-equivalence"]
-                        if arm == "trail":
+                        if arm in ("trail", "parent_ids"):
                             cmd += ["--trail-count"]
+                        if arm == "parent_ids":
+                            cmd += ["--trail-parent-ids"]
                         cmd += ["--hashbrown-borrowed", str(digits), str(cnf.resolve())]
                     result = sample(cmd, arm, digits)
                     result["trial"] = trial
@@ -237,6 +246,24 @@ def main() -> None:
             # A different in-place search engine may change node and cache
             # topology. Verify SAT and BOTH Complex WMC components against
             # the unchanged original GPMC; never demand same stdout bytes.
+            # Parent clause IDs can only shrink as assignments accumulate.
+            # This implementation optimization must leave the weighted search
+            # semantics AND traversal topology exactly unchanged relative to
+            # the source-scanning Trail engine on the same fixed bytes.
+            for trial in range(case_trials):
+                base = next(r for r in records
+                            if r["trial"] == trial and r["arm"] == "trail")
+                optimized = next(r for r in records
+                                 if r["trial"] == trial and r["arm"] == "parent_ids")
+                fields = (
+                    "sat", "real", "imag", "stdout_sha256",
+                    "nodes", "cache_hits", "decompositions",
+                )
+                if any(base[field] != optimized[field] for field in fields):
+                    cohort["status"] = "FAILED_TRAIL_PARENT_ID_EXACT_PARITY"
+                    cohort["parity_trial"] = trial
+                    args.report.write_text(json.dumps(report, indent=2) + "\n")
+                    raise SystemExit("FAILED_TRAIL_PARENT_ID_EXACT_PARITY")
             reference = next(r for r in records if r["arm"] == "gpmc")
             ref_real, ref_imag = Fraction(reference["real"]), Fraction(reference["imag"])
             agreement = all(
@@ -278,9 +305,11 @@ def main() -> None:
                       f"control_ms={stats['control']['p50_wall_ms']:.3f} "
                       f"equivalence_ms={stats['equivalence']['p50_wall_ms']:.3f} "
                       f"trail_ms={stats['trail']['p50_wall_ms']:.3f} "
+                      f"parent_ids_ms={stats['parent_ids']['p50_wall_ms']:.3f} "
                       f"control_nodes={stats['control']['p50_nodes']} "
                       f"equivalence_nodes={stats['equivalence']['p50_nodes']} "
                       f"trail_nodes={stats['trail']['p50_nodes']} "
+                      f"parent_ids_nodes={stats['parent_ids']['p50_nodes']} "
                       f"eq_fallback={eq_fallback}", flush=True)
             args.report.write_text(json.dumps(report, indent=2) + "\n")
     report["qualified_cohorts"] = qualified

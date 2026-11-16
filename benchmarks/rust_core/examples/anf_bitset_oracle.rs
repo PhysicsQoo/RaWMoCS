@@ -32,8 +32,11 @@ fn parse_source(text: &str) -> Result<Input, String> {
         return Err("ORACLE_INPUT_BYTE_LIMIT".into());
     }
     let mut rows = text.lines().filter(|line| !line.trim().is_empty());
-    let h: Vec<_> = rows.next().ok_or("ORACLE_MISSING_HEADER")?
-        .split_whitespace().collect();
+    let h: Vec<_> = rows
+        .next()
+        .ok_or("ORACLE_MISSING_HEADER")?
+        .split_whitespace()
+        .collect();
     if h.len() != 5 || h[0] != "p" || h[1] != "anf" {
         return Err("ORACLE_INVALID_HEADER".into());
     }
@@ -49,8 +52,11 @@ fn parse_source(text: &str) -> Result<Input, String> {
     let mut outputs = Vec::new();
     let mut terms_seen = 0;
     for _ in 0..num_eqs {
-        let head: Vec<_> = rows.next().ok_or("ORACLE_TRUNCATED_OUTPUT")?
-            .split_whitespace().collect();
+        let head: Vec<_> = rows
+            .next()
+            .ok_or("ORACLE_TRUNCATED_OUTPUT")?
+            .split_whitespace()
+            .collect();
         if head.len() != 3 || head[0] != "o" {
             return Err("ORACLE_INVALID_OUTPUT".into());
         }
@@ -62,8 +68,11 @@ fn parse_source(text: &str) -> Result<Input, String> {
         }
         let mut terms = Vec::with_capacity(count);
         for _ in 0..count {
-            let part: Vec<_> = rows.next().ok_or("ORACLE_TRUNCATED_TERM")?
-                .split_whitespace().collect();
+            let part: Vec<_> = rows
+                .next()
+                .ok_or("ORACLE_TRUNCATED_TERM")?
+                .split_whitespace()
+                .collect();
             if part.len() < 2 || part[0] != "m" {
                 return Err("ORACLE_INVALID_TERM".into());
             }
@@ -113,7 +122,8 @@ fn toggle_term(
     let high_full = (1usize << high_variables) - 1;
     let free = high_full ^ required_high;
     let operations = 1usize << free.count_ones();
-    *visited = visited.checked_add(operations)
+    *visited = visited
+        .checked_add(operations)
         .ok_or("ORACLE_TOGGLE_COUNTER_OVERFLOW")?;
     if *visited > limit {
         return Err("ORACLE_WORK_LIMIT".into());
@@ -191,8 +201,13 @@ fn run() -> Result<(), String> {
     let header = "status\tvariables\tphase_terms\toutput_equations\tsat\twc_real\twc_imag\ttoggle_ops\tparse_ns\tsolve_ns\n";
     let line = format!(
         "EXHAUSTIVE_ORIGINAL_ANF_COMPLETED\t{}\t0\t{}\t{}\t{}\t0\t{}\t{}\t{}\n",
-        input.variables, input.outputs.len(), result.count != 0,
-        result.count, result.toggles, parse_ns, solve_ns,
+        input.variables,
+        input.outputs.len(),
+        result.count != 0,
+        result.count,
+        result.toggles,
+        parse_ns,
+        solve_ns,
     );
     if let Some(path) = destination {
         fs::write(path, format!("{header}{line}")).map_err(|e| e.to_string())?;
@@ -236,9 +251,7 @@ mod tests {
                         .map(|i| {
                             let mut mask = 0u32;
                             for v in 0..n {
-                                if (seed * 31 + output * 17 + i * 19 + v * 13)
-                                    >> (v % 4) & 1 != 0
-                                {
+                                if (seed * 31 + output * 17 + i * 19 + v * 13) >> (v % 4) & 1 != 0 {
                                     mask |= 1u32 << v;
                                 }
                             }
@@ -247,7 +260,10 @@ mod tests {
                         .collect();
                     outputs.push(Equation { output, terms });
                 }
-                let input = Input { variables: n, outputs };
+                let input = Input {
+                    variables: n,
+                    outputs,
+                };
                 assert_eq!(
                     solve_original_source(&input, MAX_TOGGLE_OPS).unwrap().count,
                     straightforward(&input),
@@ -259,12 +275,20 @@ mod tests {
 
     #[test]
     fn exact_source_duplicate_gf2_and_free_variable_semantics() {
-        let input = parse_source(
-            "p anf 6 2 0\no 0 3\nm 1 0\nm 2 2 3\nm 2 2 3\no 1 2\nm 1 2\nm 0\n",
-        ).unwrap();
-        assert_eq!(solve_original_source(&input, MAX_TOGGLE_OPS).unwrap().count, 32);
+        let input =
+            parse_source("p anf 6 2 0\no 0 3\nm 1 0\nm 2 2 3\nm 2 2 3\no 1 2\nm 1 2\nm 0\n")
+                .unwrap();
+        assert_eq!(
+            solve_original_source(&input, MAX_TOGGLE_OPS).unwrap().count,
+            32
+        );
         let all_free = parse_source("p anf 7 0 0\n").unwrap();
-        assert_eq!(solve_original_source(&all_free, MAX_TOGGLE_OPS).unwrap().count, 128);
+        assert_eq!(
+            solve_original_source(&all_free, MAX_TOGGLE_OPS)
+                .unwrap()
+                .count,
+            128
+        );
     }
 
     #[test]

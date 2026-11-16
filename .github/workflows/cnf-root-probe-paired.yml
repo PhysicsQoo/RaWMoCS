@@ -87,9 +87,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo test --locked --release \
+          cargo test --release \
             --manifest-path benchmarks/mpfr_research/Cargo.toml
-          cargo build --locked --release \
+          cargo build --release \
             --manifest-path benchmarks/mpfr_research/Cargo.toml
           python3 -m py_compile benchmarks/rust_core/tools/quprs_cnf_root_probe_ab.py
       - name: Paired same-CNF GPMC vs Rust baseline and WMC-safe root probing

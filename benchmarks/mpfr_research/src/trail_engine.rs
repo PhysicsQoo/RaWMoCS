@@ -39,6 +39,9 @@ pub(crate) struct TrailEngine<'a> {
     pub(crate) use_compact_residual: bool,
     // Cached exact-key hash is an optimization only; collisions still compare keys.
     pub(crate) use_prehashed_cache: bool,
+    // On compact keys, fuse scope admission and literal compaction into
+    // one source-clause traversal rather than scanning twice per node.
+    pub(crate) use_fused_compact: bool,
 }
 
 fn slot(lit: i32) -> usize {
@@ -89,6 +92,7 @@ impl<'a> TrailEngine<'a> {
             use_parent_ids: false,
             use_compact_residual: false,
             use_prehashed_cache: false,
+            use_fused_compact: false,
         }
     }
 
@@ -232,20 +236,43 @@ impl<'a> TrailEngine<'a> {
             if self.live[cid] == 0 {
                 return false;
             }
-            let first = self.clauses[cid]
-                .iter()
-                .find(|&&lit| self.assigned[lit.unsigned_abs() as usize] == 0)
-                .expect("live clause has an unassigned literal");
-            if scope
-                .binary_search(&(first.unsigned_abs() as usize))
-                .is_err()
-            {
-                return true;
-            }
             let start = flat.len();
-            for &lit in &self.clauses[cid] {
-                if self.assigned[lit.unsigned_abs() as usize] == 0 {
-                    flat.push(lit);
+            if self.use_fused_compact {
+                // A branch's first still-unassigned literal establishes
+                // the same component/scope admission as the control.
+                // Read each active source clause at most once and stop
+                // immediately for a clause outside the current scope.
+                let mut first_unassigned = true;
+                for &lit in &self.clauses[cid] {
+                    let variable = lit.unsigned_abs() as usize;
+                    if self.assigned[variable] == 0 {
+                        if first_unassigned {
+                            if scope.binary_search(&variable).is_err() {
+                                return true;
+                            }
+                            first_unassigned = false;
+                        }
+                        flat.push(lit);
+                    }
+                }
+                // A live, unsatisfied clause always has an unassigned
+                // literal; a malformed counter must never be ignored.
+                assert!(!first_unassigned, "live clause has no unassigned literal");
+            } else {
+                let first = self.clauses[cid]
+                    .iter()
+                    .find(|&&lit| self.assigned[lit.unsigned_abs() as usize] == 0)
+                    .expect("live clause has an unassigned literal");
+                if scope
+                    .binary_search(&(first.unsigned_abs() as usize))
+                    .is_err()
+                {
+                    return true;
+                }
+                for &lit in &self.clauses[cid] {
+                    if self.assigned[lit.unsigned_abs() as usize] == 0 {
+                        flat.push(lit);
+                    }
                 }
             }
             debug_assert_eq!(flat.len() - start, self.live[cid]);

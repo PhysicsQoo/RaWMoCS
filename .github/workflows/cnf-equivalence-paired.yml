@@ -102,7 +102,7 @@ jobs:
             --corpus .research/weighted-cnf-equivalence \
             --gpmc .upstream/gpmc/build/gpmc \
             --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
-            --trials 3 \
+            --trials 7 \
             --report .research/weighted-cnf-equivalence/equivalence-three-arm.json \
             | tee .research/weighted-cnf-equivalence/study.log
       - name: Preserve complete positive, negative and censored source evidence

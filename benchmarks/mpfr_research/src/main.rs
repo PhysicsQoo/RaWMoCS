@@ -17,6 +17,7 @@ use std::time::Instant;
 mod weighted_equivalence;
 mod unit_closure_pivot;
 mod csr_workspace;
+mod trail_engine;
 
 type Clause = Vec<i32>;
 
@@ -834,6 +835,11 @@ fn run() -> Result<(), String> {
     let cache_first = if reuse_csr_workspace {
         args.next().ok_or("missing cache policy or precision after --csr-reuse-workspace")?
     } else { cache_first };
+    // Independent CNF-native reversible source-clause trail, strictly opt-in.
+    let trail_count = cache_first.to_str() == Some("--trail-count");
+    let cache_first = if trail_count {
+        args.next().ok_or("missing cache policy or precision after --trail-count")?
+    } else { cache_first };
     let cache_policy = match cache_first.to_str() {
         Some("--hashbrown-owned") => CachePolicy::HbOwned,
         Some("--hashbrown-borrowed") => CachePolicy::HbBorrowed,
@@ -855,6 +861,9 @@ fn run() -> Result<(), String> {
     let bits = (f64::from(digits) * 3.321_928_094_887_362_4).ceil() as u32;
     if reuse_csr_workspace && !indexed_unit_csr {
         return Err("--csr-reuse-workspace requires an indexed CSR unit propagation mode".into());
+    }
+    if trail_count && (unit_closure_pivot || reuse_csr_workspace) {
+        return Err("--trail-count is an independent search arm and cannot combine with pivot/CSR arena".into());
     }
     let path = args.next().ok_or("missing CNF")?;
     if args.next().is_some() { return Err("expected exactly one file".into()); }
@@ -889,7 +898,14 @@ fn run() -> Result<(), String> {
     engine.unit_closure_pivot = unit_closure_pivot;
     engine.reuse_csr_workspace = reuse_csr_workspace;
     engine.indexed_activation_node = indexed_activation_node;
-    let answer = engine.count(source.clauses.clone(), scope, 0)?;
+    let (answer, solver_stats, trail_profile) = if trail_count {
+        let mut trail = trail_engine::TrailEngine::new(source, bits, cache_limit, node_budget);
+        let outcome = trail.count(scope, 0)?;
+        (outcome, trail.stats, Some((trail.assignments, trail.cache_keys)))
+    } else {
+        let outcome = engine.count(source.clauses.clone(), scope, 0)?;
+        (outcome, engine.stats, None)
+    };
     let solve_ns = t2.elapsed().as_nanos();
     let t3 = Instant::now();
     println!("s {}", if answer.sat { "SATISFIABLE" } else { "UNSATISFIABLE" });
@@ -900,7 +916,7 @@ fn run() -> Result<(), String> {
     std::io::stdout().flush().map_err(|e| format!("flush: {e}"))?;
     let output_ns = t3.elapsed().as_nanos();
     eprintln!("RESEARCH_MPFR_PHASE_NS read={read_ns} parse={parse_ns} solve={solve_ns} output={output_ns} nodes={} cache_hits={} decompositions={} digits={digits} bits={bits}",
-        engine.stats.nodes, engine.stats.cache_hits, engine.stats.decompositions);
+        solver_stats.nodes, solver_stats.cache_hits, solver_stats.decompositions);
     eprintln!("RESEARCH_MPFR_WEIGHTED_EQ enabled={} binary={} eliminated={} removed_clauses={} representatives={} contradiction={} censored={}",
         weighted_equivalence, reduction_stats.binary_clauses,
         reduction_stats.eliminated_vars, reduction_stats.removed_clauses,
@@ -915,6 +931,9 @@ fn run() -> Result<(), String> {
     let (csr_slots, csr_literals, csr_clauses) = engine.csr_workspace.capacities();
     eprintln!("RESEARCH_MPFR_CSR_WORKSPACE enabled={} slots={} literals={} clauses={}",
         reuse_csr_workspace, csr_slots, csr_literals, csr_clauses);
+    let (trail_assignments, trail_cache_keys) = trail_profile.unwrap_or_default();
+    eprintln!("RESEARCH_MPFR_TRAIL enabled={} assignments={} cache_keys={}",
+        trail_count, trail_assignments, trail_cache_keys);
     eprintln!("RESEARCH_MPFR_CACHE_POLICY {}", cache_policy.label());
     eprintln!("RESEARCH_MPFR_SHARED_RESIDUAL enabled={} entries={}",
         shared_residual_key, engine.shared_cache.len());

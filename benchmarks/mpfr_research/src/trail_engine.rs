@@ -566,6 +566,27 @@ mod tests {
                 parent_indexed.stats.decompositions
             );
             assert!(compact.assigned.iter().all(|&x| x == 0));
+            // The same complete PackedKey must still guard every lookup.
+            // Change cache limits to exercise vacant, occupied and
+            // fully disabled memoization at two MPFR precisions.
+            for capacity in [0_usize, 1, 128] {
+                let mut old_cache = TrailEngine::new(&problem, bits, capacity, 100_000);
+                old_cache.use_parent_ids = true;
+                old_cache.use_compact_residual = true;
+                let original = old_cache.count((1..=problem.n).collect(), 0).unwrap();
+                let mut once = TrailEngine::new(&problem, bits, capacity, 100_000);
+                once.use_parent_ids = true;
+                once.use_compact_residual = true;
+                once.use_prehashed_cache = true;
+                let hashed = once.count((1..=problem.n).collect(), 0).unwrap();
+                assert_eq!(hashed.sat, original.sat);
+                assert_eq!(&hashed.count.re, &original.count.re);
+                assert_eq!(&hashed.count.im, &original.count.im);
+                assert_eq!(once.stats.nodes, old_cache.stats.nodes);
+                assert_eq!(once.stats.cache_hits, old_cache.stats.cache_hits);
+                assert_eq!(once.stats.decompositions, old_cache.stats.decompositions);
+                assert!(once.assigned.iter().all(|&x| x == 0));
+            }
             assert_eq!(indexed.sat, actual.sat);
             assert_eq!(indexed.count.re, actual.count.re);
             assert_eq!(indexed.count.im, actual.count.im);
@@ -667,6 +688,16 @@ mod tests {
                 assert_eq!(compressed.sat, seen.sat);
                 assert_eq!(&compressed.count.re, &seen.count.re);
                 assert_eq!(&compressed.count.im, &seen.count.im);
+                let mut once = TrailEngine::new(&problem, bits, 256, 100_000);
+                once.use_parent_ids = true;
+                once.use_compact_residual = true;
+                once.use_prehashed_cache = true;
+                let hashed = once.count((1..=5).collect(), 0).unwrap();
+                assert_eq!((hashed.sat, &hashed.count.re, &hashed.count.im),
+                    (compressed.sat, &compressed.count.re, &compressed.count.im));
+                assert_eq!(once.stats.nodes, compact.stats.nodes);
+                assert_eq!(once.stats.cache_hits, compact.stats.cache_hits);
+                assert_eq!(once.stats.decompositions, compact.stats.decompositions);
                 assert_eq!(compact.stats.nodes, incremental.stats.nodes);
                 assert_eq!(compact.stats.cache_hits, incremental.stats.cache_hits);
                 assert_eq!(

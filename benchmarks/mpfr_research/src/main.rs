@@ -670,6 +670,126 @@ fn split_components(
     }
     Some(groups.into_values().map(|(vars, cs)| (cs, vars)).collect())
 }
+
+/// A source-CNF-only, *logically implied* unit discovery pass. Every
+/// accepted unit is entailed by the original CNF: unit propagation of
+/// CNF & !unit reaches conflict. Thus the model set and each assignment's
+/// complex literal weights are unchanged; this is valid for Full WMC,
+/// unlike SAT-only pure-literal elimination or unweighted variable removal.
+///
+/// Research-only and bounded. Never change the input's literal weights,
+/// the production solver, or the original CNF file. On exhausted work
+/// budget, return the original CNF instead of a partial optimization.
+#[derive(Default, Debug)]
+struct RootProbeStats {
+    candidates: usize,
+    forced_units: usize,
+    visits: usize,
+    budget_censored: bool,
+}
+fn BooleanConflictProbe(
+    clauses: &[Clause],
+    vars: usize,
+    assumed: i32,
+    visits: &mut usize,
+    budget: usize,
+) -> Option<bool> {
+    let mut assignment = vec![0_i8; vars + 1];
+    let var = assumed.unsigned_abs() as usize;
+    assignment[var] = if assumed > 0 { 1 } else { -1 };
+    loop {
+        let mut changed = false;
+        for clause in clauses {
+            *visits += clause.len().max(1);
+            if *visits > budget {
+                return None;
+            }
+            let mut satisfied = false;
+            let mut open = 0_usize;
+            let mut last = 0_i32;
+            for &lit in clause {
+                let state = assignment[lit.unsigned_abs() as usize];
+                if state == 0 {
+                    open += 1;
+                    last = lit;
+                } else if (state > 0) == (lit > 0) {
+                    satisfied = true;
+                    break;
+                }
+            }
+            if satisfied {
+                continue;
+            }
+            if open == 0 {
+                return Some(true);
+            }
+            if open == 1 {
+                let v = last.unsigned_abs() as usize;
+                let val = if last > 0 { 1 } else { -1 };
+                if assignment[v] == -val {
+                    return Some(true);
+                }
+                if assignment[v] == 0 {
+                    assignment[v] = val;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            return Some(false);
+        }
+    }
+}
+fn bounded_root_failed_literal_probe(
+    clauses: &[Clause],
+    vars: usize,
+    max_candidates: usize,
+    work_budget: usize,
+) -> (Vec<Clause>, RootProbeStats) {
+    let mut stats = RootProbeStats::default();
+    if clauses.iter().any(Vec::is_empty) || clauses.len() > 2_000 || vars > 4096 {
+        stats.budget_censored = clauses.len() > 2_000 || vars > 4096;
+        return (clauses.to_vec(), stats);
+    }
+    let mut frequencies = vec![0_usize; vars + 1];
+    let mut existing_units = vec![false; vars + 1];
+    for clause in clauses {
+        if clause.len() == 1 {
+            existing_units[clause[0].unsigned_abs() as usize] = true;
+        }
+        for &lit in clause {
+            frequencies[lit.unsigned_abs() as usize] += 1;
+        }
+    }
+    let mut variables: Vec<usize> = (1..=vars)
+        .filter(|&v| frequencies[v] != 0 && !existing_units[v])
+        .collect();
+    variables.sort_unstable_by_key(|&v| (std::cmp::Reverse(frequencies[v]), v));
+    let mut result = clauses.to_vec();
+    for v in variables.into_iter().take(max_candidates) {
+        stats.candidates += 1;
+        let positive = BooleanConflictProbe(clauses, vars, v as i32, &mut stats.visits, work_budget);
+        let negative = BooleanConflictProbe(clauses, vars, -(v as i32), &mut stats.visits, work_budget);
+        let (Some(positive), Some(negative)) = (positive, negative) else {
+            stats.budget_censored = true;
+            return (clauses.to_vec(), stats);
+        };
+        let unit = match (positive, negative) {
+            (true, true) => {
+                result.push(Vec::new());
+                stats.forced_units += 1;
+                return (result, stats);
+            }
+            (true, false) => -(v as i32),
+            (false, true) => v as i32,
+            (false, false) => continue,
+        };
+        result.push(vec![unit]);
+        stats.forced_units += 1;
+    }
+    (result, stats)
+}
+
 fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
     if raw.is_empty() || raw.len() > 2_000_000 { return Err("invalid source bytes".into()); }
     let mut lines = raw.lines().filter(|s| !s.trim().is_empty());
@@ -786,6 +906,10 @@ fn run() -> Result<(), String> {
     let cache_first = if reuse_frequency_scratch {
         args.next().ok_or("missing cache mode or precision after --reuse-frequency-scratch")?
     } else { cache_first };
+    let root_probe = cache_first.to_str() == Some("--root-failed-literal-probe");
+    let cache_first = if root_probe {
+        args.next().ok_or("missing cache mode or precision after --root-failed-literal-probe")?
+    } else { cache_first };
     let cache_policy = match cache_first.to_str() {
         Some("--hashbrown-owned") => CachePolicy::HbOwned,
         Some("--hashbrown-borrowed") => CachePolicy::HbBorrowed,
@@ -827,7 +951,12 @@ fn run() -> Result<(), String> {
     engine.indexed_unit_csr = indexed_unit_csr;
     engine.reuse_frequency_scratch = reuse_frequency_scratch;
     engine.indexed_activation_node = indexed_activation_node;
-    let answer = engine.count(p.clauses.clone(), (1..=p.n).collect(), 0)?;
+    let (initial_clauses, root_probe_stats) = if root_probe {
+        bounded_root_failed_literal_probe(&p.clauses, p.n, 16, 2_000_000)
+    } else {
+        (p.clauses.clone(), RootProbeStats::default())
+    };
+    let answer = engine.count(initial_clauses, (1..=p.n).collect(), 0)?;
     let solve_ns = t2.elapsed().as_nanos();
     let t3 = Instant::now();
     println!("s {}", if answer.sat { "SATISFIABLE" } else { "UNSATISFIABLE" });
@@ -839,6 +968,9 @@ fn run() -> Result<(), String> {
     let output_ns = t3.elapsed().as_nanos();
     eprintln!("RESEARCH_MPFR_PHASE_NS read={read_ns} parse={parse_ns} solve={solve_ns} output={output_ns} nodes={} cache_hits={} decompositions={} digits={digits} bits={bits}",
         engine.stats.nodes, engine.stats.cache_hits, engine.stats.decompositions);
+    eprintln!("RESEARCH_MPFR_ROOT_PROBE enabled={} candidates={} forced={} visits={} censored={}",
+        root_probe, root_probe_stats.candidates, root_probe_stats.forced_units,
+        root_probe_stats.visits, root_probe_stats.budget_censored);
     eprintln!("RESEARCH_MPFR_CACHE_POLICY {}", cache_policy.label());
     eprintln!("RESEARCH_MPFR_SHARED_RESIDUAL enabled={} entries={}",
         shared_residual_key, engine.shared_cache.len());
@@ -872,6 +1004,57 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn root_failed_literal_is_entailed_and_weighted_safe() {
+        // (a|b) & (a|!b) entails a; a pure SAT-only assignment to
+        // b would be WMC-unsound, but appending a is model-equivalent.
+        let fixture = "p cnf 4 5\nc t wmc\nc p weight 1 0.25 0 0\nc p weight -1 -0.5 0 0\nc p weight 2 0.25 0 0\nc p weight -2 0.5 0 0\n1 2 0\n1 -2 0\n-1 3 0\n-3 4 0\n4 0\n";
+        for bits in [100, 333] {
+            let p = parse_emitted(fixture, bits).unwrap();
+            let (augmented, stats) = bounded_root_failed_literal_probe(&p.clauses, p.n, 16, 100_000);
+            assert!(stats.forced_units >= 1);
+            assert!(!stats.budget_censored);
+            assert!(augmented.iter().any(|c| c.as_slice() == [1]));
+            let mut control = Engine::new(&p, bits, CachePolicy::StdOwned);
+            let a = control.count(p.clauses.clone(), (1..=p.n).collect(), 0).unwrap();
+            let mut candidate = Engine::new(&p, bits, CachePolicy::StdOwned);
+            let b = candidate.count(augmented, (1..=p.n).collect(), 0).unwrap();
+            assert_eq!((a.sat, a.count.re, a.count.im), (b.sat, b.count.re, b.count.im));
+        }
+    }
+    #[test]
+    fn root_probe_preserves_original_weighted_model_set_on_small_cnfs() {
+        for bits in [100, 333] {
+            for seed in 0..48usize {
+                let mut source = "p cnf 5 6\nc t wmc\n".to_string();
+                for i in 0..6usize {
+                    let a = 1 + ((seed + 3 * i) % 5) as i32;
+                    let b = 1 + ((seed * 7 + i * 11 + 1) % 5) as i32;
+                    let a = if (seed + i) % 2 == 0 { a } else { -a };
+                    let b = if (seed + i * 3) % 3 == 0 { b } else { -b };
+                    source.push_str(&format!("{a} {b} 0\n"));
+                }
+                let p = parse_emitted(&source, bits).unwrap();
+                let (augmented, stats) = bounded_root_failed_literal_probe(&p.clauses, p.n, 16, 100_000);
+                assert!(!stats.budget_censored, "seed={seed}");
+                let mut control = Engine::new(&p, bits, CachePolicy::StdOwned);
+                let a = control.count(p.clauses.clone(), (1..=p.n).collect(), 0).unwrap();
+                let mut test = Engine::new(&p, bits, CachePolicy::StdOwned);
+                let b = test.count(augmented, (1..=p.n).collect(), 0).unwrap();
+                assert_eq!((a.sat, a.count.re, a.count.im),
+                    (b.sat, b.count.re, b.count.im), "seed={seed} bits={bits}");
+            }
+        }
+    }
+    #[test]
+    fn root_probe_work_budget_returns_unmodified_source() {
+        let p = parse_emitted("p cnf 3 3\nc t wmc\n1 2 0\n-1 3 0\n2 -3 0\n", 100).unwrap();
+        let (clauses, stats) = bounded_root_failed_literal_probe(&p.clauses, p.n, 16, 1);
+        assert_eq!(clauses, p.clauses);
+        assert!(stats.budget_censored);
+    }
+
     #[test]
     fn gpmc_binary_precision_bits_match() {
         assert_eq!((30_f64 * 3.321_928_094_887_362_4).ceil() as u32, 100);

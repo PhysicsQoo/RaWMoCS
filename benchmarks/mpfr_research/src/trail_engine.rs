@@ -495,6 +495,17 @@ mod tests {
             let mut parent_indexed = TrailEngine::new(&problem, bits, 128, 100_000);
             parent_indexed.use_parent_ids = true;
             let indexed = parent_indexed.count((1..=problem.n).collect(), 0).unwrap();
+            let mut compact = TrailEngine::new(&problem, bits, 128, 100_000);
+            compact.use_parent_ids = true;
+            compact.use_compact_residual = true;
+            let compressed = compact.count((1..=problem.n).collect(), 0).unwrap();
+            assert_eq!(compressed.sat, indexed.sat);
+            assert_eq!(&compressed.count.re, &indexed.count.re);
+            assert_eq!(&compressed.count.im, &indexed.count.im);
+            assert_eq!(compact.stats.nodes, parent_indexed.stats.nodes);
+            assert_eq!(compact.stats.cache_hits, parent_indexed.stats.cache_hits);
+            assert_eq!(compact.stats.decompositions, parent_indexed.stats.decompositions);
+            assert!(compact.assigned.iter().all(|&x| x == 0));
             assert_eq!(indexed.sat, actual.sat);
             assert_eq!(indexed.count.re, actual.count.re);
             assert_eq!(indexed.count.im, actual.count.im);
@@ -589,6 +600,16 @@ mod tests {
                     (seen.sat, &seen.count.re, &seen.count.im),
                     "incremental clause ids case {case} bits {bits}"
                 );
+                let mut compact = TrailEngine::new(&problem, bits, 256, 100_000);
+                compact.use_parent_ids = true;
+                compact.use_compact_residual = true;
+                let compressed = compact.count((1..=5).collect(), 0).unwrap();
+                assert_eq!(compressed.sat, seen.sat);
+                assert_eq!(&compressed.count.re, &seen.count.re);
+                assert_eq!(&compressed.count.im, &seen.count.im);
+                assert_eq!(compact.stats.nodes, incremental.stats.nodes);
+                assert_eq!(compact.stats.cache_hits, incremental.stats.cache_hits);
+                assert_eq!(compact.stats.decompositions, incremental.stats.decompositions);
                 assert_eq!(incremental.stats.nodes, trail.stats.nodes);
                 assert_eq!(incremental.stats.cache_hits, trail.stats.cache_hits);
                 assert_eq!(incremental.stats.decompositions, trail.stats.decompositions);

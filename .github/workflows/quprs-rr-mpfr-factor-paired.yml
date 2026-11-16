@@ -116,15 +116,3 @@ jobs:
           if-no-files-found: warn
 
 
-  lock-candidate:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Generate independent precision-workspace lockfile for review
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo generate-lockfile --manifest-path benchmarks/mpfr_research/Cargo.toml
-          printf 'MPFR_CARGO_LOCK_CANDIDATE %s\n' "$(base64 -w0 benchmarks/mpfr_research/Cargo.lock)"

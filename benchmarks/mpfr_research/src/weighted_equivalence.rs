@@ -25,7 +25,11 @@ pub(crate) struct EquivalenceStats {
 
 fn original(p: &Problem, stats: EquivalenceStats) -> (Problem, Vec<usize>, EquivalenceStats) {
     (
-        Problem { n: p.n, clauses: p.clauses.clone(), weights: p.weights.clone() },
+        Problem {
+            n: p.n,
+            clauses: p.clauses.clone(),
+            weights: p.weights.clone(),
+        },
         (1..=p.n).collect(),
         stats,
     )
@@ -42,7 +46,9 @@ fn graph_components(graph: &[Vec<usize>], reverse: &[Vec<usize>]) -> Vec<usize> 
     let mut visited = vec![false; n];
     let mut order = Vec::with_capacity(n);
     for start in 0..n {
-        if visited[start] { continue; }
+        if visited[start] {
+            continue;
+        }
         visited[start] = true;
         let mut stack = vec![(start, 0_usize)];
         while let Some((node, next_index)) = stack.last_mut() {
@@ -62,7 +68,9 @@ fn graph_components(graph: &[Vec<usize>], reverse: &[Vec<usize>]) -> Vec<usize> 
     let mut component = vec![usize::MAX; n];
     let mut number = 0;
     for &start in order.iter().rev() {
-        if component[start] != usize::MAX { continue; }
+        if component[start] != usize::MAX {
+            continue;
+        }
         let mut stack = vec![start];
         component[start] = number;
         while let Some(node) = stack.pop() {
@@ -81,9 +89,7 @@ fn graph_components(graph: &[Vec<usize>], reverse: &[Vec<usize>]) -> Vec<usize> 
 /// A bounded source-CNF-only exact transformation; returned scope excludes
 /// eliminated variables. This scope is essential: multiplying eliminated
 /// variables' free-weight sums again would silently overcount.
-pub(crate) fn reduce(
-    p: &Problem, bits: u32
-) -> (Problem, Vec<usize>, EquivalenceStats) {
+pub(crate) fn reduce(p: &Problem, bits: u32) -> (Problem, Vec<usize>, EquivalenceStats) {
     let mut stats = EquivalenceStats::default();
     if p.n == 0 || p.n > MAX_VARIABLES || p.clauses.len() > MAX_CLAUSES {
         stats.censored = true;
@@ -94,9 +100,13 @@ pub(crate) fn reduce(
     let mut reverse = vec![Vec::new(); size];
     let mut edges = 0;
     for clause in &p.clauses {
-        if clause.len() != 2 { continue; }
+        if clause.len() != 2 {
+            continue;
+        }
         let (a, b) = (clause[0], clause[1]);
-        if a == -b || a == b { continue; }
+        if a == -b || a == b {
+            continue;
+        }
         stats.binary_clauses += 1;
         // (a OR b) is equivalent to both implications.
         for (from, to) in [(-a, b), (-b, a)] {
@@ -111,14 +121,20 @@ pub(crate) fn reduce(
             edges += 1;
         }
     }
-    if edges == 0 { return original(p, stats); }
+    if edges == 0 {
+        return original(p, stats);
+    }
     let scc = graph_components(&graph, &reverse);
     for variable in 1..=p.n {
         if scc[2 * (variable - 1)] == scc[2 * (variable - 1) + 1] {
             // Boolean contradiction, independent of any complex weight.
             stats.contradictory = true;
             return (
-                Problem { n: p.n, clauses: vec![Vec::new()], weights: p.weights.clone() },
+                Problem {
+                    n: p.n,
+                    clauses: vec![Vec::new()],
+                    weights: p.weights.clone(),
+                },
                 (1..=p.n).collect(),
                 stats,
             );
@@ -149,14 +165,18 @@ pub(crate) fn reduce(
     }
     let mut weights = p.weights.clone();
     for (&rep, members) in &classes {
-        if members.len() == 1 { continue; }
+        if members.len() == 1 {
+            continue;
+        }
         let mut positive = C::one(bits);
         let mut negative = C::one(bits);
         for &(var, same) in members {
             let w = &p.weights[var - 1];
-            let (for_positive, for_negative) =
-                if same { (&w.positive, &w.negative) }
-                else { (&w.negative, &w.positive) };
+            let (for_positive, for_negative) = if same {
+                (&w.positive, &w.negative)
+            } else {
+                (&w.negative, &w.positive)
+            };
             positive = positive.mul(for_positive, bits);
             negative = negative.mul(for_negative, bits);
         }
@@ -184,7 +204,15 @@ pub(crate) fn reduce(
         }
     }
     let scope = classes.keys().copied().collect();
-    (Problem { n: p.n, clauses, weights }, scope, stats)
+    (
+        Problem {
+            n: p.n,
+            clauses,
+            weights,
+        },
+        scope,
+        stats,
+    )
 }
 
 #[cfg(test)]
@@ -193,25 +221,32 @@ mod tests {
     use crate::{parse_emitted, CachePolicy, Engine, Outcome};
 
     fn evaluate(clauses: &[Clause], mask: usize) -> bool {
-        clauses.iter().all(|clause| clause.iter().any(|&lit| {
-            let value = mask & (1 << (lit.unsigned_abs() as usize - 1)) != 0;
-            value == (lit > 0)
-        }))
+        clauses.iter().all(|clause| {
+            clause.iter().any(|&lit| {
+                let value = mask & (1 << (lit.unsigned_abs() as usize - 1)) != 0;
+                value == (lit > 0)
+            })
+        })
     }
     fn brute_weighted(p: &Problem, bits: u32) -> Outcome {
         let mut value = C::zero(bits);
         let mut sat = false;
         for mask in 0..(1_usize << p.n) {
-            if !evaluate(&p.clauses, mask) { continue; }
+            if !evaluate(&p.clauses, mask) {
+                continue;
+            }
             sat = true;
             let mut weight = C::one(bits);
             for v in 1..=p.n {
                 let w = &p.weights[v - 1];
-                weight = weight.mul(if mask & (1 << (v - 1)) != 0 {
-                    &w.positive
-                } else {
-                    &w.negative
-                }, bits);
+                weight = weight.mul(
+                    if mask & (1 << (v - 1)) != 0 {
+                        &w.positive
+                    } else {
+                        &w.negative
+                    },
+                    bits,
+                );
             }
             value = value.add(&weight, bits);
         }
@@ -224,7 +259,9 @@ mod tests {
             source.push_str(&format!("c p weight -{v} -0.125 0.25 0\n"));
         }
         for clause in clauses {
-            for lit in clause { source.push_str(&format!("{lit} ")); }
+            for lit in clause {
+                source.push_str(&format!("{lit} "));
+            }
             source.push_str("0\n");
         }
         parse_emitted(&source, bits).unwrap()
@@ -232,7 +269,9 @@ mod tests {
     fn compare(p: &Problem, bits: u32) -> EquivalenceStats {
         let brute = brute_weighted(p, bits);
         let mut control = Engine::new(p, bits, CachePolicy::StdOwned);
-        let original = control.count(p.clauses.clone(), (1..=p.n).collect(), 0).unwrap();
+        let original = control
+            .count(p.clauses.clone(), (1..=p.n).collect(), 0)
+            .unwrap();
         let (reduced, scope, stats) = reduce(p, bits);
         let mut engine = Engine::new(&reduced, bits, CachePolicy::StdOwned);
         let optimized = engine.count(reduced.clauses.clone(), scope, 0).unwrap();
@@ -248,9 +287,12 @@ mod tests {
     #[test]
     fn equivalent_and_opposite_literals_fold_complex_weights_without_overcount() {
         let clauses = vec![
-            vec![-1, 2], vec![1, -2], // x1 = x2
-            vec![-2, -3], vec![2, 3], // x2 = !x3
-            vec![3, 4], vec![-4, 5],
+            vec![-1, 2],
+            vec![1, -2], // x1 = x2
+            vec![-2, -3],
+            vec![2, 3], // x2 = !x3
+            vec![3, 4],
+            vec![-4, 5],
         ];
         for bits in [100, 333] {
             let p = make_problem(&clauses, bits);
@@ -277,11 +319,16 @@ mod tests {
                     let c = (1 + ((seed * 5 + k + 2) % 6)) as i32;
                     clauses.push(vec![
                         if k & 1 == 0 { a } else { -a },
-                        if seed & 4 == 0 { b } else { -b }, c
+                        if seed & 4 == 0 { b } else { -b },
+                        c,
                     ]);
                 }
-                if seed & 8 != 0 { clauses.push(vec![6]); }
-                if seed & 16 != 0 { clauses.push(vec![-6]); }
+                if seed & 8 != 0 {
+                    clauses.push(vec![6]);
+                }
+                if seed & 16 != 0 {
+                    clauses.push(vec![-6]);
+                }
                 let p = make_problem(&clauses, bits);
                 compare(&p, bits);
             }
@@ -291,7 +338,8 @@ mod tests {
     #[test]
     fn equivalent_literals_with_cancelling_wmc_are_sat_not_unsat() {
         for bits in [100, 333] {
-            let text = "p cnf 2 2\nc t wmc\nc p weight 1 1 0 0\nc p weight -1 -1 0 0\n-1 2 0\n1 -2 0\n";
+            let text =
+                "p cnf 2 2\nc t wmc\nc p weight 1 1 0 0\nc p weight -1 -1 0 0\n-1 2 0\n1 -2 0\n";
             let p = parse_emitted(text, bits).unwrap();
             let (reduced, scope, stats) = reduce(&p, bits);
             assert_eq!(stats.eliminated_vars, 1);
@@ -305,9 +353,7 @@ mod tests {
 
     #[test]
     fn binary_scc_boolean_contradiction_is_not_numerical_cancellation() {
-        let clauses = vec![
-            vec![1, 2], vec![-1, 2], vec![1, -2], vec![-1, -2],
-        ];
+        let clauses = vec![vec![1, 2], vec![-1, 2], vec![1, -2], vec![-1, -2]];
         for bits in [100, 333] {
             let p = make_problem(&clauses, bits);
             let stats = compare(&p, bits);

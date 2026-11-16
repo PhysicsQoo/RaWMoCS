@@ -1,0 +1,126 @@
+name: QuPRS source ANF DAG research
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/quprs-anf-dag-research.yml
+      - benchmarks/rust_core/Cargo.toml
+      - benchmarks/rust_core/examples/anf_dag_profile.rs
+      - benchmarks/rust_core/tools/quprs_pathsum_anf_dag_export.rs
+      - docs/pathsum-factor-algebraic-research.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dag-science:
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: GF2 ANF exact truth-table and resource admission tests
+        run: cargo test --locked --manifest-path benchmarks/rust_core/Cargo.toml --features pathsum-factor-research --example anf_dag_profile
+      - name: Research-only strict Clippy
+        run: cargo clippy --locked --manifest-path benchmarks/rust_core/Cargo.toml --features pathsum-factor-research --example anf_dag_profile -- -D warnings
+
+  pinned-anf-source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/QuPRS
+          ref: 0b28736651b3740ed3b201edd2efdef3da541e0d
+          path: .upstream/quprs
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Compile immutable QuPRS source ANF exporter and independent DAG profiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C .upstream/quprs rev-parse HEAD)" = 0b28736651b3740ed3b201edd2efdef3da541e0d
+          cp benchmarks/rust_core/tools/quprs_pathsum_anf_dag_export.rs \
+             .upstream/quprs/rust/quprs/examples/quprs_pathsum_anf_dag_export.rs
+          cargo build --locked --release --no-default-features \
+            --manifest-path .upstream/quprs/rust/Cargo.toml \
+            -p quprs --example quprs_pathsum_anf_dag_export
+          cargo build --locked --release \
+            --manifest-path benchmarks/rust_core/Cargo.toml \
+            --features pathsum-factor-research \
+            --example anf_dag_profile
+      - name: Profile unchanged original Adder8, Toffoli10, Barenco10 and HWB6
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .research/anf-dag
+          exporter="$GITHUB_WORKSPACE/.upstream/quprs/rust/target/release/examples/quprs_pathsum_anf_dag_export"
+          profiler="$GITHUB_WORKSPACE/benchmarks/rust_core/target/release/examples/anf_dag_profile"
+          : > .research/anf-dag/status.tsv
+          for name in feynman_adder8 feynman_tof10 feynman_barenco10 feynman_hwb6; do
+            case "$name" in
+              feynman_adder8) qasm="adder_8.qasm" ;;
+              feynman_tof10) qasm="tof_10.qasm" ;;
+              feynman_barenco10) qasm="barenco_tof_10.qasm" ;;
+              feynman_hwb6) qasm="hwb6.qasm" ;;
+            esac
+            src=".research/anf-dag/${name}.anf"
+            result=".research/anf-dag/${name}-profile.tsv"
+            log=".research/anf-dag/${name}.log"
+            exit_code=0
+            {
+              echo "CASE=$name"
+              sha256sum ".upstream/quprs/benchmarks/Feynman/$qasm"
+              timeout -k 2s 30s prlimit --as=2147483648 -- \
+                "$exporter" "$name" "$GITHUB_WORKSPACE/.upstream/quprs" "$src"
+              timeout -k 2s 30s prlimit --as=2147483648 -- \
+                "$profiler" "$src" "$result"
+            } > "$log" 2>&1 || exit_code=$?
+            if [ "$exit_code" -eq 0 ] && test -s "$result"; then
+              printf '%s\tCOMPLETED\t0\n' "$name" >> .research/anf-dag/status.tsv
+              cat "$result"
+            else
+              printf '%s\tCENSORED\t%d\n' "$name" "$exit_code" >> .research/anf-dag/status.tsv
+              echo "ANF_DAG_PROFILE_CENSORED case=$name exit=$exit_code"
+            fi
+          done
+          cat .research/anf-dag/status.tsv
+          grep -q '^feynman_adder8[[:space:]]COMPLETED[[:space:]]0' .research/anf-dag/status.tsv
+          awk -F '\t' 'NR==2 { if ($2 != 24 || $6 < 14000 || $10 < 1) exit 1 }' \
+            .research/anf-dag/feynman_adder8-profile.tsv
+      - name: Retain both negative and positive source evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: original-quprs-anf-dag-source-structural
+          path: .research/anf-dag/
+          retention-days: 30
+          if-no-files-found: warn
+
+  rustfmt-candidates:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Output canonical formatting for reviewed sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(benchmarks/rust_core/examples/anf_dag_profile.rs benchmarks/rust_core/tools/quprs_pathsum_anf_dag_export.rs)
+          rustfmt --edition 2021 "${files[@]}"
+          for file in "${files[@]}"; do
+            printf 'ANF_DAG_RUSTFMT_CANDIDATE %s %s\n' "$file" "$(base64 -w0 "$file")"
+          done

@@ -106,7 +106,7 @@ jobs:
             --corpus .research/rr-mpfr \
             --trials 7 \
             --include-holdouts \
-            --holdout-trials 2 \
+            --holdout-trials 7 \
             --holdout-timeout 30 \
             --report .research/rr-mpfr/scientific-comparison.json
       - name: Preserve all matched/censored raw evidence

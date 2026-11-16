@@ -30,6 +30,9 @@ pub(crate) struct TrailEngine<'a> {
     pub(crate) stats: Stats,
     pub(crate) assignments: u64,
     pub(crate) cache_keys: u64,
+    // Descendants may examine only their parent's still-live clause IDs.
+    // No assignment can awaken a clause previously satisfied along this trail.
+    pub(crate) use_parent_ids: bool,
 }
 
 fn slot(lit: i32) -> usize {
@@ -77,6 +80,7 @@ impl<'a> TrailEngine<'a> {
             stats: Stats::default(),
             assignments: 0,
             cache_keys: 0,
+            use_parent_ids: false,
         }
     }
 
@@ -157,24 +161,26 @@ impl<'a> TrailEngine<'a> {
     /// Canonical ids are sorted and deduplicated by *reduced* literal bytes.
     /// Under a disconnected sub-scope, clauses from another component are
     /// deliberately excluded, just as the original split_components does.
-    fn canonical_ids(&self, scope: &[usize]) -> Option<Vec<usize>> {
+    fn canonical_ids(&self, scope: &[usize], parent_ids: Option<&[usize]>) -> Option<Vec<usize>> {
         let mut ids = Vec::new();
-        for cid in 0..self.clauses.len() {
-            if self.satisfied[cid] != 0 {
-                continue;
-            }
-            if self.live[cid] == 0 {
-                return None; // Boolean conflict, never a complex zero test.
-            }
-            let first = self.clauses[cid]
-                .iter()
+        let mut visit = |cid: usize| {
+            if self.satisfied[cid] != 0 { return true; }
+            if self.live[cid] == 0 { return false; }
+            let first = self.clauses[cid].iter()
                 .find(|&&lit| self.assigned[lit.unsigned_abs() as usize] == 0)
                 .expect("live clause has an unassigned literal");
-            if scope
-                .binary_search(&(first.unsigned_abs() as usize))
-                .is_ok()
-            {
+            if scope.binary_search(&(first.unsigned_abs() as usize)).is_ok() {
                 ids.push(cid);
+            }
+            true
+        };
+        if let Some(parent) = parent_ids.filter(|_| self.use_parent_ids) {
+            for &cid in parent {
+                if !visit(cid) { return None; }
+            }
+        } else {
+            for cid in 0..self.clauses.len() {
+                if !visit(cid) { return None; }
             }
         }
         ids.sort_unstable_by(|&a, &b| self.cmp_residual(a, b));
@@ -231,13 +237,21 @@ impl<'a> TrailEngine<'a> {
     }
 
     pub(crate) fn count(&mut self, scope: Vec<usize>, depth: usize) -> Result<Outcome, String> {
+        self.count_relevant(scope, depth, None)
+    }
+
+    fn count_relevant(
+        &mut self, scope: Vec<usize>, depth: usize, parent_ids: Option<&[usize]>,
+    ) -> Result<Outcome, String> {
         let checkpoint = self.trail.len();
-        let answer = self.count_inner(scope, depth);
+        let answer = self.count_inner(scope, depth, parent_ids);
         self.undo(checkpoint);
         answer
     }
 
-    fn count_inner(&mut self, scope: Vec<usize>, depth: usize) -> Result<Outcome, String> {
+    fn count_inner(
+        &mut self, scope: Vec<usize>, depth: usize, parent_ids: Option<&[usize]>,
+    ) -> Result<Outcome, String> {
         if depth >= 512 {
             return Err("trail depth limit".into());
         }
@@ -245,7 +259,7 @@ impl<'a> TrailEngine<'a> {
             return Err("node limit".into());
         }
         self.stats.nodes += 1;
-        let Some(ids) = self.canonical_ids(&scope) else {
+        let Some(ids) = self.canonical_ids(&scope, parent_ids) else {
             return Ok(Outcome::unsat(self.bits));
         };
         let key = self.key(scope.clone(), &ids);
@@ -329,7 +343,7 @@ impl<'a> TrailEngine<'a> {
             self.stats.decompositions += 1;
             let mut value = C::one(self.bits);
             for part in pieces {
-                let result = self.count(part, depth + 1)?;
+                let result = self.count_relevant(part, depth + 1, Some(&ids))?;
                 if !result.sat {
                     return Ok(self.save(key, Outcome::unsat(self.bits)));
                 }
@@ -351,7 +365,7 @@ impl<'a> TrailEngine<'a> {
         // Neither branch creates a materialized child Vec<Vec<i32>>.
         let yes_ok = self.apply(pivot as i32, None);
         let yes_result = if yes_ok {
-            self.count(child.clone(), depth + 1)
+            self.count_relevant(child.clone(), depth + 1, Some(&ids))
         } else {
             Ok(Outcome::unsat(self.bits))
         };
@@ -360,7 +374,7 @@ impl<'a> TrailEngine<'a> {
 
         let no_ok = self.apply(-(pivot as i32), None);
         let no_result = if no_ok {
-            self.count(child, depth + 1)
+            self.count_relevant(child, depth + 1, Some(&ids))
         } else {
             Ok(Outcome::unsat(self.bits))
         };

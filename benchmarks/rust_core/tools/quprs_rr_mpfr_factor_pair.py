@@ -38,6 +38,7 @@ HOLDOUT_CASES = (
     "feynman_grover5",
     "feynman_barenco5",
     "feynman_modmult55",
+    "feynman_barenco10",
 )
 # Do not broaden the legacy 7-trial cohort without explicitly qualifying the
 # additional original QuPRS inputs; short holdouts preserve censored cases.
@@ -48,6 +49,7 @@ SOURCE_PATHS = {
     "feynman_grover5": "benchmarks/Feynman/grover_5.qasm",
     "feynman_barenco5": "benchmarks/Feynman/barenco_tof_5.qasm",
     "feynman_modmult55": "benchmarks/Feynman/mod_mult_55.qasm",
+    "feynman_barenco10": "benchmarks/Feynman/barenco_tof_10.qasm",
     "mqt_qnn_4": "benchmarks/MQTBench/qnn_nativegates_ibm_qiskit_opt0_4.qasm",
     "mqt_grover_4": "benchmarks/MQTBench/grover-noancilla_nativegates_ibm_qiskit_opt0_4.qasm",
     "mqt_vqe_4": "benchmarks/MQTBench/vqe_nativegates_ibm_qiskit_opt0_4.qasm",

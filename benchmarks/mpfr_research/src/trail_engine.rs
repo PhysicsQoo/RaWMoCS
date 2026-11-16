@@ -623,6 +623,21 @@ mod tests {
                 assert_eq!(once.stats.cache_hits, old_cache.stats.cache_hits);
                 assert_eq!(once.stats.decompositions, old_cache.stats.decompositions);
                 assert!(once.assigned.iter().all(|&x| x == 0));
+                // Same full WMC and traversal when compact scope admission
+                // and reduced-literal filtering are fused into one pass.
+                let mut fused = TrailEngine::new(&problem, bits, capacity, 100_000);
+                fused.use_parent_ids = true;
+                fused.use_compact_residual = true;
+                fused.use_prehashed_cache = true;
+                fused.use_fused_compact = true;
+                let candidate = fused.count((1..=problem.n).collect(), 0).unwrap();
+                assert_eq!(candidate.sat, hashed.sat);
+                assert_eq!(&candidate.count.re, &hashed.count.re);
+                assert_eq!(&candidate.count.im, &hashed.count.im);
+                assert_eq!(fused.stats.nodes, once.stats.nodes);
+                assert_eq!(fused.stats.cache_hits, once.stats.cache_hits);
+                assert_eq!(fused.stats.decompositions, once.stats.decompositions);
+                assert!(fused.assigned.iter().all(|&x| x == 0));
             }
             assert_eq!(indexed.sat, actual.sat);
             assert_eq!(indexed.count.re, actual.count.re);
@@ -737,6 +752,17 @@ mod tests {
                 assert_eq!(once.stats.nodes, compact.stats.nodes);
                 assert_eq!(once.stats.cache_hits, compact.stats.cache_hits);
                 assert_eq!(once.stats.decompositions, compact.stats.decompositions);
+                let mut fused = TrailEngine::new(&problem, bits, 256, 100_000);
+                fused.use_parent_ids = true;
+                fused.use_compact_residual = true;
+                fused.use_prehashed_cache = true;
+                fused.use_fused_compact = true;
+                let candidate = fused.count((1..=5).collect(), 0).unwrap();
+                assert_eq!((candidate.sat, &candidate.count.re, &candidate.count.im),
+                    (hashed.sat, &hashed.count.re, &hashed.count.im));
+                assert_eq!(fused.stats.nodes, once.stats.nodes);
+                assert_eq!(fused.stats.cache_hits, once.stats.cache_hits);
+                assert_eq!(fused.stats.decompositions, once.stats.decompositions);
                 assert_eq!(compact.stats.nodes, incremental.stats.nodes);
                 assert_eq!(compact.stats.cache_hits, incremental.stats.cache_hits);
                 assert_eq!(

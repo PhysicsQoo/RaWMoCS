@@ -537,6 +537,62 @@ The next proof gate is whole-domain original-ANF 64-way bit-parallel
 enumeration (not the ROBDD implementation), then a properly controlled
 paired native WallTime/RSS experiment.
 
+## Full original Adder8 2^24 exhaustive source oracle — independent GF(2) Mobius
+
+A third research-only verification route now computes the original
+phase-free QuPRS trace count by **direct GF(2) subset/Mobius transform
+of the source ANF coefficients**, without using polynomial DAG
+hash-consing, ROBDD Apply, BDD model counting, or GPMC's CNF search.
+It parses the independently serialized original post-RR ANF equation
+monomials and builds the complete 2^n truth table in 64-bit packs.
+
+Per original equation, it initializes an ANF coefficient bitset,
+XORs the output variable and every original source monomial (duplicate
+terms cancel), then applies 6 within-word and up to 18 across-word
+GF(2) butterfly passes. The resulting bitset is exactly the truth
+table of that source equation. The complement of all output equations
+is intersected bitwise; the final POPCOUNT includes every original
+free variable. This enumerates the **entire 2^24 = 16,777,216**
+original Adder8 assignment universe through packed operations.
+
+Source: benchmarks/rust_core/examples/anf_bitset_oracle.rs.
+Feature-gated, standalone benchmark crate only, not production.
+Independent scalar truth-table tests cover 1..9 variables with many
+nonlinear outputs; there are explicit duplicate cancellation,
+constant, free-variable, phase, dimension and work-limit tests.
+Limits: <=24 original variables; <=200,000 raw monomials; <=8MB
+source input; <=250 million packed word operations; 75-second
+CI process timeout and 2-GiB virtual-address-space guard. The
+initial per-monomial bitset expansion implementation hit its
+conservative work budget on Adder8 and was **rejected**, not
+misreported as success; switching to the mathematically equivalent
+Moebius butterfly removed that cost without increasing memory scope.
+
+The source-pinned [exact original-QASM exhaustive oracle run](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/43804272292)
+passed the original-source job. Adder8 complete universe count:
+**SAT=true, Full Complex WMC=40960+0i**, using
+**100,663,296 packed butterfly/intersection word operations**.
+Single CI solve-stage wall observed **55,790,766 ns**; this
+excludes the full QuPRS RR, source export, and fresh-process startup.
+Three other original-source controls independently agreed:
+Toffoli10=393216+0i, Barenco10=523776+0i, HWB6=4+0i, all SAT.
+
+Caveat: the initial source CI used source code whose platform
+science checks were blocked by formatting/strict Clippy; its pinned
+original-source computations DID complete. The code has since
+been canonical-formatted and its indexed-mask lint corrected.
+The final SHA must still pass Linux/macOS/Windows science and
+source jobs before final research admission.
+
+Together with the independently compiled original GPMC C++ and
+the 624-node ROBDD on the **same pinned RR residual**, three different
+methods now agree on the Adder8 **exact integer**. This does not
+prove general arbitrary-angle complex WMC or a source-to-result
+end-to-end speedup. Do not compare the 0.4ms BDD counting stage
+against a 90s GPMC budget or use a 206-node ANF polynomial DAG
+as a claim of production speedup without measured full pipeline
+and memory-fallback evidence.
+
 ## Literature
 
 - Compilation and Fast Model Counting beyond CNF (IJCAI 2024):

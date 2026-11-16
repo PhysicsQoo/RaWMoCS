@@ -8,6 +8,7 @@ on:
       - benchmarks/rust_core/src/pathsum_factor_research.rs
       - .github/workflows/pathsum-factor-research.yml
       - docs/pathsum-factor-algebraic-research.md
+      - benchmarks/rust_core/tools/quprs_pathsum_structural_probe.rs
   workflow_dispatch:
 
 permissions:
@@ -30,3 +31,60 @@ jobs:
         run: cargo test --locked --manifest-path benchmarks/rust_core/Cargo.toml --features pathsum-factor-research pathsum_factor_research -- --nocapture
       - name: Research-only code lint
         run: cargo clippy --locked --manifest-path benchmarks/rust_core/Cargo.toml --features pathsum-factor-research --lib -- -D warnings
+
+  pinned-quprs-structure:
+    timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Checkout immutable original QuPRS
+        uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/QuPRS
+          ref: 0b28736651b3740ed3b201edd2efdef3da541e0d
+          path: .upstream/quprs
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Verify source and build independent probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C .upstream/quprs rev-parse HEAD)" = "0b28736651b3740ed3b201edd2efdef3da541e0d"
+          cp benchmarks/rust_core/tools/quprs_pathsum_structural_probe.rs \
+             .upstream/quprs/rust/quprs/examples/quprs_pathsum_structural_probe.rs
+          cargo build --locked --release --no-default-features \
+            --manifest-path .upstream/quprs/rust/Cargo.toml \
+            -p quprs --example quprs_pathsum_structural_probe
+      - name: Profile unmodified QASM and post-RR structural factors
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .research/pathsum-structure
+          probe="$GITHUB_WORKSPACE/.upstream/quprs/rust/target/release/examples/quprs_pathsum_structural_probe"
+          : > .research/pathsum-structure/status.tsv
+          for name in feynman_hwb6 feynman_qft4 mqt_qnn_4 mqt_grover_4 mqt_vqe_4; do
+            for mode in raw rr; do
+              target=".research/pathsum-structure/${name}-${mode}.tsv"
+              if timeout -k 2s 30s prlimit --as=2147483648 -- \
+                 "$probe" "$name" "$GITHUB_WORKSPACE/.upstream/quprs" "$mode" "$target" \
+                 > ".research/pathsum-structure/${name}-${mode}.log" 2>&1; then
+                printf '%s\t%s\tPROBED\n' "$name" "$mode" >> .research/pathsum-structure/status.tsv
+                cat "$target"
+              else
+                printf '%s\t%s\tCENSORED_OR_UNSUPPORTED\n' "$name" "$mode" >> .research/pathsum-structure/status.tsv
+                echo "PROFILE_CENSORED case=$name mode=$mode"
+              fi
+            done
+          done
+          cat .research/pathsum-structure/status.tsv
+          grep -q 'PROBED' .research/pathsum-structure/status.tsv
+      - name: Archive immutable source-scoped profile and censored outcomes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pinned-quprs-pathsum-structural-profiles
+          path: .research/pathsum-structure/
+          retention-days: 30
+          if-no-files-found: warn

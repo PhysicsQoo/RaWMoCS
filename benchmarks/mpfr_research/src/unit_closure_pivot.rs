@@ -250,6 +250,44 @@ mod tests {
     use crate::{parse_emitted, CachePolicy, Engine};
 
     #[test]
+    fn selected_pivot_requires_strict_improvement_over_frequency_cofactor() {
+        // Two six/seven-variable groups are connected by variables 1,2,3.
+        // Branching on 1 forces 2 and 3 in *both* polarities, separating
+        // the groups. Branching on the artificial Frequency control 14
+        // leaves a substantially larger connected residual.
+        let cnf: Vec<Clause> = vec![
+            vec![-1, 2], vec![1, -2], vec![-1, 3], vec![1, -3],
+            vec![2, 4, 5], vec![-2, 10, 11],
+            vec![3, 6, 7], vec![-3, 12, 13],
+            vec![4, 5], vec![5, 6], vec![6, 7],
+            vec![7, 8], vec![8, 9],
+            vec![10, 11], vec![11, 12], vec![12, 13],
+            vec![13, 14], vec![14, 15], vec![15, 16],
+        ];
+        let mut frequency = vec![1_usize; 17];
+        // Scores are supplied explicitly to isolate the lookahead policy:
+        // the real Engine obtains them from the residual clause counts.
+        frequency[14] = 100;
+        frequency[1] = 99;
+        let mut stats = ClosureStats::default();
+        let before = (
+            project(&cnf, 14, true, 16, &mut stats).unwrap(),
+            project(&cnf, 14, false, 16, &mut stats).unwrap(),
+        );
+        let after = (
+            project(&cnf, 1, true, 16, &mut stats).unwrap(),
+            project(&cnf, 1, false, 16, &mut stats).unwrap(),
+        );
+        assert!(worth_switching(before, after));
+        let mut chosen = ClosureStats::default();
+        assert_eq!(
+            choose(&cnf, &(1..=16).collect::<Vec<_>>(), &frequency, 16, &mut chosen),
+            Some(1)
+        );
+        assert_eq!(chosen.chosen, 1);
+    }
+
+    #[test]
     fn unit_closure_exposes_components_hidden_by_single_cofactor() {
         // 1=true forces 2=true and 1=false forces 2=false.
         // Without unit propagation, the two groups connect through 2.

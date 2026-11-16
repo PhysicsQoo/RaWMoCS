@@ -20,7 +20,11 @@ pub(crate) struct Workspace {
 
 impl Workspace {
     pub(crate) fn capacities(&self) -> (usize, usize, usize) {
-        (self.counts.capacity(), self.indices.capacity(), self.lengths.capacity())
+        (
+            self.counts.capacity(),
+            self.indices.capacity(),
+            self.lengths.capacity(),
+        )
     }
 
     fn reset(&mut self, variables: usize, clauses: usize) {
@@ -159,10 +163,21 @@ mod tests {
                 let mut old_factor = C::one(bits);
                 let mut new_factor = C::one(bits);
                 let original = unit_propagate_indexed_csr(
-                    &p.clauses, p.n, &p.weights, bits, &mut old_scope, &mut old_factor,
+                    &p.clauses,
+                    p.n,
+                    &p.weights,
+                    bits,
+                    &mut old_scope,
+                    &mut old_factor,
                 );
                 let candidate = propagate(
-                    &p.clauses, p.n, &p.weights, bits, &mut new_scope, &mut new_factor, &mut arena,
+                    &p.clauses,
+                    p.n,
+                    &p.weights,
+                    bits,
+                    &mut new_scope,
+                    &mut new_factor,
+                    &mut arena,
                 );
                 assert_eq!(original, candidate);
                 assert_eq!(old_scope, new_scope);
@@ -189,21 +204,33 @@ mod tests {
                     baseline.indexed_unit_csr = true;
                     baseline.fast_assign = true;
                     baseline.cache_limit = cache;
-                    let expected = baseline.count(p.clauses.clone(), (1..=p.n).collect(), 0).unwrap();
+                    let expected = baseline
+                        .count(p.clauses.clone(), (1..=p.n).collect(), 0)
+                        .unwrap();
                     let mut candidate = Engine::new(&p, bits, CachePolicy::HbBorrowed);
                     candidate.indexed_unit_propagation = true;
                     candidate.indexed_unit_csr = true;
                     candidate.reuse_csr_workspace = true;
                     candidate.fast_assign = true;
                     candidate.cache_limit = cache;
-                    let actual = candidate.count(p.clauses.clone(), (1..=p.n).collect(), 0).unwrap();
+                    let actual = candidate
+                        .count(p.clauses.clone(), (1..=p.n).collect(), 0)
+                        .unwrap();
                     assert_eq!(
                         (expected.sat, expected.count.re, expected.count.im),
                         (actual.sat, actual.count.re, actual.count.im),
                     );
                     assert_eq!(
-                        (baseline.stats.nodes, baseline.stats.cache_hits, baseline.stats.decompositions),
-                        (candidate.stats.nodes, candidate.stats.cache_hits, candidate.stats.decompositions),
+                        (
+                            baseline.stats.nodes,
+                            baseline.stats.cache_hits,
+                            baseline.stats.decompositions
+                        ),
+                        (
+                            candidate.stats.nodes,
+                            candidate.stats.cache_hits,
+                            candidate.stats.decompositions
+                        ),
                     );
                 }
             }

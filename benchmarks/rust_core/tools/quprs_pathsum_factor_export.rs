@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::path::Path;
+use std::time::Instant;
 
 fn source_path(case: &str) -> Option<&'static str> {
     match case {
@@ -20,6 +21,7 @@ fn source_path(case: &str) -> Option<&'static str> {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = env::args_os().skip(1);
+    let overall = Instant::now();
     let case_os = args.next().ok_or("case required")?;
     let root_os = args.next().ok_or("source root required")?;
     let out_os = args.next().ok_or("output directory required")?;
@@ -33,9 +35,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if qubits == 0 || qubits > 12 {
         return Err("qubit dimension out of research range".into());
     }
+    let rr_start = Instant::now();
     let mut base = PathSum::new(qubits);
     base.set_auto_reduce(true);
     let ps = VerificationStrategy::Naive.run(base, &[], &ops);
+    let rr_ns = rr_start.elapsed().as_nanos();
     if ps.rr_approximate {
         return Err("INELIGIBLE_APPROXIMATE_RR".into());
     }
@@ -110,11 +114,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         encoded.push('\n');
     }
 
+    let construction_ns = overall.elapsed().as_nanos();
     // Independent source-level brute-force witness for small exact-Gaussian
     // cases. It directly evaluates ANF and phase indicators, not DP tables.
     if ids.len() > 20 {
         return Err("INELIGIBLE_INDEPENDENT_ORACLE_BUDGET".into());
     }
+    let oracle_start = Instant::now();
     let mut sat = false;
     let (mut real, mut imag) = (0i64, 0i64);
     for assignment in 0..(1u64 << ids.len()) {
@@ -143,6 +149,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => unreachable!(),
         }
     }
+    let oracle_ns = oracle_start.elapsed().as_nanos();
     let folder = Path::new(&out_os);
     fs::create_dir_all(folder)?;
     fs::write(folder.join(format!("{case}-rr-native-factor.txt")), encoded)?;
@@ -152,12 +159,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     println!(
         "QU_PRS_RR_FACTOR_SOURCE case={case} qasm_ops={} original_paths={} \
-         factors={} phase_terms={} exact_gaussian=1 oracle_sat={} oracle_real={real} oracle_imag={imag}",
+         factors={} phase_terms={} exact_gaussian=1 oracle_sat={} oracle_real={real} oracle_imag={imag} \
+         rr_ns={rr_ns} pre_oracle_ns={construction_ns} oracle_ns={oracle_ns} total_ns={}",
         ops.len(),
         ids.len(),
         outputs.len() + phases.len(),
         phases.len(),
         usize::from(sat),
+        overall.elapsed().as_nanos(),
     );
     Ok(())
 }

@@ -33,6 +33,9 @@ pub(crate) struct TrailEngine<'a> {
     // Descendants may examine only their parent's still-live clause IDs.
     // No assignment can awaken a clause previously satisfied along this trail.
     pub(crate) use_parent_ids: bool,
+    // Research option: filter each reduced literal once into a dense arena,
+    // then sort borrowed views and construct the same exact PackedKey.
+    pub(crate) use_compact_residual: bool,
 }
 
 fn slot(lit: i32) -> usize {
@@ -81,6 +84,7 @@ impl<'a> TrailEngine<'a> {
             assignments: 0,
             cache_keys: 0,
             use_parent_ids: false,
+            use_compact_residual: false,
         }
     }
 
@@ -200,6 +204,53 @@ impl<'a> TrailEngine<'a> {
         Some(ids)
     }
 
+    // The standard path re-filters original clauses in each comparison and
+    // again when it serializes the exact memoization key. This opt-in path
+    // materializes only one contiguous literal arena (never child CNFs),
+    // sorting small immutable spans of that arena instead.
+    fn canonical_compact(
+        &self, scope: &[usize], parent_ids: Option<&[usize]>,
+    ) -> Option<(Vec<usize>, Vec<i32>)> {
+        #[derive(Clone, Copy)]
+        struct View { cid: usize, start: usize, end: usize }
+        let mut flat = Vec::<i32>::new();
+        let mut views = Vec::<View>::new();
+        let mut visit = |cid: usize| {
+            if self.satisfied[cid] != 0 { return true; }
+            if self.live[cid] == 0 { return false; }
+            let first = self.clauses[cid].iter()
+                .find(|&&lit| self.assigned[lit.unsigned_abs() as usize] == 0)
+                .expect("live clause has an unassigned literal");
+            if scope.binary_search(&(first.unsigned_abs() as usize)).is_err() {
+                return true;
+            }
+            let start = flat.len();
+            for &lit in &self.clauses[cid] {
+                if self.assigned[lit.unsigned_abs() as usize] == 0 {
+                    flat.push(lit);
+                }
+            }
+            debug_assert_eq!(flat.len() - start, self.live[cid]);
+            views.push(View { cid, start, end: flat.len() });
+            true
+        };
+        if let Some(parent) = parent_ids.filter(|_| self.use_parent_ids) {
+            for &cid in parent { if !visit(cid) { return None; } }
+        } else {
+            for cid in 0..self.clauses.len() { if !visit(cid) { return None; } }
+        }
+        views.sort_unstable_by(|a, b| flat[a.start..a.end].cmp(&flat[b.start..b.end]));
+        views.dedup_by(|a, b| flat[a.start..a.end] == flat[b.start..b.end]);
+        let mut ids = Vec::with_capacity(views.len());
+        let mut literals = Vec::with_capacity(flat.len() + views.len());
+        for view in views {
+            ids.push(view.cid);
+            literals.extend_from_slice(&flat[view.start..view.end]);
+            literals.push(0);
+        }
+        Some((ids, literals))
+    }
+
     fn key(&mut self, scope: Vec<usize>, ids: &[usize]) -> PackedKey {
         self.cache_keys += 1;
         let mut literals = Vec::new();
@@ -277,10 +328,19 @@ impl<'a> TrailEngine<'a> {
             return Err("node limit".into());
         }
         self.stats.nodes += 1;
-        let Some(ids) = self.canonical_ids(&scope, parent_ids) else {
-            return Ok(Outcome::unsat(self.bits));
+        let (ids, key) = if self.use_compact_residual {
+            let Some((ids, literals)) = self.canonical_compact(&scope, parent_ids) else {
+                return Ok(Outcome::unsat(self.bits));
+            };
+            self.cache_keys += 1;
+            (ids, PackedKey { scope: scope.clone(), literals })
+        } else {
+            let Some(ids) = self.canonical_ids(&scope, parent_ids) else {
+                return Ok(Outcome::unsat(self.bits));
+            };
+            let key = self.key(scope.clone(), &ids);
+            (ids, key)
         };
-        let key = self.key(scope.clone(), &ids);
         if let Some(hit) = self.cache.get(&key) {
             self.stats.cache_hits += 1;
             return Ok(hit.clone());

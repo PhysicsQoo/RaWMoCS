@@ -593,6 +593,72 @@ against a 90s GPMC budget or use a 206-node ANF polynomial DAG
 as a claim of production speedup without measured full pipeline
 and memory-fallback evidence.
 
+## Seven-trial original Adder8 three-algorithm native subprocess comparison (2026-11-16)
+
+**Completed CI:** https://github.com/PhysicsQoo/RaWMoCS/actions/runs/43815105833
+Raw artifact: 14201669941, original-adder8-native-bdd-gpmc-bitset-paired.
+The CI archives all 42 source-scoped trial records, exact input source
+fingerprints, pinned model bytes, subprocess failure/censoring fields,
+peak observed RSS, and per-arm p50/p90 timings.
+
+The fixed original QuPRS source is
+0b28736651b3740ed3b201edd2efdef3da541e0d
+(Feynman adder_8.qasm); unchanged GPMC C++ source is
+89bbc89d0de918e7a5385740355df55765039230.
+**One post-RR PathSum** produces both GPMC weighted Tseitin CNF
+and native output ANF. Their exact SHA-256 values are:
+
+- Native ANF: f6772f3a0b43d9e1a75f628e5ce06ec9dc50656b42885de321a8a1f5c549e7d7
+- GPMC CNF: e76e8e21d8a7632ba421471978099ebaeb738e0d25f58e00c6ad81a7bc7d7c9a
+
+Compared **three independent counting algorithms** on the same original
+phase-free, unit-weight RR residual: native joint multi-output ROBDD,
+original GPMC CNF search, and full 2^24 Mobius-transform bit-parallel
+source-ANF exhaustive enumeration. GPMC precision = 30/100 decimal
+digits (100/333 MPFR bits); both Rust branches are exact integer
+counting and do not use source phase approximation.
+
+All **42/42** independent fresh native solver child processes passed
+the exact source oracle: **SAT=true, Full Complex WMC=40960+0i**.
+Seven rotated-order trials per arm and precision on the same Linux
+runner. Every timed subprocess includes startup, source representation
+input parsing, solver execution and output serialization. GNU time
+measures peak observed RSS under a 2 GiB virtual-address-space limit;
+this is NOT a hard cgroup RSS limit.
+
+| Original Adder8 source | GPMC full child p50 ms | ROBDD full child p50 ms | bitset full child p50 ms | GPMC/ROBDD ratio | GPMC RSS p50 KiB | ROBDD RSS p50 KiB | bitset RSS p50 KiB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 100 bits | 20253.056 | **8.946** | 49.136 | **2263.96x** | 490528 | 4212 | 6516 |
+| 333 bits | 20762.219 | **9.099** | 49.389 | **2281.69x** | 492608 | 4228 | 6584 |
+
+**No production E2E claim:** this table does not include QASM parse,
+QuPRS RR, original source phase processing, two-format emission or
+production routing overhead. The research exporter emits BOTH formats
+for common provenance, rather than giving each algorithm its
+production-optimized preparation path. The 2264-2282x solver-child
+ratio is therefore specific to the original source Adder8 residual,
+and is **NOT** a QuPRS production E2E speedup, nor an identical-CNF
+solver comparison, nor a general WMC solver ranking. Long-case
+negative controls and additional hardware would be required.
+
+Bounded correctness: ROBDD allows at most 250k nodes, 3M apply calls
+and 1.5M cache entries; exhaustive source method allows <=24 original
+variables and <=250M packed-word operations. Out-of-contract and
+over-budget routes fail closed. These phase-free unit-weight algorithms
+must not be used for arbitrary-angle or nonuniform Complex WMC.
+All source-model and numerical comparisons are immutable for this CI.
+
+Reproduction sources:
+- .github/workflows/quprs-adder8-bdd-native-paired.yml
+- benchmarks/rust_core/tools/quprs_adder8_bdd_native_pair.py
+- benchmarks/rust_core/examples/anf_dag_profile.rs
+- benchmarks/rust_core/examples/anf_bitset_oracle.rs
+
+Next gate: paired original QuPRS **source-to-result** wall (including
+QASM parse, RR, export and production-like admission/fallback), plus
+multiple low-sharing and phase-bearing negative holdouts. Keep PR Draft,
+leave RaWMoCS/QuPRS production defaults unchanged.
+
 ## Literature
 
 - Compilation and Fast Model Counting beyond CNF (IJCAI 2024):

@@ -141,7 +141,10 @@ fn solve_original_source(input: &Input, limit: usize) -> Result<ResultCount, Str
             }
             if variable < 6 {
                 let shift = 1usize << variable;
-                let filter = LOW_ZETA_MASKS.get(variable).copied().ok_or("ORACLE_LOW_MASK_RANGE")?;
+                let filter = LOW_ZETA_MASKS
+                    .get(variable)
+                    .copied()
+                    .ok_or("ORACLE_LOW_MASK_RANGE")?;
                 for word in &mut values {
                     *word ^= (*word & filter) << shift;
                 }

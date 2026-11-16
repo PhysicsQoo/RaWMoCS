@@ -114,7 +114,7 @@ jobs:
                ".research/pathsum-structure" \
                > ".research/pathsum-structure/${name}-rr-factor-export.log" 2>&1; then
               if [ "$name" = "feynman_tof10" ]; then
-                "$solver" --monotone-ice \
+                "$solver" --anf-walsh \
                   ".research/pathsum-structure/${name}-rr-native-factor.txt" \
                   ".research/pathsum-structure/${name}-rr-native-factor-oracle.tsv" \
                   | tee ".research/pathsum-structure/${name}-rr-factor-match.log"

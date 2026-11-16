@@ -530,9 +530,10 @@ mod monotone_trace_tests {
             let bit = |v: usize| assignment & (1usize << v) != 0;
             if p.outputs.iter().all(|eq| {
                 bit(eq.output)
-                    == eq.terms.iter().fold(eq.constant, |acc, term| {
-                        acc ^ term.iter().all(|&v| bit(v))
-                    })
+                    == eq
+                        .terms
+                        .iter()
+                        .fold(eq.constant, |acc, term| acc ^ term.iter().all(|&v| bit(v)))
             }) {
                 count += 1;
             }

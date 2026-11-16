@@ -6,6 +6,7 @@ on:
       - .github/workflows/quprs-anf-dag-research.yml
       - benchmarks/rust_core/Cargo.toml
       - benchmarks/rust_core/examples/anf_dag_profile.rs
+      - benchmarks/rust_core/examples/anf_bitset_oracle.rs
       - benchmarks/rust_core/tools/quprs_pathsum_anf_dag_export.rs
       - docs/pathsum-factor-algebraic-research.md
   workflow_dispatch:
@@ -27,11 +28,15 @@ jobs:
         with:
           components: clippy, rustfmt
       - name: Canonical research source formatting
-        run: rustfmt --edition 2021 --check benchmarks/rust_core/examples/anf_dag_profile.rs benchmarks/rust_core/tools/quprs_pathsum_anf_dag_export.rs
+        run: rustfmt --edition 2021 --check benchmarks/rust_core/examples/anf_dag_profile.rs benchmarks/rust_core/examples/anf_bitset_oracle.rs benchmarks/rust_core/tools/quprs_pathsum_anf_dag_export.rs
       - name: GF2 ANF exact truth-table and resource admission tests
         run: cargo test --locked --manifest-path benchmarks/rust_core/Cargo.toml --features pathsum-factor-research --example anf_dag_profile
       - name: Research-only strict Clippy
         run: cargo clippy --locked --manifest-path benchmarks/rust_core/Cargo.toml --features pathsum-factor-research --example anf_dag_profile -- -D warnings
+      - name: Exhaustive bit-parallel science versus independent scalar truth tables
+        run: cargo test --locked --manifest-path benchmarks/rust_core/Cargo.toml --features pathsum-factor-research --example anf_bitset_oracle
+      - name: Independent exhaustive-oracle Clippy
+        run: cargo clippy --locked --manifest-path benchmarks/rust_core/Cargo.toml --features pathsum-factor-research --example anf_bitset_oracle -- -D warnings
 
   pinned-anf-source:
     runs-on: ubuntu-24.04
@@ -61,6 +66,10 @@ jobs:
             --manifest-path benchmarks/rust_core/Cargo.toml \
             --features pathsum-factor-research \
             --example anf_dag_profile
+          cargo build --locked --release \
+            --manifest-path benchmarks/rust_core/Cargo.toml \
+            --features pathsum-factor-research \
+            --example anf_bitset_oracle
       - name: Profile unchanged original Adder8, Toffoli10, Barenco10 and HWB6
         shell: bash
         run: |
@@ -146,6 +155,46 @@ jobs:
             grep -q "^$case[[:space:]]KNOWN_EXACT_ORACLE_MATCH" \
               .research/anf-dag/joint-bdd-status.tsv
           done
+      - name: Fully enumerate original Adder8 Boolean assignments without BDD
+        shell: bash
+        run: |
+          set -euo pipefail
+          oracle="$GITHUB_WORKSPACE/benchmarks/rust_core/target/release/examples/anf_bitset_oracle"
+          : > .research/anf-dag/exhaustive-oracle-status.tsv
+          for name in feynman_adder8 feynman_tof10 feynman_barenco10 feynman_hwb6; do
+            source=".research/anf-dag/${name}.anf"
+            dst=".research/anf-dag/${name}-exhaustive.tsv"
+            log=".research/anf-dag/${name}-exhaustive.log"
+            bdd=".research/anf-dag/${name}-joint-bdd.tsv"
+            code=0
+            /usr/bin/time -f 'EXHAUSTIVE_SOURCE_RSS_KIB=%M' -o "${log}.rss" \
+              timeout -k 2s 75s prlimit --as=2147483648 -- \
+              "$oracle" "$source" "$dst" > "$log" 2>&1 || code=$?
+            if [ "$code" -eq 0 ] && test -s "$dst"; then
+              bitset_real="$(awk -F '\t' 'NR==2 {print $6}' "$dst")"
+              bitset_sat="$(awk -F '\t' 'NR==2 {print $5}' "$dst")"
+              bitset_imag="$(awk -F '\t' 'NR==2 {print $7}' "$dst")"
+              bdd_real="$(awk -F '\t' 'NR==2 {print $10}' "$bdd")"
+              bdd_sat="$(awk -F '\t' 'NR==2 {print $9}' "$bdd")"
+              bdd_imag="$(awk -F '\t' 'NR==2 {print $11}' "$bdd")"
+              if [ "$bitset_real" != "$bdd_real" ] ||
+                 [ "$bitset_sat" != "$bdd_sat" ] ||
+                 [ "$bitset_imag" != "$bdd_imag" ]; then
+                echo "EXHAUSTIVE_ORACLE_MISMATCH case=$name bitset=$bitset_real bdd=$bdd_real"
+                exit 1
+              fi
+              printf '%s\tEXHAUSTIVE_MATCH\t0\n' "$name" \
+                >> .research/anf-dag/exhaustive-oracle-status.tsv
+              cat "$dst"
+            else
+              printf '%s\tCENSORED\t%d\n' "$name" "$code" \
+                >> .research/anf-dag/exhaustive-oracle-status.tsv
+              echo "EXHAUSTIVE_SOURCE_ORACLE_CENSORED case=$name exit=$code"
+            fi
+          done
+          cat .research/anf-dag/exhaustive-oracle-status.tsv
+          grep -q '^feynman_adder8[[:space:]]EXHAUSTIVE_MATCH' \
+            .research/anf-dag/exhaustive-oracle-status.tsv
       - name: Export independent GPMC CNF from exactly the same Adder8 RR source
         shell: bash
         run: |

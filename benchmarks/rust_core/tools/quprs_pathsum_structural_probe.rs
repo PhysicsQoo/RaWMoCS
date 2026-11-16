@@ -15,6 +15,9 @@ fn source_path(case: &str) -> Option<&'static str> {
         "feynman_grover5" => Some("benchmarks/Feynman/grover_5.qasm"),
         "feynman_barenco5" => Some("benchmarks/Feynman/barenco_tof_5.qasm"),
         "feynman_modmult55" => Some("benchmarks/Feynman/mod_mult_55.qasm"),
+        "feynman_barenco10" => Some("benchmarks/Feynman/barenco_tof_10.qasm"),
+        "feynman_tof10" => Some("benchmarks/Feynman/tof_10.qasm"),
+        "feynman_adder8" => Some("benchmarks/Feynman/adder_8.qasm"),
         "feynman_barenco_tof_5" => Some("benchmarks/Feynman/barenco_tof_5.qasm"),
         "feynman_mod_mult_55" => Some("benchmarks/Feynman/mod_mult_55.qasm"),
         "mqt_vqe_4" => Some("benchmarks/MQTBench/vqe_nativegates_ibm_qiskit_opt0_4.qasm"),
@@ -82,7 +85,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let parse_start = Instant::now();
     let (ops, qubits) = qasm::parse_qasm_str(&source)?;
     let qasm_parse_ns = parse_start.elapsed().as_nanos();
-    if qubits == 0 || qubits > 12 {
+    // Bounded structural scout accepts larger original workloads than the
+    // 12-qubit small scientific cohort. Each run is separately timeout/AS
+    // limited in CI; no claim of full complex WMC solve is made.
+    if qubits == 0 || qubits > 24 {
         return Err("unsupported original QASM qubit count".into());
     }
     let pathsum_start = Instant::now();

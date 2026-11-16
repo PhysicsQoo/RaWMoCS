@@ -12,6 +12,9 @@ fn source_path(case: &str) -> Option<&'static str> {
     match case {
         "feynman_hwb6" => Some("benchmarks/Feynman/hwb6.qasm"),
         "feynman_qft4" => Some("benchmarks/Feynman/qft_4.qasm"),
+        "feynman_grover5" => Some("benchmarks/Feynman/grover_5.qasm"),
+        "feynman_barenco5" => Some("benchmarks/Feynman/barenco_tof_5.qasm"),
+        "feynman_modmult55" => Some("benchmarks/Feynman/mod_mult_55.qasm"),
         "mqt_qnn_4" => Some("benchmarks/MQTBench/qnn_nativegates_ibm_qiskit_opt0_4.qasm"),
         "mqt_vqe_4" => Some("benchmarks/MQTBench/vqe_nativegates_ibm_qiskit_opt0_4.qasm"),
         "mqt_grover_4" => {

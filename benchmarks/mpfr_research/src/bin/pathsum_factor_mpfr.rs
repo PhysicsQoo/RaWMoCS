@@ -331,9 +331,96 @@ fn solve(p: &Model, bits: u32) -> Result<(Cell, Stats), String> {
         .fold(Cell::one(bits), |acc, t| acc.product(&t.cells[0], bits));
     Ok((result, stats))
 }
+
+/// Restricted source-ANF Walsh expansion for a phase-free, unweighted trace.
+/// This is exact integer model counting, not a general MPFR phase shortcut.
+/// No dense 2^width table is allocated; the work scales as 2^r monomials.
+fn single_anf_walsh(p: &Model, bits: u32) -> Result<(Cell, Stats), String> {
+    use std::collections::BTreeSet;
+    if !p.phases.is_empty() || p.n > 50 {
+        return Err("ANF_WALSH_INELIGIBLE_PHASE_OR_DIMENSION".into());
+    }
+    let mut nontrivial: Option<(bool, Vec<Vec<usize>>)> = None;
+    for equation in &p.outputs {
+        let mut polynomial = BTreeSet::<Vec<usize>>::new();
+        let mut toggle = |term: &[usize]| {
+            let mut key = sorted(term.iter().copied());
+            if !polynomial.insert(key.clone()) {
+                polynomial.remove(&key);
+            }
+        };
+        toggle(&[equation.output]);
+        for term in &equation.terms {
+            toggle(term);
+        }
+        let sign_negative = polynomial.remove(&Vec::new());
+        if polynomial.is_empty() && !sign_negative {
+            continue;
+        }
+        if nontrivial.is_some() {
+            return Err("ANF_WALSH_INELIGIBLE_MULTIPLE_EQUATIONS".into());
+        }
+        if polynomial.len() > 20 {
+            return Err("ANF_WALSH_INELIGIBLE_TOO_MANY_MONOMIALS".into());
+        }
+        nontrivial = Some((sign_negative, polynomial.into_iter().collect()));
+    }
+    let total = 1i128 << p.n;
+    let (models, work) = if let Some((negative, monomials)) = nontrivial {
+        let masks: Vec<u64> = monomials
+            .iter()
+            .map(|term| term.iter().fold(0u64, |mask, &v| mask | (1u64 << v)))
+            .collect();
+        let subsets = 1usize << masks.len();
+        let mut walsh = 0i128;
+        for subset in 0..subsets {
+            let mut support = 0u64;
+            for (i, &mask) in masks.iter().enumerate() {
+                if subset & (1usize << i) != 0 {
+                    support |= mask;
+                }
+            }
+            let free = p.n - support.count_ones() as usize;
+            let contribution = (1i128 << subset.count_ones()) << free;
+            if subset.count_ones() & 1 == 0 {
+                walsh += contribution;
+            } else {
+                walsh -= contribution;
+            }
+        }
+        let double = if negative { total - walsh } else { total + walsh };
+        if double < 0 || double > 2 * total || double % 2 != 0 {
+            return Err("ANF_WALSH_NONPHYSICAL_COUNT".into());
+        }
+        (double / 2, subsets)
+    } else {
+        (total, 0)
+    };
+    Ok((
+        Cell {
+            sat: models != 0,
+            value: Complex {
+                re: Float::with_val(bits, models),
+                im: Float::with_val(bits, 0),
+            },
+        },
+        Stats {
+            peak_scope: 0,
+            work_cells: work,
+            peak_factor_cells: 0,
+            eliminations: 0,
+        },
+    ))
+}
+
 fn run() -> Result<(), String> {
     let mut argv = env::args_os().skip(1);
-    let precision = argv.next().ok_or("usage: PRECISION_DIGITS FACTOR_FILE")?;
+    let first = argv.next().ok_or("usage: [--anf-walsh] PRECISION_DIGITS FACTOR_FILE")?;
+    let (use_walsh, precision) = if first == "--anf-walsh" {
+        (true, argv.next().ok_or("precision required after --anf-walsh")?)
+    } else {
+        (false, first)
+    };
     let file = argv.next().ok_or("missing factor file")?;
     if argv.next().is_some() {
         return Err("unexpected argument".into());
@@ -353,7 +440,11 @@ fn run() -> Result<(), String> {
     let problem = parse(&raw, bits)?;
     let parse_ns = started.elapsed().as_nanos();
     let compute = Instant::now();
-    let (result, stats) = solve(&problem, bits)?;
+    let (result, stats) = if use_walsh {
+        single_anf_walsh(&problem, bits)?
+    } else {
+        solve(&problem, bits)?
+    };
     let solve_ns = compute.elapsed().as_nanos();
     println!(
         "s {}",
@@ -370,7 +461,8 @@ fn run() -> Result<(), String> {
     );
     eprintln!(
         "RESEARCH_FACTOR_MPFR_PHASE_NS parse={parse_ns} solve={solve_ns} \
-         bits={bits} factors={} peak_scope={} visited_cells={} eliminations={}",
+         bits={bits} method={} factors={} peak_scope={} visited_cells={} eliminations={}",
+        if use_walsh { "ANF_WALSH" } else { "NATIVE_FACTOR_DP" },
         problem.outputs.len() + problem.phases.len(),
         stats.peak_scope,
         stats.work_cells,
@@ -409,6 +501,64 @@ mod tests {
     fn unsat_is_not_numerical_zero() {
         verified("p pf 1\no 0 0\no 0 1\nm 0\n", 100, false, 0, 0);
     }
+    #[test]
+    fn source_toffoli10_walsh_and_independent_full_enumeration() {
+        // The pinned source has 19 variables and one equation containing
+        // nine nontrivial AND monomials; the dense initial scope is 19.
+        // Here also compare every assignment against a separate evaluator.
+        let terms = [
+            vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+            vec![2, 3, 4, 5, 6, 7, 8, 9, 10],
+            vec![3, 4, 5, 6, 7, 8, 9, 11],
+            vec![4, 5, 6, 7, 8, 9, 12],
+            vec![5, 6, 7, 8, 9, 13],
+            vec![6, 7, 8, 9, 14],
+            vec![7, 8, 9, 15],
+            vec![8, 9, 16],
+            vec![9, 17],
+        ];
+        let mut input = String::from("p pf 19\no 18 10\nm 1 18\n");
+        for term in &terms {
+            input.push_str(&format!("m {}", term.len()));
+            for v in term {
+                input.push_str(&format!(" {v}"));
+            }
+            input.push('\n');
+        }
+        let model = parse(&input, 100).unwrap();
+        assert!(solve(&model, 100).is_err());
+        let (count, work) = single_anf_walsh(&model, 100).unwrap();
+        let mut oracle = 0i64;
+        for bits in 0usize..(1 << 19) {
+            let parity = terms.iter().fold(false, |v, term| {
+                v ^ term.iter().all(|&x| bits & (1 << x) != 0)
+            });
+            if !parity {
+                oracle += 1;
+            }
+        }
+        assert_eq!(oracle, 393_216);
+        assert!(count.sat);
+        assert_eq!(count.value.re, Float::with_val(100, oracle));
+        assert_eq!(count.value.im, Float::with_val(100, 0));
+        assert_eq!(work.work_cells, 512);
+    }
+
+    #[test]
+    fn walsh_rejects_phases_and_multiple_nontrivial_outputs() {
+        let phase = parse("p pf 2\nh -1 0 1 0\n", 100).unwrap();
+        assert!(single_anf_walsh(&phase, 100).is_err());
+        let multi = parse(
+            "p pf 3\no 0 1\nm 1 1\no 1 1\nm 1 2\n",
+            100,
+        ).unwrap();
+        assert!(single_anf_walsh(&multi, 100).is_err());
+        let tautology = parse("p pf 3\no 0 1\nm 1 0\n", 333).unwrap();
+        let (result, _) = single_anf_walsh(&tautology, 333).unwrap();
+        assert!(result.sat);
+        assert_eq!(result.value.re, Float::with_val(333, 8));
+    }
+
     #[test]
     fn width_cap_and_bad_source_fail_closed() {
         let vars = (0..18).map(|v| v.to_string()).collect::<Vec<_>>().join(" ");

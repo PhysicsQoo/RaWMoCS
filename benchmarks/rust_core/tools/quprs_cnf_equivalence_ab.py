@@ -134,10 +134,10 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     for name in ("quprs", "gpmc-source", "corpus", "gpmc", "mpfr", "report"):
         ap.add_argument("--" + name, type=Path, required=True)
-    ap.add_argument("--trials", type=int, default=3)
+    ap.add_argument("--trials", type=int, default=7)
     args = ap.parse_args()
-    if args.trials != 3:
-        raise SystemExit("requires three balanced fresh process trials")
+    if args.trials != 7:
+        raise SystemExit("confirmation requires seven rotated fresh child trials")
     if source_head(args.quprs) != QU_PRS_SHA or source_head(args.gpmc_source) != GPMC_SHA:
         raise SystemExit("PINNED_SOURCE_REVISION_DRIFT")
     report = {
@@ -148,7 +148,7 @@ def main() -> None:
         "precision": "GPMC 30/100 decimal digits ↔ Rust 100/333 MPFR bits",
         "resource": {"wall_s": BUDGET_S, "as_bytes": AS_BYTES,
                      "rss": "GNU time observed max RSS, not hard cgroup RSS"},
-        "method": "3 rotated fresh child trials per completed arm; one trial for expensive Grover5 (all arms attempted); every failure archived",
+        "method": "7 rotated fresh child trials per completed arm; one trial for expensive Grover5 (all arms attempted); every failure archived",
         "caveat": "large-source numerical agreement, not independent exact Full WMC certificate",
         "rows": [],
     }

@@ -8,8 +8,10 @@ on:
       - benchmarks/mpfr_research/src/trail_engine.rs
       - benchmarks/mpfr_research/src/factor_variable_elimination.rs
       - benchmarks/mpfr_research/src/factor_minfill_order.rs
+      - benchmarks/mpfr_research/src/factor_primal_minor_bound.rs
       - benchmarks/mpfr_research/tools/quprs_cnf_factor_minfill_ab.py
       - docs/factor-ve-minfill-research.md
+      - docs/factor-ve-primal-minor-bound-research.md
   workflow_dispatch:
 
 permissions:

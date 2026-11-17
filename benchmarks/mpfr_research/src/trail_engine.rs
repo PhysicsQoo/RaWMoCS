@@ -54,6 +54,11 @@ pub(crate) struct TrailEngine<'a> {
     pub(crate) source_cache_keys: u64,
     // Opt-in: compact signed residual literals directly in canonical local IDs.
     pub(crate) use_inline_weight_relabel: bool,
+    // Exact weighted residual memo AFTER Boolean unit-closure, opt-in only.
+    pub(crate) use_post_unit_cache: bool,
+    pub(crate) post_unit_hits: u64,
+    pub(crate) post_unit_visited: u64,
+    pub(crate) post_unit_forced: u64,
     weight_classes: Vec<usize>,
     local_variable: Vec<i32>,
     local_generation: Vec<u64>,
@@ -114,6 +119,10 @@ impl<'a> TrailEngine<'a> {
             normalized_cache_keys: 0,
             source_cache_keys: 0,
             use_inline_weight_relabel: false,
+            use_post_unit_cache: false,
+            post_unit_hits: 0,
+            post_unit_visited: 0,
+            post_unit_forced: 0,
             weight_classes: Vec::new(),
             local_variable: vec![0; problem.n + 1],
             local_generation: vec![0; problem.n + 1],
@@ -501,6 +510,9 @@ impl<'a> TrailEngine<'a> {
         depth: usize,
         parent_ids: Option<&[usize]>,
     ) -> Result<Outcome, String> {
+        if self.use_post_unit_cache {
+            return self.count_inner_post_unit(scope, depth, parent_ids);
+        }
         if depth >= 512 {
             return Err("trail depth limit".into());
         }
@@ -694,6 +706,217 @@ impl<'a> TrailEngine<'a> {
         let no_weighted = weights.negative.mul(&no.count, self.bits);
         let value = prefix.mul(&yes_weighted.add(&no_weighted, self.bits), self.bits);
         Ok(self.save(
+            key,
+            key_hash,
+            Outcome {
+                sat: yes.sat || no.sat,
+                count: value,
+            },
+        ))
+    }
+    fn finish_post_unit(
+        &mut self,
+        unit_prefix: &C,
+        key: PackedKey,
+        key_hash: u64,
+        post: Outcome,
+    ) -> Outcome {
+        let saved = self.save(key, key_hash, post);
+        Outcome {
+            sat: saved.sat,
+            count: unit_prefix.mul(&saved.count, self.bits),
+        }
+    }
+
+    // Independent research counting path: memoize exact signed-complex
+    // residuals AFTER unit closure. The old pre-unit cache remains unchanged.
+    fn count_inner_post_unit(
+        &mut self,
+        scope: Vec<usize>,
+        depth: usize,
+        parent_ids: Option<&[usize]>,
+    ) -> Result<Outcome, String> {
+        if depth >= 512 {
+            return Err("trail depth limit".into());
+        }
+        if self.stats.nodes >= self.node_budget {
+            return Err("node limit".into());
+        }
+        self.stats.nodes += 1;
+        // Preserve the same canonical source order for the unit heap.
+        // No pre-closure memo key is looked up or inserted in this arm.
+        let Some((ids, _)) = self.canonical_compact(&scope, parent_ids, false) else {
+            return Ok(Outcome::unsat(self.bits));
+        };
+        self.sequence += 1;
+        let generation = self.sequence;
+        let mut heap = BinaryHeap::<Reverse<usize>>::new();
+        for (index, &cid) in ids.iter().enumerate() {
+            self.rank[cid] = index;
+            self.generation[cid] = generation;
+            if self.live[cid] == 1 {
+                heap.push(Reverse(index));
+            }
+        }
+        let mut prefix = C::one(self.bits);
+        while let Some(Reverse(index)) = heap.pop() {
+            let cid = ids[index];
+            if self.satisfied[cid] != 0 || self.live[cid] != 1 {
+                continue;
+            }
+            let lit = *self.clauses[cid]
+                .iter()
+                .find(|&&lit| self.assigned[lit.unsigned_abs() as usize] == 0)
+                .expect("live unit has one unassigned literal");
+            let var = lit.unsigned_abs() as usize;
+            let weights = &self.problem.weights[var - 1];
+            let factor = if lit > 0 {
+                &weights.positive
+            } else {
+                &weights.negative
+            };
+            prefix = prefix.mul(factor, self.bits);
+            self.post_unit_forced += 1;
+            if !self.apply(lit, Some((&mut heap, generation))) {
+                return Ok(Outcome::unsat(self.bits));
+            }
+        }
+
+        // Prefix of implied unit assignments belongs to this path only.
+        // Never store it under the canonical post-closure residual key.
+        let unit_prefix = prefix;
+        let mut prefix = C::one(self.bits);
+        let post_scope: Vec<usize> = scope.iter().copied()
+            .filter(|&var| self.assigned[var] == 0).collect();
+        let localized = self.use_weight_class_cache
+            && self.weight_cache_scope_max.is_none_or(|max| post_scope.len() <= max);
+        let inline_relabel = localized && self.use_inline_weight_relabel;
+        let class_scope = if inline_relabel {
+            Some(self.prepare_weighted_scope(&post_scope)?)
+        } else {
+            None
+        };
+        let Some((_, literals)) = self.canonical_compact(&post_scope, Some(&ids), inline_relabel)
+        else {
+            return Ok(Outcome::unsat(self.bits));
+        };
+        let mut key = PackedKey { scope: post_scope.clone(), literals };
+        self.cache_keys += 1;
+        self.post_unit_visited += 1;
+        if localized {
+            if let Some(classes) = class_scope {
+                key.scope = classes;
+            } else {
+                self.relabel_weighted_key(&post_scope, &mut key)?;
+            }
+            if self.weight_cache_scope_max.is_some() {
+                key.scope.insert(0, 0);
+            }
+            self.normalized_cache_keys += 1;
+        } else {
+            self.source_cache_keys += 1;
+        }
+        let key_hash = self.cache.hasher().hash_one(&key);
+        if let Some(hit) = self.cache.raw_entry()
+            .from_key_hashed_nocheck(key_hash, &key)
+            .map(|(_, value)| value)
+        {
+            self.stats.cache_hits += 1;
+            self.post_unit_hits += 1;
+            return Ok(Outcome {
+                sat: hit.sat,
+                count: unit_prefix.mul(&hit.count, self.bits),
+            });
+        }
+
+        let mut frequency = std::mem::take(&mut self.frequency);
+        if frequency.len() != self.problem.n + 1 {
+            frequency.resize(self.problem.n + 1, 0);
+        }
+        frequency.fill(0);
+        for &cid in &ids {
+            if self.satisfied[cid] != 0 {
+                continue;
+            }
+            for &lit in &self.clauses[cid] {
+                if self.assigned[lit.unsigned_abs() as usize] == 0 {
+                    frequency[lit.unsigned_abs() as usize] += 1;
+                }
+            }
+        }
+        let mut active = Vec::new();
+        for &var in &scope {
+            if self.assigned[var] != 0 {
+                continue;
+            }
+            if frequency[var] > 0 {
+                active.push(var);
+            } else {
+                let w = &self.problem.weights[var - 1];
+                prefix = prefix.mul(&w.positive.add(&w.negative, self.bits), self.bits);
+            }
+        }
+        let pivot = active.iter().max_by_key(|&&var| frequency[var]).copied();
+        self.frequency = frequency;
+        if active.is_empty() {
+            return Ok(self.finish_post_unit(&unit_prefix, 
+                key,
+                key_hash,
+                Outcome {
+                    sat: true,
+                    count: prefix,
+                },
+            ));
+        }
+        let pieces = self.components(&ids, &active);
+        if pieces.len() > 1 {
+            self.stats.decompositions += 1;
+            let mut value = C::one(self.bits);
+            for part in pieces {
+                let result = self.count_relevant(part, depth + 1, Some(&ids))?;
+                if !result.sat {
+                    return Ok(self.finish_post_unit(&unit_prefix, key, key_hash, Outcome::unsat(self.bits)));
+                }
+                value = value.mul(&result.count, self.bits);
+            }
+            return Ok(self.finish_post_unit(&unit_prefix, 
+                key,
+                key_hash,
+                Outcome {
+                    sat: true,
+                    count: prefix.mul(&value, self.bits),
+                },
+            ));
+        }
+        let pivot = pivot.ok_or("missing trail pivot")?;
+        let child: Vec<usize> = active.into_iter().filter(|&v| v != pivot).collect();
+        let checkpoint = self.trail.len();
+
+        // Branch assignments mutate only occurrence-adjacent clause counters.
+        // Neither branch creates a materialized child Vec<Vec<i32>>.
+        let yes_ok = self.apply(pivot as i32, None);
+        let yes_result = if yes_ok {
+            self.count_relevant(child.clone(), depth + 1, Some(&ids))
+        } else {
+            Ok(Outcome::unsat(self.bits))
+        };
+        self.undo(checkpoint);
+        let yes = yes_result?;
+
+        let no_ok = self.apply(-(pivot as i32), None);
+        let no_result = if no_ok {
+            self.count_relevant(child, depth + 1, Some(&ids))
+        } else {
+            Ok(Outcome::unsat(self.bits))
+        };
+        self.undo(checkpoint);
+        let no = no_result?;
+
+        let weights = &self.problem.weights[pivot - 1];
+        let yes_weighted = weights.positive.mul(&yes.count, self.bits);
+        let no_weighted = weights.negative.mul(&no.count, self.bits);
+        let value = prefix.mul(&yes_weighted.add(&no_weighted, self.bits), self.bits);
+        Ok(self.finish_post_unit(&unit_prefix, 
             key,
             key_hash,
             Outcome {
@@ -1218,4 +1441,94 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn post_unit_cache_matches_independent_complex_counting() {
+        let fixtures = [
+            concat!(
+                "p cnf 6 6\nc t wmc\n",
+                "c p weight 1 0.5 0.25 0\n",
+                "c p weight -1 -0.25 0.125 0\n",
+                "c p weight 3 0.25 -0.5 0\n",
+                "c p weight -3 -0.25 0 0\n",
+                "1 3 0\n-1 4 0\n3 5 0\n4 5 0\n5 -6 0\n-5 6 0\n"
+            ),
+            "p cnf 2 1\nc t wmc\nc p weight 1 0 0 0\nc p weight -1 0 0 0\n1 0\n",
+            "p cnf 3 2\nc t wmc\n1 0\n-1 0\n",
+            "p cnf 4 3\nc t wmc\n1 -2 0\n-1 2 0\n2 3 4 0\n",
+        ];
+        for bits in [100_u32, 333] {
+            for input in fixtures {
+                let p = parse_emitted(input, bits).unwrap();
+                let mut independent = Engine::new(&p, bits, CachePolicy::HbBorrowed);
+                independent.fast_assign = true;
+                let expected = independent.count(p.clauses.clone(), (1..=p.n).collect(), 0).unwrap();
+                for capacity in [0_usize, 1, 128] {
+                    for max_scope in [None, Some(2_usize)] {
+                        let mut post = TrailEngine::new(&p, bits, capacity, 100_000);
+                        post.use_parent_ids = true;
+                        post.use_compact_residual = true;
+                        post.use_prehashed_cache = true;
+                        post.use_fused_compact = true;
+                        post.use_weight_class_cache = true;
+                        post.weight_cache_scope_max = max_scope;
+                        post.use_inline_weight_relabel = true;
+                        post.use_post_unit_cache = true;
+                        let actual = post.count((1..=p.n).collect(), 0).unwrap();
+                        assert_eq!(actual.sat, expected.sat);
+                        assert_eq!(actual.count.re, expected.count.re);
+                        assert_eq!(actual.count.im, expected.count.im);
+                        assert!(post.assigned.iter().all(|&x| x == 0));
+                        assert!(post.trail.is_empty());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn post_unit_cache_randomized_signed_dyadic_full_wmc() {
+        let mut seed = 0x9e3779b97f4a7c15_u64;
+        for bits in [100_u32, 333] {
+            for case in 0..40 {
+                let mut clauses = Vec::new();
+                for _ in 0..(4 + case % 10) {
+                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    let n = 1 + seed as usize % 4;
+                    let mut clause = Vec::new();
+                    for _ in 0..n {
+                        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                        let var = 1 + seed as usize % 5;
+                        clause.push(if seed & 4 == 0 { var as i32 } else { -(var as i32) });
+                    }
+                    clauses.push(clause);
+                }
+                let p = Problem {
+                    n: 5,
+                    clauses,
+                    weights: (0..5).map(|i| crate::Weights {
+                        positive: C::decimal(bits, "0.5", "-0.25").unwrap(),
+                        negative: C::decimal(bits,
+                            if i % 2 == 0 { "-0.25" } else { "0.125" }, "0.5").unwrap(),
+                    }).collect(),
+                };
+                let mut old = Engine::new(&p, bits, CachePolicy::HbBorrowed);
+                old.fast_assign = true;
+                let expected = old.count(p.clauses.clone(), (1..=5).collect(), 0).unwrap();
+                let mut post = TrailEngine::new(&p, bits, 256, 100_000);
+                post.use_parent_ids = true;
+                post.use_compact_residual = true;
+                post.use_prehashed_cache = true;
+                post.use_fused_compact = true;
+                post.use_weight_class_cache = true;
+                post.use_inline_weight_relabel = true;
+                post.use_post_unit_cache = true;
+                let actual = post.count((1..=5).collect(), 0).unwrap();
+                assert_eq!(actual.sat, expected.sat, "SAT case {case} bits {bits}");
+                assert_eq!(actual.count.re, expected.count.re, "real case {case} bits {bits}");
+                assert_eq!(actual.count.im, expected.count.im, "imag case {case} bits {bits}");
+                assert!(post.assigned.iter().all(|&x| x == 0));
+            }
+        }
+    }
+
 }

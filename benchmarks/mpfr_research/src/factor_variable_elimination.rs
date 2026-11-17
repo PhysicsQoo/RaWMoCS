@@ -119,6 +119,14 @@ fn value_at(
 pub(crate) fn count(
     p: &Problem, scope: &[usize], bits: u32,
 ) -> (Option<Outcome>, VeStats) {
+    count_with_scope_limit(p, scope, bits, MAX_SCOPE)
+}
+
+/// Opt-in admission A/B: retain all existing width/table/product bounds,
+/// vary ONLY the source scope guard from 256 to at most 320.
+pub(crate) fn count_with_scope_limit(
+    p: &Problem, scope: &[usize], bits: u32, scope_limit: usize,
+) -> (Option<Outcome>, VeStats) {
     let mut stats = VeStats {
         source_vars: p.n,
         scope_vars: scope.len(),
@@ -126,9 +134,12 @@ pub(crate) fn count(
         source_max_clause_width: p.clauses.iter().map(Vec::len).max().unwrap_or(0),
         ..VeStats::default()
     };
+    if scope_limit < MAX_SCOPE || scope_limit > 320 {
+        return reject(stats, "unsupported_scope_limit");
+    }
     if p.n == 0 { return reject(stats, "empty_source_variables"); }
     if p.n > MAX_VARS { return reject(stats, "source_variables"); }
-    if scope.len() > MAX_SCOPE { return reject(stats, "source_scope"); }
+    if scope.len() > scope_limit { return reject(stats, "source_scope"); }
     if p.clauses.len() > MAX_CLAUSES { return reject(stats, "source_clauses"); }
     if p.weights.len() < p.n { return reject(stats, "missing_weights"); }
     let mut present = vec![false; p.n + 1];
@@ -292,6 +303,28 @@ c p weight 1 1 0 0\nc p weight -1 -1 0 0\n2 0\n");
 c p weight 6 -0.5 0.5 0\nc p weight -6 0.25 -0.25 0\n\
 1 2 0\n-1 3 0\n4 -5 0\n-4 6 0\n");
     }
+    #[test]
+    fn guarded_scope_320_admits_257_free_variables_exactly() {
+        for bits in [100_u32, 333] {
+            let problem = parse_emitted("p cnf 257 0\nc t wmc\n", bits).unwrap();
+            let scope: Vec<usize> = (1..=257).collect();
+            let (original, capped) = count(&problem, &scope, bits);
+            assert!(original.is_none() && capped.capped);
+            assert_eq!(capped.cap_reason, "source_scope");
+            let (enlarged, stats) = count_with_scope_limit(&problem, &scope, bits, 320);
+            assert!(enlarged.is_some(), "{stats:?}");
+            assert_eq!(stats.eliminated, 257);
+            assert!(stats.width <= 11);
+            assert!(stats.products <= 600_000);
+            let mut trail = TrailEngine::new(&problem, bits, 64, 100_000);
+            let reference = trail.count(scope, 0).unwrap();
+            let observed = enlarged.unwrap();
+            assert_eq!(observed.sat, reference.sat);
+            assert_eq!(observed.count.re, reference.count.re);
+            assert_eq!(observed.count.im, reference.count.im);
+        }
+    }
+
     #[test]
     fn excessive_source_clause_width_fails_closed() {
         let mut cnf = String::from("p cnf 13 1\nc t wmc\n");

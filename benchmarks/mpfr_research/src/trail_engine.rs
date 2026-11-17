@@ -528,8 +528,10 @@ impl<'a> TrailEngine<'a> {
         let pivot = if self.use_short_clause_pivot {
             // Stable deterministic ties: short-clause score, original
             // frequency, then variable index (matching frequency fallback).
-            active.iter().max_by_key(|&&var|
-                (short_scores[var], frequency[var], var)).copied()
+            active
+                .iter()
+                .max_by_key(|&&var| (short_scores[var], frequency[var], var))
+                .copied()
         } else {
             active.iter().max_by_key(|&&var| frequency[var]).copied()
         };
@@ -874,18 +876,28 @@ mod tests {
                     for _ in 0..n {
                         seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
                         let var = 1 + (seed as usize % 5);
-                        clause.push(if seed & 4 == 0 { var as i32 } else { -(var as i32) });
+                        clause.push(if seed & 4 == 0 {
+                            var as i32
+                        } else {
+                            -(var as i32)
+                        });
                     }
                     clauses.push(clause);
                 }
                 let problem = Problem {
                     n: 5,
                     clauses,
-                    weights: (0..5).map(|i| crate::Weights {
-                        positive: C::decimal(bits, "0.5", "-0.25").unwrap(),
-                        negative: C::decimal(bits,
-                            if i % 2 == 0 { "-0.25" } else { "0.125" }, "0.5").unwrap(),
-                    }).collect(),
+                    weights: (0..5)
+                        .map(|i| crate::Weights {
+                            positive: C::decimal(bits, "0.5", "-0.25").unwrap(),
+                            negative: C::decimal(
+                                bits,
+                                if i % 2 == 0 { "-0.25" } else { "0.125" },
+                                "0.5",
+                            )
+                            .unwrap(),
+                        })
+                        .collect(),
                 };
                 let mut old = TrailEngine::new(&problem, bits, 128, 100_000);
                 old.use_parent_ids = true;
@@ -900,12 +912,13 @@ mod tests {
                 heuristic.use_fused_compact = true;
                 heuristic.use_short_clause_pivot = true;
                 let actual = heuristic.count((1..=5).collect(), 0).unwrap();
-                assert_eq!((actual.sat, actual.count.re, actual.count.im),
-                           (expected.sat, expected.count.re, expected.count.im),
-                           "source {case}, bits {bits}");
+                assert_eq!(
+                    (actual.sat, actual.count.re, actual.count.im),
+                    (expected.sat, expected.count.re, expected.count.im),
+                    "source {case}, bits {bits}"
+                );
                 assert!(heuristic.assigned.iter().all(|&v| v == 0));
             }
         }
     }
-
 }

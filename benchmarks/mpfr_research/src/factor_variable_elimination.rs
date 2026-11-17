@@ -6,6 +6,8 @@ use crate::{C, Clause, Outcome, Problem};
 
 const MAX_VARS: usize = 4096;
 const MAX_SCOPE: usize = 256;
+// Research-only scope admission probe; all exponential factor limits unchanged.
+pub(crate) const PROBE_SCOPE: usize = 320;
 const MAX_CLAUSES: usize = 3000;
 const MAX_CLAUSE_WIDTH: usize = 12;
 const MAX_BAG: usize = 11;
@@ -122,11 +124,27 @@ pub(crate) fn count(
     count_clauses(p, scope, &p.clauses, bits)
 }
 
+/// Controlled envelope experiment: ONLY the pre-admission surviving-variable
+/// limit differs. The width, product, factor-cell and source-clause limits
+/// are exactly the same as baseline Factor-VE.
+pub(crate) fn count_scope_probe(
+    p: &Problem, scope: &[usize], bits: u32,
+) -> (Option<Outcome>, VeStats) {
+    count_clauses_with_limit(p, scope, &p.clauses, bits, PROBE_SCOPE)
+}
+
 /// Count a *live*, already-cofactored residual CNF with unchanged original
 /// source literal weights and an exact disjoint residual variable scope.
 /// Callers must separately multiply forced-prefix and free-variable weights.
 pub(crate) fn count_clauses(
     p: &Problem, scope: &[usize], clauses: &[Clause], bits: u32,
+) -> (Option<Outcome>, VeStats) {
+    count_clauses_with_limit(p, scope, clauses, bits, MAX_SCOPE)
+}
+
+fn count_clauses_with_limit(
+    p: &Problem, scope: &[usize], clauses: &[Clause], bits: u32,
+    scope_cap: usize,
 ) -> (Option<Outcome>, VeStats) {
     let mut stats = VeStats {
         source_vars: p.n,
@@ -137,7 +155,7 @@ pub(crate) fn count_clauses(
     };
     if p.n == 0 { return reject(stats, "empty_source_variables"); }
     if p.n > MAX_VARS { return reject(stats, "source_variables"); }
-    if scope.len() > MAX_SCOPE { return reject(stats, "source_scope"); }
+    if scope.len() > scope_cap { return reject(stats, "source_scope"); }
     if clauses.len() > MAX_CLAUSES { return reject(stats, "source_clauses"); }
     if p.weights.len() < p.n { return reject(stats, "missing_weights"); }
     let mut present = vec![false; p.n + 1];

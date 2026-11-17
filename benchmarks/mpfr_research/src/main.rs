@@ -911,6 +911,10 @@ fn run() -> Result<(), String> {
     let cache_first = if factor_ve {
         args.next().ok_or("missing mode after --factor-variable-elimination")?
     } else { cache_first };
+    let factor_ve_scope320 = cache_first.to_str() == Some("--factor-ve-scope320");
+    let cache_first = if factor_ve_scope320 {
+        args.next().ok_or("missing mode after --factor-ve-scope320")?
+    } else { cache_first };
     let cache_policy = match cache_first.to_str() {
         Some("--hashbrown-owned") => CachePolicy::HbOwned,
         Some("--hashbrown-borrowed") => CachePolicy::HbBorrowed,
@@ -973,6 +977,9 @@ fn run() -> Result<(), String> {
     if fused_post_analysis && !projected_post_key {
         return Err("--trail-fused-post-analysis requires --trail-post-unit-projected".into());
     }
+    if factor_ve_scope320 && !factor_ve {
+        return Err("--factor-ve-scope320 requires --factor-variable-elimination".into());
+    }
     if factor_ve && (!weighted_equivalence || !trail_count || post_unit_cache
                      || articulation_pivot || primal_order || root_failed_literal) {
         return Err("--factor-variable-elimination requires original weighted-equivalence and trail-count without other root transformations".into());
@@ -1026,7 +1033,9 @@ fn run() -> Result<(), String> {
     let primal_build_ns = td_start.elapsed().as_nanos();
     let ve_start = Instant::now();
     let (ve_candidate, ve_stats) = if factor_ve {
-        factor_variable_elimination::count(source, &scope, bits)
+        factor_variable_elimination::count_with_scope_limit(
+            source, &scope, bits, if factor_ve_scope320 { 320 } else { 256 },
+        )
     } else {
         (None, factor_variable_elimination::VeStats::default())
     };
@@ -1104,6 +1113,8 @@ fn run() -> Result<(), String> {
         reduction_stats.eliminated_vars, reduction_stats.removed_clauses,
         reduction_stats.representatives, reduction_stats.contradictory,
         reduction_stats.censored);
+    eprintln!("RESEARCH_MPFR_FACTOR_VE_SCOPE_MAX max={}",
+        if factor_ve_scope320 { 320 } else { 256 });
     eprintln!("RESEARCH_MPFR_FACTOR_VE enabled={} completed={} eligible={} capped={} input_factors={} eliminated={} width={} cells={} products={} zero_sat={} ve_ns={}",
         factor_ve, ve_completed, ve_stats.eligible, ve_stats.capped,
         ve_stats.factors, ve_stats.eliminated, ve_stats.width,

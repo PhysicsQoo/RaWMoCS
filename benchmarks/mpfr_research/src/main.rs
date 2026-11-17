@@ -860,6 +860,13 @@ fn run() -> Result<(), String> {
     let cache_first = if weighted_component_cache {
         args.next().ok_or("missing cache policy or precision after --trail-weight-class-cache")?
     } else { cache_first };
+    let weight_cache_scope_max: Option<usize> = cache_first.to_str()
+        .and_then(|value| value.strip_prefix("--trail-cache-scope-max="))
+        .map(|raw| raw.parse::<usize>().map_err(|_| "invalid weighted cache scope max"))
+        .transpose()?;
+    let cache_first = if weight_cache_scope_max.is_some() {
+        args.next().ok_or("missing cache policy or precision after --trail-cache-scope-max")?
+    } else { cache_first };
     let cache_policy = match cache_first.to_str() {
         Some("--hashbrown-owned") => CachePolicy::HbOwned,
         Some("--hashbrown-borrowed") => CachePolicy::HbBorrowed,
@@ -899,6 +906,12 @@ fn run() -> Result<(), String> {
     }
     if weighted_component_cache && !trail_fused_compact {
         return Err("--trail-weight-class-cache requires all existing --trail-fused-compact prerequisites".into());
+    }
+    if weight_cache_scope_max.is_some() && !weighted_component_cache {
+        return Err("--trail-cache-scope-max requires --trail-weight-class-cache".into());
+    }
+    if weight_cache_scope_max.is_some_and(|max| !(1..=4096).contains(&max)) {
+        return Err("--trail-cache-scope-max must be in 1..=4096".into());
     }
     let path = args.next().ok_or("missing CNF")?;
     if args.next().is_some() { return Err("expected exactly one file".into()); }
@@ -940,8 +953,10 @@ fn run() -> Result<(), String> {
         trail.use_prehashed_cache = trail_prehashed_cache;
         trail.use_fused_compact = trail_fused_compact;
         trail.use_weight_class_cache = weighted_component_cache;
+        trail.weight_cache_scope_max = weight_cache_scope_max;
         let outcome = trail.count(scope, 0)?;
-        (outcome, trail.stats, Some((trail.assignments, trail.cache_keys)))
+        (outcome, trail.stats,
+         Some((trail.assignments, trail.cache_keys, trail.normalized_cache_keys, trail.source_cache_keys)))
     } else {
         let outcome = engine.count(source.clauses.clone(), scope, 0)?;
         (outcome, engine.stats, None)
@@ -971,7 +986,7 @@ fn run() -> Result<(), String> {
     let (csr_slots, csr_literals, csr_clauses) = engine.csr_workspace.capacities();
     eprintln!("RESEARCH_MPFR_CSR_WORKSPACE enabled={} slots={} literals={} clauses={}",
         reuse_csr_workspace, csr_slots, csr_literals, csr_clauses);
-    let (trail_assignments, trail_cache_keys) = trail_profile.unwrap_or_default();
+    let (trail_assignments, trail_cache_keys, trail_normalized_cache_keys, trail_source_cache_keys) = trail_profile.unwrap_or_default();
     eprintln!("RESEARCH_MPFR_TRAIL enabled={} assignments={} cache_keys={}",
         trail_count, trail_assignments, trail_cache_keys);
     eprintln!("RESEARCH_MPFR_TRAIL_PARENT_IDS enabled={}", trail_parent_ids);
@@ -979,6 +994,8 @@ fn run() -> Result<(), String> {
     eprintln!("RESEARCH_MPFR_TRAIL_PREHASHED_CACHE enabled={}", trail_prehashed_cache);
     eprintln!("RESEARCH_MPFR_TRAIL_FUSED_COMPACT enabled={}", trail_fused_compact);
     eprintln!("RESEARCH_MPFR_TRAIL_WEIGHT_CLASS_CACHE enabled={}", weighted_component_cache);
+    eprintln!("RESEARCH_MPFR_TRAIL_WEIGHT_CLASS_SCOPE_MAX max={} localized_keys={} original_keys={}",
+        weight_cache_scope_max.unwrap_or_default(), trail_normalized_cache_keys, trail_source_cache_keys);
     eprintln!("RESEARCH_MPFR_CACHE_POLICY {}", cache_policy.label());
     eprintln!("RESEARCH_MPFR_SHARED_RESIDUAL enabled={} entries={}",
         shared_residual_key, engine.shared_cache.len());

@@ -33,7 +33,7 @@ SOURCE = {
     "feynman_grover_5": "benchmarks/Feynman/grover_5.qasm",
 }
 BITS = {30: 100, 100: 333}
-ARMS = ("gpmc", "control", "equivalence", "trail", "parent_ids", "compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16"
+ARMS = ("gpmc", "control", "equivalence", "trail", "parent_ids", "compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16")
 BUDGET_S = 30
 AS_BYTES = 2147483648
 
@@ -142,32 +142,32 @@ def sample(cmd: list[str], arm: str, precision: int) -> dict:
                 )
                 if not phase or not probe or not trail or not parent_ids or not compact or not prehash or not fused or not weighted_cache or not scoped_key or not inline_flag or not post_flag or not projected_flag:
                     raise ValueError("missing Rust solve/equivalence/trail diagnostics")
-                if (trail.group(1) == "true") != (arm in ("trail", "parent_ids", "compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16"):
+                if (trail.group(1) == "true") != (arm in ("trail", "parent_ids", "compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16")):
                     raise ValueError("trail selection arm did not match CLI")
-                if (parent_ids.group(1) == "true") != (arm in ("parent_ids", "compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16"):
+                if (parent_ids.group(1) == "true") != (arm in ("parent_ids", "compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16")):
                     raise ValueError("parent clause-ID option does not match arm")
-                if (compact.group(1) == "true") != (arm in ("compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16"):
+                if (compact.group(1) == "true") != (arm in ("compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16")):
                     raise ValueError("compact-residual flag differs from arm")
-                if (prehash.group(1) == "true") != (arm in ("prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16"):
+                if (prehash.group(1) == "true") != (arm in ("prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16")):
                     raise ValueError("prehashed exact-key option differs from arm")
-                if (fused.group(1) == "true") != (arm in ("fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16"):
+                if (fused.group(1) == "true") != (arm in ("fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16")):
                     raise ValueError("fused compact literal filter CLI option mismatch")
-                if (weighted_cache.group(1) == "true") != (arm in ("weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16"):
+                if (weighted_cache.group(1) == "true") != (arm in ("weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16")):
                     raise ValueError("weight-class component cache CLI mismatch")
                 expected_max = {"scoped16": 16, "scoped64": 64,
                                 "inline16": 16, "post16": 16, "projected16": 16}.get(arm, 0)
                 if int(scoped_key.group(1)) != expected_max:
                     raise ValueError("small-component key admission threshold mismatch")
-                if (inline_flag.group(1) == "true") != (arm in ("inline16", "inline_full", "post_full", "post16", "projected_full", "projected16"):
+                if (inline_flag.group(1) == "true") != (arm in ("inline16", "inline_full", "post_full", "post16", "projected_full", "projected16")):
                     raise ValueError("inline weighted key option mismatch")
-                if (post_flag.group(1) == "true") != (arm in ("post_full", "post16", "projected_full", "projected16"):
+                if (post_flag.group(1) == "true") != (arm in ("post_full", "post16", "projected_full", "projected16")):
                     raise ValueError("post-unit residual cache CLI flag mismatch")
                 if (projected_flag.group(1) == "true") != (arm in ("projected_full", "projected16")):
                     raise ValueError("projected post-unit cache CLI flag mismatch")
                 stats = [int(v) for v in phase.groups()]
                 if stats[7:] != [precision, BITS[precision]]:
                     raise ValueError("Rust binary MPFR precision drift")
-                if (probe.group(1) == "true") != (arm in ("equivalence", "trail", "parent_ids", "compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16"):
+                if (probe.group(1) == "true") != (arm in ("equivalence", "trail", "parent_ids", "compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16")):
                     raise ValueError("Rust weighted equivalence arm drift")
                 row.update({
                     "solve_ns": stats[2],
@@ -276,28 +276,28 @@ def main() -> None:
                                 "--indexed-unit-prop-csr-after-8192",
                                 "--packed-residual-key-fast",
                                 "--fast-assign", "--reuse-frequency-scratch"]
-                        if arm in ("equivalence", "trail", "parent_ids", "compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16":
+                        if arm in ("equivalence", "trail", "parent_ids", "compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16"):
                             cmd += ["--weighted-equivalence"]
-                        if arm in ("trail", "parent_ids", "compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16":
+                        if arm in ("trail", "parent_ids", "compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16"):
                             cmd += ["--trail-count"]
-                        if arm in ("parent_ids", "compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16":
+                        if arm in ("parent_ids", "compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16"):
                             cmd += ["--trail-parent-ids"]
-                        if arm in ("compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16":
+                        if arm in ("compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16"):
                             cmd += ["--trail-compact-residual"]
-                        if arm in ("prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16":
+                        if arm in ("prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16"):
                             cmd += ["--trail-prehashed-cache"]
-                        if arm in ("fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16":
+                        if arm in ("fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16"):
                             cmd += ["--trail-fused-compact"]
-                        if arm in ("weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16":
+                        if arm in ("weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16"):
                             cmd += ["--trail-weight-class-cache"]
                         if arm in ("scoped16", "scoped64", "inline16", "post16", "projected16"):
                             cmd += ["--trail-cache-scope-max=" + str(
                                 {"scoped16": 16, "scoped64": 64, "inline16": 16,
                                  "post16": 16, "projected16": 16}[arm]
                             )]
-                        if arm in ("inline16", "inline_full", "post_full", "post16", "projected_full", "projected16":
+                        if arm in ("inline16", "inline_full", "post_full", "post16", "projected_full", "projected16"):
                             cmd += ["--trail-inline-weight-relabel"]
-                        if arm in ("post_full", "post16", "projected_full", "projected16":
+                        if arm in ("post_full", "post16", "projected_full", "projected16"):
                             cmd += ["--trail-post-unit-cache"]
                         if arm in ("projected_full", "projected16"):
                             cmd += ["--trail-post-unit-projected"]

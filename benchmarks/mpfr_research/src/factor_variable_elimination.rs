@@ -63,7 +63,8 @@ fn clause_factor(
 }
 
 fn selected_bucket(factors: &[Factor], remaining: &[usize]) -> (usize, Vec<usize>, Vec<usize>) {
-    let mut selected: Option<(usize, usize, usize, Vec<usize>, Vec<usize>)> = None;
+    type BucketCandidate = (usize, usize, usize, Vec<usize>, Vec<usize>);
+    let mut selected: Option<BucketCandidate> = None;
     for &v in remaining {
         let mut incident = Vec::new();
         let mut union = Vec::new();

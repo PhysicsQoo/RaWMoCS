@@ -69,6 +69,12 @@ pub(crate) struct TrailEngine<'a> {
     pub(crate) use_articulation_pivot: bool,
     // Root-only arm: inspect one pivot, not every recursive residual.
     pub(crate) articulation_root_only: bool,
+    // Research-only fixed primal bag-centroid score. Does not modify
+    // clauses/weights/cache keys or remove either weighted branch.
+    pub(crate) primal_scores: Option<Vec<u16>>,
+    pub(crate) primal_root_only: bool,
+    pub(crate) primal_scans: u64,
+    pub(crate) primal_overrides: u64,
     pub(crate) separator_scans: u64,
     pub(crate) separator_candidates: u64,
     pub(crate) separator_chosen: u64,
@@ -143,6 +149,10 @@ impl<'a> TrailEngine<'a> {
             use_fused_post_analysis: false,
             use_articulation_pivot: false,
             articulation_root_only: false,
+            primal_scores: None,
+            primal_root_only: false,
+            primal_scans: 0,
+            primal_overrides: 0,
             separator_scans: 0,
             separator_candidates: 0,
             separator_chosen: 0,
@@ -729,6 +739,28 @@ impl<'a> TrailEngine<'a> {
                 pivot
             }
             .ok_or("missing trail pivot")?;
+        // A fixed source-primal bag centroid can act as a branch-order
+        // score, similar in *purpose* (not implementation) to GPMC's
+        // FlowCutter-derived TD distance score. No component or WMC
+        // factor is added, removed or approximated here.
+        let pivot = if !self.primal_root_only || depth == 0 {
+            if let Some(ref scores) = self.primal_scores {
+                self.primal_scans += 1;
+                let choice = *active.iter().max_by_key(|&&var| {
+                    (scores[var], self.frequency[var])
+                }).ok_or("no candidate for primal centroid pivot")?;
+                if choice != pivot && scores[choice] > 0 {
+                    self.primal_overrides += 1;
+                    choice
+                } else {
+                    pivot
+                }
+            } else {
+                pivot
+            }
+        } else {
+            pivot
+        };
         let child: Vec<usize> = active.into_iter().filter(|&v| v != pivot).collect();
         let checkpoint = self.trail.len();
 

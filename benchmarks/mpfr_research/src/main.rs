@@ -867,6 +867,10 @@ fn run() -> Result<(), String> {
     let cache_first = if weight_cache_scope_max.is_some() {
         args.next().ok_or("missing cache policy or precision after --trail-cache-scope-max")?
     } else { cache_first };
+    let inline_weight_relabel = cache_first.to_str() == Some("--trail-inline-weight-relabel");
+    let cache_first = if inline_weight_relabel {
+        args.next().ok_or("missing cache policy or precision after --trail-inline-weight-relabel")?
+    } else { cache_first };
     let cache_policy = match cache_first.to_str() {
         Some("--hashbrown-owned") => CachePolicy::HbOwned,
         Some("--hashbrown-borrowed") => CachePolicy::HbBorrowed,
@@ -913,6 +917,11 @@ fn run() -> Result<(), String> {
     if weight_cache_scope_max.is_some_and(|max| !(1..=4096).contains(&max)) {
         return Err("--trail-cache-scope-max must be in 1..=4096".into());
     }
+    if inline_weight_relabel && !(trail_count && trail_parent_ids
+        && trail_compact_residual && trail_prehashed_cache
+        && trail_fused_compact && weighted_component_cache) {
+        return Err("--trail-inline-weight-relabel requires fused weighted-class trail cache".into());
+    }
     let path = args.next().ok_or("missing CNF")?;
     if args.next().is_some() { return Err("expected exactly one file".into()); }
     let t0 = Instant::now();
@@ -954,6 +963,7 @@ fn run() -> Result<(), String> {
         trail.use_fused_compact = trail_fused_compact;
         trail.use_weight_class_cache = weighted_component_cache;
         trail.weight_cache_scope_max = weight_cache_scope_max;
+        trail.use_inline_weight_relabel = inline_weight_relabel;
         let outcome = trail.count(scope, 0)?;
         (outcome, trail.stats,
          Some((trail.assignments, trail.cache_keys, trail.normalized_cache_keys, trail.source_cache_keys)))
@@ -994,6 +1004,7 @@ fn run() -> Result<(), String> {
     eprintln!("RESEARCH_MPFR_TRAIL_PREHASHED_CACHE enabled={}", trail_prehashed_cache);
     eprintln!("RESEARCH_MPFR_TRAIL_FUSED_COMPACT enabled={}", trail_fused_compact);
     eprintln!("RESEARCH_MPFR_TRAIL_WEIGHT_CLASS_CACHE enabled={}", weighted_component_cache);
+    eprintln!("RESEARCH_MPFR_TRAIL_INLINE_WEIGHT_RELABEL enabled={}", inline_weight_relabel);
     eprintln!("RESEARCH_MPFR_TRAIL_WEIGHT_CLASS_SCOPE_MAX max={} localized_keys={} original_keys={}",
         weight_cache_scope_max.unwrap_or_default(), trail_normalized_cache_keys, trail_source_cache_keys);
     eprintln!("RESEARCH_MPFR_CACHE_POLICY {}", cache_policy.label());

@@ -203,10 +203,9 @@ pub(crate) fn build(problem: &Problem, scope: &[usize]) -> Profile {
             }
         }
         result.max_distance = result.max_distance.max(max_distance);
-        if max_distance > 0 {
-            for &var in &traversal {
-                let score = ((max_distance - dist[var]) * 100 / max_distance) as u16;
-                result.scores[scope[var]] = score;
+        for &var in &traversal {
+            if let Some(score) = ((max_distance - dist[var]) * 100).checked_div(max_distance) {
+                result.scores[scope[var]] = score as u16;
             }
         }
     }

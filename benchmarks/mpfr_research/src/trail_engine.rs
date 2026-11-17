@@ -62,6 +62,8 @@ pub(crate) struct TrailEngine<'a> {
     // Opt-in: project the already canonical pre-unit clauses instead of
     // re-reading all original source clauses to build post-unit key.
     pub(crate) use_projected_post_key: bool,
+    // Opt-in post-unit frequency/component union from the same clause traversal.
+    pub(crate) use_fused_post_analysis: bool,
     pub(crate) reused_unforced_keys: u64,
     pub(crate) projected_forced_keys: u64,
     weight_classes: Vec<usize>,
@@ -129,6 +131,7 @@ impl<'a> TrailEngine<'a> {
             post_unit_visited: 0,
             post_unit_forced: 0,
             use_projected_post_key: false,
+            use_fused_post_analysis: false,
             reused_unforced_keys: 0,
             projected_forced_keys: 0,
             weight_classes: Vec::new(),
@@ -935,16 +938,45 @@ impl<'a> TrailEngine<'a> {
             frequency.resize(self.problem.n + 1, 0);
         }
         frequency.fill(0);
-        for &cid in &ids {
-            if self.satisfied[cid] != 0 {
-                continue;
-            }
-            for &lit in &self.clauses[cid] {
-                if self.assigned[lit.unsigned_abs() as usize] == 0 {
-                    frequency[lit.unsigned_abs() as usize] += 1;
+        // The original post-unit path scans the same active source clauses
+        // separately for frequency and DSU components. Preserve the old
+        // path as the independent control; only the opt-in path fuses them.
+        let mut fused_parents = if self.use_fused_post_analysis {
+            let mut parents: Vec<_> = (0..=self.problem.n).collect();
+            for &cid in &ids {
+                if self.satisfied[cid] != 0 {
+                    continue;
+                }
+                let mut first = None;
+                for &lit in &self.clauses[cid] {
+                    let var = lit.unsigned_abs() as usize;
+                    if self.assigned[var] != 0 {
+                        continue;
+                    }
+                    frequency[var] += 1;
+                    if let Some(first_var) = first {
+                        let a = root(&mut parents, first_var);
+                        let b = root(&mut parents, var);
+                        parents[b] = a;
+                    } else {
+                        first = Some(var);
+                    }
                 }
             }
-        }
+            Some(parents)
+        } else {
+            for &cid in &ids {
+                if self.satisfied[cid] != 0 {
+                    continue;
+                }
+                for &lit in &self.clauses[cid] {
+                    if self.assigned[lit.unsigned_abs() as usize] == 0 {
+                        frequency[lit.unsigned_abs() as usize] += 1;
+                    }
+                }
+            }
+            None
+        };
         let mut active = Vec::new();
         for &var in &scope {
             if self.assigned[var] != 0 {
@@ -970,7 +1002,15 @@ impl<'a> TrailEngine<'a> {
                 },
             ));
         }
-        let pieces = self.components(&ids, &active);
+        let pieces = if let Some(ref mut parents) = fused_parents {
+            let mut groups = BTreeMap::<usize, Vec<usize>>::new();
+            for &var in &active {
+                groups.entry(root(parents, var)).or_default().push(var);
+            }
+            groups.into_values().collect::<Vec<_>>()
+        } else {
+            self.components(&ids, &active)
+        };
         if pieces.len() > 1 {
             self.stats.decompositions += 1;
             let mut value = C::one(self.bits);
@@ -1705,6 +1745,61 @@ mod tests {
                         assert_eq!(optimized.post_unit_hits, control.post_unit_hits);
                         assert_eq!(optimized.post_unit_forced, control.post_unit_forced);
                         assert!(optimized.assigned.iter().all(|&x| x == 0));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fused_post_analysis_preserves_weighted_search() {
+        let inputs = [
+            "p cnf 7 8\nc t wmc\n1 2 0\n-1 -2 0\n1 3 4 0\n2 3 4 0\n1 6 7 0\n2 6 7 0\n3 5 0\n4 5 0\n",
+            "p cnf 6 6\nc t wmc\nc p weight 1 0.5 0.25 0\nc p weight -1 -0.25 0.125 0\n1 3 0\n-1 4 0\n3 5 0\n4 5 0\n5 -6 0\n-5 6 0\n",
+            "p cnf 2 1\nc t wmc\nc p weight 1 0 0 0\nc p weight -1 0 0 0\n1 0\n",
+            "p cnf 3 2\nc t wmc\n1 0\n-1 0\n",
+        ];
+        for bits in [100_u32, 333] {
+            for input in inputs {
+                let p = parse_emitted(input, bits).unwrap();
+                for capacity in [0_usize, 1, 128] {
+                    for max_scope in [None, Some(2_usize), Some(16)] {
+                        let mut old = TrailEngine::new(&p, bits, capacity, 100_000);
+                        old.use_parent_ids = true;
+                        old.use_compact_residual = true;
+                        old.use_prehashed_cache = true;
+                        old.use_fused_compact = true;
+                        old.use_weight_class_cache = true;
+                        old.weight_cache_scope_max = max_scope;
+                        old.use_inline_weight_relabel = true;
+                        old.use_post_unit_cache = true;
+                        old.use_projected_post_key = true;
+                        let expected = old.count((1..=p.n).collect(), 0).unwrap();
+
+                        let mut next = TrailEngine::new(&p, bits, capacity, 100_000);
+                        next.use_parent_ids = true;
+                        next.use_compact_residual = true;
+                        next.use_prehashed_cache = true;
+                        next.use_fused_compact = true;
+                        next.use_weight_class_cache = true;
+                        next.weight_cache_scope_max = max_scope;
+                        next.use_inline_weight_relabel = true;
+                        next.use_post_unit_cache = true;
+                        next.use_projected_post_key = true;
+                        next.use_fused_post_analysis = true;
+                        let actual = next.count((1..=p.n).collect(), 0).unwrap();
+                        assert_eq!(actual.sat, expected.sat);
+                        assert_eq!(actual.count.re, expected.count.re);
+                        assert_eq!(actual.count.im, expected.count.im);
+                        assert_eq!(next.stats.nodes, old.stats.nodes);
+                        assert_eq!(next.stats.cache_hits, old.stats.cache_hits);
+                        assert_eq!(next.stats.decompositions, old.stats.decompositions);
+                        assert_eq!(next.post_unit_hits, old.post_unit_hits);
+                        assert_eq!(next.post_unit_visited, old.post_unit_visited);
+                        assert_eq!(next.post_unit_forced, old.post_unit_forced);
+                        assert_eq!(next.reused_unforced_keys, old.reused_unforced_keys);
+                        assert_eq!(next.projected_forced_keys, old.projected_forced_keys);
+                        assert!(next.assigned.iter().all(|&v| v == 0));
                     }
                 }
             }

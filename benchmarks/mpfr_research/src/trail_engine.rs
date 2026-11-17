@@ -706,21 +706,29 @@ impl<'a> TrailEngine<'a> {
         // A factor-graph articulation variable, if one exists, is a sound
         // separator pivot for both Shannon branches. This is after unit
         // closure and the standard disconnected-component check.
-        let pivot = if self.use_articulation_pivot
-            && (!self.articulation_root_only || depth == 0)
-        {
-            self.separator_scans += 1;
-            let probe = separator_pivot::choose(
-                &active, &ids, &self.clauses, &self.assigned,
-                &self.satisfied, &self.frequency,
-            );
-            self.separator_candidates += probe.candidates as u64;
-            if !probe.scanned { self.separator_skipped += 1; }
-            if probe.pivot.is_some() { self.separator_chosen += 1; }
-            probe.pivot.or(pivot)
-        } else {
-            pivot
-        }.ok_or("missing trail pivot")?;
+        let pivot =
+            if self.use_articulation_pivot && (!self.articulation_root_only || depth == 0) {
+                self.separator_scans += 1;
+                let probe = separator_pivot::choose(
+                    &active,
+                    &ids,
+                    &self.clauses,
+                    &self.assigned,
+                    &self.satisfied,
+                    &self.frequency,
+                );
+                self.separator_candidates += probe.candidates as u64;
+                if !probe.scanned {
+                    self.separator_skipped += 1;
+                }
+                if probe.pivot.is_some() {
+                    self.separator_chosen += 1;
+                }
+                probe.pivot.or(pivot)
+            } else {
+                pivot
+            }
+            .ok_or("missing trail pivot")?;
         let child: Vec<usize> = active.into_iter().filter(|&v| v != pivot).collect();
         let checkpoint = self.trail.len();
 

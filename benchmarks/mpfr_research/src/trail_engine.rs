@@ -510,7 +510,9 @@ impl<'a> TrailEngine<'a> {
             (ids, key)
         };
         if self.use_weight_class_cache
-            && self.weight_cache_scope_max.is_none_or(|max| scope.len() <= max)
+            && self
+                .weight_cache_scope_max
+                .is_none_or(|max| scope.len() <= max)
         {
             self.relabel_weighted_key(&scope, &mut key)?;
             if self.weight_cache_scope_max.is_some() {
@@ -1071,8 +1073,10 @@ mod tests {
                 candidate.use_weight_class_cache = true;
                 candidate.weight_cache_scope_max = Some(max_vars);
                 let actual = candidate.count((1..=6).collect(), 0).unwrap();
-                assert_eq!((actual.sat, &actual.count.re, &actual.count.im),
-                           (expected.sat, &expected.count.re, &expected.count.im));
+                assert_eq!(
+                    (actual.sat, &actual.count.re, &actual.count.im),
+                    (expected.sat, &expected.count.re, &expected.count.im)
+                );
                 assert!(candidate.normalized_cache_keys > 0);
                 if max_vars == 3 {
                     assert!(candidate.source_cache_keys > 0);
@@ -1096,17 +1100,28 @@ mod tests {
                     for _ in 0..n {
                         seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
                         let var = 1 + (seed as usize % 5);
-                        clause.push(if seed & 4 == 0 { var as i32 } else { -(var as i32) });
+                        clause.push(if seed & 4 == 0 {
+                            var as i32
+                        } else {
+                            -(var as i32)
+                        });
                     }
                     clauses.push(clause);
                 }
                 let problem = Problem {
-                    n: 5, clauses,
-                    weights: (0..5).map(|i| crate::Weights {
-                        positive: C::decimal(bits, "0.5", "-0.25").unwrap(),
-                        negative: C::decimal(bits,
-                            if i % 2 == 0 { "-0.25" } else { "0.125" }, "0.5").unwrap(),
-                    }).collect(),
+                    n: 5,
+                    clauses,
+                    weights: (0..5)
+                        .map(|i| crate::Weights {
+                            positive: C::decimal(bits, "0.5", "-0.25").unwrap(),
+                            negative: C::decimal(
+                                bits,
+                                if i % 2 == 0 { "-0.25" } else { "0.125" },
+                                "0.5",
+                            )
+                            .unwrap(),
+                        })
+                        .collect(),
                 };
                 let mut control = TrailEngine::new(&problem, bits, 128, 100_000);
                 control.use_parent_ids = true;
@@ -1123,13 +1138,14 @@ mod tests {
                     candidate.use_weight_class_cache = true;
                     candidate.weight_cache_scope_max = Some(max_vars);
                     let actual = candidate.count((1..=5).collect(), 0).unwrap();
-                    assert_eq!((actual.sat, actual.count.re, actual.count.im),
-                               (expected.sat, expected.count.re, expected.count.im),
-                               "case {case}, bits {bits}, max_vars {max_vars}");
+                    assert_eq!(
+                        (actual.sat, &actual.count.re, &actual.count.im),
+                        (expected.sat, &expected.count.re, &expected.count.im),
+                        "case {case}, bits {bits}, max_vars {max_vars}"
+                    );
                     assert!(candidate.assigned.iter().all(|&x| x == 0));
                 }
             }
         }
     }
-
 }

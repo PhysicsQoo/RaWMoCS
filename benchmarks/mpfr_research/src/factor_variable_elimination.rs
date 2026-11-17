@@ -2,7 +2,7 @@
 //! Retains SAT separately from WMC: zero complex weight is not UNSAT.
 //! Input clauses, weights and scope are never mutated. On any bound
 //! failure the caller uses the unchanged original Trail solver.
-use crate::{C, Outcome, Problem};
+use crate::{C, Clause, Outcome, Problem};
 
 const MAX_VARS: usize = 4096;
 const MAX_SCOPE: usize = 256;
@@ -119,25 +119,34 @@ fn value_at(
 pub(crate) fn count(
     p: &Problem, scope: &[usize], bits: u32,
 ) -> (Option<Outcome>, VeStats) {
+    count_clauses(p, scope, &p.clauses, bits)
+}
+
+/// Count a *live*, already-cofactored residual CNF with unchanged original
+/// source literal weights and an exact disjoint residual variable scope.
+/// Callers must separately multiply forced-prefix and free-variable weights.
+pub(crate) fn count_clauses(
+    p: &Problem, scope: &[usize], clauses: &[Clause], bits: u32,
+) -> (Option<Outcome>, VeStats) {
     let mut stats = VeStats {
         source_vars: p.n,
         scope_vars: scope.len(),
-        source_clauses: p.clauses.len(),
-        source_max_clause_width: p.clauses.iter().map(Vec::len).max().unwrap_or(0),
+        source_clauses: clauses.len(),
+        source_max_clause_width: clauses.iter().map(Vec::len).max().unwrap_or(0),
         ..VeStats::default()
     };
     if p.n == 0 { return reject(stats, "empty_source_variables"); }
     if p.n > MAX_VARS { return reject(stats, "source_variables"); }
     if scope.len() > MAX_SCOPE { return reject(stats, "source_scope"); }
-    if p.clauses.len() > MAX_CLAUSES { return reject(stats, "source_clauses"); }
+    if clauses.len() > MAX_CLAUSES { return reject(stats, "source_clauses"); }
     if p.weights.len() < p.n { return reject(stats, "missing_weights"); }
     let mut present = vec![false; p.n + 1];
     for &v in scope {
         if v == 0 || v > p.n || present[v] { return reject(stats, "invalid_scope"); }
         present[v] = true;
     }
-    let mut factors = Vec::with_capacity(p.clauses.len() + scope.len());
-    for clause in &p.clauses {
+    let mut factors = Vec::with_capacity(clauses.len() + scope.len());
+    for clause in clauses {
         let mut vars = clause.iter().map(|lit| lit.unsigned_abs() as usize).collect::<Vec<_>>();
         if vars.iter().any(|&var| var == 0 || var > p.n || !present[var]) {
             return reject(stats, "clause_outside_scope");

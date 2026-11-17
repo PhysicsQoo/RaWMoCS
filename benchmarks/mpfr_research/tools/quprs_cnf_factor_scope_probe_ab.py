@@ -254,10 +254,25 @@ def main() -> None:
                 for candidate in (baseline, probe):
                     if not candidate["factor_ve_enabled"]:
                         raise SystemExit("MISSING_FACTOR_VE_FLAG")
-                    if (candidate["factor_ve_width"] > 11
-                            or candidate["factor_ve_products"] > 600000
-                            or candidate["factor_ve_cells"] > 150000):
-                        raise SystemExit("UNBOUNDED_FACTOR_VE_WORK")
+                    # A REJECTED trial intentionally records the over-limit
+                    # candidate bag as its first cap witness. That is not
+                    # completed unsafe factor work, and must not be confused
+                    # with an accepted over-budget result.
+                    if candidate["factor_ve_completed"]:
+                        if (candidate["factor_ve_width"] > 11
+                                or candidate["factor_ve_products"] > 600000
+                                or candidate["factor_ve_cells"] > 150000):
+                            raise SystemExit("COMPLETED_UNBOUNDED_FACTOR_VE")
+                    else:
+                        reason = candidate["factor_ve_cap_reason"]
+                        if not candidate["factor_ve_capped"] or reason == "none":
+                            raise SystemExit("UNCLASSIFIED_FACTOR_VE_REJECTION")
+                        if candidate["factor_ve_width"] > 11 and reason != "bucket_width":
+                            raise SystemExit("INVALID_BAG_BOUND_REASON")
+                        if candidate["factor_ve_products"] > 600000 and reason != "bucket_products":
+                            raise SystemExit("INVALID_PRODUCT_BOUND_REASON")
+                        if candidate["factor_ve_cells"] > 150000:
+                            raise SystemExit("UNBOUNDED_FACTOR_CELL_ALLOCATION")
                     if not candidate["factor_ve_completed"] and (
                         candidate["nodes"], candidate["cache_hits"], candidate["decompositions"]
                     ) != (inline["nodes"], inline["cache_hits"], inline["decompositions"]):

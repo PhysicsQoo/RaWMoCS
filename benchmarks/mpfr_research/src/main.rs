@@ -888,6 +888,10 @@ fn run() -> Result<(), String> {
     let cache_first = if articulation_pivot {
         args.next().ok_or("missing cache mode or precision after --trail-articulation-pivot")?
     } else { cache_first };
+    let articulation_root_only = cache_first.to_str() == Some("--trail-articulation-root-only");
+    let cache_first = if articulation_root_only {
+        args.next().ok_or("missing cache mode or precision after --trail-articulation-root-only")?
+    } else { cache_first };
     let cache_policy = match cache_first.to_str() {
         Some("--hashbrown-owned") => CachePolicy::HbOwned,
         Some("--hashbrown-borrowed") => CachePolicy::HbBorrowed,
@@ -950,6 +954,9 @@ fn run() -> Result<(), String> {
     if fused_post_analysis && !projected_post_key {
         return Err("--trail-fused-post-analysis requires --trail-post-unit-projected".into());
     }
+    if articulation_root_only && !articulation_pivot {
+        return Err("--trail-articulation-root-only requires --trail-articulation-pivot".into());
+    }
     if articulation_pivot && (!trail_count || post_unit_cache) {
         return Err("--trail-articulation-pivot requires --trail-count without --trail-post-unit-cache".into());
     }
@@ -999,6 +1006,7 @@ fn run() -> Result<(), String> {
         trail.use_projected_post_key = projected_post_key;
         trail.use_fused_post_analysis = fused_post_analysis;
         trail.use_articulation_pivot = articulation_pivot;
+        trail.articulation_root_only = articulation_root_only;
         let outcome = trail.count(scope, 0)?;
         (outcome, trail.stats,
          Some((trail.assignments, trail.cache_keys, trail.normalized_cache_keys,
@@ -1053,6 +1061,7 @@ fn run() -> Result<(), String> {
     eprintln!("RESEARCH_MPFR_POST_UNIT_PROJECTED enabled={} unchanged={} projected={}",
         projected_post_key, reused_unforced_keys, projected_forced_keys);
     eprintln!("RESEARCH_MPFR_POST_UNIT_FUSED_ANALYSIS enabled={}", fused_post_analysis);
+    eprintln!("RESEARCH_MPFR_TRAIL_ARTICULATION_ROOT_ONLY enabled={}", articulation_root_only);
     eprintln!("RESEARCH_MPFR_TRAIL_ARTICULATION enabled={} scans={} candidates={} chosen={} skipped={}",
         articulation_pivot, separator_scans, separator_candidates, separator_chosen, separator_skipped);
     eprintln!("RESEARCH_MPFR_TRAIL_WEIGHT_CLASS_SCOPE_MAX max={} localized_keys={} original_keys={}",

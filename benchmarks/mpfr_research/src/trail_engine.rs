@@ -67,6 +67,8 @@ pub(crate) struct TrailEngine<'a> {
     // Exact opt-in separator-aware pivot; the source CNF and weights remain
     // unchanged. Bounded probes return to Frequency when inconclusive.
     pub(crate) use_articulation_pivot: bool,
+    // Root-only arm: inspect one pivot, not every recursive residual.
+    pub(crate) articulation_root_only: bool,
     pub(crate) separator_scans: u64,
     pub(crate) separator_candidates: u64,
     pub(crate) separator_chosen: u64,
@@ -140,6 +142,7 @@ impl<'a> TrailEngine<'a> {
             use_projected_post_key: false,
             use_fused_post_analysis: false,
             use_articulation_pivot: false,
+            articulation_root_only: false,
             separator_scans: 0,
             separator_candidates: 0,
             separator_chosen: 0,
@@ -703,7 +706,9 @@ impl<'a> TrailEngine<'a> {
         // A factor-graph articulation variable, if one exists, is a sound
         // separator pivot for both Shannon branches. This is after unit
         // closure and the standard disconnected-component check.
-        let pivot = if self.use_articulation_pivot {
+        let pivot = if self.use_articulation_pivot
+            && (!self.articulation_root_only || depth == 0)
+        {
             self.separator_scans += 1;
             let probe = separator_pivot::choose(
                 &active, &ids, &self.clauses, &self.assigned,
@@ -1777,7 +1782,6 @@ mod tests {
             }
         }
     }
-
 
     #[test]
     fn articulation_pivot_preserves_full_signed_complex_wmc_and_sat() {

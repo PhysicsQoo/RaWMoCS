@@ -1,0 +1,116 @@
+name: Same-CNF GPMC versus Rust weighted component cache research
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/cnf-weight-class-paired.yml
+      - benchmarks/mpfr_research/src/main.rs
+      - benchmarks/mpfr_research/src/trail_engine.rs
+      - benchmarks/mpfr_research/tools/quprs_cnf_weight_cache_ab.py
+      - docs/cnf-weight-class-cache-research.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: same-cnf-weight-cache-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  paired-weighted-cnf:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/QuPRS
+          ref: 0b28736651b3740ed3b201edd2efdef3da541e0d
+          path: .upstream/quprs
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/GPMC
+          ref: 89bbc89d0de918e7a5385740355df55765039230
+          path: .upstream/gpmc
+          submodules: recursive
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            benchmarks/mpfr_research -> target
+            .upstream/quprs/rust -> target
+          key: same-cnf-weight-cache-p0
+      - name: Verify source lock, install native libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C .upstream/quprs rev-parse HEAD)" = 0b28736651b3740ed3b201edd2efdef3da541e0d
+          test "$(git -C .upstream/gpmc rev-parse HEAD)" = 89bbc89d0de918e7a5385740355df55765039230
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build libgmp-dev libmpfr-dev zlib1g-dev time pkg-config
+      - name: Build original unmodified QuPRS CNF fixture source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp benchmarks/rust_core/tools/quprs_long_feynman_reference.rs \
+            .upstream/quprs/rust/quprs/examples/quprs_long_feynman_reference.rs
+          cargo build --locked --release --no-default-features \
+            --manifest-path .upstream/quprs/rust/Cargo.toml \
+            -p quprs --example quprs_long_feynman_reference
+      - name: Freeze unchanged QuPRS CNFs as solver inputs, outside solver timing
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .research/weighted-cnf-weight-cache
+          generator="$GITHUB_WORKSPACE/.upstream/quprs/rust/target/release/examples/quprs_long_feynman_reference"
+          for case in feynman_hwb6 feynman_barenco_tof_5 feynman_mod_mult_55 feynman_grover_5; do
+            timeout -k 2s 30s prlimit --as=2147483648 --fsize=2097152 -- \
+              "$generator" "$case" "$GITHUB_WORKSPACE/.upstream/quprs" \
+              "$GITHUB_WORKSPACE/.research/weighted-cnf-weight-cache" \
+              > ".research/weighted-cnf-weight-cache/$case.export.log" 2>&1
+            test -s ".research/weighted-cnf-weight-cache/$case-gpmc.cnf"
+            sha256sum ".research/weighted-cnf-weight-cache/$case-gpmc.cnf"
+          done
+      - name: Build unchanged GPMC original C++ solver
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S .upstream/gpmc -B .upstream/gpmc/build \
+            -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build .upstream/gpmc/build --target gpmc-bin --parallel 2
+      - name: Build new opt-in Rust weighted-CNF solver, verify source-only regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --release \
+            --manifest-path benchmarks/mpfr_research/Cargo.toml
+          cargo build --release \
+            --manifest-path benchmarks/mpfr_research/Cargo.toml
+          python3 -m py_compile benchmarks/mpfr_research/tools/quprs_cnf_weight_cache_ab.py
+      - name: Paired original Weighted CNF GPMC versus baseline, equivalence, reversible Trail, Fused and weighted Component Cache Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 benchmarks/mpfr_research/tools/quprs_cnf_weight_cache_ab.py \
+            --quprs .upstream/quprs \
+            --gpmc-source .upstream/gpmc \
+            --corpus .research/weighted-cnf-weight-cache \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --trials 7 \
+            --report .research/weighted-cnf-weight-cache/weighted-cache-nine-arm.json \
+            | tee .research/weighted-cnf-weight-cache/study.log
+      - name: Preserve complete positive, negative and censored source evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: original-quprs-weighted-cnf-weight-cache-residual-gpmc-six-arm
+          path: .research/weighted-cnf-weight-cache/
+          retention-days: 30
+          if-no-files-found: warn

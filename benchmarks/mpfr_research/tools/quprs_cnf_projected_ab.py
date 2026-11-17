@@ -33,7 +33,7 @@ SOURCE = {
     "feynman_grover_5": "benchmarks/Feynman/grover_5.qasm",
 }
 BITS = {30: 100, 100: 333}
-ARMS = ("gpmc", "control", "equivalence", "trail", "parent_ids", "compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16")
+ARMS = ("gpmc", "control", "equivalence", "trail", "parent_ids", "compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16", "fused_analysis")
 BUDGET_S = 30
 AS_BYTES = 2147483648
 
@@ -140,34 +140,40 @@ def sample(cmd: list[str], arm: str, precision: int) -> dict:
                     r"unchanged=(\d+) projected=(\d+)$",
                     proc.stderr, re.MULTILINE,
                 )
-                if not phase or not probe or not trail or not parent_ids or not compact or not prehash or not fused or not weighted_cache or not scoped_key or not inline_flag or not post_flag or not projected_flag:
+                fused_analysis_flag = re.search(
+                    r"^RESEARCH_MPFR_POST_UNIT_FUSED_ANALYSIS enabled=(true|false)$",
+                    proc.stderr, re.MULTILINE,
+                )
+                if not phase or not probe or not trail or not parent_ids or not compact or not prehash or not fused or not weighted_cache or not scoped_key or not inline_flag or not post_flag or not projected_flag or not fused_analysis_flag:
                     raise ValueError("missing Rust solve/equivalence/trail diagnostics")
-                if (trail.group(1) == "true") != (arm in ("trail", "parent_ids", "compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16")):
+                if (trail.group(1) == "true") != (arm in ("trail", "parent_ids", "compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16", "fused_analysis")):
                     raise ValueError("trail selection arm did not match CLI")
-                if (parent_ids.group(1) == "true") != (arm in ("parent_ids", "compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16")):
+                if (parent_ids.group(1) == "true") != (arm in ("parent_ids", "compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16", "fused_analysis")):
                     raise ValueError("parent clause-ID option does not match arm")
-                if (compact.group(1) == "true") != (arm in ("compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16")):
+                if (compact.group(1) == "true") != (arm in ("compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16", "fused_analysis")):
                     raise ValueError("compact-residual flag differs from arm")
-                if (prehash.group(1) == "true") != (arm in ("prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16")):
+                if (prehash.group(1) == "true") != (arm in ("prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16", "fused_analysis")):
                     raise ValueError("prehashed exact-key option differs from arm")
-                if (fused.group(1) == "true") != (arm in ("fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16")):
+                if (fused.group(1) == "true") != (arm in ("fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16", "fused_analysis")):
                     raise ValueError("fused compact literal filter CLI option mismatch")
-                if (weighted_cache.group(1) == "true") != (arm in ("weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16")):
+                if (weighted_cache.group(1) == "true") != (arm in ("weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16", "fused_analysis")):
                     raise ValueError("weight-class component cache CLI mismatch")
                 expected_max = {"scoped16": 16, "scoped64": 64,
                                 "inline16": 16, "post16": 16, "projected16": 16}.get(arm, 0)
                 if int(scoped_key.group(1)) != expected_max:
                     raise ValueError("small-component key admission threshold mismatch")
-                if (inline_flag.group(1) == "true") != (arm in ("inline16", "inline_full", "post_full", "post16", "projected_full", "projected16")):
+                if (inline_flag.group(1) == "true") != (arm in ("inline16", "inline_full", "post_full", "post16", "projected_full", "projected16", "fused_analysis")):
                     raise ValueError("inline weighted key option mismatch")
-                if (post_flag.group(1) == "true") != (arm in ("post_full", "post16", "projected_full", "projected16")):
+                if (post_flag.group(1) == "true") != (arm in ("post_full", "post16", "projected_full", "projected16", "fused_analysis")):
                     raise ValueError("post-unit residual cache CLI flag mismatch")
-                if (projected_flag.group(1) == "true") != (arm in ("projected_full", "projected16")):
+                if (projected_flag.group(1) == "true") != (arm in ("projected_full", "projected16", "fused_analysis")):
                     raise ValueError("projected post-unit cache CLI flag mismatch")
+                if (fused_analysis_flag.group(1) == "true") != (arm == "fused_analysis"):
+                    raise ValueError("fused post-unit analysis CLI flag mismatch")
                 stats = [int(v) for v in phase.groups()]
                 if stats[7:] != [precision, BITS[precision]]:
                     raise ValueError("Rust binary MPFR precision drift")
-                if (probe.group(1) == "true") != (arm in ("equivalence", "trail", "parent_ids", "compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16")):
+                if (probe.group(1) == "true") != (arm in ("equivalence", "trail", "parent_ids", "compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16", "fused_analysis")):
                     raise ValueError("Rust weighted equivalence arm drift")
                 row.update({
                     "solve_ns": stats[2],
@@ -276,31 +282,33 @@ def main() -> None:
                                 "--indexed-unit-prop-csr-after-8192",
                                 "--packed-residual-key-fast",
                                 "--fast-assign", "--reuse-frequency-scratch"]
-                        if arm in ("equivalence", "trail", "parent_ids", "compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16"):
+                        if arm in ("equivalence", "trail", "parent_ids", "compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16", "fused_analysis"):
                             cmd += ["--weighted-equivalence"]
-                        if arm in ("trail", "parent_ids", "compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16"):
+                        if arm in ("trail", "parent_ids", "compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16", "fused_analysis"):
                             cmd += ["--trail-count"]
-                        if arm in ("parent_ids", "compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16"):
+                        if arm in ("parent_ids", "compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16", "fused_analysis"):
                             cmd += ["--trail-parent-ids"]
-                        if arm in ("compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16"):
+                        if arm in ("compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16", "fused_analysis"):
                             cmd += ["--trail-compact-residual"]
-                        if arm in ("prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16"):
+                        if arm in ("prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16", "fused_analysis"):
                             cmd += ["--trail-prehashed-cache"]
-                        if arm in ("fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16"):
+                        if arm in ("fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16", "fused_analysis"):
                             cmd += ["--trail-fused-compact"]
-                        if arm in ("weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16"):
+                        if arm in ("weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16", "fused_analysis"):
                             cmd += ["--trail-weight-class-cache"]
-                        if arm in ("scoped16", "scoped64", "inline16", "post16", "projected16"):
+                        if arm in ("scoped16", "scoped64", "inline16", "post16", "projected16", "fused_analysis"):
                             cmd += ["--trail-cache-scope-max=" + str(
                                 {"scoped16": 16, "scoped64": 64, "inline16": 16,
                                  "post16": 16, "projected16": 16}[arm]
                             )]
-                        if arm in ("inline16", "inline_full", "post_full", "post16", "projected_full", "projected16"):
+                        if arm in ("inline16", "inline_full", "post_full", "post16", "projected_full", "projected16", "fused_analysis"):
                             cmd += ["--trail-inline-weight-relabel"]
-                        if arm in ("post_full", "post16", "projected_full", "projected16"):
+                        if arm in ("post_full", "post16", "projected_full", "projected16", "fused_analysis"):
                             cmd += ["--trail-post-unit-cache"]
-                        if arm in ("projected_full", "projected16"):
+                        if arm in ("projected_full", "projected16", "fused_analysis"):
                             cmd += ["--trail-post-unit-projected"]
+                        if arm == "fused_analysis":
+                            cmd += ["--trail-fused-post-analysis"]
                         cmd += ["--hashbrown-borrowed", str(digits), str(cnf.resolve())]
                     result = sample(cmd, arm, digits)
                     result["trial"] = trial
@@ -416,7 +424,8 @@ def main() -> None:
             # Require complete byte-level WMC and traversal equality.
             for trial in range(case_trials):
                 for old_arm, new_arm in (("post_full", "projected_full"),
-                                         ("post16", "projected16")):
+                                         ("post16", "projected16"),
+                                         ("projected_full", "fused_analysis")):
                     old = next(r for r in records if r["trial"] == trial and r["arm"] == old_arm)
                     new = next(r for r in records if r["trial"] == trial and r["arm"] == new_arm)
                     for field in ("sat", "real", "imag", "stdout_sha256",
@@ -495,6 +504,7 @@ def main() -> None:
                       f"post16_ms={stats['post16']['p50_wall_ms']:.3f} "
                       f"projected_full_ms={stats['projected_full']['p50_wall_ms']:.3f} "
                       f"projected16_ms={stats['projected16']['p50_wall_ms']:.3f} "
+                      f"fused_analysis_ms={stats['fused_analysis']['p50_wall_ms']:.3f} "
                       f"control_nodes={stats['control']['p50_nodes']} "
                       f"equivalence_nodes={stats['equivalence']['p50_nodes']} "
                       f"trail_nodes={stats['trail']['p50_nodes']} "
@@ -511,6 +521,7 @@ def main() -> None:
                       f"post16_nodes={stats['post16']['p50_nodes']} "
                       f"projected_full_nodes={stats['projected_full']['p50_nodes']} "
                       f"projected16_nodes={stats['projected16']['p50_nodes']} "
+                      f"fused_analysis_nodes={stats['fused_analysis']['p50_nodes']} "
                       f"eq_fallback={eq_fallback}", flush=True)
             args.report.write_text(json.dumps(report, indent=2) + "\n")
     report["qualified_cohorts"] = qualified

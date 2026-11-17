@@ -46,6 +46,12 @@ pub(crate) struct TrailEngine<'a> {
     // components. A cache hit is permitted only when all positive AND
     // negative Complex MPFR weight values agree at the same precision.
     pub(crate) use_weight_class_cache: bool,
+    // None: original all-scopes weight-class cache. Some(k): only
+    // scopes with <=k variables pay the normalization cost. A zero
+    // sentinel separates localized cache keys from full source keys.
+    pub(crate) weight_cache_scope_max: Option<usize>,
+    pub(crate) normalized_cache_keys: u64,
+    pub(crate) source_cache_keys: u64,
     weight_classes: Vec<usize>,
     local_variable: Vec<i32>,
     local_generation: Vec<u64>,
@@ -102,6 +108,9 @@ impl<'a> TrailEngine<'a> {
             use_prehashed_cache: false,
             use_fused_compact: false,
             use_weight_class_cache: false,
+            weight_cache_scope_max: None,
+            normalized_cache_keys: 0,
+            source_cache_keys: 0,
             weight_classes: Vec::new(),
             local_variable: vec![0; problem.n + 1],
             local_generation: vec![0; problem.n + 1],
@@ -500,8 +509,19 @@ impl<'a> TrailEngine<'a> {
             let key = self.key(scope.clone(), &ids);
             (ids, key)
         };
-        if self.use_weight_class_cache {
+        if self.use_weight_class_cache
+            && self.weight_cache_scope_max.is_none_or(|max| scope.len() <= max)
+        {
             self.relabel_weighted_key(&scope, &mut key)?;
+            if self.weight_cache_scope_max.is_some() {
+                // Original source scopes contain only variable IDs 1..n.
+                // This tag cannot equal any unmodified source scope,
+                // even if weight-class IDs happen to equal variable IDs.
+                key.scope.insert(0, 0);
+            }
+            self.normalized_cache_keys += 1;
+        } else {
+            self.source_cache_keys += 1;
         }
         let key_hash = if self.use_prehashed_cache {
             self.cache.hasher().hash_one(&key)
@@ -1031,4 +1051,85 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn small_component_admission_reuses_matching_weighted_components() {
+        for bits in [100_u32, 333_u32] {
+            let source = weighted_component_source("0.5");
+            let problem = parse_emitted(&source, bits).unwrap();
+            let mut previous = TrailEngine::new(&problem, bits, 128, 100_000);
+            previous.use_parent_ids = true;
+            previous.use_compact_residual = true;
+            previous.use_prehashed_cache = true;
+            previous.use_fused_compact = true;
+            let expected = previous.count((1..=6).collect(), 0).unwrap();
+            for max_vars in [3_usize, 16, 64] {
+                let mut candidate = TrailEngine::new(&problem, bits, 128, 100_000);
+                candidate.use_parent_ids = true;
+                candidate.use_compact_residual = true;
+                candidate.use_prehashed_cache = true;
+                candidate.use_fused_compact = true;
+                candidate.use_weight_class_cache = true;
+                candidate.weight_cache_scope_max = Some(max_vars);
+                let actual = candidate.count((1..=6).collect(), 0).unwrap();
+                assert_eq!((actual.sat, &actual.count.re, &actual.count.im),
+                           (expected.sat, &expected.count.re, &expected.count.im));
+                assert!(candidate.normalized_cache_keys > 0);
+                if max_vars == 3 {
+                    assert!(candidate.source_cache_keys > 0);
+                }
+                assert!(candidate.stats.nodes < previous.stats.nodes);
+                assert!(candidate.assigned.iter().all(|&x| x == 0));
+            }
+        }
+    }
+
+    #[test]
+    fn small_component_admission_does_not_alias_source_and_local_keys() {
+        let mut seed = 0x9e3779b97f4a7c15_u64;
+        for bits in [100_u32, 333_u32] {
+            for case in 0..40 {
+                let mut clauses = Vec::new();
+                for _ in 0..(4 + case % 10) {
+                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    let n = 1 + (seed as usize % 4);
+                    let mut clause = Vec::new();
+                    for _ in 0..n {
+                        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                        let var = 1 + (seed as usize % 5);
+                        clause.push(if seed & 4 == 0 { var as i32 } else { -(var as i32) });
+                    }
+                    clauses.push(clause);
+                }
+                let problem = Problem {
+                    n: 5, clauses,
+                    weights: (0..5).map(|i| crate::Weights {
+                        positive: C::decimal(bits, "0.5", "-0.25").unwrap(),
+                        negative: C::decimal(bits,
+                            if i % 2 == 0 { "-0.25" } else { "0.125" }, "0.5").unwrap(),
+                    }).collect(),
+                };
+                let mut control = TrailEngine::new(&problem, bits, 128, 100_000);
+                control.use_parent_ids = true;
+                control.use_compact_residual = true;
+                control.use_prehashed_cache = true;
+                control.use_fused_compact = true;
+                let expected = control.count((1..=5).collect(), 0).unwrap();
+                for max_vars in [1_usize, 2, 3, 16, 64] {
+                    let mut candidate = TrailEngine::new(&problem, bits, 128, 100_000);
+                    candidate.use_parent_ids = true;
+                    candidate.use_compact_residual = true;
+                    candidate.use_prehashed_cache = true;
+                    candidate.use_fused_compact = true;
+                    candidate.use_weight_class_cache = true;
+                    candidate.weight_cache_scope_max = Some(max_vars);
+                    let actual = candidate.count((1..=5).collect(), 0).unwrap();
+                    assert_eq!((actual.sat, actual.count.re, actual.count.im),
+                               (expected.sat, expected.count.re, expected.count.im),
+                               "case {case}, bits {bits}, max_vars {max_vars}");
+                    assert!(candidate.assigned.iter().all(|&x| x == 0));
+                }
+            }
+        }
+    }
+
 }

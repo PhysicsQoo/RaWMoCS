@@ -52,6 +52,8 @@ pub(crate) struct TrailEngine<'a> {
     pub(crate) weight_cache_scope_max: Option<usize>,
     pub(crate) normalized_cache_keys: u64,
     pub(crate) source_cache_keys: u64,
+    // Opt-in: compact signed residual literals directly in canonical local IDs.
+    pub(crate) use_inline_weight_relabel: bool,
     weight_classes: Vec<usize>,
     local_variable: Vec<i32>,
     local_generation: Vec<u64>,
@@ -111,6 +113,7 @@ impl<'a> TrailEngine<'a> {
             weight_cache_scope_max: None,
             normalized_cache_keys: 0,
             source_cache_keys: 0,
+            use_inline_weight_relabel: false,
             weight_classes: Vec::new(),
             local_variable: vec![0; problem.n + 1],
             local_generation: vec![0; problem.n + 1],
@@ -242,6 +245,7 @@ impl<'a> TrailEngine<'a> {
         &self,
         scope: &[usize],
         parent_ids: Option<&[usize]>,
+        inline_weight_relabel: bool,
     ) -> Option<(Vec<usize>, Vec<i32>)> {
         #[derive(Clone, Copy)]
         struct View {
@@ -274,7 +278,15 @@ impl<'a> TrailEngine<'a> {
                             }
                             first_unassigned = false;
                         }
-                        flat.push(lit);
+                        if inline_weight_relabel {
+                            // The component scope is pre-indexed. All local
+                            // ordinal IDs are positive and order-preserving,
+                            // so canonical sorting/dedup remains unchanged.
+                            let rank = self.local_variable[variable];
+                            flat.push(if lit < 0 { -rank } else { rank });
+                        } else {
+                            flat.push(lit);
+                        }
                     }
                 }
                 // A live, unsatisfied clause always has an unassigned
@@ -428,7 +440,7 @@ impl<'a> TrailEngine<'a> {
     // topology AND every corresponding variable has the same exact signed
     // Complex MPFR weights. Free scope variables stay in the signature.
     // No automorphism search; arbitrary reordering is NOT claimed safe.
-    fn relabel_weighted_key(&mut self, scope: &[usize], key: &mut PackedKey) -> Result<(), String> {
+    fn prepare_weighted_scope(&mut self, scope: &[usize]) -> Result<Vec<usize>, String> {
         self.local_epoch += 1;
         let stamp = self.local_epoch;
         let mut classes = Vec::with_capacity(scope.len());
@@ -440,6 +452,12 @@ impl<'a> TrailEngine<'a> {
             self.local_generation[variable] = stamp;
             classes.push(self.weight_classes[variable]);
         }
+        Ok(classes)
+    }
+
+    fn relabel_weighted_key(&mut self, scope: &[usize], key: &mut PackedKey) -> Result<(), String> {
+        let classes = self.prepare_weighted_scope(scope)?;
+        let stamp = self.local_epoch;
         for literal in &mut key.literals {
             if *literal == 0 {
                 continue;
@@ -490,8 +508,16 @@ impl<'a> TrailEngine<'a> {
             return Err("node limit".into());
         }
         self.stats.nodes += 1;
+        let localized = self.use_weight_class_cache
+            && self.weight_cache_scope_max.is_none_or(|max| scope.len() <= max);
+        let inline_relabel = localized && self.use_inline_weight_relabel;
+        let class_scope = if inline_relabel {
+            Some(self.prepare_weighted_scope(&scope)?)
+        } else {
+            None
+        };
         let (ids, mut key) = if self.use_compact_residual {
-            let Some((ids, literals)) = self.canonical_compact(&scope, parent_ids) else {
+            let Some((ids, literals)) = self.canonical_compact(&scope, parent_ids, inline_relabel) else {
                 return Ok(Outcome::unsat(self.bits));
             };
             self.cache_keys += 1;
@@ -509,12 +535,14 @@ impl<'a> TrailEngine<'a> {
             let key = self.key(scope.clone(), &ids);
             (ids, key)
         };
-        if self.use_weight_class_cache
-            && self
-                .weight_cache_scope_max
-                .is_none_or(|max| scope.len() <= max)
-        {
-            self.relabel_weighted_key(&scope, &mut key)?;
+        if localized {
+            if let Some(classes) = class_scope {
+                // The compact arena was already emitted with local ordinal
+                // signed literals, so no second full PackedKey traversal.
+                key.scope = classes;
+            } else {
+                self.relabel_weighted_key(&scope, &mut key)?;
+            }
             if self.weight_cache_scope_max.is_some() {
                 // Original source scopes contain only variable IDs 1..n.
                 // This tag cannot equal any unmodified source scope,
@@ -1148,4 +1176,44 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn inline_weight_relabel_exactly_matches_standalone_weight_cache() {
+        let input = concat!(
+            "p cnf 6 4\nc t wmc\n",
+            "1 2 0\n-1 -2 0\n",
+            "4 5 0\n-4 -5 0\n"
+        );
+        for bits in [100_u32, 333_u32] {
+            let p = parse_emitted(input, bits).unwrap();
+            for max_scope in [None, Some(1_usize), Some(2), Some(16)] {
+                let mut old = TrailEngine::new(&p, bits, 128, 100_000);
+                old.use_parent_ids = true;
+                old.use_compact_residual = true;
+                old.use_prehashed_cache = true;
+                old.use_fused_compact = true;
+                old.use_weight_class_cache = true;
+                old.weight_cache_scope_max = max_scope;
+                let expected = old.count((1..=p.n).collect(), 0).unwrap();
+                let mut inline = TrailEngine::new(&p, bits, 128, 100_000);
+                inline.use_parent_ids = true;
+                inline.use_compact_residual = true;
+                inline.use_prehashed_cache = true;
+                inline.use_fused_compact = true;
+                inline.use_weight_class_cache = true;
+                inline.weight_cache_scope_max = max_scope;
+                inline.use_inline_weight_relabel = true;
+                let actual = inline.count((1..=p.n).collect(), 0).unwrap();
+                assert_eq!(actual.sat, expected.sat);
+                assert_eq!(actual.count.re, expected.count.re);
+                assert_eq!(actual.count.im, expected.count.im);
+                assert_eq!(inline.stats.nodes, old.stats.nodes);
+                assert_eq!(inline.stats.cache_hits, old.stats.cache_hits);
+                assert_eq!(inline.stats.decompositions, old.stats.decompositions);
+                assert_eq!(inline.normalized_cache_keys, old.normalized_cache_keys);
+                assert_eq!(inline.source_cache_keys, old.source_cache_keys);
+                assert!(inline.trail.is_empty());
+            }
+        }
+    }
+
 }

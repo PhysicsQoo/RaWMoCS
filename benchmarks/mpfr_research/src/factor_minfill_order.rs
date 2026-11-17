@@ -134,6 +134,22 @@ mod tests {
     }
 
     #[test]
+    fn min_fill_can_select_a_different_variable_from_min_degree() {
+        // Graph edges: (1,2), (1,4), (1,5), (2,3), (2,5), (3,4).
+        // Min-degree picks variable 3; min-fill picks variable 5,
+        // whose two neighbors are already connected (zero fill).
+        let clauses = vec![
+            vec![1, 2], vec![1, 4], vec![1, 5],
+            vec![2, 3], vec![2, 5], vec![3, 4],
+        ];
+        let planned = plan(&clauses, &[1, 2, 3, 4, 5], 11);
+        assert!(!planned.capped);
+        assert_eq!(planned.order.len(), 5);
+        assert_eq!(planned.order[0], 5);
+        assert_ne!(planned.order[0], 3);
+    }
+
+    #[test]
     fn a_four_cycle_is_triangulated_deterministically() {
         let clauses = vec![vec![1, 2], vec![2, 3], vec![3, 4], vec![4, 1]];
         let profile = plan(&clauses, &[4, 2, 3, 1], 11);

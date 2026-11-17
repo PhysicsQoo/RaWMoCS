@@ -1032,6 +1032,10 @@ fn run() -> Result<(), String> {
     };
     let ve_ns = ve_start.elapsed().as_nanos();
     let ve_completed = ve_candidate.is_some();
+    eprintln!("RESEARCH_MPFR_FACTOR_VE_ADMISSION source_vars={} scope_vars={} source_clauses={} max_clause_width={} cap_reason={}",
+        ve_stats.source_vars, ve_stats.scope_vars, ve_stats.source_clauses,
+        ve_stats.source_max_clause_width,
+        if ve_stats.cap_reason.is_empty() { "none" } else { ve_stats.cap_reason });
     let mut engine = Engine::new(source, bits, cache_policy);
     engine.fast_assign = fast_assign;
     engine.shared_residual_key = shared_residual_key;
@@ -1104,10 +1108,6 @@ fn run() -> Result<(), String> {
         factor_ve, ve_completed, ve_stats.eligible, ve_stats.capped,
         ve_stats.factors, ve_stats.eliminated, ve_stats.width,
         ve_stats.cells, ve_stats.products, ve_stats.zero_sat, ve_ns);
-    eprintln!("RESEARCH_MPFR_FACTOR_VE_ADMISSION source_vars={} scope_vars={} source_clauses={} max_clause_width={} cap_reason={}",
-        ve_stats.source_vars, ve_stats.scope_vars, ve_stats.source_clauses,
-        ve_stats.source_max_clause_width,
-        if ve_stats.cap_reason.is_empty() { "none" } else { ve_stats.cap_reason });
     let empty_profile = primal_centroid::Profile::default();
     let td = primal_profile.as_ref().unwrap_or(&empty_profile);
     eprintln!("RESEARCH_MPFR_PRIMAL_BAG_CENTROID enabled={} root_only={} eligible={} capped={} vars={} edges={} width={} fill={} distance={} build_ns={} scans={} overrides={}",

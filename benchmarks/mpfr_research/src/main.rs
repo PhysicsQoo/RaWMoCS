@@ -18,6 +18,7 @@ mod weighted_equivalence;
 mod unit_closure_pivot;
 mod csr_workspace;
 mod trail_engine;
+mod separator_pivot;
 
 type Clause = Vec<i32>;
 
@@ -883,6 +884,10 @@ fn run() -> Result<(), String> {
     let cache_first = if fused_post_analysis {
         args.next().ok_or("missing cache policy or precision after --trail-fused-post-analysis")?
     } else { cache_first };
+    let articulation_pivot = cache_first.to_str() == Some("--trail-articulation-pivot");
+    let cache_first = if articulation_pivot {
+        args.next().ok_or("missing cache mode or precision after --trail-articulation-pivot")?
+    } else { cache_first };
     let cache_policy = match cache_first.to_str() {
         Some("--hashbrown-owned") => CachePolicy::HbOwned,
         Some("--hashbrown-borrowed") => CachePolicy::HbBorrowed,
@@ -945,6 +950,9 @@ fn run() -> Result<(), String> {
     if fused_post_analysis && !projected_post_key {
         return Err("--trail-fused-post-analysis requires --trail-post-unit-projected".into());
     }
+    if articulation_pivot && (!trail_count || post_unit_cache) {
+        return Err("--trail-articulation-pivot requires --trail-count without --trail-post-unit-cache".into());
+    }
     let path = args.next().ok_or("missing CNF")?;
     if args.next().is_some() { return Err("expected exactly one file".into()); }
     let t0 = Instant::now();
@@ -990,11 +998,14 @@ fn run() -> Result<(), String> {
         trail.use_post_unit_cache = post_unit_cache;
         trail.use_projected_post_key = projected_post_key;
         trail.use_fused_post_analysis = fused_post_analysis;
+        trail.use_articulation_pivot = articulation_pivot;
         let outcome = trail.count(scope, 0)?;
         (outcome, trail.stats,
          Some((trail.assignments, trail.cache_keys, trail.normalized_cache_keys,
                trail.source_cache_keys, trail.post_unit_hits, trail.post_unit_visited,
-               trail.post_unit_forced, trail.reused_unforced_keys, trail.projected_forced_keys)))
+               trail.post_unit_forced, trail.reused_unforced_keys, trail.projected_forced_keys,
+               trail.separator_scans, trail.separator_candidates, trail.separator_chosen,
+               trail.separator_skipped)))
     } else {
         let outcome = engine.count(source.clauses.clone(), scope, 0)?;
         (outcome, engine.stats, None)
@@ -1026,7 +1037,8 @@ fn run() -> Result<(), String> {
         reuse_csr_workspace, csr_slots, csr_literals, csr_clauses);
     let (trail_assignments, trail_cache_keys, trail_normalized_cache_keys, trail_source_cache_keys,
          post_unit_hits, post_unit_visited, post_unit_forced,
-         reused_unforced_keys, projected_forced_keys) = trail_profile.unwrap_or_default();
+         reused_unforced_keys, projected_forced_keys, separator_scans,
+         separator_candidates, separator_chosen, separator_skipped) = trail_profile.unwrap_or_default();
     eprintln!("RESEARCH_MPFR_TRAIL enabled={} assignments={} cache_keys={}",
         trail_count, trail_assignments, trail_cache_keys);
     eprintln!("RESEARCH_MPFR_TRAIL_PARENT_IDS enabled={}", trail_parent_ids);
@@ -1040,6 +1052,8 @@ fn run() -> Result<(), String> {
     eprintln!("RESEARCH_MPFR_POST_UNIT_PROJECTED enabled={} unchanged={} projected={}",
         projected_post_key, reused_unforced_keys, projected_forced_keys);
     eprintln!("RESEARCH_MPFR_POST_UNIT_FUSED_ANALYSIS enabled={}", fused_post_analysis);
+    eprintln!("RESEARCH_MPFR_TRAIL_ARTICULATION enabled={} scans={} candidates={} chosen={} skipped={}",
+        articulation_pivot, separator_scans, separator_candidates, separator_chosen, separator_skipped);
     eprintln!("RESEARCH_MPFR_TRAIL_WEIGHT_CLASS_SCOPE_MAX max={} localized_keys={} original_keys={}",
         weight_cache_scope_max.unwrap_or_default(), trail_normalized_cache_keys, trail_source_cache_keys);
     eprintln!("RESEARCH_MPFR_CACHE_POLICY {}", cache_policy.label());

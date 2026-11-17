@@ -22,7 +22,7 @@ from quprs_paired_native import parse_out
 from quprs_long_feynman_pilot import numerically_agree
 from quprs_cnf_projected_ab import SOURCE, BITS, QU_PRS_SHA, GPMC_SHA, sha, source_head, percentile
 
-ARMS = ("gpmc", "inline_full", "articulation_full")
+ARMS = ("gpmc", "inline_full", "articulation_root")
 BUDGET_S = 30
 AS_BYTES = 2_147_483_648
 INLINE_FLAGS = (
@@ -41,8 +41,8 @@ def build_command(args: argparse.Namespace, arm: str, digits: int, cnf: Path, ca
     cmd += ["--cache-limit=50000", "--indexed-unit-prop-csr-after-8192",
             "--packed-residual-key-fast", "--fast-assign",
             "--reuse-frequency-scratch", *INLINE_FLAGS]
-    if arm == "articulation_full":
-        cmd.append("--trail-articulation-pivot")
+    if arm == "articulation_root":
+        cmd.extend(["--trail-articulation-pivot", "--trail-articulation-root-only"])
     cmd += ["--hashbrown-borrowed", str(digits), str(cnf.resolve())]
     return cmd
 
@@ -74,17 +74,22 @@ def sample(command: list[str], arm: str, digits: int) -> dict:
                     r"^RESEARCH_MPFR_PHASE_NS read=(\d+) parse=(\d+) solve=(\d+) "
                     r"output=(\d+) nodes=(\d+) cache_hits=(\d+) decompositions=(\d+) "
                     r"digits=(\d+) bits=(\d+)$", proc.stderr, re.M)
+                root_only = re.search(
+                    r"^RESEARCH_MPFR_TRAIL_ARTICULATION_ROOT_ONLY enabled=(true|false)$",
+                    proc.stderr, re.M)
                 sep = re.search(
                     r"^RESEARCH_MPFR_TRAIL_ARTICULATION enabled=(true|false) "
                     r"scans=(\d+) candidates=(\d+) chosen=(\d+) skipped=(\d+)$",
                     proc.stderr, re.M)
-                if not phase or not sep:
+                if not phase or not sep or not root_only:
                     raise ValueError("missing original-CNF solver phase or articulation diagnostics")
                 fields = [int(v) for v in phase.groups()]
                 if fields[7] != digits or fields[8] != BITS[digits]:
                     raise ValueError("GPMC↔Rust MPFR precision drift")
-                if (sep.group(1) == "true") != (arm == "articulation_full"):
+                if (sep.group(1) == "true") != (arm == "articulation_root"):
                     raise ValueError("separator flag did not match arm")
+                if (root_only.group(1) == "true") != (arm == "articulation_root"):
+                    raise ValueError("root-only separator arm flag mismatch")
                 if arm == "inline_full" and any(int(x) for x in sep.groups()[1:]):
                     raise ValueError("disabled separator emitted nonzero counters")
                 row.update(nodes=fields[4], cache_hits=fields[5],
@@ -111,7 +116,7 @@ def main() -> None:
         raise SystemExit("PINNED_SOURCE_REVISION_DRIFT")
     args.report.parent.mkdir(parents=True, exist_ok=True)
     report = {
-        "study": "Original Weighted CNF exact articulation pivot vs Inline and GPMC",
+        "study": "Original Weighted CNF bounded root-only articulation pivot vs Inline and GPMC",
         "source_lock": {"quprs": QU_PRS_SHA, "gpmc": GPMC_SHA},
         "precision": "GPMC 30/100 decimal digits ↔ Rust 100/333 MPFR bits",
         "policy": {"wall_limit_seconds": BUDGET_S, "address_space_bytes": AS_BYTES,
@@ -190,7 +195,7 @@ def main() -> None:
             print(f"ARTICULATION_MATCHED case={case} bits={bits} " +
                   " ".join(f"{arm}_ms={cohort['stats'][arm]['p50_wall_ms']:.3f}"
                            for arm in ARMS) +
-                  f" sep_chosen={cohort['stats']['articulation_full']['p50_separator_chosen']}",
+                  f" sep_chosen={cohort['stats']['articulation_root']['p50_separator_chosen']}",
                   flush=True)
             args.report.write_text(json.dumps(report, indent=2) + "\n")
     report["qualified_cohorts"] = qualified

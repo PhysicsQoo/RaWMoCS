@@ -98,7 +98,12 @@ def sample(command: list[str], arm: str, digits: int) -> dict:
                     r"input_factors=(\d+) eliminated=(\d+) width=(\d+) cells=(\d+) "
                     r"products=(\d+) zero_sat=(\d+) ve_ns=(\d+)$",
                     proc.stderr, re.M)
-                if not phase or not sep or not root_only or not failed or not centroid or not ve:
+                admission = re.search(
+                    r"^RESEARCH_MPFR_FACTOR_VE_ADMISSION source_vars=(\d+) "
+                    r"scope_vars=(\d+) source_clauses=(\d+) "
+                    r"max_clause_width=(\d+) cap_reason=([a-z_]+)$",
+                    proc.stderr, re.M)
+                if not phase or not sep or not root_only or not failed or not centroid or not ve or not admission:
                     raise ValueError("missing original-CNF solver phase or articulation diagnostics")
                 if (ve.group(1) == "true") != (arm == "factor_ve"):
                     raise ValueError("factor VE arm flag mismatch")
@@ -149,6 +154,11 @@ def sample(command: list[str], arm: str, digits: int) -> dict:
                            factor_ve_products=int(ve.group(9)),
                            factor_ve_zero_sat=int(ve.group(10)),
                            factor_ve_ns=int(ve.group(11)),
+                           factor_ve_source_vars=int(admission.group(1)),
+                           factor_ve_scope_vars=int(admission.group(2)),
+                           factor_ve_source_clauses=int(admission.group(3)),
+                           factor_ve_max_clause_width=int(admission.group(4)),
+                           factor_ve_cap_reason=admission.group(5),
                            precision_bits=fields[8])
         except (OSError, ValueError) as exc:
             row["status"] = "CENSORED_INVALID_OUTPUT"
@@ -258,6 +268,16 @@ def main() -> None:
                     "p50_factor_ve_width": statistics.median(
                         [e["factor_ve_width"] for e in completed if e["arm"] == arm]
                     ) if arm != "gpmc" else None,
+                    "factor_ve_cap_reasons": sorted(set(
+                        e["factor_ve_cap_reason"] for e in completed if e["arm"] == arm
+                    )) if arm != "gpmc" else None,
+                    "source_envelope": {
+                        "vars": max(e["factor_ve_source_vars"] for e in completed if e["arm"] == arm),
+                        "scope": max(e["factor_ve_scope_vars"] for e in completed if e["arm"] == arm),
+                        "clauses": max(e["factor_ve_source_clauses"] for e in completed if e["arm"] == arm),
+                        "max_clause_width": max(e["factor_ve_max_clause_width"] for e in completed if e["arm"] == arm),
+                    } if arm != "gpmc" else None,
+
                 } for arm in ARMS
             }
             qualified += 1
@@ -266,7 +286,10 @@ def main() -> None:
                            for arm in ARMS) +
                   f" ve_complete={cohort['stats']['factor_ve']['p50_factor_ve_completed']}" +
                   f" ve_width={cohort['stats']['factor_ve']['p50_factor_ve_width']}" +
-                  f" ve_products={cohort['stats']['factor_ve']['p50_factor_ve_products']}",
+                  f" ve_products={cohort['stats']['factor_ve']['p50_factor_ve_products']}" +
+                  f" cap_reason={','.join(cohort['stats']['factor_ve']['factor_ve_cap_reasons'])}" +
+                  f" source_envelope={cohort['stats']['factor_ve']['source_envelope']}",
+
 
                   flush=True)
             args.report.write_text(json.dumps(report, indent=2) + "\n")

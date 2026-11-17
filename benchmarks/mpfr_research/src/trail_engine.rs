@@ -419,11 +419,7 @@ impl<'a> TrailEngine<'a> {
     // topology AND every corresponding variable has the same exact signed
     // Complex MPFR weights. Free scope variables stay in the signature.
     // No automorphism search; arbitrary reordering is NOT claimed safe.
-    fn relabel_weighted_key(
-        &mut self,
-        scope: &[usize],
-        key: &mut PackedKey,
-    ) -> Result<(), String> {
+    fn relabel_weighted_key(&mut self, scope: &[usize], key: &mut PackedKey) -> Result<(), String> {
         self.local_epoch += 1;
         let stamp = self.local_epoch;
         let mut classes = Vec::with_capacity(scope.len());
@@ -440,7 +436,8 @@ impl<'a> TrailEngine<'a> {
                 continue;
             }
             let original = literal.unsigned_abs() as usize;
-            if original == 0 || original > self.problem.n
+            if original == 0
+                || original > self.problem.n
                 || self.local_generation[original] != stamp
             {
                 return Err("residual outside weighted component scope".into());
@@ -868,21 +865,35 @@ mod tests {
         let mut result = String::from("p cnf 6 6\nc t wmc\n");
         for var in 1..=6 {
             let pair = (var - 1) % 3;
-            let p_real = if var == 4 { second_positive_real } else {
-                match pair { 0 => "0.5", 1 => "0.25", _ => "-0.125" }
+            let p_real = if var == 4 {
+                second_positive_real
+            } else {
+                match pair {
+                    0 => "0.5",
+                    1 => "0.25",
+                    _ => "-0.125",
+                }
             };
-            let p_im = match pair { 0 => "0.25", 1 => "-0.125", _ => "0.5" };
-            let n_real = match pair { 0 => "-0.25", 1 => "0.125", _ => "0.5" };
-            let n_im = match pair { 0 => "0.5", 1 => "0.25", _ => "-0.125" };
+            let p_im = match pair {
+                0 => "0.25",
+                1 => "-0.125",
+                _ => "0.5",
+            };
+            let n_real = match pair {
+                0 => "-0.25",
+                1 => "0.125",
+                _ => "0.5",
+            };
+            let n_im = match pair {
+                0 => "0.5",
+                1 => "0.25",
+                _ => "-0.125",
+            };
             result.push_str(&format!("c p weight {var} {p_real} {p_im} 0\n"));
             result.push_str(&format!("c p weight -{var} {n_real} {n_im} 0\n"));
         }
-        result.push_str(
-            "1 2 0\n-1 3 0\n-2 -3 0\n"
-        );
-        result.push_str(
-            "4 5 0\n-4 6 0\n-5 -6 0\n"
-        );
+        result.push_str("1 2 0\n-1 3 0\n-2 -3 0\n");
+        result.push_str("4 5 0\n-4 6 0\n-5 -6 0\n");
         result
     }
 
@@ -895,9 +906,9 @@ mod tests {
                 let mut independent = Engine::new(&problem, bits, CachePolicy::HbBorrowed);
                 independent.cache_limit = cache_limit;
                 independent.fast_assign = true;
-                let expected = independent.count(
-                    problem.clauses.clone(), (1..=problem.n).collect(), 0
-                ).unwrap();
+                let expected = independent
+                    .count(problem.clauses.clone(), (1..=problem.n).collect(), 0)
+                    .unwrap();
                 let mut baseline = TrailEngine::new(&problem, bits, cache_limit, 100_000);
                 baseline.use_parent_ids = true;
                 baseline.use_compact_residual = true;
@@ -911,10 +922,14 @@ mod tests {
                 candidate.use_fused_compact = true;
                 candidate.use_weight_class_cache = true;
                 let actual = candidate.count((1..=problem.n).collect(), 0).unwrap();
-                assert_eq!((actual.sat, &actual.count.re, &actual.count.im),
-                           (expected.sat, &expected.count.re, &expected.count.im));
-                assert_eq!((actual.sat, &actual.count.re, &actual.count.im),
-                           (old.sat, &old.count.re, &old.count.im));
+                assert_eq!(
+                    (actual.sat, &actual.count.re, &actual.count.im),
+                    (expected.sat, &expected.count.re, &expected.count.im)
+                );
+                assert_eq!(
+                    (actual.sat, &actual.count.re, &actual.count.im),
+                    (old.sat, &old.count.re, &old.count.im)
+                );
                 assert!(candidate.assigned.iter().all(|&x| x == 0));
                 assert!(candidate.trail.is_empty());
                 assert_eq!(candidate.weight_classes[1], candidate.weight_classes[4]);
@@ -969,18 +984,28 @@ mod tests {
                     for _ in 0..n {
                         seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
                         let var = 1 + (seed as usize % 5);
-                        clause.push(if seed & 4 == 0 { var as i32 } else { -(var as i32) });
+                        clause.push(if seed & 4 == 0 {
+                            var as i32
+                        } else {
+                            -(var as i32)
+                        });
                     }
                     clauses.push(clause);
                 }
                 let problem = Problem {
                     n: 5,
                     clauses,
-                    weights: (0..5).map(|i| crate::Weights {
-                        positive: C::decimal(bits, "0.5", "-0.25").unwrap(),
-                        negative: C::decimal(bits,
-                            if i % 2 == 0 { "-0.25" } else { "0.125" }, "0.5").unwrap(),
-                    }).collect(),
+                    weights: (0..5)
+                        .map(|i| crate::Weights {
+                            positive: C::decimal(bits, "0.5", "-0.25").unwrap(),
+                            negative: C::decimal(
+                                bits,
+                                if i % 2 == 0 { "-0.25" } else { "0.125" },
+                                "0.5",
+                            )
+                            .unwrap(),
+                        })
+                        .collect(),
                 };
                 for cap in [0_usize, 128] {
                     let mut baseline = TrailEngine::new(&problem, bits, cap, 100_000);
@@ -996,13 +1021,14 @@ mod tests {
                     candidate.use_fused_compact = true;
                     candidate.use_weight_class_cache = true;
                     let actual = candidate.count((1..=5).collect(), 0).unwrap();
-                    assert_eq!((actual.sat, actual.count.re, actual.count.im),
-                               (old.sat, old.count.re, old.count.im),
-                               "source {case}, bits {bits}, capacity {cap}");
+                    assert_eq!(
+                        (actual.sat, actual.count.re, actual.count.im),
+                        (old.sat, old.count.re, old.count.im),
+                        "source {case}, bits {bits}, capacity {cap}"
+                    );
                     assert!(candidate.assigned.iter().all(|&x| x == 0));
                 }
             }
         }
     }
-
 }

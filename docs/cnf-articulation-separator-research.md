@@ -78,3 +78,41 @@ and a credible improvement on censored hard instances. If no consistent
 benefit, retain the benchmark evidence and move to a true multi-variable
 separator / tree decomposition or exact weighted-safe equivalence
 preprocessor PoC on the *same* source CNF. All code remains research-only.
+
+
+## 2026-11-17 follow-up: root-only counterexample after recursive No-Go
+
+[Initial all-depth native CI](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/44005152394)
+did **not** meet its six-cohort acceptance gate: HWB6 100/333-bit
+Articulation arm was censored in each of seven fresh-process trials,
+even though unchanged GPMC and Rust Inline completed; Grover5 remained
+censored for both Rust arms. Four short source×precision cohorts
+qualified, but all four regressed versus Inline. For ModMult55,
+repeated cut-vertex selection made 1,683 separator pivots; nodes rose
+from 3,879 to 6,985, and p50 native WallTime from 17.089 ms to
+33.533 ms at 100 bits (333 bits: 18.126 to 35.296 ms).
+This is negative algorithmic evidence, not merely a test-script bug.
+Never weaken the original six-cohort qualification threshold.
+
+The independent root-only arm keeps exactly the same original CNF
+and signed complex literal weights; the only change is that factor-graph
+articulation probing is allowed **at DPLL depth zero only**, then
+Frequency is used recursively. The guarded opt-in flag
+`--trail-articulation-root-only` requires
+`--trail-articulation-pivot` and remains incompatible
+with post-unit caching. The runner compares unchanged GPMC, Inline,
+and Root-Only in seven fresh order-rotated paired trials for all
+complete original source×100/333-bit cohorts, preserving all failures,
+Boolean SAT and both signed Complex WMC components, nodes,
+p50/p90 full WallTime and peak RSS, and separator counts.
+
+A root-only cap avoids repeated graph analysis but can still choose a
+harmful root and expand the total search. **This is not claimed as a win.**
+Retain the original six-cohort qualification gate; a production default
+also requires material native WallTime and DPLL-node improvements
+without hard-case regression against Inline. If root-only is negative,
+do not keep tuning arbitrary separator cut ordering; instead research
+comparative bounded cofactor costs and exact signed-weight-preserving
+preprocessing with independent Gaussian WMC controls.
+
+No changes to the production Rust core or QuPRS GPMC default.

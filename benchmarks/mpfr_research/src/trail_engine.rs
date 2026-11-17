@@ -1824,6 +1824,41 @@ mod tests {
     }
 
     #[test]
+    fn root_only_separator_preserves_complex_wmc_and_limits_pivot_probes() {
+        let source = "p cnf 5 6\nc t wmc\nc p weight 3 0.25 -0.125 0\nc p weight -3 -0.5 0.25 0\n1 2 0\n1 3 0\n2 3 0\n3 4 0\n3 5 0\n4 5 0\n";
+        for bits in [100_u32, 333] {
+            let problem = parse_emitted(source, bits).unwrap();
+            for limit in [0_usize, 1, 128] {
+                let mut baseline = TrailEngine::new(&problem, bits, limit, 100_000);
+                baseline.use_parent_ids = true;
+                baseline.use_compact_residual = true;
+                baseline.use_prehashed_cache = true;
+                baseline.use_fused_compact = true;
+                baseline.use_weight_class_cache = true;
+                baseline.use_inline_weight_relabel = true;
+                let expected = baseline.count((1..=problem.n).collect(), 0).unwrap();
+
+                let mut root = TrailEngine::new(&problem, bits, limit, 100_000);
+                root.use_parent_ids = true;
+                root.use_compact_residual = true;
+                root.use_prehashed_cache = true;
+                root.use_fused_compact = true;
+                root.use_weight_class_cache = true;
+                root.use_inline_weight_relabel = true;
+                root.use_articulation_pivot = true;
+                root.articulation_root_only = true;
+                let actual = root.count((1..=problem.n).collect(), 0).unwrap();
+                assert_eq!(actual.sat, expected.sat);
+                assert_eq!(actual.count.re, expected.count.re);
+                assert_eq!(actual.count.im, expected.count.im);
+                assert!(root.separator_scans <= 1);
+                assert!(root.separator_chosen <= 1);
+                assert!(root.assigned.iter().all(|&v| v == 0));
+            }
+        }
+    }
+
+    #[test]
     fn fused_post_analysis_preserves_weighted_search() {
         let inputs = [
             "p cnf 7 8\nc t wmc\n1 2 0\n-1 -2 0\n1 3 4 0\n2 3 4 0\n1 6 7 0\n2 6 7 0\n3 5 0\n4 5 0\n",

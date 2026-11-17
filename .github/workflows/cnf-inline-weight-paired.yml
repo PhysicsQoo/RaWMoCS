@@ -14,8 +14,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: same-cnf-selective-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: same-cnf-inline-weight-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
 
 jobs:
   paired-weighted-cnf:
@@ -104,13 +104,13 @@ jobs:
             --gpmc .upstream/gpmc/build/gpmc \
             --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
             --trials 7 \
-            --report .research/weighted-cnf-inline/selective-eleven-arm.json \
+            --report .research/weighted-cnf-inline/inline-thirteen-arm.json \
             | tee .research/weighted-cnf-inline/study.log
       - name: Preserve complete positive, negative and censored source evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: original-quprs-weighted-cnf-inline-residual-gpmc-six-arm
+          name: original-quprs-weighted-cnf-inline-thirteen-arm
           path: .research/weighted-cnf-inline/
           retention-days: 30
           if-no-files-found: warn

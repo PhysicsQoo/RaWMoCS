@@ -911,6 +911,10 @@ fn run() -> Result<(), String> {
     let cache_first = if factor_ve {
         args.next().ok_or("missing mode after --factor-variable-elimination")?
     } else { cache_first };
+    let residual_factor_ve = cache_first.to_str() == Some("--trail-residual-factor-ve");
+    let cache_first = if residual_factor_ve {
+        args.next().ok_or("missing mode after --trail-residual-factor-ve")?
+    } else { cache_first };
     let cache_policy = match cache_first.to_str() {
         Some("--hashbrown-owned") => CachePolicy::HbOwned,
         Some("--hashbrown-borrowed") => CachePolicy::HbBorrowed,
@@ -972,6 +976,10 @@ fn run() -> Result<(), String> {
     }
     if fused_post_analysis && !projected_post_key {
         return Err("--trail-fused-post-analysis requires --trail-post-unit-projected".into());
+    }
+    if residual_factor_ve && (!weighted_equivalence || !trail_count || factor_ve
+        || post_unit_cache || articulation_pivot || primal_order || root_failed_literal) {
+        return Err("--trail-residual-factor-ve requires weighted-equivalence + trail-count, without other root transforms".into());
     }
     if factor_ve && (!weighted_equivalence || !trail_count || post_unit_cache
                      || articulation_pivot || primal_order || root_failed_literal) {
@@ -1051,6 +1059,7 @@ fn run() -> Result<(), String> {
     engine.unit_closure_pivot = unit_closure_pivot;
     engine.reuse_csr_workspace = reuse_csr_workspace;
     engine.indexed_activation_node = indexed_activation_node;
+    let mut residual_ve_metrics = (0_u64, 0_u64, 0_u64, 0_u64, 0_usize);
     let (answer, solver_stats, trail_profile, primal_scans, primal_overrides) =
         if let Some(answer) = ve_candidate {
             // A complete factor-semiring count has NO DPLL nodes.
@@ -1071,6 +1080,7 @@ fn run() -> Result<(), String> {
         trail.use_fused_post_analysis = fused_post_analysis;
         trail.use_articulation_pivot = articulation_pivot;
         trail.articulation_root_only = articulation_root_only;
+        trail.use_residual_factor_ve = residual_factor_ve;
         if let Some(ref profile) = primal_profile {
             if profile.eligible {
                 trail.primal_scores = Some(profile.scores.clone());
@@ -1078,6 +1088,11 @@ fn run() -> Result<(), String> {
             }
         }
         let outcome = trail.count(scope, 0)?;
+        residual_ve_metrics = (
+            trail.residual_ve_attempts, trail.residual_ve_completed,
+            trail.residual_ve_capped, trail.residual_ve_products,
+            trail.residual_ve_max_width,
+        );
         (outcome, trail.stats,
          Some((trail.assignments, trail.cache_keys, trail.normalized_cache_keys,
                trail.source_cache_keys, trail.post_unit_hits, trail.post_unit_visited,
@@ -1104,6 +1119,9 @@ fn run() -> Result<(), String> {
         reduction_stats.eliminated_vars, reduction_stats.removed_clauses,
         reduction_stats.representatives, reduction_stats.contradictory,
         reduction_stats.censored);
+    eprintln!("RESEARCH_MPFR_RESIDUAL_VE enabled={} attempts={} completed={} capped={} products={} max_width={}",
+        residual_factor_ve, residual_ve_metrics.0, residual_ve_metrics.1,
+        residual_ve_metrics.2, residual_ve_metrics.3, residual_ve_metrics.4);
     eprintln!("RESEARCH_MPFR_FACTOR_VE enabled={} completed={} eligible={} capped={} input_factors={} eliminated={} width={} cells={} products={} zero_sat={} ve_ns={}",
         factor_ve, ve_completed, ve_stats.eligible, ve_stats.capped,
         ve_stats.factors, ve_stats.eliminated, ve_stats.width,

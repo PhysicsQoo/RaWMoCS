@@ -23,6 +23,7 @@ mod separator_pivot;
 mod primal_centroid;
 mod factor_variable_elimination;
 mod factor_minfill_order;
+mod factor_primal_minor_bound;
 
 type Clause = Vec<i32>;
 
@@ -1063,6 +1064,13 @@ fn run() -> Result<(), String> {
     let ve_completed = ve_candidate.is_some();
     eprintln!("RESEARCH_MPFR_FACTOR_VE_SCOPE_PROBE enabled={} limit={}",
         scope_probe_320, if scope_probe_320 { 320 } else { 256 });
+    if ve_min_fill {
+        let begin = std::time::Instant::now();
+        let minor = factor_primal_minor_bound::minor_min_width(&source.clauses, &scope);
+        eprintln!("RESEARCH_MPFR_FACTOR_VE_MINOR_BOUND eligible={} treewidth_lower={} bucket_lower={} contractions={} compute_ns={}",
+            !minor.capped, minor.treewidth_lower, minor.treewidth_lower + 1,
+            minor.contractions, begin.elapsed().as_nanos());
+    }
     eprintln!("RESEARCH_MPFR_FACTOR_VE_ORDER minfill={} predicted_width={} fill_edges={} candidates={} plan_ns={}",
         ve_min_fill, ve_stats.minfill_plan_width, ve_stats.minfill_fill_edges,
         ve_stats.minfill_candidates, ve_stats.minfill_plan_ns);

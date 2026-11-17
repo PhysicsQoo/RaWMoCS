@@ -98,7 +98,12 @@ def sample(command: list[str], arm: str, digits: int) -> dict:
                     r"input_factors=(\d+) eliminated=(\d+) width=(\d+) cells=(\d+) "
                     r"products=(\d+) zero_sat=(\d+) ve_ns=(\d+)$",
                     proc.stderr, re.M)
-                if not phase or not sep or not root_only or not failed or not centroid or not ve:
+                residual_ve = re.search(
+                    r"^RESEARCH_MPFR_RESIDUAL_VE enabled=(true|false) "
+                    r"attempts=(\d+) completed=(\d+) capped=(\d+) "
+                    r"products=(\d+) max_width=(\d+)$",
+                    proc.stderr, re.M)
+                if not phase or not sep or not root_only or not failed or not centroid or not ve or not residual_ve:
                     raise ValueError("missing original-CNF solver phase or articulation diagnostics")
                 fields = [int(v) for v in phase.groups()]
                 if fields[7] != digits or fields[8] != BITS[digits]:
@@ -147,6 +152,12 @@ def sample(command: list[str], arm: str, digits: int) -> dict:
                            factor_ve_products=int(ve.group(9)),
                            factor_ve_zero_sat=int(ve.group(10)),
                            factor_ve_ns=int(ve.group(11)),
+                           residual_ve_enabled=(residual_ve.group(1) == "true"),
+                           residual_ve_attempts=int(residual_ve.group(2)),
+                           residual_ve_completed=int(residual_ve.group(3)),
+                           residual_ve_capped=int(residual_ve.group(4)),
+                           residual_ve_products=int(residual_ve.group(5)),
+                           residual_ve_max_width=int(residual_ve.group(6)),
                            precision_bits=fields[8])
         except (OSError, ValueError) as exc:
             row["status"] = "CENSORED_INVALID_OUTPUT"

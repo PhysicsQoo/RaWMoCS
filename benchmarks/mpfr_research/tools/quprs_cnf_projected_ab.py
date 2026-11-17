@@ -33,7 +33,12 @@ SOURCE = {
     "feynman_grover_5": "benchmarks/Feynman/grover_5.qasm",
 }
 BITS = {30: 100, 100: 333}
+# Single source of truth: only these arms set a bounded component scope.
+# Full-scope fused_analysis must not enter this map.
+SCOPE_LIMITS = {"scoped16": 16, "scoped64": 64, "inline16": 16,
+                "post16": 16, "projected16": 16}
 ARMS = ("gpmc", "control", "equivalence", "trail", "parent_ids", "compact", "prehash", "fused", "weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16", "fused_analysis")
+assert not (set(SCOPE_LIMITS) - set(ARMS)), 'unknown bounded-scope arm'
 BUDGET_S = 30
 AS_BYTES = 2147483648
 
@@ -158,8 +163,7 @@ def sample(cmd: list[str], arm: str, precision: int) -> dict:
                     raise ValueError("fused compact literal filter CLI option mismatch")
                 if (weighted_cache.group(1) == "true") != (arm in ("weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16", "fused_analysis")):
                     raise ValueError("weight-class component cache CLI mismatch")
-                expected_max = {"scoped16": 16, "scoped64": 64,
-                                "inline16": 16, "post16": 16, "projected16": 16}.get(arm, 0)
+                expected_max = SCOPE_LIMITS.get(arm, 0)
                 if int(scoped_key.group(1)) != expected_max:
                     raise ValueError("small-component key admission threshold mismatch")
                 if (inline_flag.group(1) == "true") != (arm in ("inline16", "inline_full", "post_full", "post16", "projected_full", "projected16", "fused_analysis")):
@@ -235,7 +239,7 @@ def main() -> None:
     if source_head(args.quprs) != QU_PRS_SHA or source_head(args.gpmc_source) != GPMC_SHA:
         raise SystemExit("PINNED_SOURCE_REVISION_DRIFT")
     report = {
-        "study": "Domain-separated, bounded 16/64 variable scope admission vs all-scope weight-class component memoization",
+        "study": "18-arm same-CNF post-unit frequency/component DSU traversal fusion versus projected full-scope and scoped control",
         "quprs_revision": QU_PRS_SHA,
         "gpmc_revision": GPMC_SHA,
         "input_boundary": "identical original QuPRS Weighted CNF bytes for all arms; no native ANF path",
@@ -296,11 +300,8 @@ def main() -> None:
                             cmd += ["--trail-fused-compact"]
                         if arm in ("weight_cache", "scoped16", "scoped64", "inline16", "inline_full", "post_full", "post16", "projected_full", "projected16", "fused_analysis"):
                             cmd += ["--trail-weight-class-cache"]
-                        if arm in ("scoped16", "scoped64", "inline16", "post16", "projected16", "fused_analysis"):
-                            cmd += ["--trail-cache-scope-max=" + str(
-                                {"scoped16": 16, "scoped64": 64, "inline16": 16,
-                                 "post16": 16, "projected16": 16}[arm]
-                            )]
+                        if arm in SCOPE_LIMITS:
+                            cmd += [f"--trail-cache-scope-max={SCOPE_LIMITS[arm]}"]
                         if arm in ("inline16", "inline_full", "post_full", "post16", "projected_full", "projected16", "fused_analysis"):
                             cmd += ["--trail-inline-weight-relabel"]
                         if arm in ("post_full", "post16", "projected_full", "projected16", "fused_analysis"):

@@ -1,4 +1,4 @@
-name: Same-CNF exact Rust articulation separator pivot research
+name: Same-CNF exact Rust root-only articulation pivot research
 
 on:
   pull_request:
@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: same-cnf-articulation-pivot-${{ github.event.pull_request.number || github.ref }}
+  group: same-cnf-root-articulation-pivot-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -96,7 +96,7 @@ jobs:
           cargo build --release \
             --manifest-path benchmarks/mpfr_research/Cargo.toml
           python3 -m py_compile benchmarks/mpfr_research/tools/quprs_cnf_articulation_ab.py
-      - name: Paired original Weighted CNF GPMC versus Inline and articulation separator Rust
+      - name: Paired original Weighted CNF GPMC versus Inline and root-only articulation Rust
         shell: bash
         run: |
           set -euo pipefail
@@ -107,13 +107,13 @@ jobs:
             --gpmc .upstream/gpmc/build/gpmc \
             --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
             --trials 7 \
-            --report .research/weighted-cnf-articulation/articulation-three-arm.json \
+            --report .research/weighted-cnf-articulation/root-articulation-three-arm.json \
             | tee .research/weighted-cnf-articulation/study.log
       - name: Preserve complete positive, negative and censored source evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: original-quprs-weighted-cnf-articulation-three-arm
+          name: original-quprs-weighted-cnf-root-articulation-three-arm
           path: .research/weighted-cnf-articulation/
           retention-days: 30
           if-no-files-found: warn

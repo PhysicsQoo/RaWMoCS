@@ -81,13 +81,20 @@ def sample(command: list[str], arm: str, digits: int) -> dict:
                     r"^RESEARCH_MPFR_TRAIL_ARTICULATION enabled=(true|false) "
                     r"scans=(\d+) candidates=(\d+) chosen=(\d+) skipped=(\d+)$",
                     proc.stderr, re.M)
-                if not phase or not sep or not root_only:
+                failed = re.search(
+                    r"^RESEARCH_MPFR_ROOT_FAILED_LITERAL enabled=(true|false) "
+                    r"eligible=(\d+) candidates=(\d+) probes=(\d+) implied=(\d+) "
+                    r"refutations=(\d+) work=(\d+) contradiction=(true|false) "
+                    r"capped=(true|false)$", proc.stderr, re.M)
+                if not phase or not sep or not root_only or not failed:
                     raise ValueError("missing original-CNF solver phase or articulation diagnostics")
                 fields = [int(v) for v in phase.groups()]
                 if fields[7] != digits or fields[8] != BITS[digits]:
                     raise ValueError("GPMC↔Rust MPFR precision drift")
                 if (sep.group(1) == "true") != (arm == "articulation_root"):
                     raise ValueError("separator flag did not match arm")
+                if (failed.group(1) == "true") != (arm == "failed_literal"):
+                    raise ValueError("failed-literal flag does not match arm")
                 if (root_only.group(1) == "true") != (arm == "articulation_root"):
                     raise ValueError("root-only separator arm flag mismatch")
                 if arm == "inline_full" and any(int(x) for x in sep.groups()[1:]):
@@ -98,6 +105,13 @@ def sample(command: list[str], arm: str, digits: int) -> dict:
                            separator_candidates=int(sep.group(3)),
                            separator_chosen=int(sep.group(4)),
                            separator_skipped=int(sep.group(5)),
+                           failed_candidates=int(failed.group(3)),
+                           failed_probes=int(failed.group(4)),
+                           implied_units=int(failed.group(5)),
+                           failed_refutations=int(failed.group(6)),
+                           failed_work=int(failed.group(7)),
+                           failed_contradicted=(failed.group(8) == "true"),
+                           failed_capped=(failed.group(9) == "true"),
                            precision_bits=fields[8])
         except (OSError, ValueError) as exc:
             row["status"] = "CENSORED_INVALID_OUTPUT"

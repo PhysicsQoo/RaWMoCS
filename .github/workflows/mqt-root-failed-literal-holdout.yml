@@ -94,7 +94,7 @@ jobs:
         run: |
           cargo test --release --manifest-path benchmarks/mpfr_research/Cargo.toml
           cargo build --release --manifest-path benchmarks/mpfr_research/Cargo.toml
-      - name: Original MQT weighted CNF: GPMC versus Rust Inline and root failed-literal closure
+      - name: Original MQT weighted CNF GPMC versus Rust Inline and root failed-literal closure
         run: |
           set -euo pipefail
           python3 -m py_compile benchmarks/mpfr_research/tools/quprs_mqt_failed_literal_ab.py

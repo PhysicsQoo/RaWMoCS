@@ -1,4 +1,4 @@
-name: Same-CNF GPMC versus Rust projected projected-unit weighted component cache research
+name: Same-CNF GPMC versus Rust projected-unit weighted component cache research
 
 on:
   pull_request:

@@ -42,6 +42,14 @@ pub(crate) struct TrailEngine<'a> {
     // On compact keys, fuse scope admission and literal compaction into
     // one source-clause traversal rather than scanning twice per node.
     pub(crate) use_fused_compact: bool,
+    // Exact, order-preserving variable relabeling for identical weighted
+    // components. A cache hit is permitted only when all positive AND
+    // negative Complex MPFR weight values agree at the same precision.
+    pub(crate) use_weight_class_cache: bool,
+    weight_classes: Vec<usize>,
+    local_variable: Vec<i32>,
+    local_generation: Vec<u64>,
+    local_epoch: u64,
 }
 
 fn slot(lit: i32) -> usize {
@@ -93,6 +101,11 @@ impl<'a> TrailEngine<'a> {
             use_compact_residual: false,
             use_prehashed_cache: false,
             use_fused_compact: false,
+            use_weight_class_cache: false,
+            weight_classes: Vec::new(),
+            local_variable: vec![0; problem.n + 1],
+            local_generation: vec![0; problem.n + 1],
+            local_epoch: 0,
         }
     }
 
@@ -371,7 +384,78 @@ impl<'a> TrailEngine<'a> {
         groups.into_values().collect()
     }
 
+    // The fingerprint is computed once per experiment (not for the Fused
+    // control). A full binary MPFR mantissa, exponent, sign and signed zero
+    // are preserved by radix-16 formatting with >= ceil(bits/4)+2 digits.
+    // This is a conservative weight-class *identity*, not an approximate
+    // numerical/tolerance clustering rule.
+    fn initialize_weight_classes(&mut self) {
+        if !self.weight_classes.is_empty() {
+            return;
+        }
+        let digits = (self.bits.div_ceil(4) + 3) as usize;
+        let mut known = BTreeMap::new();
+        self.weight_classes = vec![0; self.problem.n + 1];
+        for (index, weight) in self.problem.weights.iter().enumerate() {
+            let signature = (
+                weight.positive.re.to_string_radix(16, Some(digits)),
+                weight.positive.im.to_string_radix(16, Some(digits)),
+                weight.negative.re.to_string_radix(16, Some(digits)),
+                weight.negative.im.to_string_radix(16, Some(digits)),
+            );
+            let id = if let Some(&existing) = known.get(&signature) {
+                existing
+            } else {
+                let next = known.len() + 1;
+                known.insert(signature, next);
+                next
+            };
+            self.weight_classes[index + 1] = id;
+        }
+    }
+
+    // Different source variable IDs may share a PackedKey only when the
+    // order-preserving positional relabeling produces the same literal
+    // topology AND every corresponding variable has the same exact signed
+    // Complex MPFR weights. Free scope variables stay in the signature.
+    // No automorphism search; arbitrary reordering is NOT claimed safe.
+    fn relabel_weighted_key(
+        &mut self,
+        scope: &[usize],
+        key: &mut PackedKey,
+    ) -> Result<(), String> {
+        self.local_epoch += 1;
+        let stamp = self.local_epoch;
+        let mut classes = Vec::with_capacity(scope.len());
+        for (offset, &variable) in scope.iter().enumerate() {
+            if variable == 0 || variable > self.problem.n || offset >= i32::MAX as usize {
+                return Err("invalid weighted component scope".into());
+            }
+            self.local_variable[variable] = (offset + 1) as i32;
+            self.local_generation[variable] = stamp;
+            classes.push(self.weight_classes[variable]);
+        }
+        for literal in &mut key.literals {
+            if *literal == 0 {
+                continue;
+            }
+            let original = literal.unsigned_abs() as usize;
+            if original == 0 || original > self.problem.n
+                || self.local_generation[original] != stamp
+            {
+                return Err("residual outside weighted component scope".into());
+            }
+            let rank = self.local_variable[original];
+            *literal = if *literal < 0 { -rank } else { rank };
+        }
+        key.scope = classes;
+        Ok(())
+    }
+
     pub(crate) fn count(&mut self, scope: Vec<usize>, depth: usize) -> Result<Outcome, String> {
+        if self.use_weight_class_cache {
+            self.initialize_weight_classes();
+        }
         self.count_relevant(scope, depth, None)
     }
 
@@ -400,7 +484,7 @@ impl<'a> TrailEngine<'a> {
             return Err("node limit".into());
         }
         self.stats.nodes += 1;
-        let (ids, key) = if self.use_compact_residual {
+        let (ids, mut key) = if self.use_compact_residual {
             let Some((ids, literals)) = self.canonical_compact(&scope, parent_ids) else {
                 return Ok(Outcome::unsat(self.bits));
             };
@@ -419,6 +503,9 @@ impl<'a> TrailEngine<'a> {
             let key = self.key(scope.clone(), &ids);
             (ids, key)
         };
+        if self.use_weight_class_cache {
+            self.relabel_weighted_key(&scope, &mut key)?;
+        }
         let key_hash = if self.use_prehashed_cache {
             self.cache.hasher().hash_one(&key)
         } else {
@@ -777,4 +864,145 @@ mod tests {
             }
         }
     }
+    fn weighted_component_source(second_positive_real: &str) -> String {
+        let mut result = String::from("p cnf 6 6\nc t wmc\n");
+        for var in 1..=6 {
+            let pair = (var - 1) % 3;
+            let p_real = if var == 4 { second_positive_real } else {
+                match pair { 0 => "0.5", 1 => "0.25", _ => "-0.125" }
+            };
+            let p_im = match pair { 0 => "0.25", 1 => "-0.125", _ => "0.5" };
+            let n_real = match pair { 0 => "-0.25", 1 => "0.125", _ => "0.5" };
+            let n_im = match pair { 0 => "0.5", 1 => "0.25", _ => "-0.125" };
+            result.push_str(&format!("c p weight {var} {p_real} {p_im} 0\n"));
+            result.push_str(&format!("c p weight -{var} {n_real} {n_im} 0\n"));
+        }
+        result.push_str(
+            "1 2 0\n-1 3 0\n-2 -3 0\n"
+        );
+        result.push_str(
+            "4 5 0\n-4 6 0\n-5 -6 0\n"
+        );
+        result
+    }
+
+    #[test]
+    fn weight_class_remap_reuses_disjoint_identical_complex_components() {
+        for bits in [100_u32, 333_u32] {
+            let source = weighted_component_source("0.5");
+            let problem = parse_emitted(&source, bits).unwrap();
+            for cache_limit in [0_usize, 1, 128] {
+                let mut independent = Engine::new(&problem, bits, CachePolicy::HbBorrowed);
+                independent.cache_limit = cache_limit;
+                independent.fast_assign = true;
+                let expected = independent.count(
+                    problem.clauses.clone(), (1..=problem.n).collect(), 0
+                ).unwrap();
+                let mut baseline = TrailEngine::new(&problem, bits, cache_limit, 100_000);
+                baseline.use_parent_ids = true;
+                baseline.use_compact_residual = true;
+                baseline.use_prehashed_cache = true;
+                baseline.use_fused_compact = true;
+                let old = baseline.count((1..=problem.n).collect(), 0).unwrap();
+                let mut candidate = TrailEngine::new(&problem, bits, cache_limit, 100_000);
+                candidate.use_parent_ids = true;
+                candidate.use_compact_residual = true;
+                candidate.use_prehashed_cache = true;
+                candidate.use_fused_compact = true;
+                candidate.use_weight_class_cache = true;
+                let actual = candidate.count((1..=problem.n).collect(), 0).unwrap();
+                assert_eq!((actual.sat, &actual.count.re, &actual.count.im),
+                           (expected.sat, &expected.count.re, &expected.count.im));
+                assert_eq!((actual.sat, &actual.count.re, &actual.count.im),
+                           (old.sat, &old.count.re, &old.count.im));
+                assert!(candidate.assigned.iter().all(|&x| x == 0));
+                assert!(candidate.trail.is_empty());
+                assert_eq!(candidate.weight_classes[1], candidate.weight_classes[4]);
+                assert_eq!(candidate.weight_classes[2], candidate.weight_classes[5]);
+                assert_eq!(candidate.weight_classes[3], candidate.weight_classes[6]);
+                if cache_limit == 128 {
+                    assert!(candidate.stats.cache_hits > baseline.stats.cache_hits);
+                    assert!(candidate.stats.nodes < baseline.stats.nodes);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn weighted_component_remap_rejects_different_signed_mpfr_weights() {
+        for bits in [100_u32, 333_u32] {
+            // The two disconnected components share precisely the clause
+            // graph but variable 4 has a different positive Complex weight.
+            // They must NOT be merged in the cache.
+            let source = weighted_component_source("0.125");
+            let problem = parse_emitted(&source, bits).unwrap();
+            let mut baseline = TrailEngine::new(&problem, bits, 128, 100_000);
+            baseline.use_parent_ids = true;
+            baseline.use_compact_residual = true;
+            baseline.use_prehashed_cache = true;
+            baseline.use_fused_compact = true;
+            let old = baseline.count((1..=6).collect(), 0).unwrap();
+            let mut candidate = TrailEngine::new(&problem, bits, 128, 100_000);
+            candidate.use_parent_ids = true;
+            candidate.use_compact_residual = true;
+            candidate.use_prehashed_cache = true;
+            candidate.use_fused_compact = true;
+            candidate.use_weight_class_cache = true;
+            let actual = candidate.count((1..=6).collect(), 0).unwrap();
+            assert_ne!(candidate.weight_classes[1], candidate.weight_classes[4]);
+            assert_eq!(actual.sat, old.sat);
+            assert_eq!(actual.count.re, old.count.re);
+            assert_eq!(actual.count.im, old.count.im);
+        }
+    }
+
+    #[test]
+    fn weighted_component_remap_matches_signed_random_dyadic_cnf() {
+        let mut seed = 0x9e3779b97f4a7c15_u64;
+        for bits in [100_u32, 333_u32] {
+            for case in 0..40 {
+                let mut clauses = Vec::new();
+                for _ in 0..(4 + case % 10) {
+                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    let n = 1 + (seed as usize % 4);
+                    let mut clause = Vec::new();
+                    for _ in 0..n {
+                        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                        let var = 1 + (seed as usize % 5);
+                        clause.push(if seed & 4 == 0 { var as i32 } else { -(var as i32) });
+                    }
+                    clauses.push(clause);
+                }
+                let problem = Problem {
+                    n: 5,
+                    clauses,
+                    weights: (0..5).map(|i| crate::Weights {
+                        positive: C::decimal(bits, "0.5", "-0.25").unwrap(),
+                        negative: C::decimal(bits,
+                            if i % 2 == 0 { "-0.25" } else { "0.125" }, "0.5").unwrap(),
+                    }).collect(),
+                };
+                for cap in [0_usize, 128] {
+                    let mut baseline = TrailEngine::new(&problem, bits, cap, 100_000);
+                    baseline.use_parent_ids = true;
+                    baseline.use_compact_residual = true;
+                    baseline.use_prehashed_cache = true;
+                    baseline.use_fused_compact = true;
+                    let old = baseline.count((1..=5).collect(), 0).unwrap();
+                    let mut candidate = TrailEngine::new(&problem, bits, cap, 100_000);
+                    candidate.use_parent_ids = true;
+                    candidate.use_compact_residual = true;
+                    candidate.use_prehashed_cache = true;
+                    candidate.use_fused_compact = true;
+                    candidate.use_weight_class_cache = true;
+                    let actual = candidate.count((1..=5).collect(), 0).unwrap();
+                    assert_eq!((actual.sat, actual.count.re, actual.count.im),
+                               (old.sat, old.count.re, old.count.im),
+                               "source {case}, bits {bits}, capacity {cap}");
+                    assert!(candidate.assigned.iter().all(|&x| x == 0));
+                }
+            }
+        }
+    }
+
 }

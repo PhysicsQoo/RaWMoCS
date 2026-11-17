@@ -509,7 +509,9 @@ impl<'a> TrailEngine<'a> {
         }
         self.stats.nodes += 1;
         let localized = self.use_weight_class_cache
-            && self.weight_cache_scope_max.is_none_or(|max| scope.len() <= max);
+            && self
+                .weight_cache_scope_max
+                .is_none_or(|max| scope.len() <= max);
         let inline_relabel = localized && self.use_inline_weight_relabel;
         let class_scope = if inline_relabel {
             Some(self.prepare_weighted_scope(&scope)?)
@@ -517,7 +519,8 @@ impl<'a> TrailEngine<'a> {
             None
         };
         let (ids, mut key) = if self.use_compact_residual {
-            let Some((ids, literals)) = self.canonical_compact(&scope, parent_ids, inline_relabel) else {
+            let Some((ids, literals)) = self.canonical_compact(&scope, parent_ids, inline_relabel)
+            else {
                 return Ok(Outcome::unsat(self.bits));
             };
             self.cache_keys += 1;
@@ -1215,5 +1218,4 @@ mod tests {
             }
         }
     }
-
 }

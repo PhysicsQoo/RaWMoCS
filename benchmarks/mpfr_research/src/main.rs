@@ -21,6 +21,7 @@ mod csr_workspace;
 mod trail_engine;
 mod separator_pivot;
 mod primal_centroid;
+mod factor_variable_elimination;
 
 type Clause = Vec<i32>;
 
@@ -906,6 +907,10 @@ fn run() -> Result<(), String> {
     let cache_first = if primal_root_only {
         args.next().ok_or("missing mode after --trail-primal-centroid-root-only")?
     } else { cache_first };
+    let factor_ve = cache_first.to_str() == Some("--factor-variable-elimination");
+    let cache_first = if factor_ve {
+        args.next().ok_or("missing mode after --factor-variable-elimination")?
+    } else { cache_first };
     let cache_policy = match cache_first.to_str() {
         Some("--hashbrown-owned") => CachePolicy::HbOwned,
         Some("--hashbrown-borrowed") => CachePolicy::HbBorrowed,
@@ -968,6 +973,10 @@ fn run() -> Result<(), String> {
     if fused_post_analysis && !projected_post_key {
         return Err("--trail-fused-post-analysis requires --trail-post-unit-projected".into());
     }
+    if factor_ve && (!weighted_equivalence || !trail_count || post_unit_cache
+                     || articulation_pivot || primal_order || root_failed_literal) {
+        return Err("--factor-variable-elimination requires original weighted-equivalence and trail-count without other root transformations".into());
+    }
     if primal_root_only && !primal_order {
         return Err("--trail-primal-centroid-root-only requires --trail-primal-bag-centroid".into());
     }
@@ -1015,6 +1024,14 @@ fn run() -> Result<(), String> {
         None
     };
     let primal_build_ns = td_start.elapsed().as_nanos();
+    let ve_start = Instant::now();
+    let (ve_candidate, ve_stats) = if factor_ve {
+        factor_variable_elimination::count(source, &scope, bits)
+    } else {
+        (None, factor_variable_elimination::VeStats::default())
+    };
+    let ve_ns = ve_start.elapsed().as_nanos();
+    let ve_completed = ve_candidate.is_some();
     let mut engine = Engine::new(source, bits, cache_policy);
     engine.fast_assign = fast_assign;
     engine.shared_residual_key = shared_residual_key;
@@ -1030,7 +1047,13 @@ fn run() -> Result<(), String> {
     engine.unit_closure_pivot = unit_closure_pivot;
     engine.reuse_csr_workspace = reuse_csr_workspace;
     engine.indexed_activation_node = indexed_activation_node;
-    let (answer, solver_stats, trail_profile, primal_scans, primal_overrides) = if trail_count {
+    let (answer, solver_stats, trail_profile, primal_scans, primal_overrides) =
+        if let Some(answer) = ve_candidate {
+            // A complete factor-semiring count has NO DPLL nodes.
+            // Report VE product count separately instead of pretending
+            // zero Shannon nodes is a direct DPLL-node improvement.
+            (answer, Stats::default(), None, 0, 0)
+        } else if trail_count {
         let mut trail = trail_engine::TrailEngine::new(source, bits, cache_limit, node_budget);
         trail.use_parent_ids = trail_parent_ids;
         trail.use_compact_residual = trail_compact_residual;
@@ -1077,6 +1100,10 @@ fn run() -> Result<(), String> {
         reduction_stats.eliminated_vars, reduction_stats.removed_clauses,
         reduction_stats.representatives, reduction_stats.contradictory,
         reduction_stats.censored);
+    eprintln!("RESEARCH_MPFR_FACTOR_VE enabled={} completed={} eligible={} capped={} input_factors={} eliminated={} width={} cells={} products={} zero_sat={} ve_ns={}",
+        factor_ve, ve_completed, ve_stats.eligible, ve_stats.capped,
+        ve_stats.factors, ve_stats.eliminated, ve_stats.width,
+        ve_stats.cells, ve_stats.products, ve_stats.zero_sat, ve_ns);
     let empty_profile = primal_centroid::Profile::default();
     let td = primal_profile.as_ref().unwrap_or(&empty_profile);
     eprintln!("RESEARCH_MPFR_PRIMAL_BAG_CENTROID enabled={} root_only={} eligible={} capped={} vars={} edges={} width={} fill={} distance={} build_ns={} scans={} overrides={}",

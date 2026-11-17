@@ -786,10 +786,15 @@ impl<'a> TrailEngine<'a> {
         // Never store it under the canonical post-closure residual key.
         let unit_prefix = prefix;
         let mut prefix = C::one(self.bits);
-        let post_scope: Vec<usize> = scope.iter().copied()
-            .filter(|&var| self.assigned[var] == 0).collect();
+        let post_scope: Vec<usize> = scope
+            .iter()
+            .copied()
+            .filter(|&var| self.assigned[var] == 0)
+            .collect();
         let localized = self.use_weight_class_cache
-            && self.weight_cache_scope_max.is_none_or(|max| post_scope.len() <= max);
+            && self
+                .weight_cache_scope_max
+                .is_none_or(|max| post_scope.len() <= max);
         let inline_relabel = localized && self.use_inline_weight_relabel;
         let class_scope = if inline_relabel {
             Some(self.prepare_weighted_scope(&post_scope)?)
@@ -800,7 +805,10 @@ impl<'a> TrailEngine<'a> {
         else {
             return Ok(Outcome::unsat(self.bits));
         };
-        let mut key = PackedKey { scope: post_scope.clone(), literals };
+        let mut key = PackedKey {
+            scope: post_scope.clone(),
+            literals,
+        };
         self.cache_keys += 1;
         self.post_unit_visited += 1;
         if localized {
@@ -817,7 +825,9 @@ impl<'a> TrailEngine<'a> {
             self.source_cache_keys += 1;
         }
         let key_hash = self.cache.hasher().hash_one(&key);
-        if let Some(hit) = self.cache.raw_entry()
+        if let Some(hit) = self
+            .cache
+            .raw_entry()
             .from_key_hashed_nocheck(key_hash, &key)
             .map(|(_, value)| value)
         {
@@ -859,7 +869,8 @@ impl<'a> TrailEngine<'a> {
         let pivot = active.iter().max_by_key(|&&var| frequency[var]).copied();
         self.frequency = frequency;
         if active.is_empty() {
-            return Ok(self.finish_post_unit(&unit_prefix, 
+            return Ok(self.finish_post_unit(
+                &unit_prefix,
                 key,
                 key_hash,
                 Outcome {
@@ -875,11 +886,17 @@ impl<'a> TrailEngine<'a> {
             for part in pieces {
                 let result = self.count_relevant(part, depth + 1, Some(&ids))?;
                 if !result.sat {
-                    return Ok(self.finish_post_unit(&unit_prefix, key, key_hash, Outcome::unsat(self.bits)));
+                    return Ok(self.finish_post_unit(
+                        &unit_prefix,
+                        key,
+                        key_hash,
+                        Outcome::unsat(self.bits),
+                    ));
                 }
                 value = value.mul(&result.count, self.bits);
             }
-            return Ok(self.finish_post_unit(&unit_prefix, 
+            return Ok(self.finish_post_unit(
+                &unit_prefix,
                 key,
                 key_hash,
                 Outcome {
@@ -916,7 +933,8 @@ impl<'a> TrailEngine<'a> {
         let yes_weighted = weights.positive.mul(&yes.count, self.bits);
         let no_weighted = weights.negative.mul(&no.count, self.bits);
         let value = prefix.mul(&yes_weighted.add(&no_weighted, self.bits), self.bits);
-        Ok(self.finish_post_unit(&unit_prefix, 
+        Ok(self.finish_post_unit(
+            &unit_prefix,
             key,
             key_hash,
             Outcome {
@@ -1461,7 +1479,9 @@ mod tests {
                 let p = parse_emitted(input, bits).unwrap();
                 let mut independent = Engine::new(&p, bits, CachePolicy::HbBorrowed);
                 independent.fast_assign = true;
-                let expected = independent.count(p.clauses.clone(), (1..=p.n).collect(), 0).unwrap();
+                let expected = independent
+                    .count(p.clauses.clone(), (1..=p.n).collect(), 0)
+                    .unwrap();
                 for capacity in [0_usize, 1, 128] {
                     for max_scope in [None, Some(2_usize)] {
                         let mut post = TrailEngine::new(&p, bits, capacity, 100_000);
@@ -1498,18 +1518,28 @@ mod tests {
                     for _ in 0..n {
                         seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
                         let var = 1 + seed as usize % 5;
-                        clause.push(if seed & 4 == 0 { var as i32 } else { -(var as i32) });
+                        clause.push(if seed & 4 == 0 {
+                            var as i32
+                        } else {
+                            -(var as i32)
+                        });
                     }
                     clauses.push(clause);
                 }
                 let p = Problem {
                     n: 5,
                     clauses,
-                    weights: (0..5).map(|i| crate::Weights {
-                        positive: C::decimal(bits, "0.5", "-0.25").unwrap(),
-                        negative: C::decimal(bits,
-                            if i % 2 == 0 { "-0.25" } else { "0.125" }, "0.5").unwrap(),
-                    }).collect(),
+                    weights: (0..5)
+                        .map(|i| crate::Weights {
+                            positive: C::decimal(bits, "0.5", "-0.25").unwrap(),
+                            negative: C::decimal(
+                                bits,
+                                if i % 2 == 0 { "-0.25" } else { "0.125" },
+                                "0.5",
+                            )
+                            .unwrap(),
+                        })
+                        .collect(),
                 };
                 let mut old = Engine::new(&p, bits, CachePolicy::HbBorrowed);
                 old.fast_assign = true;
@@ -1524,11 +1554,16 @@ mod tests {
                 post.use_post_unit_cache = true;
                 let actual = post.count((1..=5).collect(), 0).unwrap();
                 assert_eq!(actual.sat, expected.sat, "SAT case {case} bits {bits}");
-                assert_eq!(actual.count.re, expected.count.re, "real case {case} bits {bits}");
-                assert_eq!(actual.count.im, expected.count.im, "imag case {case} bits {bits}");
+                assert_eq!(
+                    actual.count.re, expected.count.re,
+                    "real case {case} bits {bits}"
+                );
+                assert_eq!(
+                    actual.count.im, expected.count.im,
+                    "imag case {case} bits {bits}"
+                );
                 assert!(post.assigned.iter().all(|&x| x == 0));
             }
         }
     }
-
 }

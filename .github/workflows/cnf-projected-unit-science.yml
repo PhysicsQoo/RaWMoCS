@@ -1,4 +1,4 @@
-name: Original weighted-CNF projected projected-unit weighted component cache correctness
+name: Original weighted-CNF projected-unit weighted component cache correctness
 
 on:
   pull_request:

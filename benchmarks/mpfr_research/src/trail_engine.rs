@@ -59,6 +59,11 @@ pub(crate) struct TrailEngine<'a> {
     pub(crate) post_unit_hits: u64,
     pub(crate) post_unit_visited: u64,
     pub(crate) post_unit_forced: u64,
+    // Opt-in: project the already canonical pre-unit clauses instead of
+    // re-reading all original source clauses to build post-unit key.
+    pub(crate) use_projected_post_key: bool,
+    pub(crate) reused_unforced_keys: u64,
+    pub(crate) projected_forced_keys: u64,
     weight_classes: Vec<usize>,
     local_variable: Vec<i32>,
     local_generation: Vec<u64>,
@@ -123,6 +128,9 @@ impl<'a> TrailEngine<'a> {
             post_unit_hits: 0,
             post_unit_visited: 0,
             post_unit_forced: 0,
+            use_projected_post_key: false,
+            reused_unforced_keys: 0,
+            projected_forced_keys: 0,
             weight_classes: Vec::new(),
             local_variable: vec![0; problem.n + 1],
             local_generation: vec![0; problem.n + 1],
@@ -714,6 +722,71 @@ impl<'a> TrailEngine<'a> {
             },
         ))
     }
+    // Project an already canonical reduced source-key through the current
+    // reversible assignments. This never revisits the original clauses.
+    // Filtering can make previously different clauses equal, therefore
+    // the projected spans must be sorted AND deduplicated again.
+    fn project_pre_unit_key(&self, pre_lits: &[i32], local: bool) -> Option<Vec<i32>> {
+        #[derive(Clone, Copy)]
+        struct Span {
+            start: usize,
+            end: usize,
+        }
+        debug_assert!(pre_lits.is_empty() || pre_lits.last() == Some(&0));
+        let mut flat = Vec::<i32>::with_capacity(pre_lits.len());
+        let mut spans = Vec::<Span>::new();
+        let mut start = 0;
+        let mut satisfied = false;
+        let mut unassigned = false;
+        for &lit in pre_lits {
+            if lit == 0 {
+                if !satisfied {
+                    if !unassigned {
+                        // An empty live residual clause is Boolean UNSAT,
+                        // even when its numeric weights sum to zero.
+                        return None;
+                    }
+                    spans.push(Span {
+                        start,
+                        end: flat.len(),
+                    });
+                } else {
+                    flat.truncate(start);
+                }
+                start = flat.len();
+                satisfied = false;
+                unassigned = false;
+                continue;
+            }
+            if satisfied {
+                continue;
+            }
+            let var = lit.unsigned_abs() as usize;
+            let current = self.assigned[var];
+            if current == 0 {
+                let number = if local {
+                    self.local_variable[var]
+                } else {
+                    var as i32
+                };
+                flat.push(if lit < 0 { -number } else { number });
+                unassigned = true;
+            } else if current == if lit < 0 { -1 } else { 1 } {
+                satisfied = true;
+                flat.truncate(start);
+            }
+        }
+        debug_assert_eq!(flat.len(), start);
+        spans.sort_unstable_by(|a, b| flat[a.start..a.end].cmp(&flat[b.start..b.end]));
+        spans.dedup_by(|a, b| flat[a.start..a.end] == flat[b.start..b.end]);
+        let mut compact = Vec::with_capacity(flat.len() + spans.len());
+        for span in spans {
+            compact.extend_from_slice(&flat[span.start..span.end]);
+            compact.push(0);
+        }
+        Some(compact)
+    }
+
     fn finish_post_unit(
         &mut self,
         unit_prefix: &C,
@@ -745,9 +818,10 @@ impl<'a> TrailEngine<'a> {
         self.stats.nodes += 1;
         // Preserve the same canonical source order for the unit heap.
         // No pre-closure memo key is looked up or inserted in this arm.
-        let Some((ids, _)) = self.canonical_compact(&scope, parent_ids, false) else {
+        let Some((ids, pre_lits)) = self.canonical_compact(&scope, parent_ids, false) else {
             return Ok(Outcome::unsat(self.bits));
         };
+        let mut forced_here = 0_u64;
         self.sequence += 1;
         let generation = self.sequence;
         let mut heap = BinaryHeap::<Reverse<usize>>::new();
@@ -777,6 +851,7 @@ impl<'a> TrailEngine<'a> {
             };
             prefix = prefix.mul(factor, self.bits);
             self.post_unit_forced += 1;
+            forced_here += 1;
             if !self.apply(lit, Some((&mut heap, generation))) {
                 return Ok(Outcome::unsat(self.bits));
             }
@@ -795,15 +870,30 @@ impl<'a> TrailEngine<'a> {
             && self
                 .weight_cache_scope_max
                 .is_none_or(|max| post_scope.len() <= max);
-        let inline_relabel = localized && self.use_inline_weight_relabel;
+        let reuse_no_units = self.use_projected_post_key && forced_here == 0;
+        // If the source key is reused verbatim there is no local rank
+        // mapping yet, so use the original exact weighted relabel pass.
+        let inline_relabel = localized && self.use_inline_weight_relabel && !reuse_no_units;
         let class_scope = if inline_relabel {
             Some(self.prepare_weighted_scope(&post_scope)?)
         } else {
             None
         };
-        let Some((_, literals)) = self.canonical_compact(&post_scope, Some(&ids), inline_relabel)
-        else {
-            return Ok(Outcome::unsat(self.bits));
+        let literals = if reuse_no_units {
+            self.reused_unforced_keys += 1;
+            pre_lits
+        } else if self.use_projected_post_key {
+            self.projected_forced_keys += 1;
+            let Some(projected) = self.project_pre_unit_key(&pre_lits, inline_relabel) else {
+                return Ok(Outcome::unsat(self.bits));
+            };
+            projected
+        } else {
+            let Some((_, clauses)) = self.canonical_compact(&post_scope, Some(&ids), inline_relabel)
+            else {
+                return Ok(Outcome::unsat(self.bits));
+            };
+            clauses
         };
         let mut key = PackedKey {
             scope: post_scope.clone(),
@@ -1566,4 +1656,58 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn projected_unit_key_exactly_matches_post_unit_key() {
+        let fixtures = [
+            concat!(
+                "p cnf 7 8\nc t wmc\n",
+                "1 2 0\n-1 -2 0\n",
+                "1 3 4 0\n2 3 4 0\n",
+                "1 6 7 0\n2 6 7 0\n",
+                "3 5 0\n4 5 0\n"
+            ),
+            "p cnf 2 1\nc t wmc\nc p weight 1 0 0 0\nc p weight -1 0 0 0\n1 0\n",
+            "p cnf 3 2\nc t wmc\n1 0\n-1 0\n",
+        ];
+        for bits in [100_u32, 333] {
+            for input in fixtures {
+                let p = parse_emitted(input, bits).unwrap();
+                for max_scope in [None, Some(2_usize), Some(16)] {
+                    for limit in [0_usize, 1, 256] {
+                        let mut control = TrailEngine::new(&p, bits, limit, 100_000);
+                        control.use_parent_ids = true;
+                        control.use_compact_residual = true;
+                        control.use_prehashed_cache = true;
+                        control.use_fused_compact = true;
+                        control.use_weight_class_cache = true;
+                        control.weight_cache_scope_max = max_scope;
+                        control.use_inline_weight_relabel = true;
+                        control.use_post_unit_cache = true;
+                        let expected = control.count((1..=p.n).collect(), 0).unwrap();
+                        let mut optimized = TrailEngine::new(&p, bits, limit, 100_000);
+                        optimized.use_parent_ids = true;
+                        optimized.use_compact_residual = true;
+                        optimized.use_prehashed_cache = true;
+                        optimized.use_fused_compact = true;
+                        optimized.use_weight_class_cache = true;
+                        optimized.weight_cache_scope_max = max_scope;
+                        optimized.use_inline_weight_relabel = true;
+                        optimized.use_post_unit_cache = true;
+                        optimized.use_projected_post_key = true;
+                        let actual = optimized.count((1..=p.n).collect(), 0).unwrap();
+                        assert_eq!(actual.sat, expected.sat);
+                        assert_eq!(actual.count.re, expected.count.re);
+                        assert_eq!(actual.count.im, expected.count.im);
+                        assert_eq!(optimized.stats.nodes, control.stats.nodes);
+                        assert_eq!(optimized.stats.cache_hits, control.stats.cache_hits);
+                        assert_eq!(optimized.stats.decompositions, control.stats.decompositions);
+                        assert_eq!(optimized.post_unit_hits, control.post_unit_hits);
+                        assert_eq!(optimized.post_unit_forced, control.post_unit_forced);
+                        assert!(optimized.assigned.iter().all(|&x| x == 0));
+                    }
+                }
+            }
+        }
+    }
+
 }

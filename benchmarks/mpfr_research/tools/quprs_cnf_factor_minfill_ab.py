@@ -109,6 +109,10 @@ def sample(command: list[str], arm: str, digits: int) -> dict:
                     r"^RESEARCH_MPFR_FACTOR_VE_ORDER minfill=(true|false) "
                     r"predicted_width=(\d+) fill_edges=(\d+) candidates=(\d+) "
                     r"plan_ns=(\d+)$", proc.stderr, re.M)
+                minor = re.search(
+                    r"^RESEARCH_MPFR_FACTOR_VE_MINOR_BOUND eligible=(true|false) "
+                    r"treewidth_lower=(\d+) bucket_lower=(\d+) "
+                    r"contractions=(\d+) compute_ns=(\d+)$", proc.stderr, re.M)
                 admission = re.search(
                     r"^RESEARCH_MPFR_FACTOR_VE_ADMISSION source_vars=(\d+) "
                     r"scope_vars=(\d+) source_clauses=(\d+) "
@@ -124,6 +128,12 @@ def sample(command: list[str], arm: str, digits: int) -> dict:
                     raise ValueError("VE scope probe limit drift")
                 if (order.group(1) == "true") != (arm == "factor_ve_minfill320"):
                     raise ValueError("min-fill structural planner flag mismatch")
+                if (minor is not None) != (arm == "factor_ve_minfill320"):
+                    raise ValueError("minor-bound certificate diagnostic mismatch")
+                if minor is not None:
+                    if minor.group(1) != "true" or int(minor.group(3)) != int(minor.group(2)) + 1:
+                        raise ValueError("invalid graph minor certificate")
+
                 fields = [int(v) for v in phase.groups()]
                 if fields[7] != digits or fields[8] != BITS[digits]:
                     raise ValueError("GPMC↔Rust MPFR precision drift")
@@ -172,6 +182,10 @@ def sample(command: list[str], arm: str, digits: int) -> dict:
                            factor_ve_zero_sat=int(ve.group(10)),
                            factor_ve_ns=int(ve.group(11)),
                            factor_ve_minfill_enabled=(order.group(1) == "true"),
+                           minor_treewidth_lower=int(minor.group(2)) if minor else None,
+                           minor_bucket_lower=int(minor.group(3)) if minor else None,
+                           minor_contractions=int(minor.group(4)) if minor else None,
+                           minor_compute_ns=int(minor.group(5)) if minor else None,
                            minfill_predicted_width=int(order.group(2)),
                            minfill_fill_edges=int(order.group(3)),
                            minfill_candidates=int(order.group(4)),
@@ -296,6 +310,8 @@ def main() -> None:
                 for candidate in (probe, minfill):
                     if candidate["factor_ve_scope_vars"] > 320 and candidate["factor_ve_cap_reason"] != "source_scope":
                         raise SystemExit("PROBE_SCOPE_ENVELOPE_DRIFT")
+                if minfill["minor_bucket_lower"] > minfill["minfill_predicted_width"] and minfill["minfill_predicted_width"] > 0:
+                    raise SystemExit("INVALID_LOWER_GREATER_THAN_HEURISTIC_UPPER")
                 if minfill["minfill_predicted_width"] > 11 and minfill["factor_ve_completed"]:
                     raise SystemExit("PLANNER_ACCEPTED_OVERWIDTH_BUCKET")
                 if minfill["minfill_predicted_width"] > 11 and minfill["factor_ve_cap_reason"] != "bucket_width":
@@ -348,6 +364,7 @@ def main() -> None:
                   f" wide_width={cohort['stats']['factor_ve_scope320']['p50_factor_ve_width']}" +
                   f" wide_products={cohort['stats']['factor_ve_scope320']['p50_factor_ve_products']}" +
                   f" wide_cap_reason={','.join(cohort['stats']['factor_ve_scope320']['factor_ve_cap_reasons'])}" +
+                  f" minor_bucket_lower={next(e['minor_bucket_lower'] for e in completed if e['arm'] == 'factor_ve_minfill320')}" +
                   f" fill_complete={cohort['stats']['factor_ve_minfill320']['p50_factor_ve_completed']}" +
                   f" fill_width={cohort['stats']['factor_ve_minfill320']['p50_factor_ve_width']}" +
                   f" fill_products={cohort['stats']['factor_ve_minfill320']['p50_factor_ve_products']}" +

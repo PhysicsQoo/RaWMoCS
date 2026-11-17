@@ -144,7 +144,7 @@ def sample(cmd: list[str], arm: str, precision: int) -> dict:
                     raise ValueError("fused compact literal filter CLI option mismatch")
                 if (weighted_cache.group(1) == "true") != (arm in ("weight_cache", "scoped16", "scoped64", "inline16", "inline_full")):
                     raise ValueError("weight-class component cache CLI mismatch")
-                expected_max = {"scoped16": 16, "scoped64": 64}.get(arm, 0)
+                expected_max = {"scoped16": 16, "scoped64": 64, "inline16": 16}.get(arm, 0)
                 if int(scoped_key.group(1)) != expected_max:
                     raise ValueError("small-component key admission threshold mismatch")
                 if (inline_flag.group(1) == "true") != (arm in ("inline16", "inline_full")):

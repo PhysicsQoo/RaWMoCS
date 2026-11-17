@@ -2,7 +2,8 @@
 //! Retains SAT separately from WMC: zero complex weight is not UNSAT.
 //! Input clauses, weights and scope are never mutated. On any bound
 //! failure the caller uses the unchanged original Trail solver.
-use crate::{C, Clause, Outcome, Problem};
+use crate::{factor_minfill_order, C, Clause, Outcome, Problem};
+use std::time::Instant;
 
 const MAX_VARS: usize = 4096;
 const MAX_SCOPE: usize = 256;
@@ -34,6 +35,11 @@ pub(crate) struct VeStats {
     pub(crate) scope_vars: usize,
     pub(crate) source_clauses: usize,
     pub(crate) source_max_clause_width: usize,
+    pub(crate) minfill_enabled: bool,
+    pub(crate) minfill_plan_width: usize,
+    pub(crate) minfill_fill_edges: usize,
+    pub(crate) minfill_candidates: u64,
+    pub(crate) minfill_plan_ns: u128,
 }
 
 fn reject(mut stats: VeStats, reason: &'static str) -> (Option<Outcome>, VeStats) {
@@ -130,7 +136,15 @@ pub(crate) fn count(
 pub(crate) fn count_scope_probe(
     p: &Problem, scope: &[usize], bits: u32,
 ) -> (Option<Outcome>, VeStats) {
-    count_clauses_with_limit(p, scope, &p.clauses, bits, PROBE_SCOPE)
+    count_clauses_with_limit(p, scope, &p.clauses, bits, PROBE_SCOPE, false)
+}
+
+/// Research-only alternative: same 320 source-scope admission and exactly
+/// the same exponential work caps, but use bounded primal min-fill ordering.
+pub(crate) fn count_scope_probe_minfill(
+    p: &Problem, scope: &[usize], bits: u32,
+) -> (Option<Outcome>, VeStats) {
+    count_clauses_with_limit(p, scope, &p.clauses, bits, PROBE_SCOPE, true)
 }
 
 /// Count a *live*, already-cofactored residual CNF with unchanged original
@@ -139,12 +153,28 @@ pub(crate) fn count_scope_probe(
 pub(crate) fn count_clauses(
     p: &Problem, scope: &[usize], clauses: &[Clause], bits: u32,
 ) -> (Option<Outcome>, VeStats) {
-    count_clauses_with_limit(p, scope, clauses, bits, MAX_SCOPE)
+    count_clauses_with_limit(p, scope, clauses, bits, MAX_SCOPE, false)
+}
+
+fn selected_bucket_for_variable(
+    factors: &[Factor], variable: usize,
+) -> (usize, Vec<usize>, Vec<usize>) {
+    let mut incident = Vec::new();
+    let mut union = Vec::new();
+    for (index, factor) in factors.iter().enumerate() {
+        if factor.vars.binary_search(&variable).is_ok() {
+            incident.push(index);
+            union.extend(&factor.vars);
+        }
+    }
+    union.sort_unstable();
+    union.dedup();
+    (variable, incident, union)
 }
 
 fn count_clauses_with_limit(
     p: &Problem, scope: &[usize], clauses: &[Clause], bits: u32,
-    scope_cap: usize,
+    scope_cap: usize, minfill: bool,
 ) -> (Option<Outcome>, VeStats) {
     let mut stats = VeStats {
         source_vars: p.n,
@@ -193,10 +223,30 @@ fn count_clauses_with_limit(
     }
     stats.factors = factors.len();
     stats.eligible = true;
+    stats.minfill_enabled = minfill;
+    let minfill_order = if minfill {
+        let start = Instant::now();
+        let plan = factor_minfill_order::plan(clauses, scope, MAX_BAG);
+        stats.minfill_plan_ns = start.elapsed().as_nanos();
+        stats.minfill_plan_width = plan.max_bucket;
+        stats.minfill_fill_edges = plan.fill_edges;
+        stats.minfill_candidates = plan.candidate_evaluations;
+        if plan.capped {
+            stats.width = plan.max_bucket;
+            return reject(stats, "bucket_width");
+        }
+        Some(plan.order)
+    } else {
+        None
+    };
     let mut remaining = scope.to_vec();
     remaining.sort_unstable();
     while !remaining.is_empty() {
-        let (variable, incident, union) = selected_bucket(&factors, &remaining);
+        let (variable, incident, union) = if let Some(order) = &minfill_order {
+            selected_bucket_for_variable(&factors, order[stats.eliminated])
+        } else {
+            selected_bucket(&factors, &remaining)
+        };
         stats.width = stats.width.max(union.len());
         if union.len() > MAX_BAG || union.is_empty() {
             return reject(stats, "bucket_width");
@@ -285,6 +335,12 @@ mod tests {
             let (candidate, stats) = count(&p, &scope, bits);
             assert!(stats.eligible && !stats.capped, "{stats:?}");
             let result = candidate.unwrap();
+            let (minfill, fill_stats) = count_scope_probe_minfill(&p, &scope, bits);
+            assert!(fill_stats.eligible && !fill_stats.capped, "{fill_stats:?}");
+            let minfill = minfill.unwrap();
+            assert_eq!(minfill.sat, exact.sat);
+            assert_eq!(minfill.count.re, exact.count.re);
+            assert_eq!(minfill.count.im, exact.count.im);
             assert_eq!(result.sat, exact.sat);
             assert_eq!(result.count.re, exact.count.re);
             assert_eq!(result.count.im, exact.count.im);
@@ -334,6 +390,13 @@ c p weight 6 -0.5 0.5 0\nc p weight -6 0.25 -0.25 0\n\
             assert!(baseline.is_none());
             assert_eq!(before.cap_reason, "source_scope");
             let (candidate, after) = count_scope_probe(&p, &scope, bits);
+            let (minfill, minfill_stats) = count_scope_probe_minfill(&p, &scope, bits);
+            assert!(minfill_stats.eligible && !minfill_stats.capped, "{minfill_stats:?}");
+            let candidate_minfill = minfill.expect("bounded 257-unit minfill VE");
+            let candidate_ref = candidate.as_ref().expect("bounded 257-unit VE");
+            assert_eq!(candidate_minfill.sat, candidate_ref.sat);
+            assert_eq!(candidate_minfill.count.re, candidate_ref.count.re);
+            assert_eq!(candidate_minfill.count.im, candidate_ref.count.im);
             assert!(after.eligible && !after.capped, "{after:?}");
             let answer = candidate.expect("bounded 257-unit VE");
             assert!(answer.sat);

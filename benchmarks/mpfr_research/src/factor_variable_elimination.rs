@@ -320,6 +320,34 @@ c p weight 6 -0.5 0.5 0\nc p weight -6 0.25 -0.25 0\n\
 1 2 0\n-1 3 0\n4 -5 0\n-4 6 0\n");
     }
     #[test]
+    fn research_scope_probe_changes_only_admission_not_signed_wmc() {
+        // Synthetic boundary fixture, not a performance benchmark.
+        // All 257 root units are Boolean satisfiable and count exactly 1.
+        let mut cnf = String::from("p cnf 257 257\\nc t wmc\\n");
+        for var in 1..=257 {
+            cnf.push_str(&format!("{var} 0\\n"));
+        }
+        for bits in [100, 333] {
+            let p = parse_emitted(&cnf, bits).unwrap();
+            let scope: Vec<usize> = (1..=257).collect();
+            let (baseline, before) = count(&p, &scope, bits);
+            assert!(baseline.is_none());
+            assert_eq!(before.cap_reason, "source_scope");
+            let (candidate, after) = count_scope_probe(&p, &scope, bits);
+            assert!(after.eligible && !after.capped, "{after:?}");
+            let answer = candidate.expect("bounded 257-unit VE");
+            assert!(answer.sat);
+            assert_eq!(answer.count.re, 1);
+            assert_eq!(answer.count.im, 0);
+            let mut trail = TrailEngine::new(&p, bits, 128, 100_000);
+            let old = trail.count(scope, 0).unwrap();
+            assert_eq!(answer.sat, old.sat);
+            assert_eq!(answer.count.re, old.count.re);
+            assert_eq!(answer.count.im, old.count.im);
+        }
+    }
+
+    #[test]
     fn excessive_source_clause_width_fails_closed() {
         let mut cnf = String::from("p cnf 13 1\nc t wmc\n");
         for var in 1..=13 { cnf.push_str(&format!("{var} ")); }

@@ -889,7 +889,8 @@ impl<'a> TrailEngine<'a> {
             };
             projected
         } else {
-            let Some((_, clauses)) = self.canonical_compact(&post_scope, Some(&ids), inline_relabel)
+            let Some((_, clauses)) =
+                self.canonical_compact(&post_scope, Some(&ids), inline_relabel)
             else {
                 return Ok(Outcome::unsat(self.bits));
             };
@@ -1709,5 +1710,4 @@ mod tests {
             }
         }
     }
-
 }

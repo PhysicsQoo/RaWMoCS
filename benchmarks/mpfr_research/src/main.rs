@@ -856,6 +856,10 @@ fn run() -> Result<(), String> {
     let cache_first = if trail_fused_compact {
         args.next().ok_or("missing cache mode or precision after --trail-fused-compact")?
     } else { cache_first };
+    let weighted_component_cache = cache_first.to_str() == Some("--trail-weight-class-cache");
+    let cache_first = if weighted_component_cache {
+        args.next().ok_or("missing cache policy or precision after --trail-weight-class-cache")?
+    } else { cache_first };
     let cache_policy = match cache_first.to_str() {
         Some("--hashbrown-owned") => CachePolicy::HbOwned,
         Some("--hashbrown-borrowed") => CachePolicy::HbBorrowed,
@@ -892,6 +896,9 @@ fn run() -> Result<(), String> {
     }
     if trail_fused_compact && !trail_prehashed_cache {
         return Err("--trail-fused-compact requires --trail-count --trail-parent-ids --trail-compact-residual --trail-prehashed-cache".into());
+    }
+    if weighted_component_cache && !trail_fused_compact {
+        return Err("--trail-weight-class-cache requires all existing --trail-fused-compact prerequisites".into());
     }
     let path = args.next().ok_or("missing CNF")?;
     if args.next().is_some() { return Err("expected exactly one file".into()); }
@@ -932,6 +939,7 @@ fn run() -> Result<(), String> {
         trail.use_compact_residual = trail_compact_residual;
         trail.use_prehashed_cache = trail_prehashed_cache;
         trail.use_fused_compact = trail_fused_compact;
+        trail.use_weight_class_cache = weighted_component_cache;
         let outcome = trail.count(scope, 0)?;
         (outcome, trail.stats, Some((trail.assignments, trail.cache_keys)))
     } else {
@@ -970,6 +978,7 @@ fn run() -> Result<(), String> {
     eprintln!("RESEARCH_MPFR_TRAIL_COMPACT_RESIDUAL enabled={}", trail_compact_residual);
     eprintln!("RESEARCH_MPFR_TRAIL_PREHASHED_CACHE enabled={}", trail_prehashed_cache);
     eprintln!("RESEARCH_MPFR_TRAIL_FUSED_COMPACT enabled={}", trail_fused_compact);
+    eprintln!("RESEARCH_MPFR_TRAIL_WEIGHT_CLASS_CACHE enabled={}", weighted_component_cache);
     eprintln!("RESEARCH_MPFR_CACHE_POLICY {}", cache_policy.label());
     eprintln!("RESEARCH_MPFR_SHARED_RESIDUAL enabled={} entries={}",
         shared_residual_key, engine.shared_cache.len());

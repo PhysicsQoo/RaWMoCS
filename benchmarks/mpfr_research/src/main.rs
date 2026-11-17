@@ -875,6 +875,10 @@ fn run() -> Result<(), String> {
     let cache_first = if post_unit_cache {
         args.next().ok_or("missing cache policy or precision after --trail-post-unit-cache")?
     } else { cache_first };
+    let projected_post_key = cache_first.to_str() == Some("--trail-post-unit-projected");
+    let cache_first = if projected_post_key {
+        args.next().ok_or("missing cache policy or precision after --trail-post-unit-projected")?
+    } else { cache_first };
     let cache_policy = match cache_first.to_str() {
         Some("--hashbrown-owned") => CachePolicy::HbOwned,
         Some("--hashbrown-borrowed") => CachePolicy::HbBorrowed,
@@ -931,6 +935,9 @@ fn run() -> Result<(), String> {
         && trail_fused_compact && weighted_component_cache && inline_weight_relabel) {
         return Err("--trail-post-unit-cache requires --trail-inline-weight-relabel and weighted-class fused trail".into());
     }
+    if projected_post_key && !post_unit_cache {
+        return Err("--trail-post-unit-projected requires --trail-post-unit-cache".into());
+    }
     let path = args.next().ok_or("missing CNF")?;
     if args.next().is_some() { return Err("expected exactly one file".into()); }
     let t0 = Instant::now();
@@ -974,11 +981,12 @@ fn run() -> Result<(), String> {
         trail.weight_cache_scope_max = weight_cache_scope_max;
         trail.use_inline_weight_relabel = inline_weight_relabel;
         trail.use_post_unit_cache = post_unit_cache;
+        trail.use_projected_post_key = projected_post_key;
         let outcome = trail.count(scope, 0)?;
         (outcome, trail.stats,
          Some((trail.assignments, trail.cache_keys, trail.normalized_cache_keys,
                trail.source_cache_keys, trail.post_unit_hits, trail.post_unit_visited,
-               trail.post_unit_forced)))
+               trail.post_unit_forced, trail.reused_unforced_keys, trail.projected_forced_keys)))
     } else {
         let outcome = engine.count(source.clauses.clone(), scope, 0)?;
         (outcome, engine.stats, None)
@@ -1009,7 +1017,8 @@ fn run() -> Result<(), String> {
     eprintln!("RESEARCH_MPFR_CSR_WORKSPACE enabled={} slots={} literals={} clauses={}",
         reuse_csr_workspace, csr_slots, csr_literals, csr_clauses);
     let (trail_assignments, trail_cache_keys, trail_normalized_cache_keys, trail_source_cache_keys,
-         post_unit_hits, post_unit_visited, post_unit_forced) = trail_profile.unwrap_or_default();
+         post_unit_hits, post_unit_visited, post_unit_forced,
+         reused_unforced_keys, projected_forced_keys) = trail_profile.unwrap_or_default();
     eprintln!("RESEARCH_MPFR_TRAIL enabled={} assignments={} cache_keys={}",
         trail_count, trail_assignments, trail_cache_keys);
     eprintln!("RESEARCH_MPFR_TRAIL_PARENT_IDS enabled={}", trail_parent_ids);
@@ -1020,6 +1029,8 @@ fn run() -> Result<(), String> {
     eprintln!("RESEARCH_MPFR_TRAIL_INLINE_WEIGHT_RELABEL enabled={}", inline_weight_relabel);
     eprintln!("RESEARCH_MPFR_POST_UNIT_CACHE enabled={} hits={} visited={} forced={}",
         post_unit_cache, post_unit_hits, post_unit_visited, post_unit_forced);
+    eprintln!("RESEARCH_MPFR_POST_UNIT_PROJECTED enabled={} unchanged={} projected={}",
+        projected_post_key, reused_unforced_keys, projected_forced_keys);
     eprintln!("RESEARCH_MPFR_TRAIL_WEIGHT_CLASS_SCOPE_MAX max={} localized_keys={} original_keys={}",
         weight_cache_scope_max.unwrap_or_default(), trail_normalized_cache_keys, trail_source_cache_keys);
     eprintln!("RESEARCH_MPFR_CACHE_POLICY {}", cache_policy.label());

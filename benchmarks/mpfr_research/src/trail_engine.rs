@@ -6,7 +6,7 @@
 //! reduced clauses are streamed only at the component-cache boundary.
 //!
 //! This is NOT CDCL and does not perform weight-unsafe SAT simplification.
-use crate::{normalize, Clause, Outcome, PackedKey, Problem, Stats, C};
+use crate::{normalize, separator_pivot, Clause, Outcome, PackedKey, Problem, Stats, C};
 use hashbrown::{hash_map::RawEntryMut, HashMap};
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeMap, BinaryHeap};
@@ -64,6 +64,13 @@ pub(crate) struct TrailEngine<'a> {
     pub(crate) use_projected_post_key: bool,
     // Opt-in post-unit frequency/component union from the same clause traversal.
     pub(crate) use_fused_post_analysis: bool,
+    // Exact opt-in separator-aware pivot; the source CNF and weights remain
+    // unchanged. Bounded probes return to Frequency when inconclusive.
+    pub(crate) use_articulation_pivot: bool,
+    pub(crate) separator_scans: u64,
+    pub(crate) separator_candidates: u64,
+    pub(crate) separator_chosen: u64,
+    pub(crate) separator_skipped: u64,
     pub(crate) reused_unforced_keys: u64,
     pub(crate) projected_forced_keys: u64,
     weight_classes: Vec<usize>,
@@ -132,6 +139,11 @@ impl<'a> TrailEngine<'a> {
             post_unit_forced: 0,
             use_projected_post_key: false,
             use_fused_post_analysis: false,
+            use_articulation_pivot: false,
+            separator_scans: 0,
+            separator_candidates: 0,
+            separator_chosen: 0,
+            separator_skipped: 0,
             reused_unforced_keys: 0,
             projected_forced_keys: 0,
             weight_classes: Vec::new(),
@@ -688,7 +700,22 @@ impl<'a> TrailEngine<'a> {
                 },
             ));
         }
-        let pivot = pivot.ok_or("missing trail pivot")?;
+        // A factor-graph articulation variable, if one exists, is a sound
+        // separator pivot for both Shannon branches. This is after unit
+        // closure and the standard disconnected-component check.
+        let pivot = if self.use_articulation_pivot {
+            self.separator_scans += 1;
+            let probe = separator_pivot::choose(
+                &active, &ids, &self.clauses, &self.assigned,
+                &self.satisfied, &self.frequency,
+            );
+            self.separator_candidates += probe.candidates as u64;
+            if !probe.scanned { self.separator_skipped += 1; }
+            if probe.pivot.is_some() { self.separator_chosen += 1; }
+            probe.pivot.or(pivot)
+        } else {
+            pivot
+        }.ok_or("missing trail pivot")?;
         let child: Vec<usize> = active.into_iter().filter(|&v| v != pivot).collect();
         let checkpoint = self.trail.len();
 
@@ -1746,6 +1773,47 @@ mod tests {
                         assert_eq!(optimized.post_unit_forced, control.post_unit_forced);
                         assert!(optimized.assigned.iter().all(|&x| x == 0));
                     }
+                }
+            }
+        }
+    }
+
+
+    #[test]
+    fn articulation_pivot_preserves_full_signed_complex_wmc_and_sat() {
+        let sources = [
+            "p cnf 5 6\nc t wmc\nc p weight 1 0.5 0.25 0\nc p weight -1 -0.25 0.125 0\n1 2 0\n1 3 0\n2 3 0\n3 4 0\n3 5 0\n4 5 0\n",
+            "p cnf 3 0\nc t wmc\nc p weight 1 1 0 0\nc p weight -1 -1 0 0\n",
+            "p cnf 3 2\nc t wmc\n1 0\n-1 0\n",
+            "p cnf 5 6\nc t wmc\n-1 2 0\n1 3 0\n-2 3 0\n3 -4 0\n-3 5 0\n4 -5 0\n",
+        ];
+        for bits in [100_u32, 333] {
+            for source in sources {
+                let problem = parse_emitted(source, bits).unwrap();
+                for capacity in [0_usize, 1, 128] {
+                    let mut original = TrailEngine::new(&problem, bits, capacity, 100_000);
+                    original.use_parent_ids = true;
+                    original.use_compact_residual = true;
+                    original.use_prehashed_cache = true;
+                    original.use_fused_compact = true;
+                    original.use_weight_class_cache = true;
+                    original.use_inline_weight_relabel = true;
+                    let expected = original.count((1..=problem.n).collect(), 0).unwrap();
+
+                    let mut changed = TrailEngine::new(&problem, bits, capacity, 100_000);
+                    changed.use_parent_ids = true;
+                    changed.use_compact_residual = true;
+                    changed.use_prehashed_cache = true;
+                    changed.use_fused_compact = true;
+                    changed.use_weight_class_cache = true;
+                    changed.use_inline_weight_relabel = true;
+                    changed.use_articulation_pivot = true;
+                    let actual = changed.count((1..=problem.n).collect(), 0).unwrap();
+                    assert_eq!(actual.sat, expected.sat);
+                    assert_eq!(actual.count.re, expected.count.re);
+                    assert_eq!(actual.count.im, expected.count.im);
+                    assert!(changed.assigned.iter().all(|&v| v == 0));
+                    assert!(original.assigned.iter().all(|&v| v == 0));
                 }
             }
         }

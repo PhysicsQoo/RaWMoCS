@@ -27,10 +27,16 @@ pub(crate) struct VeStats {
     pub(crate) cells: usize,
     pub(crate) products: usize,
     pub(crate) zero_sat: usize,
+    pub(crate) cap_reason: &'static str,
+    pub(crate) source_vars: usize,
+    pub(crate) scope_vars: usize,
+    pub(crate) source_clauses: usize,
+    pub(crate) source_max_clause_width: usize,
 }
 
-fn reject(mut stats: VeStats) -> (Option<Outcome>, VeStats) {
+fn reject(mut stats: VeStats, reason: &'static str) -> (Option<Outcome>, VeStats) {
     stats.capped = true;
+    stats.cap_reason = reason;
     (None, stats)
 }
 
@@ -113,26 +119,42 @@ fn value_at(
 pub(crate) fn count(
     p: &Problem, scope: &[usize], bits: u32,
 ) -> (Option<Outcome>, VeStats) {
-    let mut stats = VeStats::default();
-    if p.n == 0 || p.n > MAX_VARS || scope.len() > MAX_SCOPE
-        || p.clauses.len() > MAX_CLAUSES || p.weights.len() < p.n
-    {
-        return reject(stats);
-    }
+    let mut stats = VeStats {
+        source_vars: p.n,
+        scope_vars: scope.len(),
+        source_clauses: p.clauses.len(),
+        source_max_clause_width: p.clauses.iter().map(Vec::len).max().unwrap_or(0),
+        ..VeStats::default()
+    };
+    if p.n == 0 { return reject(stats, "empty_source_variables"); }
+    if p.n > MAX_VARS { return reject(stats, "source_variables"); }
+    if scope.len() > MAX_SCOPE { return reject(stats, "source_scope"); }
+    if p.clauses.len() > MAX_CLAUSES { return reject(stats, "source_clauses"); }
+    if p.weights.len() < p.n { return reject(stats, "missing_weights"); }
     let mut present = vec![false; p.n + 1];
     for &v in scope {
-        if v == 0 || v > p.n || present[v] { return reject(stats); }
+        if v == 0 || v > p.n || present[v] { return reject(stats, "invalid_scope"); }
         present[v] = true;
     }
     let mut factors = Vec::with_capacity(p.clauses.len() + scope.len());
     for clause in &p.clauses {
+        let mut vars = clause.iter().map(|lit| lit.unsigned_abs() as usize).collect::<Vec<_>>();
+        if vars.iter().any(|&var| var == 0 || var > p.n || !present[var]) {
+            return reject(stats, "clause_outside_scope");
+        }
+        vars.sort_unstable();
+        vars.dedup();
+        if vars.len() > MAX_CLAUSE_WIDTH { return reject(stats, "source_clause_width"); }
+        if stats.cells.saturating_add(1_usize << vars.len()) > MAX_CELLS {
+            return reject(stats, "source_factor_cells");
+        }
         let Some(factor) = clause_factor(clause, &present, bits, &mut stats) else {
-            return reject(stats);
+            return reject(stats, "source_factor_invalid");
         };
         factors.push(factor);
     }
     for &v in scope {
-        if stats.cells.saturating_add(2) > MAX_CELLS { return reject(stats); }
+        if stats.cells.saturating_add(2) > MAX_CELLS { return reject(stats, "source_unary_cells"); }
         stats.cells += 2;
         factors.push(Factor {
             vars: vec![v],
@@ -150,21 +172,21 @@ pub(crate) fn count(
         let (variable, incident, union) = selected_bucket(&factors, &remaining);
         stats.width = stats.width.max(union.len());
         if union.len() > MAX_BAG || union.is_empty() {
-            return reject(stats);
+            return reject(stats, "bucket_width");
         }
         let rest: Vec<usize> = union.into_iter().filter(|&v| v != variable).collect();
         let n_cells = 1_usize << rest.len();
-        if stats.cells.saturating_add(n_cells) > MAX_CELLS { return reject(stats); }
+        if stats.cells.saturating_add(n_cells) > MAX_CELLS { return reject(stats, "bucket_cells"); }
         stats.cells += n_cells;
         let affected: Vec<&Factor> = incident.iter().map(|&i| &factors[i]).collect();
         let mut new_values = Vec::with_capacity(n_cells);
         for assignment in 0..n_cells {
             let Some(negative) = value_at(
                 &affected, &rest, variable, false, assignment, bits, &mut stats
-            ) else { return reject(stats) };
+            ) else { return reject(stats, "bucket_products") };
             let Some(positive) = value_at(
                 &affected, &rest, variable, true, assignment, bits, &mut stats
-            ) else { return reject(stats) };
+            ) else { return reject(stats, "bucket_products") };
             let sat = negative.sat || positive.sat;
             let mut weighted = C::zero(bits);
             if negative.sat { weighted = weighted.add(&negative.count, bits); }
@@ -187,7 +209,7 @@ pub(crate) fn count(
     let mut outcome = Outcome { sat: true, count: C::one(bits) };
     for factor in factors {
         if !factor.vars.is_empty() || factor.values.len() != 1 {
-            return reject(stats);
+            return reject(stats, "non_scalar_final_factor");
         }
         let scalar = &factor.values[0];
         if !scalar.sat {

@@ -1,0 +1,117 @@
+name: Same-CNF MQT exact signed-complex factor variable elimination holdout
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/mqt-factor-variable-elimination.yml"
+      - "benchmarks/mpfr_research/tools/quprs_mqt_factor_ve_ab.py"
+      - "docs/factor-variable-elimination-research.md"
+      - "benchmarks/mpfr_research/src/trail_engine.rs"
+      - "benchmarks/mpfr_research/src/factor_variable_elimination.rs"
+      - "benchmarks/mpfr_research/src/separator_pivot.rs"
+      - "benchmarks/rust_core/tools/quprs_mqtbench_original_cnf.rs"
+      - "benchmarks/rust_core/tools/quprs_mqtbench_original_cnf_ab.py"
+      - "benchmarks/mpfr_research/src/main.rs"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mqt-factor-ve-holdout-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  mqtbench-native-paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout RaWMoCS research scripts
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Checkout pinned QuPRS with existing original MQTBench corpus
+        uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/QuPRS
+          ref: 0b28736651b3740ed3b201edd2efdef3da541e0d
+          path: .upstream/quprs
+          persist-credentials: false
+      - name: Checkout pinned native GPMC C++ source
+        uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/GPMC
+          ref: 89bbc89d0de918e7a5385740355df55765039230
+          path: .upstream/gpmc
+          submodules: recursive
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .upstream/quprs/rust -> target
+          key: mqtbench-native-encoder-research
+      - name: Verify pinned sources and install native MPFR dependencies
+        run: |
+          test "$(git -C .upstream/quprs rev-parse HEAD)" = "0b28736651b3740ed3b201edd2efdef3da541e0d"
+          test "$(git -C .upstream/gpmc rev-parse HEAD)" = "89bbc89d0de918e7a5385740355df55765039230"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build libgmp-dev libmpfr-dev zlib1g-dev time
+      - name: Build QuPRS source-faithful MQTBench original QASM WMC encoder
+        run: |
+          cp benchmarks/rust_core/tools/quprs_mqtbench_original_cnf.rs \
+            .upstream/quprs/rust/quprs/examples/quprs_mqtbench_original_cnf.rs
+          cargo build --locked --release --no-default-features \
+            --manifest-path .upstream/quprs/rust/Cargo.toml \
+            -p quprs --example quprs_mqtbench_original_cnf
+      - name: Bounded source-faithful MQT original QASM to weighted CNF export
+        run: |
+          mkdir -p .research/mqtbench
+          EXPORTER="$GITHUB_WORKSPACE/.upstream/quprs/rust/target/release/examples/quprs_mqtbench_original_cnf"
+          : > .research/mqtbench/source-status.tsv
+          for case in mqt_wstate_4 mqt_vqe_4 mqt_qnn_4 mqt_grover_4 mqt_qwalk_3 mqt_qaoa_7 mqt_qpeexact_8; do
+            echo "MQT_SOURCE_START $case"
+            if timeout -k 2s 30s prlimit --as=2147483648 --fsize=2097152 -- \
+              "$EXPORTER" "$case" \
+              "$GITHUB_WORKSPACE/.upstream/quprs" \
+              "$GITHUB_WORKSPACE/.research/mqtbench" \
+              > ".research/mqtbench/$case.export.log" 2>&1; then
+              printf '%s\tEXPORTED\n' "$case" >> .research/mqtbench/source-status.tsv
+              echo "MQT_SOURCE_EXPORTED $case"
+            else
+              printf '%s\tCENSORED_OR_UNSUPPORTED\n' "$case" >> .research/mqtbench/source-status.tsv
+              echo "MQT_SOURCE_CENSORED $case"
+            fi
+          done
+      - name: Build unchanged GPMC C++ native solver
+        run: |
+          cmake -S .upstream/gpmc -B .upstream/gpmc/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build .upstream/gpmc/build --target gpmc-bin --parallel 2
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/mpfr_research -> target
+          key: mqtbench-native-mpfr-research
+      - name: Build and qualify same-bit RaWMoCS research MPFR solver
+        run: |
+          cargo test --release --manifest-path benchmarks/mpfr_research/Cargo.toml
+          cargo build --release --manifest-path benchmarks/mpfr_research/Cargo.toml
+      - name: Original MQT weighted CNF GPMC versus Rust Inline and exact factor elimination
+        run: |
+          set -euo pipefail
+          python3 -m py_compile benchmarks/mpfr_research/tools/quprs_mqt_factor_ve_ab.py
+          python3 benchmarks/mpfr_research/tools/quprs_mqt_factor_ve_ab.py --self-test
+          python3 benchmarks/mpfr_research/tools/quprs_mqt_factor_ve_ab.py \
+            --quprs .upstream/quprs \
+            --gpmc-source .upstream/gpmc \
+            --corpus .research/mqtbench \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --report .research/mqtbench/mqt-factor-ve-report.json \
+            | tee .research/mqtbench/mqt-factor-ve-report.log
+      - name: Archive source statuses and every paired/censored record
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: original-mqtbench-qasm-quprs-weighted-cnf-exact-factor-ve
+          path: .research/mqtbench/
+          if-no-files-found: warn
+          retention-days: 30

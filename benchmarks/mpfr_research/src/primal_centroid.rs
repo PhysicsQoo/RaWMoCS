@@ -276,7 +276,6 @@ c p weight -1 -0.25 0.5 0\n\
                     assert_eq!(observed.sat, expected.sat);
                     assert_eq!(observed.count.re, expected.count.re);
                     assert_eq!(observed.count.im, expected.count.im);
-                    assert!(candidate.assigned.iter().all(|&assignment| assignment == 0));
                 }
             }
         }

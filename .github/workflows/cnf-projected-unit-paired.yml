@@ -45,6 +45,8 @@ jobs:
             benchmarks/mpfr_research -> target
             .upstream/quprs/rust -> target
           key: same-cnf-selective-p0
+      - name: Fast Python research runner syntax gate before expensive native builds
+        run: python3 -m py_compile benchmarks/mpfr_research/tools/quprs_cnf_projected_ab.py
       - name: Verify source lock, install native libraries
         shell: bash
         run: |

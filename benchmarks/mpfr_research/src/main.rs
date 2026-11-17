@@ -879,6 +879,10 @@ fn run() -> Result<(), String> {
     let cache_first = if projected_post_key {
         args.next().ok_or("missing cache policy or precision after --trail-post-unit-projected")?
     } else { cache_first };
+    let fused_post_analysis = cache_first.to_str() == Some("--trail-fused-post-analysis");
+    let cache_first = if fused_post_analysis {
+        args.next().ok_or("missing cache policy or precision after --trail-fused-post-analysis")?
+    } else { cache_first };
     let cache_policy = match cache_first.to_str() {
         Some("--hashbrown-owned") => CachePolicy::HbOwned,
         Some("--hashbrown-borrowed") => CachePolicy::HbBorrowed,
@@ -938,6 +942,9 @@ fn run() -> Result<(), String> {
     if projected_post_key && !post_unit_cache {
         return Err("--trail-post-unit-projected requires --trail-post-unit-cache".into());
     }
+    if fused_post_analysis && !projected_post_key {
+        return Err("--trail-fused-post-analysis requires --trail-post-unit-projected".into());
+    }
     let path = args.next().ok_or("missing CNF")?;
     if args.next().is_some() { return Err("expected exactly one file".into()); }
     let t0 = Instant::now();
@@ -982,6 +989,7 @@ fn run() -> Result<(), String> {
         trail.use_inline_weight_relabel = inline_weight_relabel;
         trail.use_post_unit_cache = post_unit_cache;
         trail.use_projected_post_key = projected_post_key;
+        trail.use_fused_post_analysis = fused_post_analysis;
         let outcome = trail.count(scope, 0)?;
         (outcome, trail.stats,
          Some((trail.assignments, trail.cache_keys, trail.normalized_cache_keys,
@@ -1031,6 +1039,7 @@ fn run() -> Result<(), String> {
         post_unit_cache, post_unit_hits, post_unit_visited, post_unit_forced);
     eprintln!("RESEARCH_MPFR_POST_UNIT_PROJECTED enabled={} unchanged={} projected={}",
         projected_post_key, reused_unforced_keys, projected_forced_keys);
+    eprintln!("RESEARCH_MPFR_POST_UNIT_FUSED_ANALYSIS enabled={}", fused_post_analysis);
     eprintln!("RESEARCH_MPFR_TRAIL_WEIGHT_CLASS_SCOPE_MAX max={} localized_keys={} original_keys={}",
         weight_cache_scope_max.unwrap_or_default(), trail_normalized_cache_keys, trail_source_cache_keys);
     eprintln!("RESEARCH_MPFR_CACHE_POLICY {}", cache_policy.label());

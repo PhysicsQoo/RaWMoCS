@@ -911,6 +911,10 @@ fn run() -> Result<(), String> {
     let cache_first = if factor_ve {
         args.next().ok_or("missing mode after --factor-variable-elimination")?
     } else { cache_first };
+    let scope_probe_320 = cache_first.to_str() == Some("--factor-ve-scope-probe-320");
+    let cache_first = if scope_probe_320 {
+        args.next().ok_or("missing mode after --factor-ve-scope-probe-320")?
+    } else { cache_first };
     let residual_factor_ve = cache_first.to_str() == Some("--trail-residual-factor-ve");
     let cache_first = if residual_factor_ve {
         args.next().ok_or("missing mode after --trail-residual-factor-ve")?
@@ -977,6 +981,9 @@ fn run() -> Result<(), String> {
     if fused_post_analysis && !projected_post_key {
         return Err("--trail-fused-post-analysis requires --trail-post-unit-projected".into());
     }
+    if scope_probe_320 && !factor_ve {
+        return Err("--factor-ve-scope-probe-320 requires --factor-variable-elimination".into());
+    }
     if residual_factor_ve && (!weighted_equivalence || !trail_count || factor_ve
         || post_unit_cache || articulation_pivot || primal_order || root_failed_literal) {
         return Err("--trail-residual-factor-ve requires weighted-equivalence + trail-count, without other root transforms".into());
@@ -1034,12 +1041,18 @@ fn run() -> Result<(), String> {
     let primal_build_ns = td_start.elapsed().as_nanos();
     let ve_start = Instant::now();
     let (ve_candidate, ve_stats) = if factor_ve {
-        factor_variable_elimination::count(source, &scope, bits)
+        if scope_probe_320 {
+            factor_variable_elimination::count_scope_probe(source, &scope, bits)
+        } else {
+            factor_variable_elimination::count(source, &scope, bits)
+        }
     } else {
         (None, factor_variable_elimination::VeStats::default())
     };
     let ve_ns = ve_start.elapsed().as_nanos();
     let ve_completed = ve_candidate.is_some();
+    eprintln!("RESEARCH_MPFR_FACTOR_VE_SCOPE_PROBE enabled={} limit={}",
+        scope_probe_320, if scope_probe_320 { 320 } else { 256 });
     eprintln!("RESEARCH_MPFR_FACTOR_VE_ADMISSION source_vars={} scope_vars={} source_clauses={} max_clause_width={} cap_reason={}",
         ve_stats.source_vars, ve_stats.scope_vars, ve_stats.source_clauses,
         ve_stats.source_max_clause_width,

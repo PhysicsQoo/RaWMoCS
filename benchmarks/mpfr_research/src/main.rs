@@ -15,6 +15,7 @@ use std::path::Path;
 use std::time::Instant;
 
 mod weighted_equivalence;
+mod root_failed_literal;
 mod unit_closure_pivot;
 mod csr_workspace;
 mod trail_engine;
@@ -828,6 +829,10 @@ fn run() -> Result<(), String> {
     let cache_first = if weighted_equivalence {
         args.next().ok_or("missing cache policy or precision after --weighted-equivalence")?
     } else { cache_first };
+    let root_failed_literal = cache_first.to_str() == Some("--root-failed-literal");
+    let cache_first = if root_failed_literal {
+        args.next().ok_or("missing solver flags after --root-failed-literal")?
+    } else { cache_first };
     let unit_closure_pivot = cache_first.to_str() == Some("--unit-closure-pivot");
     let cache_first = if unit_closure_pivot {
         args.next().ok_or("missing cache policy or precision after --unit-closure-pivot")?
@@ -954,6 +959,9 @@ fn run() -> Result<(), String> {
     if fused_post_analysis && !projected_post_key {
         return Err("--trail-fused-post-analysis requires --trail-post-unit-projected".into());
     }
+    if root_failed_literal && (!weighted_equivalence || !trail_count) {
+        return Err("--root-failed-literal requires --weighted-equivalence --trail-count".into());
+    }
     if articulation_root_only && !articulation_pivot {
         return Err("--trail-articulation-root-only requires --trail-articulation-pivot".into());
     }
@@ -975,9 +983,15 @@ fn run() -> Result<(), String> {
     } else {
         (None, weighted_equivalence::EquivalenceStats::default())
     };
-    let source = reduced.as_ref().map(|(problem, _)| problem).unwrap_or(&p);
+    let pre_source = reduced.as_ref().map(|(problem, _)| problem).unwrap_or(&p);
     let scope = reduced.as_ref().map(|(_, scope)| scope.clone())
         .unwrap_or_else(|| (1..=p.n).collect());
+    let (root_augmented, root_stats) = if root_failed_literal {
+        root_failed_literal::augment(pre_source, &scope)
+    } else {
+        (None, root_failed_literal::RootFailedStats::default())
+    };
+    let source = root_augmented.as_ref().unwrap_or(pre_source);
     let mut engine = Engine::new(source, bits, cache_policy);
     engine.fast_assign = fast_assign;
     engine.shared_residual_key = shared_residual_key;
@@ -1034,6 +1048,10 @@ fn run() -> Result<(), String> {
         reduction_stats.eliminated_vars, reduction_stats.removed_clauses,
         reduction_stats.representatives, reduction_stats.contradictory,
         reduction_stats.censored);
+    eprintln!("RESEARCH_MPFR_ROOT_FAILED_LITERAL enabled={} eligible={} candidates={} probes={} implied={} refutations={} work={} contradiction={} capped={}",
+        root_failed_literal, root_stats.eligible, root_stats.candidates,
+        root_stats.probes, root_stats.implied_units, root_stats.refutations,
+        root_stats.work, root_stats.contradicted, root_stats.capped);
     eprintln!("RESEARCH_MPFR_UNIT_CLOSURE_PIVOT enabled={} scans={} candidates={} chosen={} rejected={} work={} forced={} conflicts={} censored={}",
         unit_closure_pivot, engine.unit_closure_stats.scans,
         engine.unit_closure_stats.candidates, engine.unit_closure_stats.chosen,

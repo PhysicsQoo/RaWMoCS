@@ -22,6 +22,7 @@ mod trail_engine;
 mod separator_pivot;
 mod primal_centroid;
 mod factor_variable_elimination;
+mod factor_minfill_order;
 
 type Clause = Vec<i32>;
 
@@ -915,6 +916,10 @@ fn run() -> Result<(), String> {
     let cache_first = if scope_probe_320 {
         args.next().ok_or("missing mode after --factor-ve-scope-probe-320")?
     } else { cache_first };
+    let ve_min_fill = cache_first.to_str() == Some("--factor-ve-minfill-order");
+    let cache_first = if ve_min_fill {
+        args.next().ok_or("missing mode after --factor-ve-minfill-order")?
+    } else { cache_first };
     let residual_factor_ve = cache_first.to_str() == Some("--trail-residual-factor-ve");
     let cache_first = if residual_factor_ve {
         args.next().ok_or("missing mode after --trail-residual-factor-ve")?
@@ -981,6 +986,9 @@ fn run() -> Result<(), String> {
     if fused_post_analysis && !projected_post_key {
         return Err("--trail-fused-post-analysis requires --trail-post-unit-projected".into());
     }
+    if ve_min_fill && (!scope_probe_320 || !factor_ve) {
+        return Err("--factor-ve-minfill-order requires --factor-variable-elimination --factor-ve-scope-probe-320".into());
+    }
     if scope_probe_320 && !factor_ve {
         return Err("--factor-ve-scope-probe-320 requires --factor-variable-elimination".into());
     }
@@ -1041,7 +1049,9 @@ fn run() -> Result<(), String> {
     let primal_build_ns = td_start.elapsed().as_nanos();
     let ve_start = Instant::now();
     let (ve_candidate, ve_stats) = if factor_ve {
-        if scope_probe_320 {
+        if ve_min_fill {
+            factor_variable_elimination::count_scope_probe_minfill(source, &scope, bits)
+        } else if scope_probe_320 {
             factor_variable_elimination::count_scope_probe(source, &scope, bits)
         } else {
             factor_variable_elimination::count(source, &scope, bits)
@@ -1053,6 +1063,9 @@ fn run() -> Result<(), String> {
     let ve_completed = ve_candidate.is_some();
     eprintln!("RESEARCH_MPFR_FACTOR_VE_SCOPE_PROBE enabled={} limit={}",
         scope_probe_320, if scope_probe_320 { 320 } else { 256 });
+    eprintln!("RESEARCH_MPFR_FACTOR_VE_ORDER minfill={} predicted_width={} fill_edges={} candidates={} plan_ns={}",
+        ve_min_fill, ve_stats.minfill_plan_width, ve_stats.minfill_fill_edges,
+        ve_stats.minfill_candidates, ve_stats.minfill_plan_ns);
     eprintln!("RESEARCH_MPFR_FACTOR_VE_ADMISSION source_vars={} scope_vars={} source_clauses={} max_clause_width={} cap_reason={}",
         ve_stats.source_vars, ve_stats.scope_vars, ve_stats.source_clauses,
         ve_stats.source_max_clause_width,

@@ -1,4 +1,4 @@
-name: Same-CNF GPMC versus Rust projected-unit weighted component cache research
+name: Same-CNF GPMC versus Rust fused post-unit component analysis research
 
 on:
   pull_request:
@@ -8,13 +8,14 @@ on:
       - benchmarks/mpfr_research/src/trail_engine.rs
       - benchmarks/mpfr_research/tools/quprs_cnf_projected_ab.py
       - docs/cnf-projected-unit-research.md
+      - docs/cnf-fused-post-analysis-research.md
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: same-cnf-projected-unit-${{ github.event.pull_request.number || github.ref }}
+  group: same-cnf-fused-post-analysis-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -106,13 +107,13 @@ jobs:
             --gpmc .upstream/gpmc/build/gpmc \
             --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
             --trials 7 \
-            --report .research/weighted-cnf-projected-unit/projected-unit-fifteen-arm.json \
+            --report .research/weighted-cnf-projected-unit/fused-post-analysis-eighteen-arm.json \
             | tee .research/weighted-cnf-projected-unit/study.log
       - name: Preserve complete positive, negative and censored source evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: original-quprs-weighted-cnf-projected-unit-seventeen-arm
+          name: original-quprs-weighted-cnf-fused-analysis-eighteen-arm
           path: .research/weighted-cnf-projected-unit/
           retention-days: 30
           if-no-files-found: warn

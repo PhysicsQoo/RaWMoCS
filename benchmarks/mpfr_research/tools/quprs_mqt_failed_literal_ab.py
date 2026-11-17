@@ -129,7 +129,7 @@ def main() -> None:
         if statuses[case] != "EXPORTED":
             case_record["status"] = "CENSORED_EXPORT"
             save()
-            print(f"MQT_ROOT_CENSORED case={case} source={statuses[case]}", flush=True)
+            print(f"MQT_FAILED_LITERAL_CENSORED case={case} source={statuses[case]}", flush=True)
             continue
         copied = args.corpus / f"{case}.qasm"
         cnf = args.corpus / f"{case}-gpmc.cnf"
@@ -211,7 +211,7 @@ def main() -> None:
                     cohort["status"] = "FAILED_BOOLEAN_SAT"
                     save()
                     raise SystemExit("FAILED_BOOLEAN_SAT")
-                for arm, result in (("inline_full", rust), ("articulation_root", root)):
+                for arm, result in (("inline_full", rust), ("failed_literal", root)):
                     witness = complex_relative_witness(baseline, result, digits)
                     if not witness["pass"]:
                         cohort["status"] = "FAILED_SIGNED_COMPLEX_WMC"

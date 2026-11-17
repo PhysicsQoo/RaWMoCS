@@ -260,8 +260,21 @@ mod tests {
 
     #[test]
     fn sat_with_zero_complex_weight_is_not_mistaken_for_unsat() {
-        // The formula forces 1=true, but its positive literal weight is 0.
-        verify(&[vec![1, 2], vec![1, -2]], ("0", "1"), Some(1));
+        // The formula forces 1=true, and the positive literal weight
+        // is EXACTLY 0+0i, not just a zero real component.
+        for bits in [100, 333] {
+            let mut p = source(&[vec![1, 2], vec![1, -2]], bits, ("1", "-1"));
+            p.weights[0].positive = C::zero(bits);
+            let (converted, stats) = augment(&p, &(1..=p.n).collect::<Vec<_>>());
+            assert!(stats.implied_units >= 1);
+            let reduced = converted.unwrap();
+            assert!(reduced.clauses.contains(&vec![1]));
+            let mut engine = Engine::new(&reduced, bits, CachePolicy::StdOwned);
+            let answer = engine.count(reduced.clauses.clone(), (1..=p.n).collect(), 0).unwrap();
+            assert!(answer.sat);
+            assert_eq!(answer.count.re, 0);
+            assert_eq!(answer.count.im, 0);
+        }
     }
 
     #[test]

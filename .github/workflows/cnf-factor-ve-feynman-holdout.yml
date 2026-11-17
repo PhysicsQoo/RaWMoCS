@@ -1,0 +1,119 @@
+name: Same-CNF original Feynman signed-complex factor VE holdout
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/cnf-factor-ve-feynman-holdout.yml
+      - benchmarks/mpfr_research/src/main.rs
+      - benchmarks/mpfr_research/src/trail_engine.rs
+      - benchmarks/mpfr_research/src/factor_variable_elimination.rs
+      - benchmarks/mpfr_research/tools/quprs_cnf_factor_ve_ab.py
+      - docs/factor-variable-elimination-research.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: same-cnf-feynman-factor-ve-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  paired-weighted-cnf:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/QuPRS
+          ref: 0b28736651b3740ed3b201edd2efdef3da541e0d
+          path: .upstream/quprs
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/GPMC
+          ref: 89bbc89d0de918e7a5385740355df55765039230
+          path: .upstream/gpmc
+          submodules: recursive
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            benchmarks/mpfr_research -> target
+            .upstream/quprs/rust -> target
+          key: same-cnf-selective-p0
+      - name: Fast Python research runner syntax gate before expensive native builds
+        run: python3 -m py_compile benchmarks/mpfr_research/tools/quprs_cnf_factor_ve_ab.py
+      - name: Verify source lock, install native libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C .upstream/quprs rev-parse HEAD)" = 0b28736651b3740ed3b201edd2efdef3da541e0d
+          test "$(git -C .upstream/gpmc rev-parse HEAD)" = 89bbc89d0de918e7a5385740355df55765039230
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build libgmp-dev libmpfr-dev zlib1g-dev time pkg-config
+      - name: Build original unmodified QuPRS CNF fixture source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp benchmarks/rust_core/tools/quprs_long_feynman_reference.rs \
+            .upstream/quprs/rust/quprs/examples/quprs_long_feynman_reference.rs
+          cargo build --locked --release --no-default-features \
+            --manifest-path .upstream/quprs/rust/Cargo.toml \
+            -p quprs --example quprs_long_feynman_reference
+      - name: Freeze unchanged QuPRS CNFs as solver inputs, outside solver timing
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .research/weighted-cnf-articulation
+          generator="$GITHUB_WORKSPACE/.upstream/quprs/rust/target/release/examples/quprs_long_feynman_reference"
+          for case in feynman_hwb6 feynman_barenco_tof_5 feynman_mod_mult_55 feynman_grover_5; do
+            timeout -k 2s 30s prlimit --as=2147483648 --fsize=2097152 -- \
+              "$generator" "$case" "$GITHUB_WORKSPACE/.upstream/quprs" \
+              "$GITHUB_WORKSPACE/.research/weighted-cnf-articulation" \
+              > ".research/weighted-cnf-articulation/$case.export.log" 2>&1
+            test -s ".research/weighted-cnf-articulation/$case-gpmc.cnf"
+            sha256sum ".research/weighted-cnf-articulation/$case-gpmc.cnf"
+          done
+      - name: Build unchanged GPMC original C++ solver
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S .upstream/gpmc -B .upstream/gpmc/build \
+            -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build .upstream/gpmc/build --target gpmc-bin --parallel 2
+      - name: Build opt-in exact failed-literal Rust weighted-CNF solver and run independent tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --release \
+            --manifest-path benchmarks/mpfr_research/Cargo.toml
+          cargo build --release \
+            --manifest-path benchmarks/mpfr_research/Cargo.toml
+          python3 -m py_compile benchmarks/mpfr_research/tools/quprs_cnf_factor_ve_ab.py
+      - name: Paired original Feynman Weighted CNF GPMC versus Inline and exact factor VE
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 benchmarks/mpfr_research/tools/quprs_cnf_factor_ve_ab.py \
+            --quprs .upstream/quprs \
+            --gpmc-source .upstream/gpmc \
+            --corpus .research/weighted-cnf-articulation \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --trials 7 \
+            --report .research/weighted-cnf-articulation/factor-ve-feynman-three-arm.json \
+            | tee .research/weighted-cnf-articulation/study.log
+      - name: Preserve complete positive, negative and censored source evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: original-quprs-weighted-cnf-factor-ve-feynman-three-arm
+          path: .research/weighted-cnf-articulation/
+          retention-days: 30
+          if-no-files-found: warn

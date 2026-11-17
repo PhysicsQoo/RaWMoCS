@@ -1038,7 +1038,8 @@ fn run() -> Result<(), String> {
     let (trail_assignments, trail_cache_keys, trail_normalized_cache_keys, trail_source_cache_keys,
          post_unit_hits, post_unit_visited, post_unit_forced,
          reused_unforced_keys, projected_forced_keys, separator_scans,
-         separator_candidates, separator_chosen, separator_skipped) = trail_profile.unwrap_or_default();
+         separator_candidates, separator_chosen, separator_skipped) =
+        trail_profile.unwrap_or((0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0));
     eprintln!("RESEARCH_MPFR_TRAIL enabled={} assignments={} cache_keys={}",
         trail_count, trail_assignments, trail_cache_keys);
     eprintln!("RESEARCH_MPFR_TRAIL_PARENT_IDS enabled={}", trail_parent_ids);

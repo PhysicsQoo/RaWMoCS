@@ -1964,6 +1964,50 @@ mod tests {
     }
 
     #[test]
+    fn bounded_post_unit_factor_ve_preserves_signed_complex_wmc() {
+        // Exact Boolean SAT must remain separate from cancellations to zero.
+        let cases = [
+            "p cnf 5 5\nc t wmc\nc p weight 1 0.25 -0.5 0\nc p weight -1 -0.125 0.25 0\n1 2 0\n-1 3 0\n3 4 0\n-4 5 0\n-5 2 0\n",
+            "p cnf 4 3\nc t wmc\nc p weight 2 0 0 0\nc p weight -2 -1 0 0\n2 0\n1 3 0\n-1 4 0\n",
+            "p cnf 4 2\nc t wmc\n1 0\n-1 0\n",
+            "p cnf 8 5\nc t wmc\nc p weight 6 -0.5 0.25 0\nc p weight -6 0.25 -0.5 0\n1 2 0\n-1 3 0\n4 5 0\n-4 6 0\n7 -8 0\n",
+        ];
+        for bits in [100_u32, 333] {
+            for source in cases {
+                let p = parse_emitted(source, bits).unwrap();
+                let scope: Vec<usize> = (1..=p.n).collect();
+                for cache_limit in [0_usize, 1, 128] {
+                    let mut baseline = TrailEngine::new(&p, bits, cache_limit, 100_000);
+                    baseline.use_parent_ids = true;
+                    baseline.use_compact_residual = true;
+                    baseline.use_prehashed_cache = true;
+                    baseline.use_fused_compact = true;
+                    baseline.use_weight_class_cache = true;
+                    baseline.use_inline_weight_relabel = true;
+                    let reference = baseline.count(scope.clone(), 0).unwrap();
+
+                    let mut hybrid = TrailEngine::new(&p, bits, cache_limit, 100_000);
+                    hybrid.use_parent_ids = true;
+                    hybrid.use_compact_residual = true;
+                    hybrid.use_prehashed_cache = true;
+                    hybrid.use_fused_compact = true;
+                    hybrid.use_weight_class_cache = true;
+                    hybrid.use_inline_weight_relabel = true;
+                    hybrid.use_residual_factor_ve = true;
+                    let observed = hybrid.count(scope.clone(), 0).unwrap();
+                    assert_eq!(observed.sat, reference.sat);
+                    assert_eq!(observed.count.re, reference.count.re);
+                    assert_eq!(observed.count.im, reference.count.im);
+                    assert!(hybrid.residual_ve_attempts <= 8);
+                    assert!(hybrid.residual_ve_completed <= hybrid.residual_ve_attempts);
+                    assert!(hybrid.residual_ve_capped <= hybrid.residual_ve_attempts);
+                    assert!(hybrid.assigned.iter().all(|&v| v == 0));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn fused_post_analysis_preserves_weighted_search() {
         let inputs = [
             "p cnf 7 8\nc t wmc\n1 2 0\n-1 -2 0\n1 3 4 0\n2 3 4 0\n1 6 7 0\n2 6 7 0\n3 5 0\n4 5 0\n",

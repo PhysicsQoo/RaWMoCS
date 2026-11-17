@@ -323,9 +323,9 @@ c p weight 6 -0.5 0.5 0\nc p weight -6 0.25 -0.25 0\n\
     fn research_scope_probe_changes_only_admission_not_signed_wmc() {
         // Synthetic boundary fixture, not a performance benchmark.
         // All 257 root units are Boolean satisfiable and count exactly 1.
-        let mut cnf = String::from("p cnf 257 257\\nc t wmc\\n");
+        let mut cnf = String::from("p cnf 257 257\nc t wmc\n");
         for var in 1..=257 {
-            cnf.push_str(&format!("{var} 0\\n"));
+            cnf.push_str(&format!("{var} 0\n"));
         }
         for bits in [100, 333] {
             let p = parse_emitted(&cnf, bits).unwrap();

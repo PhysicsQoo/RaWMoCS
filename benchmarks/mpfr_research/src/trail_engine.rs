@@ -6,7 +6,7 @@
 //! reduced clauses are streamed only at the component-cache boundary.
 //!
 //! This is NOT CDCL and does not perform weight-unsafe SAT simplification.
-use crate::{normalize, separator_pivot, Clause, Outcome, PackedKey, Problem, Stats, C};
+use crate::{factor_variable_elimination, normalize, separator_pivot, Clause, Outcome, PackedKey, Problem, Stats, C};
 use hashbrown::{hash_map::RawEntryMut, HashMap};
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeMap, BinaryHeap};
@@ -67,6 +67,14 @@ pub(crate) struct TrailEngine<'a> {
     // Exact opt-in separator-aware pivot; the source CNF and weights remain
     // unchanged. Bounded probes return to Frequency when inconclusive.
     pub(crate) use_articulation_pivot: bool,
+    // Research-only exact Factor-VE after reversible DPLL unit closure.
+    // At most eight small residual probes per full solve.
+    pub(crate) use_residual_factor_ve: bool,
+    pub(crate) residual_ve_attempts: u64,
+    pub(crate) residual_ve_completed: u64,
+    pub(crate) residual_ve_capped: u64,
+    pub(crate) residual_ve_products: u64,
+    pub(crate) residual_ve_max_width: usize,
     // Root-only arm: inspect one pivot, not every recursive residual.
     pub(crate) articulation_root_only: bool,
     // Research-only fixed primal bag-centroid score. Does not modify
@@ -148,6 +156,12 @@ impl<'a> TrailEngine<'a> {
             use_projected_post_key: false,
             use_fused_post_analysis: false,
             use_articulation_pivot: false,
+            use_residual_factor_ve: false,
+            residual_ve_attempts: 0,
+            residual_ve_completed: 0,
+            residual_ve_capped: 0,
+            residual_ve_products: 0,
+            residual_ve_max_width: 0,
             articulation_root_only: false,
             primal_scores: None,
             primal_root_only: false,
@@ -712,6 +726,57 @@ impl<'a> TrailEngine<'a> {
                     count: prefix.mul(&value, self.bits),
                 },
             ));
+        }
+        // Exact sum-product DP on the *live cofactor*, not the original
+        // potentially huge root formula. Every forced literal and free
+        // variable was already accounted for in 'prefix'; the residual
+        // factor scope owns only the remaining active signed weights.
+        // Failed bounded probes discard all partial DP states and proceed
+        // to exactly the same full weighted DPLL children as the control.
+        if self.use_residual_factor_ve
+            && self.residual_ve_attempts < 8
+            && !active.is_empty()
+            && active.len() <= 64
+            && ids.len() <= 512
+        {
+            let mut residual = Vec::<Clause>::with_capacity(ids.len());
+            let mut width_ok = true;
+            for &cid in &ids {
+                if self.satisfied[cid] != 0 {
+                    continue;
+                }
+                let clause: Clause = self.clauses[cid]
+                    .iter()
+                    .copied()
+                    .filter(|&lit| self.assigned[lit.unsigned_abs() as usize] == 0)
+                    .collect();
+                if clause.len() > 12 {
+                    width_ok = false;
+                    break;
+                }
+                residual.push(clause);
+            }
+            if width_ok {
+                self.residual_ve_attempts += 1;
+                let (candidate, stats) = factor_variable_elimination::count_clauses(
+                    self.problem, &active, &residual, self.bits,
+                );
+                self.residual_ve_products += stats.products as u64;
+                self.residual_ve_max_width = self.residual_ve_max_width.max(stats.width);
+                if let Some(answer) = candidate {
+                    self.residual_ve_completed += 1;
+                    let result = if answer.sat {
+                        Outcome {
+                            sat: true,
+                            count: prefix.mul(&answer.count, self.bits),
+                        }
+                    } else {
+                        Outcome::unsat(self.bits)
+                    };
+                    return Ok(self.save(key, key_hash, result));
+                }
+                self.residual_ve_capped += 1;
+            }
         }
         // A factor-graph articulation variable, if one exists, is a sound
         // separator pivot for both Shannon branches. This is after unit

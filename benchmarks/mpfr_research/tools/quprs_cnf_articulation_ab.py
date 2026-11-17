@@ -86,7 +86,13 @@ def sample(command: list[str], arm: str, digits: int) -> dict:
                     r"eligible=(\d+) candidates=(\d+) probes=(\d+) implied=(\d+) "
                     r"refutations=(\d+) work=(\d+) contradiction=(true|false) "
                     r"capped=(true|false)$", proc.stderr, re.M)
-                if not phase or not sep or not root_only or not failed:
+                centroid = re.search(
+                    r"^RESEARCH_MPFR_PRIMAL_BAG_CENTROID enabled=(true|false) "
+                    r"root_only=(true|false) eligible=(true|false) capped=(true|false) "
+                    r"vars=(\d+) edges=(\d+) width=(\d+) fill=(\d+) "
+                    r"distance=(\d+) build_ns=(\d+) scans=(\d+) overrides=(\d+)$",
+                    proc.stderr, re.M)
+                if not phase or not sep or not root_only or not failed or not centroid:
                     raise ValueError("missing original-CNF solver phase or articulation diagnostics")
                 fields = [int(v) for v in phase.groups()]
                 if fields[7] != digits or fields[8] != BITS[digits]:
@@ -112,6 +118,18 @@ def sample(command: list[str], arm: str, digits: int) -> dict:
                            failed_work=int(failed.group(7)),
                            failed_contradicted=(failed.group(8) == "true"),
                            failed_capped=(failed.group(9) == "true"),
+                           centroid_enabled=(centroid.group(1) == "true"),
+                           centroid_root_only=(centroid.group(2) == "true"),
+                           centroid_eligible=(centroid.group(3) == "true"),
+                           centroid_capped=(centroid.group(4) == "true"),
+                           centroid_vars=int(centroid.group(5)),
+                           centroid_edges=int(centroid.group(6)),
+                           centroid_width=int(centroid.group(7)),
+                           centroid_fill=int(centroid.group(8)),
+                           centroid_distance=int(centroid.group(9)),
+                           centroid_build_ns=int(centroid.group(10)),
+                           centroid_scans=int(centroid.group(11)),
+                           centroid_overrides=int(centroid.group(12)),
                            precision_bits=fields[8])
         except (OSError, ValueError) as exc:
             row["status"] = "CENSORED_INVALID_OUTPUT"

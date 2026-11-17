@@ -97,7 +97,7 @@ jobs:
           cargo build --release \
             --manifest-path benchmarks/mpfr_research/Cargo.toml
           python3 -m py_compile benchmarks/mpfr_research/tools/quprs_cnf_residual_ve_ab.py
-      - name: Original Feynman CNF: GPMC, Inline, root Factor-VE, and bounded residual hybrid
+      - name: Original Feynman CNF GPMC Inline root Factor-VE and bounded residual hybrid
         shell: bash
         run: |
           set -euo pipefail

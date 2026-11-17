@@ -92,7 +92,13 @@ def sample(command: list[str], arm: str, digits: int) -> dict:
                     r"vars=(\d+) edges=(\d+) width=(\d+) fill=(\d+) "
                     r"distance=(\d+) build_ns=(\d+) scans=(\d+) overrides=(\d+)$",
                     proc.stderr, re.M)
-                if not phase or not sep or not root_only or not failed or not centroid:
+                ve = re.search(
+                    r"^RESEARCH_MPFR_FACTOR_VE enabled=(true|false) "
+                    r"completed=(true|false) eligible=(true|false) capped=(true|false) "
+                    r"input_factors=(\d+) eliminated=(\d+) width=(\d+) cells=(\d+) "
+                    r"products=(\d+) zero_sat=(\d+) ve_ns=(\d+)$",
+                    proc.stderr, re.M)
+                if not phase or not sep or not root_only or not failed or not centroid or not ve:
                     raise ValueError("missing original-CNF solver phase or articulation diagnostics")
                 fields = [int(v) for v in phase.groups()]
                 if fields[7] != digits or fields[8] != BITS[digits]:
@@ -130,6 +136,17 @@ def sample(command: list[str], arm: str, digits: int) -> dict:
                            centroid_build_ns=int(centroid.group(10)),
                            centroid_scans=int(centroid.group(11)),
                            centroid_overrides=int(centroid.group(12)),
+                           factor_ve_enabled=(ve.group(1) == "true"),
+                           factor_ve_completed=(ve.group(2) == "true"),
+                           factor_ve_eligible=(ve.group(3) == "true"),
+                           factor_ve_capped=(ve.group(4) == "true"),
+                           factor_ve_factors=int(ve.group(5)),
+                           factor_ve_eliminations=int(ve.group(6)),
+                           factor_ve_width=int(ve.group(7)),
+                           factor_ve_cells=int(ve.group(8)),
+                           factor_ve_products=int(ve.group(9)),
+                           factor_ve_zero_sat=int(ve.group(10)),
+                           factor_ve_ns=int(ve.group(11)),
                            precision_bits=fields[8])
         except (OSError, ValueError) as exc:
             row["status"] = "CENSORED_INVALID_OUTPUT"

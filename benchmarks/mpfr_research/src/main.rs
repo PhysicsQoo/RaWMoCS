@@ -20,6 +20,7 @@ mod unit_closure_pivot;
 mod csr_workspace;
 mod trail_engine;
 mod separator_pivot;
+mod primal_centroid;
 
 type Clause = Vec<i32>;
 
@@ -897,6 +898,14 @@ fn run() -> Result<(), String> {
     let cache_first = if articulation_root_only {
         args.next().ok_or("missing cache mode or precision after --trail-articulation-root-only")?
     } else { cache_first };
+    let primal_order = cache_first.to_str() == Some("--trail-primal-bag-centroid");
+    let cache_first = if primal_order {
+        args.next().ok_or("missing mode after --trail-primal-bag-centroid")?
+    } else { cache_first };
+    let primal_root_only = cache_first.to_str() == Some("--trail-primal-centroid-root-only");
+    let cache_first = if primal_root_only {
+        args.next().ok_or("missing mode after --trail-primal-centroid-root-only")?
+    } else { cache_first };
     let cache_policy = match cache_first.to_str() {
         Some("--hashbrown-owned") => CachePolicy::HbOwned,
         Some("--hashbrown-borrowed") => CachePolicy::HbBorrowed,
@@ -959,6 +968,13 @@ fn run() -> Result<(), String> {
     if fused_post_analysis && !projected_post_key {
         return Err("--trail-fused-post-analysis requires --trail-post-unit-projected".into());
     }
+    if primal_root_only && !primal_order {
+        return Err("--trail-primal-centroid-root-only requires --trail-primal-bag-centroid".into());
+    }
+    if primal_order && (!trail_count || !weighted_equivalence || post_unit_cache
+                        || articulation_pivot || root_failed_literal) {
+        return Err("--trail-primal-bag-centroid requires weighted-equivalence and trail-count without post-unit/articulation/failed-literal".into());
+    }
     if root_failed_literal && (!weighted_equivalence || !trail_count) {
         return Err("--root-failed-literal requires --weighted-equivalence --trail-count".into());
     }
@@ -992,6 +1008,13 @@ fn run() -> Result<(), String> {
         (None, root_failed_literal::RootFailedStats::default())
     };
     let source = root_augmented.as_ref().unwrap_or(pre_source);
+    let td_start = Instant::now();
+    let primal_profile = if primal_order {
+        Some(primal_centroid::build(source, &scope))
+    } else {
+        None
+    };
+    let primal_build_ns = td_start.elapsed().as_nanos();
     let mut engine = Engine::new(source, bits, cache_policy);
     engine.fast_assign = fast_assign;
     engine.shared_residual_key = shared_residual_key;
@@ -1007,7 +1030,7 @@ fn run() -> Result<(), String> {
     engine.unit_closure_pivot = unit_closure_pivot;
     engine.reuse_csr_workspace = reuse_csr_workspace;
     engine.indexed_activation_node = indexed_activation_node;
-    let (answer, solver_stats, trail_profile) = if trail_count {
+    let (answer, solver_stats, trail_profile, primal_scans, primal_overrides) = if trail_count {
         let mut trail = trail_engine::TrailEngine::new(source, bits, cache_limit, node_budget);
         trail.use_parent_ids = trail_parent_ids;
         trail.use_compact_residual = trail_compact_residual;
@@ -1021,16 +1044,22 @@ fn run() -> Result<(), String> {
         trail.use_fused_post_analysis = fused_post_analysis;
         trail.use_articulation_pivot = articulation_pivot;
         trail.articulation_root_only = articulation_root_only;
+        if let Some(ref profile) = primal_profile {
+            if profile.eligible {
+                trail.primal_scores = Some(profile.scores.clone());
+                trail.primal_root_only = primal_root_only;
+            }
+        }
         let outcome = trail.count(scope, 0)?;
         (outcome, trail.stats,
          Some((trail.assignments, trail.cache_keys, trail.normalized_cache_keys,
                trail.source_cache_keys, trail.post_unit_hits, trail.post_unit_visited,
                trail.post_unit_forced, trail.reused_unforced_keys, trail.projected_forced_keys,
                trail.separator_scans, trail.separator_candidates, trail.separator_chosen,
-               trail.separator_skipped)))
+               trail.separator_skipped)), trail.primal_scans, trail.primal_overrides)
     } else {
         let outcome = engine.count(source.clauses.clone(), scope, 0)?;
-        (outcome, engine.stats, None)
+        (outcome, engine.stats, None, 0, 0)
     };
     let solve_ns = t2.elapsed().as_nanos();
     let t3 = Instant::now();
@@ -1048,6 +1077,12 @@ fn run() -> Result<(), String> {
         reduction_stats.eliminated_vars, reduction_stats.removed_clauses,
         reduction_stats.representatives, reduction_stats.contradictory,
         reduction_stats.censored);
+    let empty_profile = primal_centroid::Profile::default();
+    let td = primal_profile.as_ref().unwrap_or(&empty_profile);
+    eprintln!("RESEARCH_MPFR_PRIMAL_BAG_CENTROID enabled={} root_only={} eligible={} capped={} vars={} edges={} width={} fill={} distance={} build_ns={} scans={} overrides={}",
+        primal_order, primal_root_only, td.eligible, td.capped,
+        td.vertices, td.primal_edges, td.width, td.fill_edges,
+        td.max_distance, primal_build_ns, primal_scans, primal_overrides);
     eprintln!("RESEARCH_MPFR_ROOT_FAILED_LITERAL enabled={} eligible={} candidates={} probes={} implied={} refutations={} work={} contradiction={} capped={}",
         root_failed_literal, root_stats.eligible, root_stats.candidates,
         root_stats.probes, root_stats.implied_units, root_stats.refutations,

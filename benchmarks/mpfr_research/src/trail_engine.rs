@@ -6,7 +6,10 @@
 //! reduced clauses are streamed only at the component-cache boundary.
 //!
 //! This is NOT CDCL and does not perform weight-unsafe SAT simplification.
-use crate::{factor_variable_elimination, normalize, separator_pivot, Clause, Outcome, PackedKey, Problem, Stats, C};
+use crate::{
+    factor_variable_elimination, normalize, separator_pivot, Clause, Outcome, PackedKey, Problem,
+    Stats, C,
+};
 use hashbrown::{hash_map::RawEntryMut, HashMap};
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeMap, BinaryHeap};
@@ -485,9 +488,7 @@ impl<'a> TrailEngine<'a> {
     /// parent node already owns all forced and free-variable weights, so this
     /// helper must count only this component's original still-unassigned
     /// variables and clauses. Never cache a partial component on rejection.
-    fn try_component_factor_ve(
-        &mut self, part: &[usize], ids: &[usize],
-    ) -> Option<Outcome> {
+    fn try_component_factor_ve(&mut self, part: &[usize], ids: &[usize]) -> Option<Outcome> {
         if !self.use_component_local_ve
             || self.component_ve_attempts >= 8
             || !(8..=32).contains(&part.len())
@@ -497,13 +498,17 @@ impl<'a> TrailEngine<'a> {
         }
         let mut residual = Vec::<Clause>::new();
         for &cid in ids {
-            if self.satisfied[cid] != 0 { continue; }
+            if self.satisfied[cid] != 0 {
+                continue;
+            }
             self.component_ve_scans += 1;
             let mut clause = Vec::new();
             let mut intersects = false;
             for &literal in &self.clauses[cid] {
                 let var = literal.unsigned_abs() as usize;
-                if self.assigned[var] != 0 { continue; }
+                if self.assigned[var] != 0 {
+                    continue;
+                }
                 if part.binary_search(&var).is_ok() {
                     intersects = true;
                     clause.push(literal);
@@ -515,22 +520,27 @@ impl<'a> TrailEngine<'a> {
                 }
             }
             if intersects {
-                if clause.iter().any(|lit| part.binary_search(
-                    &(lit.unsigned_abs() as usize)).is_err()) {
+                if clause
+                    .iter()
+                    .any(|lit| part.binary_search(&(lit.unsigned_abs() as usize)).is_err())
+                {
                     return None;
                 }
                 if clause.is_empty() || clause.len() > 12 {
                     return None;
                 }
                 residual.push(clause);
-                if residual.len() > 128 { return None; }
+                if residual.len() > 128 {
+                    return None;
+                }
             }
         }
-        if residual.is_empty() { return None; }
+        if residual.is_empty() {
+            return None;
+        }
         self.component_ve_attempts += 1;
-        let (result, metrics) = factor_variable_elimination::count_clauses(
-            self.problem, part, &residual, self.bits
-        );
+        let (result, metrics) =
+            factor_variable_elimination::count_clauses(self.problem, part, &residual, self.bits);
         self.component_ve_products += metrics.products as u64;
         if result.is_some() {
             self.component_ve_completed += 1;
@@ -552,11 +562,15 @@ impl<'a> TrailEngine<'a> {
             }
             let mut parents: Vec<_> = (0..active.len()).collect();
             for &cid in ids {
-                if self.satisfied[cid] != 0 { continue; }
+                if self.satisfied[cid] != 0 {
+                    continue;
+                }
                 let mut first = None;
                 for &lit in &self.clauses[cid] {
                     let variable = lit.unsigned_abs() as usize;
-                    if self.assigned[variable] != 0 { continue; }
+                    if self.assigned[variable] != 0 {
+                        continue;
+                    }
                     // Every live literal in the current residual's canonical
                     // clause set must belong to the provided active scope.
                     // This invariant is already needed by the original DSU.
@@ -891,8 +905,7 @@ impl<'a> TrailEngine<'a> {
             self.stats.decompositions += 1;
             let mut value = C::one(self.bits);
             for part in pieces {
-                let result = if let Some(exact) =
-                    self.try_component_factor_ve(&part, &ids) {
+                let result = if let Some(exact) = self.try_component_factor_ve(&part, &ids) {
                     exact
                 } else {
                     self.count_relevant(part, depth + 1, Some(&ids))?
@@ -943,7 +956,10 @@ impl<'a> TrailEngine<'a> {
             if width_ok {
                 self.residual_ve_attempts += 1;
                 let (candidate, stats) = factor_variable_elimination::count_clauses(
-                    self.problem, &active, &residual, self.bits,
+                    self.problem,
+                    &active,
+                    &residual,
+                    self.bits,
                 );
                 self.residual_ve_products += stats.products as u64;
                 self.residual_ve_max_width = self.residual_ve_max_width.max(stats.width);
@@ -995,9 +1011,10 @@ impl<'a> TrailEngine<'a> {
         let pivot = if !self.primal_root_only || depth == 0 {
             if let Some(ref scores) = self.primal_scores {
                 self.primal_scans += 1;
-                let choice = *active.iter().max_by_key(|&&var| {
-                    (scores[var], self.frequency[var])
-                }).ok_or("no candidate for primal centroid pivot")?;
+                let choice = *active
+                    .iter()
+                    .max_by_key(|&&var| (scores[var], self.frequency[var]))
+                    .ok_or("no candidate for primal centroid pivot")?;
                 if choice != pivot && scores[choice] > 0 {
                     self.primal_overrides += 1;
                     choice
@@ -1336,8 +1353,7 @@ impl<'a> TrailEngine<'a> {
             self.stats.decompositions += 1;
             let mut value = C::one(self.bits);
             for part in pieces {
-                let result = if let Some(exact) =
-                    self.try_component_factor_ve(&part, &ids) {
+                let result = if let Some(exact) = self.try_component_factor_ve(&part, &ids) {
                     exact
                 } else {
                     self.count_relevant(part, depth + 1, Some(&ids))?
@@ -2168,17 +2184,26 @@ c p weight 9 -0.5 0.125 0\nc p weight -9 0.25 -0.5 0\n\
             let mut sat = false;
             let mut sum = C::zero(bits);
             for assignment in 0..(1_usize << p.n) {
-                let accepted = p.clauses.iter().all(|clause| clause.iter().any(|&lit| {
-                    let index = lit.unsigned_abs() as usize - 1;
-                    (assignment & (1 << index) != 0) == (lit > 0)
-                }));
-                if !accepted { continue; }
+                let accepted = p.clauses.iter().all(|clause| {
+                    clause.iter().any(|&lit| {
+                        let index = lit.unsigned_abs() as usize - 1;
+                        (assignment & (1 << index) != 0) == (lit > 0)
+                    })
+                });
+                if !accepted {
+                    continue;
+                }
                 sat = true;
                 let mut product = C::one(bits);
                 for (var, weight) in p.weights.iter().enumerate().take(p.n) {
-                    product = product.mul(if assignment & (1 << var) != 0 {
-                        &weight.positive
-                    } else { &weight.negative }, bits);
+                    product = product.mul(
+                        if assignment & (1 << var) != 0 {
+                            &weight.positive
+                        } else {
+                            &weight.negative
+                        },
+                        bits,
+                    );
                 }
                 sum = sum.add(&product, bits);
             }
@@ -2237,7 +2262,6 @@ c p weight 9 -0.5 0.125 0\nc p weight -9 0.25 -0.5 0\n\
         }
     }
 
-
     #[test]
     fn scoped_dsu_matches_exact_source_component_cache_and_search_topology() {
         // Distinct disconnected factors, signed complex weights, zero-ish
@@ -2252,9 +2276,7 @@ c p weight 1 0.5 0.25 0\nc p weight -1 -0.25 -0.5 0\n\
 c p weight 1 1 0 0\nc p weight -1 -1 0 0\n\
 1 2 0\n-1 3 0\n-2 4 0\n-3 -4 0\n";
         for bits in [100_u32, 333] {
-            for source in [
-                source_a.as_str(), source_b.as_str(), source_c, source_d,
-            ] {
+            for source in [source_a.as_str(), source_b.as_str(), source_c, source_d] {
                 let p = parse_emitted(source, bits).unwrap();
                 for cap in [0_usize, 1, 128] {
                     let scope = (1..=p.n).collect::<Vec<usize>>();
@@ -2311,15 +2333,24 @@ c p weight 1 1 0 0\nc p weight -1 -1 0 0\n\
                     clauses.push(clause);
                 }
                 let p = Problem {
-                    n: 7, clauses,
-                    weights: (0..7).map(|v| crate::Weights {
-                        positive: C::decimal(bits,
-                            if v % 3 == 0 { "-0.25" } else { "0.5" },
-                            if v % 2 == 0 { "0.125" } else { "-0.25" }).unwrap(),
-                        negative: C::decimal(bits,
-                            if v % 2 == 0 { "0.25" } else { "-0.125" },
-                            if v % 3 == 0 { "0.5" } else { "-0.25" }).unwrap(),
-                    }).collect(),
+                    n: 7,
+                    clauses,
+                    weights: (0..7)
+                        .map(|v| crate::Weights {
+                            positive: C::decimal(
+                                bits,
+                                if v % 3 == 0 { "-0.25" } else { "0.5" },
+                                if v % 2 == 0 { "0.125" } else { "-0.25" },
+                            )
+                            .unwrap(),
+                            negative: C::decimal(
+                                bits,
+                                if v % 2 == 0 { "0.25" } else { "-0.125" },
+                                if v % 3 == 0 { "0.5" } else { "-0.25" },
+                            )
+                            .unwrap(),
+                        })
+                        .collect(),
                 };
                 for cap in [0_usize, 128] {
                     let scope: Vec<usize> = (1..=7).collect();
@@ -2346,7 +2377,10 @@ c p weight 1 1 0 0\nc p weight -1 -1 0 0\n\
                     assert_eq!(reference.count.im, observed.count.im, "case={case}");
                     assert_eq!(old.stats.nodes, new.stats.nodes, "case={case}");
                     assert_eq!(old.stats.cache_hits, new.stats.cache_hits, "case={case}");
-                    assert_eq!(old.stats.decompositions, new.stats.decompositions, "case={case}");
+                    assert_eq!(
+                        old.stats.decompositions, new.stats.decompositions,
+                        "case={case}"
+                    );
                 }
             }
         }
@@ -2475,15 +2509,32 @@ c p weight 1 1 0 0\nc p weight -1 -1 0 0\n\
                     };
                     let (expected, control) = run(false);
                     let (actual, profiled) = run(true);
-                    assert_eq!((actual.sat, &actual.count.re, &actual.count.im),
-                               (expected.sat, &expected.count.re, &expected.count.im));
-                    assert_eq!((profiled.stats.nodes, profiled.stats.cache_hits,
-                                profiled.stats.decompositions),
-                               (control.stats.nodes, control.stats.cache_hits,
-                                control.stats.decompositions));
-                    assert_eq!((control.stage_key_ns, control.stage_lookup_ns,
-                                control.stage_unit_ns, control.stage_frequency_ns,
-                                control.stage_components_ns), (0, 0, 0, 0, 0));
+                    assert_eq!(
+                        (actual.sat, &actual.count.re, &actual.count.im),
+                        (expected.sat, &expected.count.re, &expected.count.im)
+                    );
+                    assert_eq!(
+                        (
+                            profiled.stats.nodes,
+                            profiled.stats.cache_hits,
+                            profiled.stats.decompositions
+                        ),
+                        (
+                            control.stats.nodes,
+                            control.stats.cache_hits,
+                            control.stats.decompositions
+                        )
+                    );
+                    assert_eq!(
+                        (
+                            control.stage_key_ns,
+                            control.stage_lookup_ns,
+                            control.stage_unit_ns,
+                            control.stage_frequency_ns,
+                            control.stage_components_ns
+                        ),
+                        (0, 0, 0, 0, 0)
+                    );
                     assert!(profiled.stage_key_ns > 0);
                     assert!(profiled.trail.is_empty());
                     assert!(profiled.assigned.iter().all(|&v| v == 0));
@@ -2491,5 +2542,4 @@ c p weight 1 1 0 0\nc p weight -1 -1 0 0\n\
             }
         }
     }
-
 }

@@ -217,7 +217,7 @@ def main() -> None:
                     try:
                         validate_stage(row, arm)
                     except (KeyError, ValueError, TypeError) as exc:
-                        raise SystemExit(str(exc)) from exc)
+                        raise SystemExit(str(exc)) from exc
                 for arm in ARMS[1:]:
                     if group[arm]["scoped_dsu_enabled"]:
                         raise SystemExit("UNEXPECTED_SCOPED_DSU_FLAG")

@@ -971,6 +971,11 @@ fn run() -> Result<(), String> {
     let cache_first = if trail_scope_stamp_admission {
         args.next().ok_or("missing mode after --trail-scope-stamp-admission")?
     } else { cache_first };
+    let trail_active_clause_bitmap =
+        cache_first.to_str() == Some("--trail-active-clause-bitmap");
+    let cache_first = if trail_active_clause_bitmap {
+        args.next().ok_or("missing mode after --trail-active-clause-bitmap")?
+    } else { cache_first };
     let component_local_ve = cache_first.to_str() == Some("--trail-component-local-ve");
     let cache_first = if component_local_ve {
         args.next().ok_or("missing mode after --trail-component-local-ve")?
@@ -1082,6 +1087,11 @@ fn run() -> Result<(), String> {
         factor_pair_cutset || root_failed_literal || articulation_pivot ||
         primal_order || unit_closure_pivot) {
         return Err("--trail-ordered-key-fastpath requires original fused signed-weight Trail without other experimental search arms".into());
+    }
+    if trail_active_clause_bitmap
+        && (!trail_reuse_key_arena || trail_scope_stamp_admission)
+    {
+        return Err("--trail-active-clause-bitmap requires Arena and forbids simultaneous Scope Stamp".into());
     }
     if trail_scope_stamp_admission && !trail_reuse_key_arena {
         return Err("--trail-scope-stamp-admission requires --trail-reuse-key-arena and current exact weighted Trail scope".into());
@@ -1256,6 +1266,7 @@ fn run() -> Result<(), String> {
     let mut ordered_key_metrics = (0_u64, 0_u64);
     let mut key_arena_metrics = (0_u64, 0_u64, 0_u64);
     let mut scope_stamp_probes = 0_u64;
+    let mut active_bitmap_key_visits = 0_u64;
     let mut stage_metrics = (0_u128, 0_u128, 0_u128, 0_u128, 0_u128);
     let mut key_subphase_metrics = (0_u128, 0_u128, 0_u128);
     let (answer, solver_stats, trail_profile, primal_scans, primal_overrides) =
@@ -1284,6 +1295,9 @@ fn run() -> Result<(), String> {
         trail.use_ordered_key_fastpath = trail_ordered_key_fastpath;
         trail.use_reusable_key_arena = trail_reuse_key_arena;
         trail.use_scope_stamp_admission = trail_scope_stamp_admission;
+        if trail_active_clause_bitmap {
+            trail.enable_active_clause_bitmap();
+        }
         trail.stage_profile = trail_stage_profile;
         if let Some(ref profile) = primal_profile {
             if profile.eligible {
@@ -1310,6 +1324,7 @@ fn run() -> Result<(), String> {
             trail.key_arena_view_reuses,
         );
         scope_stamp_probes = trail.scope_stamp_probes;
+        active_bitmap_key_visits = trail.active_bitmap_key_visits;
         stage_metrics = (trail.stage_key_ns, trail.stage_lookup_ns,
                          trail.stage_unit_ns, trail.stage_frequency_ns,
                          trail.stage_components_ns);
@@ -1359,6 +1374,11 @@ fn run() -> Result<(), String> {
         "RESEARCH_MPFR_SCOPE_STAMP_ADMISSION enabled={} probes={}",
         trail_scope_stamp_admission,
         scope_stamp_probes
+    );
+    eprintln!(
+        "RESEARCH_MPFR_ACTIVE_CLAUSE_BITMAP enabled={} key_visits={}",
+        trail_active_clause_bitmap,
+        active_bitmap_key_visits
     );
     eprintln!("RESEARCH_MPFR_TRAIL_STAGE_PROFILE enabled={} key_ns={} lookup_ns={} unit_ns={} frequency_ns={} components_ns={}",
         trail_stage_profile, stage_metrics.0, stage_metrics.1,

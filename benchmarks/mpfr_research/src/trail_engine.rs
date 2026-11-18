@@ -11,6 +11,7 @@ use hashbrown::{hash_map::RawEntryMut, HashMap};
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeMap, BinaryHeap};
 use std::hash::BuildHasher;
+use std::time::Instant;
 
 pub(crate) struct TrailEngine<'a> {
     problem: &'a Problem,
@@ -78,6 +79,14 @@ pub(crate) struct TrailEngine<'a> {
     // Unlike the existing n+1 DSU, untouched/assigned source vars are
     // not initialized in every recursive component traversal.
     pub(crate) use_scoped_component_dsu: bool,
+    // Disabled by default: stage timers measure opt-in instrumentation cost,
+    // never a claim about the uninstrumented solver's stage distribution.
+    pub(crate) stage_profile: bool,
+    pub(crate) stage_key_ns: u128,
+    pub(crate) stage_lookup_ns: u128,
+    pub(crate) stage_unit_ns: u128,
+    pub(crate) stage_frequency_ns: u128,
+    pub(crate) stage_components_ns: u128,
     pub(crate) component_dsu_calls: u64,
     pub(crate) component_dsu_slots: u64,
     scoped_component_index: Vec<usize>,
@@ -177,6 +186,12 @@ impl<'a> TrailEngine<'a> {
             use_residual_factor_ve: false,
             use_component_local_ve: false,
             use_scoped_component_dsu: false,
+            stage_profile: false,
+            stage_key_ns: 0,
+            stage_lookup_ns: 0,
+            stage_unit_ns: 0,
+            stage_frequency_ns: 0,
+            stage_components_ns: 0,
             component_dsu_calls: 0,
             component_dsu_slots: 0,
             scoped_component_index: vec![0; problem.n + 1],
@@ -705,6 +720,7 @@ impl<'a> TrailEngine<'a> {
             return Err("node limit".into());
         }
         self.stats.nodes += 1;
+        let key_started = self.stage_profile.then(Instant::now);
         let localized = self.use_weight_class_cache
             && self
                 .weight_cache_scope_max
@@ -718,6 +734,9 @@ impl<'a> TrailEngine<'a> {
         let (ids, mut key) = if self.use_compact_residual {
             let Some((ids, literals)) = self.canonical_compact(&scope, parent_ids, inline_relabel)
             else {
+                if let Some(start) = key_started {
+                    self.stage_key_ns += start.elapsed().as_nanos();
+                }
                 return Ok(Outcome::unsat(self.bits));
             };
             self.cache_keys += 1;
@@ -730,6 +749,9 @@ impl<'a> TrailEngine<'a> {
             )
         } else {
             let Some(ids) = self.canonical_ids(&scope, parent_ids) else {
+                if let Some(start) = key_started {
+                    self.stage_key_ns += start.elapsed().as_nanos();
+                }
                 return Ok(Outcome::unsat(self.bits));
             };
             let key = self.key(scope.clone(), &ids);
@@ -753,6 +775,10 @@ impl<'a> TrailEngine<'a> {
         } else {
             self.source_cache_keys += 1;
         }
+        if let Some(start) = key_started {
+            self.stage_key_ns += start.elapsed().as_nanos();
+        }
+        let lookup_started = self.stage_profile.then(Instant::now);
         let key_hash = if self.use_prehashed_cache {
             self.cache.hasher().hash_one(&key)
         } else {
@@ -766,10 +792,14 @@ impl<'a> TrailEngine<'a> {
         } else {
             self.cache.get(&key)
         };
+        if let Some(start) = lookup_started {
+            self.stage_lookup_ns += start.elapsed().as_nanos();
+        }
         if let Some(hit) = hit {
             self.stats.cache_hits += 1;
             return Ok(hit.clone());
         }
+        let unit_started = self.stage_profile.then(Instant::now);
         self.sequence += 1;
         let generation = self.sequence;
         let mut heap = BinaryHeap::<Reverse<usize>>::new();
@@ -799,10 +829,17 @@ impl<'a> TrailEngine<'a> {
             };
             prefix = prefix.mul(factor, self.bits);
             if !self.apply(lit, Some((&mut heap, generation))) {
+                if let Some(start) = unit_started {
+                    self.stage_unit_ns += start.elapsed().as_nanos();
+                }
                 return Ok(self.save(key, key_hash, Outcome::unsat(self.bits)));
             }
         }
+        if let Some(start) = unit_started {
+            self.stage_unit_ns += start.elapsed().as_nanos();
+        }
 
+        let frequency_started = self.stage_profile.then(Instant::now);
         let mut frequency = std::mem::take(&mut self.frequency);
         if frequency.len() != self.problem.n + 1 {
             frequency.resize(self.problem.n + 1, 0);
@@ -832,6 +869,9 @@ impl<'a> TrailEngine<'a> {
         }
         let pivot = active.iter().max_by_key(|&&var| frequency[var]).copied();
         self.frequency = frequency;
+        if let Some(start) = frequency_started {
+            self.stage_frequency_ns += start.elapsed().as_nanos();
+        }
         if active.is_empty() {
             return Ok(self.save(
                 key,
@@ -842,7 +882,11 @@ impl<'a> TrailEngine<'a> {
                 },
             ));
         }
+        let components_started = self.stage_profile.then(Instant::now);
         let pieces = self.components(&ids, &active);
+        if let Some(start) = components_started {
+            self.stage_components_ns += start.elapsed().as_nanos();
+        }
         if pieces.len() > 1 {
             self.stats.decompositions += 1;
             let mut value = C::one(self.bits);
@@ -2406,4 +2450,46 @@ c p weight 1 1 0 0\nc p weight -1 -1 0 0\n\
             }
         }
     }
+    #[test]
+    fn optional_stage_profile_preserves_signed_wmc_and_search_topology() {
+        let inputs = [
+            "p cnf 6 6\nc t wmc\nc p weight 1 0.5 0.25 0\nc p weight -1 -0.25 0.125 0\n1 3 0\n-1 4 0\n3 5 0\n4 5 0\n5 -6 0\n-5 6 0\n",
+            "p cnf 3 2\nc t wmc\n1 0\n-1 0\n",
+            "p cnf 2 1\nc t wmc\nc p weight 1 0 0 0\nc p weight -1 0 0 0\n1 0\n",
+        ];
+        for bits in [100_u32, 333] {
+            for input in inputs {
+                let p = parse_emitted(input, bits).unwrap();
+                for capacity in [0_usize, 1, 128] {
+                    let run = |profile: bool| {
+                        let mut t = TrailEngine::new(&p, bits, capacity, 100_000);
+                        t.use_parent_ids = true;
+                        t.use_compact_residual = true;
+                        t.use_prehashed_cache = true;
+                        t.use_fused_compact = true;
+                        t.use_weight_class_cache = true;
+                        t.use_inline_weight_relabel = true;
+                        t.stage_profile = profile;
+                        let result = t.count((1..=p.n).collect(), 0).unwrap();
+                        (result, t)
+                    };
+                    let (expected, control) = run(false);
+                    let (actual, profiled) = run(true);
+                    assert_eq!((actual.sat, &actual.count.re, &actual.count.im),
+                               (expected.sat, &expected.count.re, &expected.count.im));
+                    assert_eq!((profiled.stats.nodes, profiled.stats.cache_hits,
+                                profiled.stats.decompositions),
+                               (control.stats.nodes, control.stats.cache_hits,
+                                control.stats.decompositions));
+                    assert_eq!((control.stage_key_ns, control.stage_lookup_ns,
+                                control.stage_unit_ns, control.stage_frequency_ns,
+                                control.stage_components_ns), (0, 0, 0, 0, 0));
+                    assert!(profiled.stage_key_ns > 0);
+                    assert!(profiled.trail.is_empty());
+                    assert!(profiled.assigned.iter().all(|&v| v == 0));
+                }
+            }
+        }
+    }
+
 }

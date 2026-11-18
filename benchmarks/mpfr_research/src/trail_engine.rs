@@ -526,7 +526,7 @@ impl<'a> TrailEngine<'a> {
         let pack_started = self.stage_profile.then(Instant::now);
         let mut ids = Vec::with_capacity(views.len());
         let mut literals = Vec::with_capacity(flat.len() + views.len());
-        for view in views {
+        for view in &views {
             ids.push(view.cid);
             literals.extend_from_slice(&flat[view.start..view.end]);
             literals.push(0);

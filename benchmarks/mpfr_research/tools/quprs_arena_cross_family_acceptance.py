@@ -124,9 +124,9 @@ def audit_trials(cohort: dict, case: str, bits: int, kind: str) -> dict:
     arena_rss = statistics.median(raw("arena_reuse", "peak_rss_kib"))
     wins = sum(x < y for x, y in zip(arena, inline))
     gates = {
-        "p50_reduction_at_least_five_percent": arena_p50 * 100 <= inline_p50 * 95,
+        "p50_reduction_at_least_ten_percent": arena_p50 * 100 <= inline_p50 * 90,
+        "p90_reduction_at_least_ten_percent": arena_p90 * 100 <= inline_p90 * 90,
         "at_least_five_of_seven_paired_wins": wins >= 5,
-        "p90_not_worse": arena_p90 <= inline_p90,
         "median_peak_rss_within_five_percent": arena_rss * 100 <= inline_rss * 105,
     }
     return {
@@ -243,7 +243,7 @@ def audit(feynman: dict, mqt: dict) -> dict:
         ],
         "production_router_approval": False,
         "limitations": [
-            "Research Go only; the original GPMC gap and DPLL node-limit negatives remain",
+            "Research Go only with >=10% p50 and p90 hard-case gains, >=5/7 paired wins, and <=5% RSS increase; GPMC gap and DPLL negatives remain",
             "Each input is a completed source-locked independent native CI JSON; "
             "the script recomputes performance directly from seven raw trials",
             "The scientific gate is not an independent mathematical proof of large CNF WMC",
@@ -285,6 +285,33 @@ def self_test() -> None:
         if row["arm"] == "arena_reuse":
             row["wall_ns"] = 120_000_000
     rejected = audit_trials({"records": damaged}, "synthetic", 100, "feynman")
+    assert not rejected["meets_performance_gate"]
+    # A 5% improvement is meaningful enough to retain as evidence but
+    # does NOT satisfy the previously published >=10% hard-case gate.
+    marginal = [dict(row) for row in rows]
+    for row in marginal:
+        if row["arm"] == "arena_reuse":
+            row["wall_ns"] = 95_000_000
+    rejected = audit_trials({"records": marginal}, "synthetic", 100, "feynman")
+    assert not rejected["meets_performance_gate"]
+    assert not rejected["checks"]["p50_reduction_at_least_ten_percent"]
+    assert not rejected["checks"]["p90_reduction_at_least_ten_percent"]
+    # Seven-run p50 can pass while the upper tail fails. No p90 waiver.
+    unstable = [dict(row) for row in rows]
+    for row in unstable:
+        if row["arm"] == "arena_reuse" and row["trial"] in (5, 6):
+            row["wall_ns"] = 101_000_000
+    rejected = audit_trials({"records": unstable}, "synthetic", 100, "feynman")
+    assert rejected["checks"]["p50_reduction_at_least_ten_percent"]
+    assert not rejected["checks"]["p90_reduction_at_least_ten_percent"]
+    assert not rejected["meets_performance_gate"]
+    # Recycle rate is never a performance proxy; prohibit RSS regression.
+    bloated = [dict(row) for row in rows]
+    for row in bloated:
+        if row["arm"] == "arena_reuse":
+            row["peak_rss_kib"] = 1100
+    rejected = audit_trials({"records": bloated}, "synthetic", 100, "feynman")
+    assert not rejected["checks"]["median_peak_rss_within_five_percent"]
     assert not rejected["meets_performance_gate"]
     print("EXACT_ARENA_CROSS_FAMILY_ACCEPTANCE_SELF_TEST_PASS")
 

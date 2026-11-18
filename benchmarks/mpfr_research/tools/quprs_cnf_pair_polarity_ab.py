@@ -167,8 +167,8 @@ def sample(command, arm, digits):
                     raise ValueError("Cutset solver dispatch drift")
                 if (pair.group(1) == "true") != arm.startswith("factor_pair_cutset"):
                     raise ValueError("Pair-cutset solver dispatch drift")
-                if (fastgraph.group(1) == "true") != arm in (
-                    "factor_pair_cutset_fastgraph", "factor_pair_cutset_polarity"):
+                if (fastgraph.group(1) == "true") != (arm in (
+                    "factor_pair_cutset_fastgraph", "factor_pair_cutset_polarity")):
                     raise ValueError("Fast bitset planner dispatch drift")
                 if (polarity.group(1) == "true") != (arm == "factor_pair_cutset_polarity"):
                     raise ValueError("Polarity graph dispatch drift")

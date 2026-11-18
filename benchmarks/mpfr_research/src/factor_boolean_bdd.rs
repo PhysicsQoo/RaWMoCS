@@ -299,12 +299,12 @@ mod tests {
             }
             sat = true;
             let mut product = C::one(bits);
-            for i in 0..p.n {
+            for (i, weights) in p.weights.iter().enumerate().take(p.n) {
                 product = product.mul(
                     if (mask >> i) & 1 == 1 {
-                        &p.weights[i].positive
+                        &weights.positive
                     } else {
-                        &p.weights[i].negative
+                        &weights.negative
                     }, bits,
                 );
             }

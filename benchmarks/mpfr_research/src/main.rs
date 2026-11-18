@@ -950,6 +950,10 @@ fn run() -> Result<(), String> {
     let cache_first = if factor_cutset {
         args.next().ok_or("missing mode after --factor-cutset-ve")?
     } else { cache_first };
+    let scoped_component_dsu = cache_first.to_str() == Some("--trail-scoped-component-dsu");
+    let cache_first = if scoped_component_dsu {
+        args.next().ok_or("missing mode after --trail-scoped-component-dsu")?
+    } else { cache_first };
     let component_local_ve = cache_first.to_str() == Some("--trail-component-local-ve");
     let cache_first = if component_local_ve {
         args.next().ok_or("missing mode after --trail-component-local-ve")?
@@ -1052,6 +1056,13 @@ fn run() -> Result<(), String> {
         || residual_factor_ve || root_failed_literal || post_unit_cache
         || articulation_pivot || primal_order || unit_closure_pivot) {
         return Err("--factor-add-elimination requires weighted-equivalence + trail-count without other root transforms".into());
+    }
+    if scoped_component_dsu && (!weighted_equivalence || !trail_count ||
+        component_local_ve || residual_factor_ve || factor_ve || factor_add ||
+        factor_boolean_bdd || factor_cutset || factor_pair_cutset ||
+        post_unit_cache || root_failed_literal || articulation_pivot ||
+        primal_order || unit_closure_pivot) {
+        return Err("--trail-scoped-component-dsu requires weighted-equivalence + trail-count without other experimental search arms".into());
     }
     if component_local_ve && (!weighted_equivalence || !trail_count
         || residual_factor_ve || factor_ve || factor_add || factor_boolean_bdd
@@ -1197,6 +1208,7 @@ fn run() -> Result<(), String> {
     engine.indexed_activation_node = indexed_activation_node;
     let mut residual_ve_metrics = (0_u64, 0_u64, 0_u64, 0_u64, 0_usize);
     let mut component_ve_metrics = (0_u64, 0_u64, 0_u64, 0_u64, 0_u64);
+    let mut scoped_dsu_metrics = (0_u64, 0_u64);
     let (answer, solver_stats, trail_profile, primal_scans, primal_overrides) =
         if let Some(answer) = pair_candidate.or(cutset_candidate).or(bdd_candidate).or(add_candidate).or(ve_candidate) {
             // A complete factor-semiring count has NO DPLL nodes.
@@ -1219,6 +1231,7 @@ fn run() -> Result<(), String> {
         trail.articulation_root_only = articulation_root_only;
         trail.use_residual_factor_ve = residual_factor_ve;
         trail.use_component_local_ve = component_local_ve;
+        trail.use_scoped_component_dsu = scoped_component_dsu;
         if let Some(ref profile) = primal_profile {
             if profile.eligible {
                 trail.primal_scores = Some(profile.scores.clone());
@@ -1236,6 +1249,7 @@ fn run() -> Result<(), String> {
             trail.component_ve_capped, trail.component_ve_products,
             trail.component_ve_scans,
         );
+        scoped_dsu_metrics = (trail.component_dsu_calls, trail.component_dsu_slots);
         (outcome, trail.stats,
          Some((trail.assignments, trail.cache_keys, trail.normalized_cache_keys,
                trail.source_cache_keys, trail.post_unit_hits, trail.post_unit_visited,
@@ -1262,6 +1276,8 @@ fn run() -> Result<(), String> {
         reduction_stats.eliminated_vars, reduction_stats.removed_clauses,
         reduction_stats.representatives, reduction_stats.contradictory,
         reduction_stats.censored);
+    eprintln!("RESEARCH_MPFR_SCOPED_DSU enabled={} calls={} slots={}",
+        scoped_component_dsu, scoped_dsu_metrics.0, scoped_dsu_metrics.1);
     eprintln!("RESEARCH_MPFR_COMPONENT_LOCAL_VE enabled={} attempts={} completed={} capped={} products={} scans={}",
         component_local_ve, component_ve_metrics.0, component_ve_metrics.1,
         component_ve_metrics.2, component_ve_metrics.3, component_ve_metrics.4);

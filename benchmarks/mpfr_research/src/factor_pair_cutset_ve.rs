@@ -270,7 +270,7 @@ mod tests {
     use crate::{parse_emitted, trail_engine::TrailEngine};
 
     fn independent_brute(p: &Problem, bits: u32) -> Outcome {
-        assert!(p.n <= 13);
+        assert!(p.n <= 14);
         let mut sat = false;
         let mut count = C::zero(bits);
         for mask in 0..(1_usize << p.n) {
@@ -329,6 +329,58 @@ c p weight 2 -0.5 0.5 0\nc p weight -2 0.25 -0.25 0\n",
             assert_eq!(got.sat, old.sat);
             assert_eq!(got.count.re, old.count.re);
             assert_eq!(got.count.im, old.count.im);
+        }
+    }
+
+    #[test]
+    fn polarity_cofactors_pass_when_vertex_deleted_supergraph_fails() {
+        // Each of the four signed assignments of x=1,y=2 activates only
+        // one eleven-clique among the twelve remaining variables.
+        // The union of their scopes is a twelve-clique, so the original
+        // deleted-variable supergraph fails width 11 for the same pair.
+        // The exact four polarity-aware cofactors all fit width 11.
+        let mut original = String::from(
+            "p cnf 14 220\nc t wmc\n\
+c p weight 1 0.5 0.25 0\nc p weight -1 -0.25 -0.5 0\n\
+c p weight 2 -0.5 0.5 0\nc p weight -2 0.25 -0.25 0\n",
+        );
+        for mode in 0..4 {
+            let absent = 3 + mode;
+            let gate_x = if mode & 1 == 0 { 1 } else { -1 };
+            let gate_y = if mode & 2 == 0 { 2 } else { -2 };
+            for a in 3..=14 {
+                if a == absent { continue; }
+                for b in a + 1..=14 {
+                    if b == absent { continue; }
+                    original.push_str(&format!("{gate_x} {gate_y} {a} {b} 0\n"));
+                }
+            }
+        }
+        for bits in [100, 333] {
+            let problem = parse_emitted(&original, bits).unwrap();
+            let scope: Vec<usize> = (1..=14).collect();
+            let graph = FastGraph::build(&problem.clauses, &scope).unwrap();
+            assert!(graph.plan_deleted(1, 2, MAX_BAG).capped);
+            assert_eq!(graph.plan_deleted(1, 2, MAX_BAG).max_bucket, 12);
+            let (result, stats) = count_polarity(&problem, &scope, bits);
+            assert!(result.is_some() && !stats.capped, "{stats:?}");
+            assert!(stats.fast_graph && stats.polarity_graph);
+            assert_eq!(stats.x, 1);
+            assert_eq!(stats.y, 2);
+            assert_eq!(stats.polarity_feasible_pairs, 1);
+            assert_eq!(stats.branches_completed, 4);
+            assert_eq!(stats.graph_upper_bucket, 11);
+            assert_eq!(stats.branch_width, 11);
+            let outcome = result.unwrap();
+            let oracle = independent_brute(&problem, bits);
+            assert_eq!(outcome.sat, oracle.sat);
+            assert_eq!(outcome.count.re, oracle.count.re);
+            assert_eq!(outcome.count.im, oracle.count.im);
+            let mut trail = TrailEngine::new(&problem, bits, 256, 100_000);
+            let old = trail.count(scope, 0).unwrap();
+            assert_eq!(outcome.sat, old.sat);
+            assert_eq!(outcome.count.re, old.count.re);
+            assert_eq!(outcome.count.im, old.count.im);
         }
     }
 

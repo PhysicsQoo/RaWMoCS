@@ -83,6 +83,8 @@ def certify_trial(records: list[dict], trial: int, digits: int) -> None:
             raise ValueError(f"ORDERED_KEY_SEARCH_TOPOLOGY_DRIFT arm={arm}")
         if row["stdout_sha256"] != control["stdout_sha256"]:
             raise ValueError(f"RUST_SIGNED_COMPLEX_OUTPUT_BYTES_DRIFT arm={arm}")
+        if row.get("scope_stamp_enabled") or row.get("scope_stamp_probes", 0):
+            raise ValueError(f"UNRELATED_SCOPE_STAMP_ARM_CONTAMINATION arm={arm}")
         if row.get("key_arena_enabled") != arm.startswith("arena"):
             raise ValueError(f"KEY_ARENA_FLAG_MISMATCH arm={arm}")
         calls = row.get("key_arena_calls", 0)

@@ -20,7 +20,7 @@ from quprs_paired_native import parse_out
 from quprs_long_feynman_pilot import numerically_agree
 from quprs_cnf_projected_ab import SOURCE, BITS, QU_PRS_SHA, GPMC_SHA, sha, source_head, percentile
 
-ARMS = ("gpmc", "inline_full", "factor_ve_minfill320", "factor_add")
+ARMS = ("gpmc", "inline_full", "factor_ve_minfill320", "factor_add", "factor_add_2x", "factor_add_4x")
 BUDGET_S = 30
 AS_BYTES = 2_147_483_648
 FLAGS = (
@@ -58,9 +58,12 @@ def command(args, arm, digits, cnf, case):
     if arm == "factor_ve_minfill320":
         cmd.extend(("--factor-variable-elimination",
                     "--factor-ve-scope-probe-320", "--factor-ve-minfill-order"))
-    if arm == "factor_add":
+    if arm.startswith("factor_add"):
         cmd.append("--factor-add-elimination")
     cmd.extend(("--hashbrown-borrowed", str(digits), str(cnf.resolve())))
+    if arm in ("factor_add_2x", "factor_add_4x"):
+        mult = arm.split("_")[-1][0]
+        cmd = ["/usr/bin/env", f"RAWMOCS_ADD_RESEARCH_CAP_MULTIPLIER={mult}", *cmd]
     return cmd
 
 
@@ -98,7 +101,7 @@ def sample(cmd, arm, digits):
                     PHASE_RE.search(proc.stderr))
                 if not a or not ve or not phase:
                     raise ValueError("missing mandatory paired solver diagnostics")
-                if (a.group(1) == "true") != (arm == "factor_add"):
+                if (a.group(1) == "true") != (arm.startswith("factor_add")):
                     raise ValueError("ADD mode mismatch")
                 if (ve.group(1) == "true") != (arm == "factor_ve_minfill320"):
                     raise ValueError("Dense VE mode mismatch")
@@ -124,12 +127,13 @@ def sample(cmd, arm, digits):
                     dense_width=int(ve.group(7)),
                     dense_products=int(ve.group(9)),
                 )
-                if arm == "factor_add":
+                if arm.startswith("factor_add"):
                     if entry["add_complete"] == entry["add_capped"]:
                         raise ValueError("ADD completed/capped classification inconsistent")
                     if entry["add_complete"] and not entry["add_eligible"]:
                         raise ValueError("ADD result without eligibility")
-                    if entry["add_nodes"] > 30000 or entry["add_terminals"] > 4096:
+                    mult = 4 if arm == "factor_add_4x" else 2 if arm == "factor_add_2x" else 1
+                    if entry["add_nodes"] > 30000 * mult or entry["add_terminals"] > 4096 * mult:
                         raise ValueError("ADD hard resource limit exceeded")
                 else:
                     if any((entry["add_complete"], entry["add_capped"],
@@ -153,7 +157,7 @@ def main():
             or source_head(args.gpmc_source) != GPMC_SHA):
         raise SystemExit("ORIGINAL_SOURCE_SHA_DRIFT")
     report = {
-        "study": "original QuPRS Weighted CNF: signed-complex bounded ADD",
+        "study": "original QuPRS Weighted CNF: exact terminal-key ADD 1x/2x/4x resource admission",
         "source_lock": {"quprs": QU_PRS_SHA, "gpmc": GPMC_SHA},
         "precision": "GPMC 30/100 decimal digits ↔ Rust 100/333 MPFR bits",
         "budget": {"child_wall_seconds": BUDGET_S,
@@ -217,13 +221,14 @@ def main():
                         cohort["trial"] = trial
                         write()
                         raise SystemExit("FAILED_SAT_OR_SIGNED_COMPLEX_WMC")
-                add = selected["factor_add"]
                 inline = selected["inline_full"]
-                if not add["add_complete"] and add["add_capped"]:
-                    if add["dpll_nodes"] != inline["dpll_nodes"]:
-                        cohort["status"] = "FALLBACK_TOPOLOGY_DRIFT"
-                        write()
-                        raise SystemExit("FALLBACK_TOPOLOGY_DRIFT")
+                for add_arm in ("factor_add", "factor_add_2x", "factor_add_4x"):
+                    add = selected[add_arm]
+                    if not add["add_complete"] and add["add_capped"]:
+                        if add["dpll_nodes"] != inline["dpll_nodes"]:
+                            cohort["status"] = "FALLBACK_TOPOLOGY_DRIFT"
+                            write()
+                            raise SystemExit("FALLBACK_TOPOLOGY_DRIFT")
             cohort["status"] = "MATCHED"
             cohort["stats"] = {
                 arm: {
@@ -235,14 +240,14 @@ def main():
                         e["peak_rss_kib"] for e in completed if e["arm"] == arm),
                     "add_completed": all(
                         e.get("add_complete", False) for e in completed if e["arm"] == arm)
-                    if arm == "factor_add" else None,
+                    if arm.startswith("factor_add") else None,
                     "add_capped_reasons": sorted({
                         e.get("add_cap_reason", "none")
                         for e in completed if e["arm"] == arm
-                    }) if arm == "factor_add" else None,
+                    }) if arm.startswith("factor_add") else None,
                     "p50_add_nodes": statistics.median(
                         [e["add_nodes"] for e in completed if e["arm"] == arm]
-                    ) if arm == "factor_add" else None,
+                    ) if arm.startswith("factor_add") else None,
                 } for arm in ARMS
             }
             qualified += 1
@@ -250,8 +255,11 @@ def main():
             print("ADD_MATCH " + f"case={case} bits={bits} " +
                   " ".join(f"{arm}_ms={cohort['stats'][arm]['p50_wall_ms']:.3f}"
                            for arm in ARMS) +
-                  f" add_complete={cohort['stats']['factor_add']['add_completed']}"
-                  f" cap={cohort['stats']['factor_add']['add_capped_reasons']}", flush=True)
+                  " " + " ".join(
+                      f"{arm}_complete={cohort['stats'][arm]['add_completed']}"
+                      f" cap={cohort['stats'][arm]['add_capped_reasons']}"
+                      for arm in ("factor_add", "factor_add_2x", "factor_add_4x")
+                  ), flush=True)
     report["qualified_cohorts"] = qualified
     report["status"] = "QUALIFIED_WITH_CENSORS" if qualified == 6 else "INCOMPLETE"
     write()

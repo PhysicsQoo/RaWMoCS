@@ -53,7 +53,7 @@ BDD_RE = re.compile(
     r"minfill_bucket=(\d+) bdd_ns=(\d+)$", re.M)
 CUTSET_RE = re.compile(
     r"^RESEARCH_MPFR_CUTSET_VE enabled=(true|false) completed=(true|false) "
-    r"eligible=(true|false) capped=(true|false) reason=([a-z_]+) "
+    r"eligible=(true|false) capped=(true|false) reason=([a-z_0-9]+) "
     r"root_bucket=(\d+) candidate_probes=(\d+) feasible_candidates=(\d+) "
     r"selected_variable=(\d+) lower_bucket=(\d+) upper_bucket=(\d+) "
     r"branches_completed=(\d+) products=(\d+) scope=(\d+) clauses=(\d+) "
@@ -208,6 +208,7 @@ def sample(command, arm, digits):
         except (OSError, ValueError) as exc:
             row["status"] = "CENSORED_INVALID_OUTPUT"
             row["error"] = str(exc)[:280]
+            row["stderr_tail"] = proc.stderr[-1600:]
         return row
 
 

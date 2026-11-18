@@ -115,6 +115,11 @@ def sample(command: list[str], arm: str, digits: int) -> dict:
                 ordered = re.search(
                     r"^RESEARCH_MPFR_ORDERED_KEY_FASTPATH enabled=(true|false) "
                     r"probes=(\d+) hits=(\d+)$", proc.stderr, re.M)
+                key_arena = re.search(
+                    r"^RESEARCH_MPFR_KEY_ARENA_REUSE enabled=(true|false) "
+                    r"calls=(\d+) flat_reuses=(\d+) view_reuses=(\d+)$",
+                    proc.stderr, re.M,
+                )
                 component = re.search(
                     r"^RESEARCH_MPFR_COMPONENT_LOCAL_VE enabled=(true|false) "
                     r"attempts=(\d+) completed=(\d+) capped=(\d+) "
@@ -204,6 +209,10 @@ def sample(command: list[str], arm: str, digits: int) -> dict:
                            ordered_key_enabled=(ordered.group(1) == "true") if ordered else False,
                            ordered_key_probes=int(ordered.group(2)) if ordered else 0,
                            ordered_key_hits=int(ordered.group(3)) if ordered else 0,
+                           key_arena_enabled=(key_arena.group(1) == "true") if key_arena else False,
+                           key_arena_calls=int(key_arena.group(2)) if key_arena else 0,
+                           key_arena_flat_reuses=int(key_arena.group(3)) if key_arena else 0,
+                           key_arena_view_reuses=int(key_arena.group(4)) if key_arena else 0,
                            precision_bits=fields[8])
                 stage = re.search(
                     r"^RESEARCH_MPFR_TRAIL_STAGE_PROFILE enabled=(true|false) "

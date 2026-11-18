@@ -266,6 +266,15 @@ c p weight 2 -0.5 0.5 0\nc p weight -2 0.25 -0.25 0\n",
             assert_eq!(stats.branches_completed, 4);
             assert_eq!(stats.graph_upper_bucket, 11);
             let got = got.unwrap();
+            let (fast, fast_stats) = count_fast(&problem, &scope, bits);
+            assert!(fast.is_some() && !fast_stats.capped, "{fast_stats:?}");
+            assert!(fast_stats.fast_graph);
+            assert_eq!(fast_stats.branches_completed, 4);
+            assert_eq!(fast_stats.graph_upper_bucket, stats.graph_upper_bucket);
+            let fast = fast.unwrap();
+            assert_eq!(fast.sat, got.sat);
+            assert_eq!(fast.count.re, got.count.re);
+            assert_eq!(fast.count.im, got.count.im);
             let reference = independent_brute(&problem, bits);
             assert_eq!(got.sat, reference.sat);
             assert_eq!(got.count.re, reference.count.re);
@@ -285,6 +294,9 @@ c p weight 2 -0.5 0.5 0\nc p weight -2 0.25 -0.25 0\n",
         let (out, stats) = count(&p, &scope, 100);
         assert!(out.is_none() && stats.capped);
         assert_eq!(stats.reason, "pair_not_needed");
+        let (fast, fast_stats) = count_fast(&p, &scope, 100);
+        assert!(fast.is_none() && fast_stats.capped);
+        assert_eq!(fast_stats.reason, "pair_not_needed");
         let mut trail = TrailEngine::new(&p, 100, 128, 100_000);
         let old = trail.count(scope, 0).unwrap();
         let independent = independent_brute(&p, 100);

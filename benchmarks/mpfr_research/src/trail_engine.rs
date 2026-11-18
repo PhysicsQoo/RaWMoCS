@@ -1055,32 +1055,43 @@ impl<'a> TrailEngine<'a> {
             frequency.resize(self.problem.n + 1, 0);
         }
         frequency.fill(0);
-        let mut fused_parents = self
-            .use_fused_pre_analysis
-            .then(|| (0..=self.problem.n).collect::<Vec<_>>());
-        for &cid in &ids {
-            if self.satisfied[cid] != 0 {
-                continue;
-            }
-            if self.use_fused_pre_analysis {
+        let mut fused_parents = None;
+        if self.use_fused_pre_analysis {
+            let mut parents = (0..=self.problem.n).collect::<Vec<_>>();
+            for &cid in &ids {
+                if self.satisfied[cid] != 0 {
+                    continue;
+                }
                 self.fused_pre_clause_scans += 1;
-            }
-            let mut first = None;
-            for &lit in &self.clauses[cid] {
-                let var = lit.unsigned_abs() as usize;
-                if self.assigned[var] == 0 {
-                    frequency[var] += 1;
-                    if let Some(ref mut parents) = fused_parents {
+                let mut first = None;
+                for &lit in &self.clauses[cid] {
+                    let var = lit.unsigned_abs() as usize;
+                    if self.assigned[var] == 0 {
+                        frequency[var] += 1;
                         if let Some(first_var) = first {
-                            // Same exact union sequence as components_full,
-                            // including the original canonical clause order.
-                            let a = root(parents, first_var);
-                            let b = root(parents, var);
+                            // Preserve the exact components_full DSU unions
+                            // in original canonical clause and literal order.
+                            let a = root(&mut parents, first_var);
+                            let b = root(&mut parents, var);
                             parents[b] = a;
                             self.fused_pre_dsu_merges += 1;
                         } else {
                             first = Some(var);
                         }
+                    }
+                }
+            }
+            fused_parents = Some(parents);
+        } else {
+            // Keep the original Arena-only frequency hot loop intact.
+            // No candidate-only Option branch is paid by the control.
+            for &cid in &ids {
+                if self.satisfied[cid] != 0 {
+                    continue;
+                }
+                for &lit in &self.clauses[cid] {
+                    if self.assigned[lit.unsigned_abs() as usize] == 0 {
+                        frequency[lit.unsigned_abs() as usize] += 1;
                     }
                 }
             }

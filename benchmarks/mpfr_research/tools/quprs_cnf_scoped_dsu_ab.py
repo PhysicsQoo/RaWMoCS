@@ -9,6 +9,7 @@ import argparse
 from fractions import Fraction
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
 import re
 import statistics
@@ -65,6 +66,11 @@ def sample(command: list[str], arm: str, digits: int) -> dict:
             return {"arm": arm, "status": "CENSORED_OUTER_TIMEOUT"}
         wall = time.perf_counter_ns() - start
         row = {"arm": arm, "wall_ns": wall, "exit_code": proc.returncode,
+               # The exact code checkout used by this Actions run. The PR
+               # event GITHUB_SHA is the checked-out synthetic merge commit.
+               # Keep it on raw per-arm records so cross-family audits cannot
+               # accidentally combine different source revisions.
+               "source_checkout_sha": os.environ.get("GITHUB_SHA"),
                "status": ("COMPLETED" if proc.returncode == 0 else
                           "CENSORED_TIME" if proc.returncode == 124 else "CENSORED_EXIT")}
         if proc.returncode:

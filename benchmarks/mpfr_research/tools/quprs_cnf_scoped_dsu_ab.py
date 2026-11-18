@@ -63,7 +63,10 @@ def sample(command: list[str], arm: str, digits: int) -> dict:
         try:
             proc = subprocess.run(timed, capture_output=True, text=True, timeout=BUDGET_S + 7)
         except subprocess.TimeoutExpired:
-            return {"arm": arm, "status": "CENSORED_OUTER_TIMEOUT"}
+            # Preserve the source checkout even when a child times out
+            # before it can produce stdout, RSS or an exit code.
+            return {"arm": arm, "status": "CENSORED_OUTER_TIMEOUT",
+                    "source_checkout_sha": os.environ.get("GITHUB_SHA")}
         wall = time.perf_counter_ns() - start
         row = {"arm": arm, "wall_ns": wall, "exit_code": proc.returncode,
                # The exact code checkout used by this Actions run. The PR

@@ -147,6 +147,17 @@ pub(crate) fn count_scope_probe_minfill(
     count_clauses_with_limit(p, scope, &p.clauses, bits, PROBE_SCOPE, true)
 }
 
+/// Conditionally restricted original source clauses with one source variable
+/// explicitly assigned outside this elimination scope. All other source
+/// weights remain unchanged. Caller owns the removed variable's signed
+/// literal weight and must multiply it into each complete branch exactly once.
+/// Existing dense width/cell/product limits remain unmodified.
+pub(crate) fn count_conditioned_minfill(
+    p: &Problem, scope: &[usize], clauses: &[Clause], bits: u32,
+) -> (Option<Outcome>, VeStats) {
+    count_clauses_with_limit(p, scope, clauses, bits, PROBE_SCOPE, true)
+}
+
 /// Count a *live*, already-cofactored residual CNF with unchanged original
 /// source literal weights and an exact disjoint residual variable scope.
 /// Callers must separately multiply forced-prefix and free-variable weights.

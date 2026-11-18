@@ -106,7 +106,7 @@ impl FastGraph {
                     }
                 }
                 debug_assert_eq!(twice_edges % 2, 0);
-                let fill = degree * (degree - 1) / 2 - twice_edges / 2;
+                let fill = degree * degree.saturating_sub(1) / 2 - twice_edges / 2;
                 out.candidate_evaluations += 1;
                 let key = (bucket > max_bucket, fill, bucket, self.vars[i], i);
                 if best.as_ref().is_none_or(|old| key < *old) {

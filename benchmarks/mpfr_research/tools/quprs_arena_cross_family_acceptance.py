@@ -274,7 +274,9 @@ def self_test() -> None:
     else:
         raise AssertionError("signed complex drift passed the gate")
     damaged = [dict(row) for row in rows]
-    damaged[3]["wall_ns"] = 120_000_000
+    for row in damaged:
+        if row["arm"] == "arena_reuse":
+            row["wall_ns"] = 120_000_000
     rejected = audit_trials({"records": damaged}, "synthetic", 100)
     assert not rejected["meets_performance_gate"]
     print("EXACT_ARENA_CROSS_FAMILY_ACCEPTANCE_SELF_TEST_PASS")

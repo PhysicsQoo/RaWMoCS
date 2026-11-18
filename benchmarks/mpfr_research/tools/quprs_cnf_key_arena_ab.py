@@ -251,6 +251,8 @@ def main() -> None:
                         raise SystemExit(f"UNRELATED_SCOPE_STAMP_ARM_CONTAMINATION: {arm}")
                     if row.get("active_bitmap_enabled") or row.get("active_bitmap_key_visits", 0):
                         raise SystemExit(f"UNRELATED_ACTIVE_BITMAP_ARM_CONTAMINATION: {arm}")
+                    if row.get("fused_pre_enabled") or row.get("fused_pre_clause_scans", 0) or row.get("fused_pre_dsu_merges", 0):
+                        raise SystemExit(f"UNRELATED_FUSED_PRE_ARM_CONTAMINATION: {arm}")
                     if row.get("key_arena_enabled") != expected_arena:
                         raise SystemExit(f"KEY_ARENA_ARM_CONTAMINATION: {arm}")
                     if expected_arena:

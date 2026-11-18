@@ -70,6 +70,15 @@ pub(crate) struct TrailEngine<'a> {
     // Research-only exact Factor-VE after reversible DPLL unit closure.
     // At most eight small residual probes per full solve.
     pub(crate) use_residual_factor_ve: bool,
+    // Independent research arm: after exact DSU component decomposition,
+    // try bounded dense signed-complex WMC on small *whole components*.
+    // Other components stay on original Trail and exact component cache.
+    pub(crate) use_component_local_ve: bool,
+    pub(crate) component_ve_attempts: u64,
+    pub(crate) component_ve_completed: u64,
+    pub(crate) component_ve_capped: u64,
+    pub(crate) component_ve_products: u64,
+    pub(crate) component_ve_scans: u64,
     pub(crate) residual_ve_attempts: u64,
     pub(crate) residual_ve_completed: u64,
     pub(crate) residual_ve_capped: u64,
@@ -157,6 +166,12 @@ impl<'a> TrailEngine<'a> {
             use_fused_post_analysis: false,
             use_articulation_pivot: false,
             use_residual_factor_ve: false,
+            use_component_local_ve: false,
+            component_ve_attempts: 0,
+            component_ve_completed: 0,
+            component_ve_capped: 0,
+            component_ve_products: 0,
+            component_ve_scans: 0,
             residual_ve_attempts: 0,
             residual_ve_completed: 0,
             residual_ve_capped: 0,
@@ -436,6 +451,65 @@ impl<'a> TrailEngine<'a> {
         outcome
     }
 
+    /// Exact AND/OR accelerator for a proven disconnected component. The
+    /// parent node already owns all forced and free-variable weights, so this
+    /// helper must count only this component's original still-unassigned
+    /// variables and clauses. Never cache a partial component on rejection.
+    fn try_component_factor_ve(
+        &mut self, part: &[usize], ids: &[usize],
+    ) -> Option<Outcome> {
+        if !self.use_component_local_ve
+            || self.component_ve_attempts >= 8
+            || !(8..=32).contains(&part.len())
+            || ids.len() > 512
+        {
+            return None;
+        }
+        let mut residual = Vec::<Clause>::new();
+        for &cid in ids {
+            if self.satisfied[cid] != 0 { continue; }
+            self.component_ve_scans += 1;
+            let mut clause = Vec::new();
+            let mut intersects = false;
+            for &literal in &self.clauses[cid] {
+                let var = literal.unsigned_abs() as usize;
+                if self.assigned[var] != 0 { continue; }
+                if part.binary_search(&var).is_ok() {
+                    intersects = true;
+                    clause.push(literal);
+                } else {
+                    // Preserve noncomponent literals temporarily. If any
+                    // clause intersects both parts, the full membership
+                    // check below rejects before any numeric operation.
+                    clause.push(literal);
+                }
+            }
+            if intersects {
+                if clause.iter().any(|lit| part.binary_search(
+                    &(lit.unsigned_abs() as usize)).is_err()) {
+                    return None;
+                }
+                if clause.is_empty() || clause.len() > 12 {
+                    return None;
+                }
+                residual.push(clause);
+                if residual.len() > 128 { return None; }
+            }
+        }
+        if residual.is_empty() { return None; }
+        self.component_ve_attempts += 1;
+        let (result, metrics) = factor_variable_elimination::count_clauses(
+            self.problem, part, &residual, self.bits
+        );
+        self.component_ve_products += metrics.products as u64;
+        if result.is_some() {
+            self.component_ve_completed += 1;
+        } else {
+            self.component_ve_capped += 1;
+        }
+        result
+    }
+
     fn components(&self, ids: &[usize], active: &[usize]) -> Vec<Vec<usize>> {
         let mut parents: Vec<_> = (0..=self.problem.n).collect();
         for &cid in ids {
@@ -712,7 +786,12 @@ impl<'a> TrailEngine<'a> {
             self.stats.decompositions += 1;
             let mut value = C::one(self.bits);
             for part in pieces {
-                let result = self.count_relevant(part, depth + 1, Some(&ids))?;
+                let result = if let Some(exact) =
+                    self.try_component_factor_ve(&part, &ids) {
+                    exact
+                } else {
+                    self.count_relevant(part, depth + 1, Some(&ids))?
+                };
                 if !result.sat {
                     return Ok(self.save(key, key_hash, Outcome::unsat(self.bits)));
                 }
@@ -1152,7 +1231,12 @@ impl<'a> TrailEngine<'a> {
             self.stats.decompositions += 1;
             let mut value = C::one(self.bits);
             for part in pieces {
-                let result = self.count_relevant(part, depth + 1, Some(&ids))?;
+                let result = if let Some(exact) =
+                    self.try_component_factor_ve(&part, &ids) {
+                    exact
+                } else {
+                    self.count_relevant(part, depth + 1, Some(&ids))?
+                };
                 if !result.sat {
                     return Ok(self.finish_post_unit(
                         &unit_prefix,

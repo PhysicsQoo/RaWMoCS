@@ -231,15 +231,15 @@ mod tests {
         for mask in 0..(1_usize << p.n) {
             let valid = p.clauses.iter().all(|clause| clause.iter().any(|&lit| {
                 let v = lit.unsigned_abs() as usize - 1;
-                ((mask & (1 << v) != 0) == (lit > 0))
+                (mask & (1 << v) != 0) == (lit > 0)
             }));
             if !valid { continue; }
             sat = true;
             let mut value = C::one(bits);
-            for v in 0..p.n {
+            for (v, weights) in p.weights.iter().enumerate().take(p.n) {
                 value = value.mul(if mask & (1 << v) != 0 {
-                    &p.weights[v].positive
-                } else { &p.weights[v].negative }, bits);
+                    &weights.positive
+                } else { &weights.negative }, bits);
             }
             count = count.add(&value, bits);
         }

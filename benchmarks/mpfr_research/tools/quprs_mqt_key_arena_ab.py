@@ -336,7 +336,7 @@ def main() -> None:
                 f"ordered_ms={cohort['stats']['ordered_key']['p50_wall_ms']:.3f} "
                 f"arena_ms={cohort['stats']['arena_reuse']['p50_wall_ms']:.3f} "
                 f"arena_flat_reuses={cohort['stats']['arena_reuse']['p50_key_arena_flat_reuses']} "
-                f"hits={cohort['stats']['ordered_key']['p50_ordered_key_hits']}
+                f"hits={cohort['stats']['ordered_key']['p50_ordered_key_hits']}",
                 flush=True,
             )
             save()

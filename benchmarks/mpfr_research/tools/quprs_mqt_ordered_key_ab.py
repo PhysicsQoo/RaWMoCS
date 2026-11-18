@@ -118,6 +118,10 @@ def self_test() -> None:
             "stage_unit_ns": 2 if profiled else 0,
             "stage_frequency_ns": 2 if profiled else 0,
             "stage_components_ns": 2 if profiled else 0,
+            "key_subphase_enabled": profiled,
+            "key_materialize_ns": 2 if profiled else 0,
+            "key_order_ns": 1 if profiled else 0,
+            "key_pack_ns": 1 if profiled else 0,
             "solver_ns": 100,
         }
 

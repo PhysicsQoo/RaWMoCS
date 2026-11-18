@@ -271,6 +271,10 @@ def main() -> None:
                         and numerically_agree(Fraction(row["imag"]), Fraction(gpmc["imag"]), digits)
                     ):
                         raise SystemExit(f"SIGNED_COMPLEX_WMC_DRIFT: {case} {bits} {trial} {arm}")
+                    if row["precision_bits"] != bits:
+                        raise SystemExit(f"RUST_PRECISION_DRIFT: {case} {bits} {trial} {arm}")
+                    if row["stdout_sha256"] != inline["stdout_sha256"]:
+                        raise SystemExit(f"RUST_SIGNED_COMPLEX_OUTPUT_BYTES_DRIFT: {case} {bits} {trial} {arm}")
                     if (row["nodes"], row["cache_hits"], row["decompositions"]) != expected_topology:
                         raise SystemExit(f"SEARCH_TOPOLOGY_DRIFT: {case} {bits} {trial} {arm}")
                     try:

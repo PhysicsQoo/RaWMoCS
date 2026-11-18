@@ -102,6 +102,23 @@ def check_trial(group: dict[str, dict], bits: int, digits: int,
             "SOURCE_CHECKOUT_MIXED_OR_MISSING")
 
 
+def check_grover_negative(rows: list[dict], checkout: str) -> None:
+    checked(len(rows) == 3 and {r["arm"] for r in rows} == set(ARMS),
+            "GROVER_NEGATIVE_CONTROL_ARM_MISSING")
+    trials = {r.get("trial") for r in rows}
+    checked(trials == {0}, "GROVER_NEGATIVE_TRIAL_DRIFT")
+    ref = next(r for r in rows if r["arm"] == "gpmc")
+    checked(ref["status"] == "COMPLETED" and ref["exit_code"] == 0,
+            "ORIGINAL_GPMC_GROVER_CONTROL_DID_NOT_COMPLETE")
+    for row in rows:
+        checked(row.get("source_checkout_sha") == checkout,
+                "GROVER_NEGATIVE_CHECKOUT_DRIFT")
+        if row["arm"] != "gpmc":
+            checked(row["status"] == "CENSORED_EXIT"
+                    and "node limit" in row.get("stderr_tail", ""),
+                    "GROVER_NODE_LIMIT_NEGATIVE_WITNESS_MISSING")
+
+
 def stats(rows: list[dict]) -> dict:
     series = {arm: [next(r for r in rows
                          if r["trial"] == trial and r["arm"] == arm)
@@ -199,6 +216,21 @@ def self_test() -> None:
         if row["arm"] == "arena_scope_stamp" and row["trial"] in (5, 6):
             row["wall_ns"] = 111_000_000
     assert not stats(tail)["incremental_research_go"]
+    negative = [
+        {**trial(arm, 0), "status": "COMPLETED" if arm == "gpmc"
+         else "CENSORED_EXIT",
+         "stderr_tail": "" if arm == "gpmc" else
+         "RESEARCH_MPFR_FAIL_CLOSED: node limit"}
+        for arm in ARMS
+    ]
+    check_grover_negative(negative, "a" * 40)
+    negative[1]["stderr_tail"] = "resource exhausted"
+    try:
+        check_grover_negative(negative, "a" * 40)
+    except ValueError as ex:
+        assert "GROVER_NODE_LIMIT" in str(ex)
+    else:
+        raise AssertionError("censored Grover without node witness passed")
     print("SCOPE_STAMP_EXACT_PAIRED_ORACLE_SELF_TEST_PASS", flush=True)
 
 
@@ -224,6 +256,17 @@ def main() -> None:
             and all(c in "0123456789abcdef" for c in checkout),
             "GITHUB_SOURCE_CHECKOUT_SHA_MISSING")
     cases = SOURCE if args.family == "feynman" else ORIGINAL_MQT
+    if args.family == "mqt":
+        manifest = {}
+        for line in (args.corpus / "source-status.tsv").read_text().splitlines():
+            fields = line.split("\t")
+            checked(len(fields) == 2 and fields[0] in ORIGINAL_MQT
+                    and fields[0] not in manifest,
+                    "MQT_SOURCE_MANIFEST_DUPLICATE_OR_UNKNOWN")
+            manifest[fields[0]] = fields[1]
+        checked(set(manifest) == set(ORIGINAL_MQT)
+                and all(status == "EXPORTED" for status in manifest.values()),
+                "ORIGINAL_MQT_SEVEN_SOURCE_EXPORTS_INCOMPLETE")
     report = {
         "study": "Exact generation-stamped scope admission vs bounded Arena",
         "family": args.family, "arms": list(ARMS),
@@ -297,9 +340,7 @@ def main() -> None:
                     cohort["status"] = "CENSORED_FIRST_ROTATION"
                     break
             if case == "feynman_grover_5":
-                checked(len(cohort["records"]) == len(ARMS)
-                        and cohort["records"][0]["arm"] == "gpmc",
-                        "GROVER_NEGATIVE_ORIGINAL_CONTROL_MISSING")
+                check_grover_negative(cohort["records"], checkout)
                 # Full, unchanged per-arm failures are archived, never a pass.
                 cohort["status"] = "CENSORED_NODE_BUDGET_NEGATIVE"
                 negative += 1

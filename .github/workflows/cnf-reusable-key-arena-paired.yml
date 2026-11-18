@@ -60,8 +60,9 @@ jobs:
           # This stacked research tree contains unrelated inherited formatting
           # debt. Validate the modified exact Trail solver directly instead.
           rustfmt --edition 2021 --check benchmarks/mpfr_research/src/trail_engine.rs
-          python3 -m py_compile benchmarks/mpfr_research/tools/quprs_cnf_scoped_dsu_ab.py benchmarks/mpfr_research/tools/quprs_cnf_key_arena_ab.py
+          python3 -m py_compile benchmarks/mpfr_research/tools/quprs_cnf_scoped_dsu_ab.py benchmarks/mpfr_research/tools/quprs_cnf_key_arena_ab.py benchmarks/mpfr_research/tools/quprs_arena_cross_family_acceptance.py
           python3 benchmarks/mpfr_research/tools/quprs_cnf_key_arena_ab.py --self-test
+          python3 benchmarks/mpfr_research/tools/quprs_arena_cross_family_acceptance.py --self-test
       - name: Verify source lock, install native libraries
         shell: bash
         run: |

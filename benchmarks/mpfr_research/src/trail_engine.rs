@@ -2788,9 +2788,8 @@ c p weight 1 1 0 0\nc p weight -1 -1 0 0\n\
                         ),
                         (0, 0, 0)
                     );
-                    let nested = b.stage_key_materialize_ns
-                        + b.stage_key_order_ns
-                        + b.stage_key_pack_ns;
+                    let nested =
+                        b.stage_key_materialize_ns + b.stage_key_order_ns + b.stage_key_pack_ns;
                     assert!(nested > 0);
                     assert!(nested <= b.stage_key_ns);
                     assert!(b.trail.is_empty());

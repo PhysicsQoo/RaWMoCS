@@ -49,12 +49,24 @@ def is_sha(value: object) -> bool:
             and all(letter in "0123456789abcdef" for letter in value))
 
 
+def is_checkout_sha(value: object) -> bool:
+    # GitHub commit IDs are 40 hexadecimal chars (unlike 64-char
+    # SHA-256 evidence file digests). The PR checkout is a merge SHA.
+    return (isinstance(value, str) and len(value) == 40
+            and all(letter in "0123456789abcdef" for letter in value))
+
+
 def audit_trials(cohort: dict, case: str, bits: int, kind: str) -> dict:
     digits = {v: k for k, v in PRECISION.items()}[bits]
     rows = cohort["records"]
     check(len(rows) == 7 * len(ARMS), f"INCOMPLETE_NATIVE_TRIALS:{case}:{bits}")
     by_trial: dict[tuple[int, str], dict] = {}
+    checkout_sha = rows[0].get("source_checkout_sha") if rows else None
+    check(is_checkout_sha(checkout_sha),
+          f"MISSING_EXACT_GITHUB_CHECKOUT_REVISION:{case}:{bits}")
     for r in rows:
+        check(r.get("source_checkout_sha") == checkout_sha,
+              f"MIXED_CHECKOUT_WITHIN_NATIVE_COHORT:{case}:{bits}")
         key = (r["trial"], r["arm"])
         check(
             type(r["trial"]) is int and 0 <= r["trial"] < 7
@@ -133,6 +145,7 @@ def audit_trials(cohort: dict, case: str, bits: int, kind: str) -> dict:
         "case": case,
         "bits": bits,
         "digits": digits,
+        "source_checkout_sha": checkout_sha,
         "trials": 7,
         "original_gpmc_p50_wall_ms": statistics.median(original) / 1e6,
         "original_gpmc_p90_wall_ms": percentile(original, .9) / 1e6,
@@ -223,6 +236,9 @@ def audit(feynman: dict, mqt: dict) -> dict:
           and len(negative) == 2 and not extra,
           "SOURCE_FAMILY_OR_CENSOR_INCOMPLETE")
     all_rows = source + out_of_family
+    revisions = {r["source_checkout_sha"] for r in all_rows}
+    check(len(revisions) == 1, "MIXED_FEYNMAN_MQT_CODE_REVISIONS")
+    checkout_sha = next(iter(revisions))
     hard = [next(x for x in all_rows
                  if (x["case"], x["bits"]) == pair) for pair in HARD]
     winner = all(x["meets_performance_gate"] for x in hard)
@@ -230,6 +246,8 @@ def audit(feynman: dict, mqt: dict) -> dict:
         "status": ("RESEARCH_GO_EXACT_SOURCE_NUMERIC_AND_HARD_CASE_PERFORMANCE"
                    if winner else "HARD_CASE_PERFORMANCE_NO_GO"),
         "source_sha": {"quprs": QU_PRS_SHA, "gpmc": GPMC_SHA},
+        "source_checkout_sha": checkout_sha,
+        "checkout_sha_semantics": "GitHub Actions GITHUB_SHA for exact PR merge or workflow dispatch checkout",
         "independent_original_mqt_cnf_emitted_by_quprs": True,
         "all_ordinary_source_cohorts_matched": 6,
         "all_independent_mqt_cohorts_matched": 14,
@@ -258,6 +276,7 @@ def self_test() -> None:
         ordered = arm.startswith("ordered")
         return {
             "trial": trial, "arm": arm, "status": "COMPLETED", "exit_code": 0,
+            "source_checkout_sha": "a" * 40,
             "wall_ns": (90 if arena else 100) * 1_000_000,
             "peak_rss_kib": 1000,
             "sat": True, "real": "1/2", "imag": "-1/8",
@@ -272,6 +291,15 @@ def self_test() -> None:
     rows = [fake_run(arm, trial) for trial in range(7) for arm in ARMS]
     good = audit_trials({"records": rows}, "synthetic", 100, "feynman")
     assert good["meets_performance_gate"] and good["paired_wins"] == 7
+    assert good["source_checkout_sha"] == "a" * 40
+    mismatched = [dict(row) for row in rows]
+    mismatched[0]["source_checkout_sha"] = "b" * 40
+    try:
+        audit_trials({"records": mismatched}, "synthetic", 100, "feynman")
+    except ValueError as ex:
+        assert "MIXED_CHECKOUT" in str(ex)
+    else:
+        raise AssertionError("mixed GitHub commit versions passed the gate")
     damaged = [dict(row) for row in rows]
     damaged[3]["imag"] = "1/8"
     try:

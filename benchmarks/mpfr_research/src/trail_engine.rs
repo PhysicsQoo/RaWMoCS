@@ -92,6 +92,11 @@ pub(crate) struct TrailEngine<'a> {
     // never a claim about the uninstrumented solver's stage distribution.
     pub(crate) stage_profile: bool,
     pub(crate) stage_key_ns: u128,
+    // Key subphases are inclusive within stage_key_ns, never an
+    // additional independent share of full native solver WallTime.
+    pub(crate) stage_key_materialize_ns: u128,
+    pub(crate) stage_key_order_ns: u128,
+    pub(crate) stage_key_pack_ns: u128,
     pub(crate) stage_lookup_ns: u128,
     pub(crate) stage_unit_ns: u128,
     pub(crate) stage_frequency_ns: u128,
@@ -200,6 +205,9 @@ impl<'a> TrailEngine<'a> {
             ordered_key_hits: 0,
             stage_profile: false,
             stage_key_ns: 0,
+            stage_key_materialize_ns: 0,
+            stage_key_order_ns: 0,
+            stage_key_pack_ns: 0,
             stage_lookup_ns: 0,
             stage_unit_ns: 0,
             stage_frequency_ns: 0,
@@ -369,6 +377,7 @@ impl<'a> TrailEngine<'a> {
             start: usize,
             end: usize,
         }
+        let materialize_started = self.stage_profile.then(Instant::now);
         let mut flat = Vec::<i32>::new();
         let mut views = Vec::<View>::new();
         let mut visit = |cid: usize| {
@@ -446,6 +455,10 @@ impl<'a> TrailEngine<'a> {
                 }
             }
         }
+        if let Some(start) = materialize_started {
+            self.stage_key_materialize_ns += start.elapsed().as_nanos();
+        }
+        let order_started = self.stage_profile.then(Instant::now);
         // The parent residual is often already in exact lexicographic order.
         // If every *adjacent* pair remains strictly increasing after source
         // assignments, a complete sort and duplicate elimination is redundant.
@@ -467,12 +480,19 @@ impl<'a> TrailEngine<'a> {
             views.sort_unstable_by(|a, b| flat[a.start..a.end].cmp(&flat[b.start..b.end]));
             views.dedup_by(|a, b| flat[a.start..a.end] == flat[b.start..b.end]);
         }
+        if let Some(start) = order_started {
+            self.stage_key_order_ns += start.elapsed().as_nanos();
+        }
+        let pack_started = self.stage_profile.then(Instant::now);
         let mut ids = Vec::with_capacity(views.len());
         let mut literals = Vec::with_capacity(flat.len() + views.len());
         for view in views {
             ids.push(view.cid);
             literals.extend_from_slice(&flat[view.start..view.end]);
             literals.push(0);
+        }
+        if let Some(start) = pack_started {
+            self.stage_key_pack_ns += start.elapsed().as_nanos();
         }
         Some((ids, literals))
     }
@@ -2564,6 +2584,19 @@ c p weight 1 1 0 0\nc p weight -1 -1 0 0\n\
                         (0, 0, 0, 0, 0)
                     );
                     assert!(profiled.stage_key_ns > 0);
+                    assert_eq!(
+                        (
+                            control.stage_key_materialize_ns,
+                            control.stage_key_order_ns,
+                            control.stage_key_pack_ns
+                        ),
+                        (0, 0, 0)
+                    );
+                    let subphase_sum = profiled.stage_key_materialize_ns
+                        + profiled.stage_key_order_ns
+                        + profiled.stage_key_pack_ns;
+                    assert!(subphase_sum > 0);
+                    assert!(subphase_sum <= profiled.stage_key_ns);
                     assert!(profiled.trail.is_empty());
                     assert!(profiled.assigned.iter().all(|&v| v == 0));
                 }

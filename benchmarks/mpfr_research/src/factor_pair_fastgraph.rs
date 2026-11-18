@@ -67,22 +67,35 @@ impl FastGraph {
     pub(crate) fn plan_deleted(
         &self, x: usize, y: usize, max_bucket: usize,
     ) -> factor_minfill_order::FillPlan {
+        self.plan_excluding(&[x, y], max_bucket)
+    }
+
+    /// Plan the entire graph of a genuine Boolean cofactor. This uses the
+    /// same tie-breaking and exact width gate as the dense min-fill oracle.
+    pub(crate) fn plan_all(&self, max_bucket: usize)
+        -> factor_minfill_order::FillPlan {
+        self.plan_excluding(&[], max_bucket)
+    }
+
+    fn plan_excluding(&self, excluded: &[usize], max_bucket: usize)
+        -> factor_minfill_order::FillPlan {
         let mut out = factor_minfill_order::FillPlan::default();
         let n = self.vars.len();
-        if x == y || max_bucket == 0 || !self.vars.contains(&x)
-            || !self.vars.contains(&y) || n < 3 {
+        if max_bucket == 0 || excluded.len() >= n
+            || excluded.iter().any(|v| self.vars.binary_search(v).is_err())
+            || excluded.iter().enumerate().any(|(i, v)| excluded[i + 1..].contains(v)) {
             out.capped = true;
             return out;
         }
-        let xi = self.vars.binary_search(&x).unwrap();
-        let yi = self.vars.binary_search(&y).unwrap();
         let mut active = [0_u64; MAX_WORDS];
         for i in 0..n { active[i / 64] |= 1_u64 << (i % 64); }
-        active[xi / 64] &= !(1_u64 << (xi % 64));
-        active[yi / 64] &= !(1_u64 << (yi % 64));
+        for &variable in excluded {
+            let i = self.vars.binary_search(&variable).unwrap();
+            active[i / 64] &= !(1_u64 << (i % 64));
+        }
         let mut rows = self.rows.clone();
 
-        for _ in 0..n - 2 {
+        for _ in 0..n - excluded.len() {
             let mut best: Option<(bool, usize, usize, usize, usize)> = None;
             for i in 0..n {
                 if active[i / 64] & (1_u64 << (i % 64)) == 0 { continue; }
@@ -187,6 +200,14 @@ mod tests {
             }).collect::<Vec<Clause>>();
             for cap in [1, 2, 3, 11] {
                 compare(&clauses, &scope, cap);
+                let graph = FastGraph::build(&clauses, &scope).unwrap();
+                let expected = factor_minfill_order::plan(&clauses, &scope, cap);
+                let got = graph.plan_all(cap);
+                assert_eq!(got.capped, expected.capped);
+                assert_eq!(got.order, expected.order);
+                assert_eq!(got.max_bucket, expected.max_bucket);
+                assert_eq!(got.fill_edges, expected.fill_edges);
+                assert_eq!(got.candidate_evaluations, expected.candidate_evaluations);
             }
         }
     }

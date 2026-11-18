@@ -2193,6 +2193,121 @@ c p weight 9 -0.5 0.125 0\nc p weight -9 0.25 -0.5 0\n\
         }
     }
 
+
+    #[test]
+    fn scoped_dsu_matches_exact_source_component_cache_and_search_topology() {
+        // Distinct disconnected factors, signed complex weights, zero-ish
+        // cancellation, and one fully connected case. No solver shortcut,
+        // CNF regeneration or source weight conversion is admitted.
+        let source_a = weighted_component_source("0.5");
+        let source_b = weighted_component_source("0.125");
+        let source_c = "p cnf 10 9\nc t wmc\n\
+c p weight 1 0.5 0.25 0\nc p weight -1 -0.25 -0.5 0\n\
+1 2 0\n2 3 0\n3 4 0\n4 5 0\n5 6 0\n6 7 0\n7 8 0\n8 1 0\n9 10 0\n";
+        let source_d = "p cnf 4 4\nc t wmc\n\
+c p weight 1 1 0 0\nc p weight -1 -1 0 0\n\
+1 2 0\n-1 3 0\n-2 4 0\n-3 -4 0\n";
+        for bits in [100_u32, 333] {
+            for source in [
+                source_a.as_str(), source_b.as_str(), source_c, source_d,
+            ] {
+                let p = parse_emitted(source, bits).unwrap();
+                for cap in [0_usize, 1, 128] {
+                    let scope = (1..=p.n).collect::<Vec<usize>>();
+                    let mut old = TrailEngine::new(&p, bits, cap, 100_000);
+                    old.use_parent_ids = true;
+                    old.use_compact_residual = true;
+                    old.use_prehashed_cache = true;
+                    old.use_fused_compact = true;
+                    old.use_weight_class_cache = true;
+                    old.use_inline_weight_relabel = true;
+                    let expected = old.count(scope.clone(), 0).unwrap();
+
+                    let mut compact = TrailEngine::new(&p, bits, cap, 100_000);
+                    compact.use_parent_ids = true;
+                    compact.use_compact_residual = true;
+                    compact.use_prehashed_cache = true;
+                    compact.use_fused_compact = true;
+                    compact.use_weight_class_cache = true;
+                    compact.use_inline_weight_relabel = true;
+                    compact.use_scoped_component_dsu = true;
+                    let observed = compact.count(scope, 0).unwrap();
+
+                    assert_eq!(observed.sat, expected.sat);
+                    assert_eq!(observed.count.re, expected.count.re);
+                    assert_eq!(observed.count.im, expected.count.im);
+                    assert_eq!(compact.stats.nodes, old.stats.nodes);
+                    assert_eq!(compact.stats.cache_hits, old.stats.cache_hits);
+                    assert_eq!(compact.stats.decompositions, old.stats.decompositions);
+                    assert_eq!(compact.component_dsu_calls, old.component_dsu_calls);
+                    assert!(compact.component_dsu_slots <= old.component_dsu_slots);
+                    assert!(compact.trail.is_empty() && old.trail.is_empty());
+                    assert!(compact.assigned.iter().all(|&v| v == 0));
+                    assert!(old.assigned.iter().all(|&v| v == 0));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn scoped_dsu_weighted_random_dyadic_cache_regression() {
+        let mut seed = 0x9e3779b97f4a7c15_u64;
+        for bits in [100_u32, 333] {
+            for case in 0..50 {
+                let mut clauses = Vec::new();
+                for _ in 0..(5 + case % 13) {
+                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    let width = 1 + (seed as usize % 3);
+                    let mut clause = Vec::new();
+                    for _ in 0..width {
+                        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                        let v = 1 + ((seed >> 16) as usize % 7);
+                        clause.push(if seed & 8 == 0 { v as i32 } else { -(v as i32) });
+                    }
+                    clauses.push(clause);
+                }
+                let p = Problem {
+                    n: 7, clauses,
+                    weights: (0..7).map(|v| crate::Weights {
+                        positive: C::decimal(bits,
+                            if v % 3 == 0 { "-0.25" } else { "0.5" },
+                            if v % 2 == 0 { "0.125" } else { "-0.25" }).unwrap(),
+                        negative: C::decimal(bits,
+                            if v % 2 == 0 { "0.25" } else { "-0.125" },
+                            if v % 3 == 0 { "0.5" } else { "-0.25" }).unwrap(),
+                    }).collect(),
+                };
+                for cap in [0_usize, 128] {
+                    let scope: Vec<usize> = (1..=7).collect();
+                    let mut old = TrailEngine::new(&p, bits, cap, 200_000);
+                    old.use_parent_ids = true;
+                    old.use_compact_residual = true;
+                    old.use_prehashed_cache = true;
+                    old.use_fused_compact = true;
+                    old.use_weight_class_cache = true;
+                    old.use_inline_weight_relabel = true;
+                    let reference = old.count(scope.clone(), 0).unwrap();
+
+                    let mut new = TrailEngine::new(&p, bits, cap, 200_000);
+                    new.use_parent_ids = true;
+                    new.use_compact_residual = true;
+                    new.use_prehashed_cache = true;
+                    new.use_fused_compact = true;
+                    new.use_weight_class_cache = true;
+                    new.use_inline_weight_relabel = true;
+                    new.use_scoped_component_dsu = true;
+                    let observed = new.count(scope, 0).unwrap();
+                    assert_eq!(reference.sat, observed.sat, "case={case}");
+                    assert_eq!(reference.count.re, observed.count.re, "case={case}");
+                    assert_eq!(reference.count.im, observed.count.im, "case={case}");
+                    assert_eq!(old.stats.nodes, new.stats.nodes, "case={case}");
+                    assert_eq!(old.stats.cache_hits, new.stats.cache_hits, "case={case}");
+                    assert_eq!(old.stats.decompositions, new.stats.decompositions, "case={case}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn bounded_post_unit_factor_ve_preserves_signed_complex_wmc() {
         // Exact Boolean SAT must remain separate from cancellations to zero.

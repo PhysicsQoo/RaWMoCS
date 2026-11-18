@@ -3072,12 +3072,7 @@ c p weight 1 1 0 0\nc p weight -1 -1 0 0\n\
     #[test]
     fn scope_stamp_exact_canonical_bytes_across_components_assignments_and_undo() {
         let source = "p cnf 5 5\nc t wmc\nc p weight 1 0.5 0.25 0\nc p weight -1 -0.25 0.125 0\n1 2 0\n-1 2 0\n3 4 0\n-3 4 0\n5 0\n";
-        let scopes = [
-            vec![1, 2, 3, 4, 5],
-            vec![1, 2],
-            vec![3, 4],
-            vec![5],
-        ];
+        let scopes = [vec![1, 2, 3, 4, 5], vec![1, 2], vec![3, 4], vec![5]];
         let assignments = [vec![], vec![-1], vec![-1, -2], vec![3]];
         for bits in [100_u32, 333] {
             let p = parse_emitted(source, bits).unwrap();
@@ -3097,10 +3092,7 @@ c p weight 1 1 0 0\nc p weight -1 -1 0 0\n\
                 for assigned in &assignments {
                     let checkpoint = control.trail.len();
                     for &literal in assigned {
-                        assert_eq!(
-                            control.apply(literal, None),
-                            candidate.apply(literal, None)
-                        );
+                        assert_eq!(control.apply(literal, None), candidate.apply(literal, None));
                     }
                     for scope in &scopes {
                         assert_eq!(

@@ -46,6 +46,17 @@ jobs:
           submodules: recursive
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
+      - name: Fail-fast exact MQT source and numerical-oracle preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            benchmarks/mpfr_research/tools/quprs_cnf_scoped_dsu_ab.py \
+            benchmarks/mpfr_research/tools/quprs_cnf_trail_stage_profile.py \
+            benchmarks/mpfr_research/tools/quprs_cnf_ordered_key_ab.py \
+            benchmarks/mpfr_research/tools/quprs_mqt_ordered_key_ab.py
+          python3 benchmarks/mpfr_research/tools/quprs_cnf_ordered_key_ab.py --self-test
+          python3 benchmarks/mpfr_research/tools/quprs_mqt_ordered_key_ab.py --self-test
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: .upstream/quprs/rust -> target

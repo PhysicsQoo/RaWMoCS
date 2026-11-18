@@ -443,8 +443,7 @@ impl<'a> TrailEngine<'a> {
                                 && self.use_scope_stamp_admission
                             {
                                 self.scope_stamp_probes += 1;
-                                let stamped =
-                                    self.local_generation[variable] == self.local_epoch;
+                                let stamped = self.local_generation[variable] == self.local_epoch;
                                 debug_assert_eq!(
                                     stamped,
                                     scope.binary_search(&variable).is_ok(),
@@ -3069,5 +3068,4 @@ c p weight 1 1 0 0\nc p weight -1 -1 0 0\n\
         }
         assert!(observed > 0);
     }
-
 }

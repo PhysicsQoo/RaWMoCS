@@ -27,6 +27,9 @@ pub(crate) struct PairStats {
     pub(crate) root_bucket: usize,
     pub(crate) fast_graph: bool,
     pub(crate) graph_build_ns: u128,
+    pub(crate) polarity_graph: bool,
+    pub(crate) cofactor_graphs_probed: usize,
+    pub(crate) polarity_feasible_pairs: usize,
     pub(crate) vertex_candidates: usize,
     pub(crate) pair_probes: usize,
     pub(crate) feasible_pairs: usize,
@@ -94,22 +97,29 @@ fn cofactor(clauses: &[Clause], x: usize, vx: bool, y: usize, vy: bool) -> Vec<C
 
 pub(crate) fn count(p: &Problem, scope: &[usize], bits: u32)
     -> (Option<Outcome>, PairStats) {
-    count_with_graph(p, scope, bits, false)
+    count_with_graph(p, scope, bits, false, false)
 }
 
 pub(crate) fn count_fast(p: &Problem, scope: &[usize], bits: u32)
     -> (Option<Outcome>, PairStats) {
-    count_with_graph(p, scope, bits, true)
+    count_with_graph(p, scope, bits, true, false)
 }
 
-fn count_with_graph(p: &Problem, scope: &[usize], bits: u32, fast: bool)
+pub(crate) fn count_polarity(p: &Problem, scope: &[usize], bits: u32)
     -> (Option<Outcome>, PairStats) {
-    let mut stats = PairStats { fast_graph: fast, ..PairStats::default() };
-    let answer = attempt(p, scope, bits, fast, &mut stats);
+    count_with_graph(p, scope, bits, true, true)
+}
+
+fn count_with_graph(p: &Problem, scope: &[usize], bits: u32, fast: bool, polarity: bool)
+    -> (Option<Outcome>, PairStats) {
+    let mut stats = PairStats {
+        fast_graph: fast, polarity_graph: polarity, ..PairStats::default()
+    };
+    let answer = attempt(p, scope, bits, fast, polarity, &mut stats);
     (answer, stats)
 }
 
-fn attempt(p: &Problem, scope: &[usize], bits: u32, fast: bool,
+fn attempt(p: &Problem, scope: &[usize], bits: u32, fast: bool, polarity: bool,
            stats: &mut PairStats) -> Option<Outcome> {
     if p.n == 0 || p.n > MAX_SOURCE_VARS || scope.len() < 3
         || scope.len() > MAX_SCOPE || p.clauses.len() > MAX_CLAUSES
@@ -176,6 +186,41 @@ fn attempt(p: &Problem, scope: &[usize], bits: u32, fast: bool,
             if !plan.capped {
                 stats.feasible_pairs += 1;
                 selected = Some((x, y, remaining, plan.max_bucket));
+                break 'pairs;
+            }
+            if !polarity { continue; }
+
+            // The vertex-deletion graph is a conservative overapproximation.
+            // A failed supergraph is NOT proof of failure after SAT-sensitive
+            // clause satisfaction by a specific signed pair assignment.
+            // Test four exact Boolean cofactors, each at the unchanged
+            // width-11 dense-factor structural guard, before any MPFR work.
+            let mut cofactor_bucket = 0;
+            let mut all_admitted = true;
+            'polarities: for vx in [false, true] {
+                for vy in [false, true] {
+                    if begin.elapsed().as_nanos() > MAX_PAIR_PLANNING_NS {
+                        all_admitted = false;
+                        break 'polarities;
+                    }
+                    let cofactor = cofactor(&p.clauses, x, vx, y, vy);
+                    stats.cofactor_graphs_probed += 1;
+                    let Some(branch_graph) = FastGraph::build(&cofactor, &remaining) else {
+                        all_admitted = false;
+                        break 'polarities;
+                    };
+                    let branch_plan = branch_graph.plan_all(MAX_BAG);
+                    cofactor_bucket = cofactor_bucket.max(branch_plan.max_bucket);
+                    if branch_plan.capped {
+                        all_admitted = false;
+                        break 'polarities;
+                    }
+                }
+            }
+            if all_admitted {
+                stats.feasible_pairs += 1;
+                stats.polarity_feasible_pairs += 1;
+                selected = Some((x, y, remaining, cofactor_bucket));
                 break 'pairs;
             }
         }

@@ -218,6 +218,16 @@ def sample(command: list[str], arm: str, digits: int) -> dict:
                                stage_unit_ns=int(stage.group(4)),
                                stage_frequency_ns=int(stage.group(5)),
                                stage_components_ns=int(stage.group(6)))
+                subphases = re.search(
+                    r"^RESEARCH_MPFR_TRAIL_KEY_SUBPHASE enabled=(true|false) "
+                    r"materialize_ns=(\d+) order_ns=(\d+) pack_ns=(\d+)$",
+                    proc.stderr, re.M,
+                )
+                if subphases is not None:
+                    row.update(key_subphase_enabled=subphases.group(1) == "true",
+                               key_materialize_ns=int(subphases.group(2)),
+                               key_order_ns=int(subphases.group(3)),
+                               key_pack_ns=int(subphases.group(4)))
         except (OSError, ValueError) as exc:
             row["status"] = "CENSORED_INVALID_OUTPUT"
             row["error"] = str(exc)[:250]

@@ -10,6 +10,7 @@ on:
       - benchmarks/mpfr_research/tools/quprs_cnf_scoped_dsu_ab.py
       - benchmarks/mpfr_research/tools/quprs_cnf_trail_stage_profile.py
       - benchmarks/mpfr_research/tools/quprs_cnf_key_arena_ab.py
+      - benchmarks/mpfr_research/tools/quprs_scope_stamp_paired.py
       - benchmarks/mpfr_research/tools/quprs_mqt_key_arena_ab.py
       - benchmarks/mpfr_research/src/factor_add_elimination.rs
       - benchmarks/mpfr_research/src/factor_pair_cutset_ve.rs
@@ -60,7 +61,9 @@ jobs:
           # This stacked research tree contains unrelated inherited formatting
           # debt. Validate the modified exact Trail solver directly instead.
           rustfmt --edition 2021 --check benchmarks/mpfr_research/src/trail_engine.rs
-          python3 -m py_compile benchmarks/mpfr_research/tools/quprs_cnf_scoped_dsu_ab.py benchmarks/mpfr_research/tools/quprs_cnf_key_arena_ab.py benchmarks/mpfr_research/tools/quprs_arena_cross_family_acceptance.py
+          python3 -m py_compile benchmarks/mpfr_research/tools/quprs_cnf_scoped_dsu_ab.py benchmarks/mpfr_research/tools/quprs_cnf_key_arena_ab.py benchmarks/mpfr_research/tools/quprs_arena_cross_family_acceptance.py \
+            benchmarks/mpfr_research/tools/quprs_scope_stamp_paired.py
+          python3 benchmarks/mpfr_research/tools/quprs_scope_stamp_paired.py --self-test
           python3 benchmarks/mpfr_research/tools/quprs_cnf_key_arena_ab.py --self-test
           python3 benchmarks/mpfr_research/tools/quprs_arena_cross_family_acceptance.py --self-test
       - name: Verify source lock, install native libraries
@@ -126,6 +129,20 @@ jobs:
             --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
             --report .research/weighted-cnf-articulation/arena-seven-arm.json \
             | tee .research/weighted-cnf-articulation/arena-study.log
+
+      - name: Independent original Feynman GPMC versus Arena scope-stamp native A/B
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 benchmarks/mpfr_research/tools/quprs_scope_stamp_paired.py \
+            --family feynman --quprs .upstream/quprs \
+            --gpmc-source .upstream/gpmc \
+            --corpus .research/weighted-cnf-articulation \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --report .research/weighted-cnf-articulation/scope-stamp-three-arm.json \
+            | tee .research/weighted-cnf-articulation/scope-stamp-three-arm.log
+
       - name: Preserve complete positive, negative and censored source evidence
         if: always()
         uses: actions/upload-artifact@v4

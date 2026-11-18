@@ -105,6 +105,11 @@ pub(crate) struct TrailEngine<'a> {
     // This never changes variable ordering or signed MPFR weight classes.
     pub(crate) use_scope_stamp_admission: bool,
     pub(crate) scope_stamp_probes: u64,
+    // Reversible, source-owned live-clause bitmap: a bit is set exactly
+    // when satisfied[cid] == 0. Never changes original clause or literal
+    // order, weight classes, or cache-key ownership. Opt-in only.
+    active_clause_bits: Option<Vec<u64>>,
+    pub(crate) active_bitmap_key_visits: u64,
     key_arena_flat: Vec<i32>,
     key_arena_views: Vec<ResidualKeyView>,
     pub(crate) key_arena_calls: u64,
@@ -228,6 +233,8 @@ impl<'a> TrailEngine<'a> {
             use_reusable_key_arena: false,
             use_scope_stamp_admission: false,
             scope_stamp_probes: 0,
+            active_clause_bits: None,
+            active_bitmap_key_visits: 0,
             key_arena_flat: Vec::new(),
             key_arena_views: Vec::new(),
             key_arena_calls: 0,
@@ -277,6 +284,21 @@ impl<'a> TrailEngine<'a> {
         }
     }
 
+    /// Opt-in bitmap initialized only at the root, before any assignment.
+    /// The last word is masked to avoid visiting a nonexistent clause ID.
+    pub(crate) fn enable_active_clause_bitmap(&mut self) {
+        assert!(self.trail.is_empty(), "bitmap must start at the root");
+        let n = self.clauses.len();
+        let mut words = vec![u64::MAX; n.div_ceil(64)];
+        if !n.is_multiple_of(64) {
+            if let Some(last) = words.last_mut() {
+                *last = (1_u64 << (n % 64)) - 1;
+            }
+        }
+        self.active_clause_bits = Some(words);
+        self.active_bitmap_key_visits = 0;
+    }
+
     /// One reversible variable assignment. Even if a clause becomes
     /// contradictory, finish the incidence updates so undo is exact.
     fn apply(&mut self, lit: i32, heap: Option<(&mut BinaryHeap<Reverse<usize>>, u64)>) -> bool {
@@ -286,6 +308,11 @@ impl<'a> TrailEngine<'a> {
         self.trail.push(var);
         self.assignments += 1;
         for &cid in &self.occurrence[slot(lit)] {
+            if self.satisfied[cid] == 0 {
+                if let Some(words) = self.active_clause_bits.as_mut() {
+                    words[cid / 64] &= !(1_u64 << (cid % 64));
+                }
+            }
             self.satisfied[cid] += 1;
             self.live[cid] -= 1;
         }
@@ -317,6 +344,11 @@ impl<'a> TrailEngine<'a> {
             };
             for &cid in &self.occurrence[slot(lit)] {
                 self.satisfied[cid] -= 1;
+                if self.satisfied[cid] == 0 {
+                    if let Some(words) = self.active_clause_bits.as_mut() {
+                        words[cid / 64] |= 1_u64 << (cid % 64);
+                    }
+                }
                 self.live[cid] += 1;
             }
             for &cid in &self.occurrence[slot(-lit)] {
@@ -421,6 +453,11 @@ impl<'a> TrailEngine<'a> {
         };
         flat.clear();
         views.clear();
+        // Temporarily move only the fixed-size bitmap out of the solver
+        // while the key visitor mutably borrows other solver fields.
+        // Key construction never applies or undoes assignments.
+        let active_words = self.active_clause_bits.take();
+        let mut bitmap_visits = 0_u64;
         let mut visit = |cid: usize| {
             if self.satisfied[cid] != 0 {
                 return true;
@@ -498,11 +535,42 @@ impl<'a> TrailEngine<'a> {
             true
         };
         let complete = if let Some(parent) = parent_ids.filter(|_| self.use_parent_ids) {
-            parent.iter().all(|&cid| visit(cid))
+            // Keep the original parent traversal order; omitted clauses
+            // were already satisfied and originally returned true.
+            parent
+                .iter()
+                .filter(|&&cid| {
+                    active_words.as_ref().is_none_or(|words| {
+                        words[cid / 64] & (1_u64 << (cid % 64)) != 0
+                    })
+                })
+                .all(|&cid| {
+                    bitmap_visits += u64::from(active_words.is_some());
+                    visit(cid)
+                })
+        } else if let Some(words) = active_words.as_ref() {
+            // Visit only unfulfilled source IDs, in exactly ascending ID
+            // order. The last word's unused upper bits are always zero.
+            let mut complete = true;
+            'source: for (word_index, &word) in words.iter().enumerate() {
+                let mut pending = word;
+                while pending != 0 {
+                    let cid = word_index * 64 + pending.trailing_zeros() as usize;
+                    pending &= pending - 1;
+                    bitmap_visits += 1;
+                    if !visit(cid) {
+                        complete = false;
+                        break 'source;
+                    }
+                }
+            }
+            complete
         } else {
             (0..self.clauses.len()).all(&mut visit)
         };
         drop(visit);
+        self.active_clause_bits = active_words;
+        self.active_bitmap_key_visits += bitmap_visits;
         if !complete {
             // A Boolean contradiction never becomes a numeric zero WMC
             // certificate. Restore transient arena even on failed paths.

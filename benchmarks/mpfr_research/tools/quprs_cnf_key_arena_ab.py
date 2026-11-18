@@ -282,7 +282,9 @@ def main() -> None:
                         raise SystemExit("UNEXPECTED_SCOPED_DSU_FLAG")
             cohort["status"] = "MATCHED"
             cohort["stats"] = {arm: statistics_for(rows, arm) for arm in ARMS}
-            for profile_arm, control_arm in (
+            for target_arm, control_arm in (
+                ("ordered_key", "inline_full"),
+                ("arena_reuse", "inline_full"),
                 ("inline_profile", "inline_full"),
                 ("ordered_profile", "ordered_key"),
                 ("arena_profile", "arena_reuse"),
@@ -291,12 +293,19 @@ def main() -> None:
                 for trial in range(trials):
                     matched_pairs = {e["arm"]: e for e in rows if e["trial"] == trial}
                     differences.append(
-                        matched_pairs[profile_arm]["wall_ns"] -
+                        matched_pairs[target_arm]["wall_ns"] -
                         matched_pairs[control_arm]["wall_ns"]
                     )
-                cohort["stats"][profile_arm]["p50_paired_profile_wall_overhead_ms"] = (
+                cohort["stats"][target_arm]["p50_paired_complete_wall_delta_ms"] = (
                     statistics.median(differences) / 1e6
                 )
+                cohort["stats"][target_arm]["paired_trails_faster"] = sum(
+                    difference < 0 for difference in differences
+                )
+                if target_arm.endswith("_profile"):
+                    cohort["stats"][target_arm][
+                        "p50_paired_profile_wall_overhead_ms"
+                    ] = statistics.median(differences) / 1e6
             matched += 1
             p = cohort["stats"]["inline_profile"]["stage_p50_ms"]
             print(f"KEY_ARENA_MATCH case={case} bits={bits} "

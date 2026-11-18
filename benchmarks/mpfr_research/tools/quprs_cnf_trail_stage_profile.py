@@ -200,7 +200,7 @@ def main() -> None:
                     try:
                         validate_stage(row, arm)
                     except (KeyError, ValueError, TypeError) as exc:
-                        raise SystemExit(str(exc)) from exc)
+                        raise SystemExit(str(exc)) from exc
                 if group["scoped_profile"]["scoped_dsu_slots"] > group["inline_profile"]["scoped_dsu_slots"]:
                     raise SystemExit("SCOPED_DSU_SLOT_REGRESSION")
             cohort["status"] = "MATCHED"

@@ -2958,6 +2958,31 @@ c p weight 1 1 0 0\nc p weight -1 -1 0 0\n\
                     );
                     let checkpoint = control.trail.len();
                     assert_eq!(control.apply(literal, None), candidate.apply(literal, None));
+                    // Verify the *live* reduced key, not only the value
+                    // reconstructed after rolling the Trail back.
+                    assert_eq!(
+                        control.canonical_compact(&scope, None, false),
+                        candidate.canonical_compact(&scope, None, false)
+                    );
+                    control.undo(checkpoint);
+                    candidate.undo(checkpoint);
+                    assert_eq!(
+                        control.canonical_compact(&scope, None, false),
+                        candidate.canonical_compact(&scope, None, false)
+                    );
+                }
+                // Two committed assignments create duplicate reduced
+                // clauses. A second sequence creates a Boolean conflict.
+                // Neither case can poison the reclaimed scratch buffers.
+                for sequence in [[-1, -3], [-1, -2]] {
+                    let checkpoint = control.trail.len();
+                    for literal in sequence {
+                        assert_eq!(control.apply(literal, None), candidate.apply(literal, None));
+                        assert_eq!(
+                            control.canonical_compact(&scope, None, false),
+                            candidate.canonical_compact(&scope, None, false)
+                        );
+                    }
                     control.undo(checkpoint);
                     candidate.undo(checkpoint);
                     assert_eq!(

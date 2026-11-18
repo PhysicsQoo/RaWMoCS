@@ -56,7 +56,7 @@ def make_command(args: argparse.Namespace, arm: str, digits: int,
 
 
 def check_trial(group: dict[str, dict], bits: int, digits: int,
-                family: str) -> None:
+                family: str, case: str) -> None:
     checked(set(group) == set(ARMS), "UNBALANCED_FUSED_PRE_ARMS")
     g, a, b = (group[arm] for arm in ARMS)
     checked(all(r["status"] == "COMPLETED" and r["exit_code"] == 0
@@ -85,13 +85,24 @@ def check_trial(group: dict[str, dict], bits: int, digits: int,
                 "UNRELATED_SEARCH_ARM")
         checked(not rust.get("stage_enabled"),
                 "INSTRUMENTED_NATIVE_WALLTIME_CONTAMINATION")
+    # A fully unit-closed residual (e.g. original MQT Grover4) can
+    # finish without entering frequency/component analysis. Enabled does
+    # NOT imply a nonzero work counter; accept exact 0/0 only when both
+    # stages have no work. Never suppress an actual hard-case admission
+    # failure or a synthetically inconsistent counter combination.
+    scans = b.get("fused_pre_clause_scans")
+    merges = b.get("fused_pre_dsu_merges")
     checked(a.get("fused_pre_enabled") is False
             and a.get("fused_pre_clause_scans") == 0
-            and a.get("fused_pre_dsu_merges", 0) == 0
+            and a.get("fused_pre_dsu_merges") == 0
             and b.get("fused_pre_enabled") is True
-            and b.get("fused_pre_clause_scans", 0) > 0
-            and b.get("fused_pre_dsu_merges", 0) > 0,
+            and type(scans) is int and scans >= 0
+            and type(merges) is int and merges >= 0
+            and (scans > 0 or merges == 0),
             "FUSED_PRE_FLAG_OR_ADMISSION_DRIFT")
+    if case in HARD:
+        checked(scans > 0 and merges > 0,
+                "HARD_CASE_FUSED_PRE_NO_WORK_ADMISSION")
     checked(
         a["stdout_sha256"] == b["stdout_sha256"]
         and tuple(a[k] for k in ("nodes", "cache_hits", "decompositions"))
@@ -198,7 +209,8 @@ def self_test() -> None:
             "peak_rss_kib": 6000,
         }
     rows = [trial(arm, i) for i in range(7) for arm in ARMS]
-    check_trial({r["arm"]: r for r in rows[:3]}, 100, 30, "feynman")
+    check_trial({r["arm"]: r for r in rows[:3]}, 100, 30, "feynman",
+                "feynman_hwb6")
     assert stats(rows)["incremental_research_go"]
     for arm, field, bad in (
         ("arena_fused_pre", "imag", "1/8"),
@@ -213,11 +225,34 @@ def self_test() -> None:
         broken = [dict(row) for row in rows[:3]]
         next(r for r in broken if r["arm"] == arm)[field] = bad
         try:
-            check_trial({r["arm"]: r for r in broken}, 100, 30, "feynman")
+            check_trial({r["arm"]: r for r in broken}, 100, 30,
+                        "feynman", "feynman_hwb6")
         except ValueError:
             pass
         else:
             raise AssertionError(f"CORRUPTED_FUSED_PRE_ORACLE: {arm}:{field}")
+    # Zero scan and zero union is legitimate for a fully closed
+    # original residual, even though the experimental flag is enabled.
+    no_work = [dict(row) for row in rows[:3]]
+    candidate = next(r for r in no_work if r["arm"] == "arena_fused_pre")
+    candidate["fused_pre_clause_scans"] = 0
+    candidate["fused_pre_dsu_merges"] = 0
+    check_trial({r["arm"]: r for r in no_work}, 100, 30,
+                "mqt", "mqt_grover_4")
+    for bad in (
+        {"fused_pre_clause_scans": 0, "fused_pre_dsu_merges": 1},
+        {"fused_pre_clause_scans": -1, "fused_pre_dsu_merges": 0},
+        {"fused_pre_clause_scans": 0, "fused_pre_dsu_merges": -1},
+    ):
+        invalid = [dict(row) for row in no_work]
+        next(r for r in invalid if r["arm"] == "arena_fused_pre").update(bad)
+        try:
+            check_trial({r["arm"]: r for r in invalid}, 100, 30,
+                        "mqt", "mqt_grover_4")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("MALFORMED_NO_WORK_COUNTERS_ACCEPTED")
     slow = [dict(row) for row in rows]
     for row in slow:
         if row["arm"] == "arena_fused_pre":
@@ -385,7 +420,7 @@ def main() -> None:
             for trial_no in range(TRIALS):
                 check_trial({r["arm"]: r for r in cohort["records"]
                              if r["trial"] == trial_no}, bits,
-                            digits, args.family)
+                            digits, args.family, case)
             cohort["status"] = "EXACT_NUMERIC_AND_TOPOLOGY_MATCH"
             cohort["stats"] = stats(cohort["records"])
             complete += 1

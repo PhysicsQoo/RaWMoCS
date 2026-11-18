@@ -164,3 +164,120 @@ JSON so it can be rejected or archived without invalidating the
 independently accepted Arena correctness evidence. A failed numeric
 or source-provenance gate makes CI fail; a measured performance No-Go
 is preserved explicitly without falsely failing numerical integrity.
+
+## Scope Stamp scientific disposition and reversible active-clause bitmap experiment
+
+### Source-locked Scope Stamp outcome: correct but not a hard-case algorithm Go
+
+At the same original-source head, [Feynman native run #44305340744](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/44305340744)
+and [independent MQT native run #44305340356](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/44305340356)
+passed six Feynman ordinary and fourteen original MQT source-by-precision
+SAT / Signed Complex real+imag WMC, same Rust stdout bytes and exact
+DPLL/cache/decomposition topology. The isolated three-arm opt-in
+Scope Stamp study found:
+
+| Original source / MPFR | Arena-only p50 | Scope Stamp p50 | p50 gain | p90 gain | Native paired wins |
+|---|---:|---:|---:|---:|---:|
+| HWB6 / 100 | 566.911ms | 540.748ms | 4.615% | 4.107% | 7/7 |
+| HWB6 / 333 | 605.276ms | 580.114ms | 4.157% | 4.867% | 7/7 |
+| MQT QNN4 / 100 | 37.801ms | 36.324ms | 3.909% | 4.660% | 7/7 |
+| MQT QNN4 / 333 | 40.005ms | 38.164ms | 4.602% | 4.962% | 7/7 |
+
+All four **fail** the predeclared incremental p50 **and** p90
+improvement >= 5% screen. Do not infer full algorithm Go or default
+promotion from seven paired wins alone. The retained Scope Stamp
+three-arm script, source-code opt-in flag and raw artifacts remain
+available, but future CI no longer repeats this expensive No-Go arm.
+The original seven-arm Arena study remains the unchanged control.
+
+The source-exact Feynman workflow did not finish successfully:
+original GPMC Grover5/333-bit crossed the unchanged **30s native
+timeout**, though GPMC/100-bit finished (~29.29s). The Rust
+Grover5 arms at both precisions remained censored at the original
+1M DPLL-node cap. Because Grover5 is a deliberately censored
+negative-control cohort, forcing original GPMC to complete at
+*both* precisions was an incorrect acceptance criterion. Now only
+an original GPMC completed/timeout witness is accepted, preserving
+the exact status/exit code/child stderr, while Rust arms must present
+the original fail-closed node-limit witness. Any unrelated source
+or solver failure remains rejected. Those two censored cohorts are
+never reported as numeric matched or hard-case speed improvements.
+
+### Next exact structural hypothesis: reversible active-clause bitmap
+
+The original solver already keeps source-owned immutable
+`occurrence[slot(lit)]`, and reversible
+`satisfied[cid]` / `live[cid]` counts. The new flag
+`--trail-active-clause-bitmap` requires the bounded Arena flag and
+**forbids concurrent Scope Stamp** so its marginal effect can be
+identified independently. No solver default changes.
+
+A lazily initialized, source-sized `Vec<u64>` records the invariant:
+
+```
+active_bitmap[cid] == 1  iff  satisfied[cid] == 0
+```
+
+For a satisfying assignment on a literal occurrence, only the
+`0 -> 1` change of the satisfied counter clears the bit. On undo,
+only the `1 -> 0` change sets the bit. False-branch assignments
+that reduce `live[cid]` without satisfaction leave the bit set.
+Thus contradictory all-assigned clauses are **still visited** and
+must fail-closed, rather than being silently removed. The bitset is
+initialized only when this opt-in arm is enabled at the root; no
+new literal linkage or independently reconstructed clause state is
+maintained. Child recursion reuses the exact same reversible bitmap.
+
+At `canonical_compact`, the full-source branch iterates only set
+bits using `trailing_zeros` in original ascending source CID
+order; a parent-scope branch filters only already satisfied IDs
+without changing the order of the supplied parent list. The
+literal-level source order, signed variable rank, sorting,
+duplicate elimination, independently owned final PackedKey bytes,
+signed MPFR weights and search order remain unchanged.
+The bitset is moved out and restored during key visitation only
+to satisfy Rust's exclusive borrowing; no `apply`/`undo`
+occurs during this visit. The source record emits
+`RESEARCH_MPFR_ACTIVE_CLAUSE_BITMAP enabled=... key_visits=...`;
+this count is not proof of a performance benefit.
+
+Rust regression compares source clause IDs plus exact canonical
+literals before/after assignment, throughout aborts and rollback,
+on >= 65 original source clauses (crossing 64-bit words);
+and independently checks exact signed Complex WMC, SAT,
+branch/cache/decomposition topology at 100/333-bit precision,
+cache 0/1/128. This is a stronger invariant than an output-only
+numeric smoke test.
+
+### Incremental native benchmark and No-Go screen
+
+Keep the original seven-arm Arena experiment *identical*, and
+run a **separate three-arm** matched native comparison:
+
+- Original unmodified GPMC C++ with original QuPRS-emitted
+  weighted CNF, 30 or 100 decimal digits.
+- Rust Arena-only, 100/333-bit MPFR.
+- Rust Arena+Active-Clause-Bitmap, with identical MPFR, cache,
+  branch and resource settings.
+
+At every complete source-by-precision cohort, use seven independent,
+rotated, native child processes, 30s / 2GiB each, complete WallTime
+p50/p90, RSS p50 and per-trial raw data. The original QASM and
+CNF/weights/phase hashes, GitHub checkout SHA, signed Complex
+real+imag numeric oracle, Rust stdout SHA, SAT, cache and
+decomposition topology must match before evaluating performance.
+Feynman six ordinary source cohorts and independent original
+MQT 14 source cohorts are mandatory, preserving the actual
+Grover5 GPMC timeout and Rust node-cap negative outcomes.
+
+The **new predeclared experimental Go** requires, on both
+Feynman HWB6 and independent MQT QNN4 at 100/333 bits,
+unprofiled full-process **p50 AND p90 >=5% faster** than
+Arena-only, **>=5/7 paired faster trials**, **RSS p50 <=105%**
+of Arena-only, and zero numeric/source/topology violations.
+Short-case performance or high active-bitmap hit rate never
+substitutes for this. Failure is an explicitly recorded **No-Go**
+without breaking numeric-comparison success. The original GPMC
+gap is shown separately; even passing this incremental
+screen would not authorize production routing or merging the
+entire long-lived stacked research branch.

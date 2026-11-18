@@ -22,6 +22,7 @@ mod trail_engine;
 mod separator_pivot;
 mod primal_centroid;
 mod factor_variable_elimination;
+mod factor_add_elimination;
 mod factor_minfill_order;
 mod factor_primal_minor_bound;
 
@@ -921,6 +922,10 @@ fn run() -> Result<(), String> {
     let cache_first = if ve_min_fill {
         args.next().ok_or("missing mode after --factor-ve-minfill-order")?
     } else { cache_first };
+    let factor_add = cache_first.to_str() == Some("--factor-add-elimination");
+    let cache_first = if factor_add {
+        args.next().ok_or("missing mode after --factor-add-elimination")?
+    } else { cache_first };
     let residual_factor_ve = cache_first.to_str() == Some("--trail-residual-factor-ve");
     let cache_first = if residual_factor_ve {
         args.next().ok_or("missing mode after --trail-residual-factor-ve")?
@@ -993,6 +998,11 @@ fn run() -> Result<(), String> {
     if scope_probe_320 && !factor_ve {
         return Err("--factor-ve-scope-probe-320 requires --factor-variable-elimination".into());
     }
+    if factor_add && (!weighted_equivalence || !trail_count || factor_ve
+        || residual_factor_ve || root_failed_literal || post_unit_cache
+        || articulation_pivot || primal_order || unit_closure_pivot) {
+        return Err("--factor-add-elimination requires weighted-equivalence + trail-count without other root transforms".into());
+    }
     if residual_factor_ve && (!weighted_equivalence || !trail_count || factor_ve
         || post_unit_cache || articulation_pivot || primal_order || root_failed_literal) {
         return Err("--trail-residual-factor-ve requires weighted-equivalence + trail-count, without other root transforms".into());
@@ -1062,6 +1072,14 @@ fn run() -> Result<(), String> {
     };
     let ve_ns = ve_start.elapsed().as_nanos();
     let ve_completed = ve_candidate.is_some();
+    let add_start = Instant::now();
+    let (add_candidate, add_stats) = if factor_add {
+        factor_add_elimination::count(source, &scope, bits)
+    } else {
+        (None, factor_add_elimination::AddStats::default())
+    };
+    let add_ns = add_start.elapsed().as_nanos();
+    let add_completed = add_candidate.is_some();
     eprintln!("RESEARCH_MPFR_FACTOR_VE_SCOPE_PROBE enabled={} limit={}",
         scope_probe_320, if scope_probe_320 { 320 } else { 256 });
     if ve_min_fill {
@@ -1095,7 +1113,7 @@ fn run() -> Result<(), String> {
     engine.indexed_activation_node = indexed_activation_node;
     let mut residual_ve_metrics = (0_u64, 0_u64, 0_u64, 0_u64, 0_usize);
     let (answer, solver_stats, trail_profile, primal_scans, primal_overrides) =
-        if let Some(answer) = ve_candidate {
+        if let Some(answer) = add_candidate.or(ve_candidate) {
             // A complete factor-semiring count has NO DPLL nodes.
             // Report VE product count separately instead of pretending
             // zero Shannon nodes is a direct DPLL-node improvement.
@@ -1160,6 +1178,12 @@ fn run() -> Result<(), String> {
         factor_ve, ve_completed, ve_stats.eligible, ve_stats.capped,
         ve_stats.factors, ve_stats.eliminated, ve_stats.width,
         ve_stats.cells, ve_stats.products, ve_stats.zero_sat, ve_ns);
+    eprintln!("RESEARCH_MPFR_FACTOR_ADD enabled={} completed={} eligible={} capped={} reason={} nodes={} terminals={} apply_calls={} apply_hits={} abstractions={} factors={} eliminated={} max_bucket={} add_ns={}",
+        factor_add, add_completed, add_stats.eligible, add_stats.capped,
+        if add_stats.reason.is_empty() { "none" } else { add_stats.reason },
+        add_stats.nodes, add_stats.terminals, add_stats.apply_calls,
+        add_stats.apply_hits, add_stats.abstractions, add_stats.factors,
+        add_stats.eliminated, add_stats.max_bucket, add_ns);
     let empty_profile = primal_centroid::Profile::default();
     let td = primal_profile.as_ref().unwrap_or(&empty_profile);
     eprintln!("RESEARCH_MPFR_PRIMAL_BAG_CENTROID enabled={} root_only={} eligible={} capped={} vars={} edges={} width={} fill={} distance={} build_ns={} scans={} overrides={}",

@@ -91,6 +91,76 @@ dominated by re-reading source clause literals/scope checks
 rather than allocation; investigate exact incremental residual
 occurrence lists, bounded by reversible Trail state, and independently
 prove original Boolean SAT, signed Complex WMC and identical
-canonical cache keys. Any such next optimization requires a
-separate Draft PR, source-exact CI and a predeclared No-Go rule.
+canonical cache keys. Any subsequent independent hypothesis must have its own opt-in research
+arm, paired source-exact CI and predeclared No-Go rule. Keep such work in
+the **one active research Draft PR** until a separately reviewed,
+clean main-based production implementation is justified.
 No production defaults or routing changes are authorized here.
+
+
+## Next controlled experiment: exact generation-stamped scope admission
+
+The original Arena experiment passed full signed-complex numeric equivalence
+and deterministic search topology on both source families, but the later
+same-head 10%-p50 AND 10%-p90 hard-case performance screen did not pass
+all four selected instances. Therefore all existing production defaults
+remain unchanged and Arena-only is **an opt-in baseline**, not a router Go.
+
+Instead of a new mutable incidence structure or opening another PR,
+the strictly opt-in research switch \`--trail-scope-stamp-admission\`
+is accepted **only together with** \`--trail-reuse-key-arena\` and the
+already required original fused weighted Trail. It changes exactly
+one expression inside \`canonical_compact\`: the first still-unassigned
+literal of each candidate source clause is admitted when
+\`local_generation[variable] == local_epoch\` rather than the original
+\`scope.binary_search(variable).is_ok()\`. The current epoch and all
+in-scope variables' stamps are installed by the **existing**
+\`prepare_weighted_scope\` immediately before the current residual
+key is built. The guard only applies with exact
+\`inline_weight_relabel\`; every other source clause path stays on
+the original binary-search condition. In Rust debug builds, each
+stamp verdict is independently checked against the original sorted
+scope membership. No mutable occurrence index, new key
+normalization, CNF transformation or MPFR operation is introduced.
+
+### Independent native three-arm comparison
+
+The two existing source-pinned native workflows execute the original
+seven-arm Arena benchmark **unchanged**, then run a **separate**
+three-arm study with \`quprs_scope_stamp_paired.py\`:
+
+1. The exact pinned unchanged original GPMC executable, using original
+   QuPRS-emitted signed Complex Weighted CNF at 30/100 decimal digits.
+2. Exact Rust \`--trail-reuse-key-arena\` control with 100/333-bit MPFR.
+3. Same exact Rust control plus
+   \`--trail-scope-stamp-admission\`.
+
+Original source QASM, CNF, GPMC/Ganak dual dialect and phase sidecars,
+checksummed sources and each GitHub checkout SHA are retained. Every
+ordinary Feynman or independent MQT source×precision cohort requires
+seven fresh process-order-rotated trials, 30s/2GiB bound per child,
+complete WallTime p50/p90 and observed max RSS. Original Grover5 remains
+a required and explicitly verified DPLL node-budget negative control.
+
+All complete trials require original GPMC SAT and signed Complex WMC
+real/imag agreement at same precision; **exact Rust stdout SHA-256,
+nodes, cache hits and decomposition equality** between Arena and Stamp.
+The Arena arm must show zero Stamp probes, while the Stamp arm requires
+positive probes, and both arms retain the same bounded Arena reuse.
+Test failures remain separate from completed numerical matches.
+
+The **new incremental research Go screen** is deliberately separate
+from the previously fixed *Arena vs Inline* 10%+10% screen: Stamp
+must beat **Arena-only** on *both* HWB6 and independent MQT QNN4
+at 100/333 bits (four difficult cohorts) with at least **5% lower
+unprofiled full WallTime p50 AND p90**, at least **5 of 7 paired
+wins** and no more than **5% higher p50 peak RSS**. A fast
+short example, a stamp probe counter or a single lucky batch is
+insufficient. Report the remaining original GPMC gap and all misses.
+No automatic promotion follows even if the incremental screen passes.
+
+The original three-arm report is separate from the seven-arm baseline
+JSON so it can be rejected or archived without invalidating the
+independently accepted Arena correctness evidence. A failed numeric
+or source-provenance gate makes CI fail; a measured performance No-Go
+is preserved explicitly without falsely failing numerical integrity.

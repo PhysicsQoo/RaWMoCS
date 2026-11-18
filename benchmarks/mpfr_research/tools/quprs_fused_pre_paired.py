@@ -43,7 +43,7 @@ def make_command(args: argparse.Namespace, arm: str, digits: int,
                  cnf: Path, case: str) -> list[str]:
     if arm == "gpmc":
         return command(args, "gpmc", digits, cnf, case)
-    checked(arm in ARMS, "UNKNOWN_STAMP_ARM")
+    checked(arm in ARMS, "UNKNOWN_FUSED_PRE_ARM")
     cmd = command(args, "arena_reuse", digits, cnf, case)
     if args.family == "mqt":
         cmd.insert(1, "--node-budget=1000000")
@@ -87,8 +87,10 @@ def check_trial(group: dict[str, dict], bits: int, digits: int,
                 "INSTRUMENTED_NATIVE_WALLTIME_CONTAMINATION")
     checked(a.get("fused_pre_enabled") is False
             and a.get("fused_pre_clause_scans") == 0
+            and a.get("fused_pre_dsu_merges", 0) == 0
             and b.get("fused_pre_enabled") is True
-            and b.get("fused_pre_clause_scans", 0) > 0,
+            and b.get("fused_pre_clause_scans", 0) > 0
+            and b.get("fused_pre_dsu_merges", 0) > 0,
             "FUSED_PRE_FLAG_OR_ADMISSION_DRIFT")
     checked(
         a["stdout_sha256"] == b["stdout_sha256"]
@@ -184,7 +186,9 @@ def self_test() -> None:
             "key_arena_calls": 20 if is_rust else 0,
             "key_arena_flat_reuses": 18 if is_rust else 0,
             "key_arena_view_reuses": 18 if is_rust else 0,
-            "fused_pre_enabled": stamp, "fused_pre_clause_scans": 20 if stamp else 0,
+            "fused_pre_enabled": stamp,
+            "fused_pre_clause_scans": 20 if stamp else 0,
+            "fused_pre_dsu_merges": 12 if stamp else 0,
             "stdout_sha256": "same-output", "nodes": 12, "cache_hits": 2,
             "decompositions": 1, "ordered_key_enabled": False,
             "scoped_dsu_enabled": False, "factor_ve_enabled": False,
@@ -201,6 +205,7 @@ def self_test() -> None:
         ("arena_fused_pre", "nodes", 99),
         ("arena_fused_pre", "fused_pre_enabled", False),
         ("arena_fused_pre", "fused_pre_clause_scans", 0),
+        ("arena_fused_pre", "fused_pre_dsu_merges", 0),
         ("arena_fused_pre", "source_checkout_sha", "b" * 40),
         ("arena_control", "fused_pre_clause_scans", 1),
         ("arena_control", "key_arena_enabled", False),
@@ -288,7 +293,7 @@ def main() -> None:
                 and all(status == "EXPORTED" for status in manifest.values()),
                 "ORIGINAL_MQT_SEVEN_SOURCE_EXPORTS_INCOMPLETE")
     report = {
-        "study": "Exact reversible source-clause bitmap admission vs bounded Arena",
+        "study": "Exact post-unit fused frequency and component DSU vs original Arena",
         "family": args.family, "arms": list(ARMS),
         "source_sha": {"quprs": QU_PRS_SHA, "gpmc": GPMC_SHA,
                        "checkout": checkout},

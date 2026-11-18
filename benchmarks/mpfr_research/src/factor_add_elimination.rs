@@ -41,6 +41,8 @@ enum Node {
     Terminal(Outcome),
     Branch { var: usize, low: usize, high: usize },
 }
+type TerminalKey = (bool, (rug::Integer, i32), (rug::Integer, i32));
+
 struct Factor {
     vars: Vec<usize>,
     root: usize,
@@ -51,6 +53,7 @@ struct Diagram {
     limits: Limits,
     nodes: Vec<Node>,
     terminals: Vec<usize>,
+    terminal_index: HashMap<TerminalKey, usize>,
     unique: HashMap<(usize, usize, usize), usize>,
     apply_cache: HashMap<(u8, usize, usize), usize>,
     abstract_cache: HashMap<(usize, usize), usize>,
@@ -60,6 +63,7 @@ impl Diagram {
     fn new(bits: u32, limits: Limits) -> Self {
         Self {
             bits, limits, nodes: Vec::new(), terminals: Vec::new(),
+            terminal_index: HashMap::new(),
             unique: HashMap::new(), apply_cache: HashMap::new(),
             abstract_cache: HashMap::new(), stats: AddStats::default(),
         }
@@ -73,15 +77,22 @@ impl Diagram {
         None
     }
 
-    // Collision-safe, checked numerical equality; no rounded decimal hashing.
+    // Exact MPFR finite representation: integer mantissa * 2^exponent.
+    // Hashing cannot silently merge SAT-but-zero with UNSAT or rounded values.
     fn terminal(&mut self, value: Outcome) -> Option<usize> {
-        for &id in &self.terminals {
-            if let Node::Terminal(previous) = &self.nodes[id] {
-                if previous.sat == value.sat
+        let Some(real) = value.count.re.to_integer_exp() else {
+            return self.cap("add_nonfinite_real");
+        };
+        let Some(imag) = value.count.im.to_integer_exp() else {
+            return self.cap("add_nonfinite_imag");
+        };
+        let key = (value.sat, real, imag);
+        if let Some(&id) = self.terminal_index.get(&key) {
+            match &self.nodes[id] {
+                Node::Terminal(previous) if previous.sat == value.sat
                     && previous.count.re == value.count.re
-                    && previous.count.im == value.count.im {
-                    return Some(id);
-                }
+                    && previous.count.im == value.count.im => return Some(id),
+                _ => return self.cap("add_terminal_key_invariant"),
             }
         }
         if self.terminals.len() >= self.limits.terminals {
@@ -93,6 +104,7 @@ impl Diagram {
         let id = self.nodes.len();
         self.nodes.push(Node::Terminal(value));
         self.terminals.push(id);
+        self.terminal_index.insert(key, id);
         Some(id)
     }
 
@@ -319,7 +331,22 @@ impl Diagram {
 
 pub(crate) fn count(p: &Problem, scope: &[usize], bits: u32)
     -> (Option<Outcome>, AddStats) {
-    count_with_limits(p, scope, bits, Limits::default())
+    // Explicit research-only controlled budget sweep; no production solver
+    // and no dense Factor-VE width/cell limits are modified.
+    let mult = match std::env::var("RAWMOCS_ADD_RESEARCH_CAP_MULTIPLIER").ok().as_deref() {
+        None | Some("1") => 1,
+        Some("2") => 2,
+        Some("4") => 4,
+        _ => return (None, AddStats {
+            capped: true, reason: "add_invalid_budget", ..AddStats::default()
+        }),
+    };
+    let mut limits = Limits::default();
+    limits.nodes *= mult;
+    limits.terminals *= mult;
+    limits.apply_calls *= mult;
+    limits.cache_entries *= mult;
+    count_with_limits(p, scope, bits, limits)
 }
 
 fn count_with_limits(p: &Problem, scope: &[usize], bits: u32, limits: Limits)
@@ -402,6 +429,23 @@ c p weight 1 1 0 0\nc p weight -1 -1 0 0\n2 0\n");
 c p weight 6 -0.5 0.5 0\nc p weight -6 0.25 -0.25 0\n\
 1 1 2 0\n-1 -1 3 0\n4 -5 0\n-4 6 0\n2 -2 0\n");
     }
+
+    #[test]
+    fn terminal_index_preserves_exact_binary_mpfr_and_sat_channel() {
+        for bits in [100, 333] {
+            let mut diagram = Diagram::new(bits, Limits::default());
+            let a = Outcome { sat: true, count: C::decimal(bits, "0.1", "-0.2").unwrap() };
+            let first = diagram.terminal(a.clone()).unwrap();
+            assert_eq!(diagram.terminal(a).unwrap(), first);
+            let changed = Outcome { sat: true, count: C::decimal(bits, "0.1", "-0.20000001").unwrap() };
+            assert_ne!(diagram.terminal(changed).unwrap(), first);
+            let canceled = Outcome { sat: true, count: C::zero(bits) };
+            let impossible = Outcome::unsat(bits);
+            assert_ne!(diagram.terminal(canceled).unwrap(),
+                       diagram.terminal(impossible).unwrap());
+        }
+    }
+
     #[test]
     fn rejected_diagram_does_not_change_original_fallback_count() {
         let p = parse_emitted(

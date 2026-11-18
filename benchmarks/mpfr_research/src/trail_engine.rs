@@ -100,6 +100,11 @@ pub(crate) struct TrailEngine<'a> {
     // Exact opt-in reuse of transient flat literals + clause views only.
     // Cache-owned canonical PackedKey remains independently allocated.
     pub(crate) use_reusable_key_arena: bool,
+    // Research-only O(1) membership using the exact current scope stamp
+    // installed by prepare_weighted_scope immediately before key creation.
+    // This never changes variable ordering or signed MPFR weight classes.
+    pub(crate) use_scope_stamp_admission: bool,
+    pub(crate) scope_stamp_probes: u64,
     key_arena_flat: Vec<i32>,
     key_arena_views: Vec<ResidualKeyView>,
     pub(crate) key_arena_calls: u64,
@@ -221,6 +226,8 @@ impl<'a> TrailEngine<'a> {
             use_scoped_component_dsu: false,
             use_ordered_key_fastpath: false,
             use_reusable_key_arena: false,
+            use_scope_stamp_admission: false,
+            scope_stamp_probes: 0,
             key_arena_flat: Vec::new(),
             key_arena_views: Vec::new(),
             key_arena_calls: 0,
@@ -432,7 +439,22 @@ impl<'a> TrailEngine<'a> {
                     let variable = lit.unsigned_abs() as usize;
                     if self.assigned[variable] == 0 {
                         if first_unassigned {
-                            if scope.binary_search(&variable).is_err() {
+                            let in_scope = if inline_weight_relabel
+                                && self.use_scope_stamp_admission
+                            {
+                                self.scope_stamp_probes += 1;
+                                let stamped =
+                                    self.local_generation[variable] == self.local_epoch;
+                                debug_assert_eq!(
+                                    stamped,
+                                    scope.binary_search(&variable).is_ok(),
+                                    "exact scope stamp must equal source-sorted membership"
+                                );
+                                stamped
+                            } else {
+                                scope.binary_search(&variable).is_ok()
+                            };
+                            if !in_scope {
                                 return true;
                             }
                             first_unassigned = false;
@@ -2997,4 +3019,55 @@ c p weight 1 1 0 0\nc p weight -1 -1 0 0\n\
             }
         }
     }
+
+    #[test]
+    fn exact_scope_stamp_matches_binary_search_under_weighted_trail() {
+        let sources = [
+            "p cnf 4 4\nc t wmc\nc p weight 1 0.5 0.25 0\nc p weight -1 -0.25 0.125 0\n1 4 0\n2 3 0\n-1 2 0\n-2 -3 0\n",
+            "p cnf 3 2\nc t wmc\n1 0\n-1 0\n",
+            "p cnf 3 2\nc t wmc\nc p weight 1 0 0 0\nc p weight -1 0 0 0\n1 2 0\n-2 3 0\n",
+            "p cnf 4 3\nc t wmc\nc p weight 3 -0.125 0.25 0\nc p weight -3 0.5 -0.25 0\n1 2 0\n-1 3 0\n2 4 0\n",
+        ];
+        let mut observed = 0_u64;
+        for bits in [100_u32, 333] {
+            for source in sources {
+                let p = parse_emitted(source, bits).unwrap();
+                for capacity in [0_usize, 1, 128] {
+                    let run = |stamped: bool| {
+                        let mut t = TrailEngine::new(&p, bits, capacity, 100_000);
+                        t.use_parent_ids = true;
+                        t.use_compact_residual = true;
+                        t.use_prehashed_cache = true;
+                        t.use_fused_compact = true;
+                        t.use_weight_class_cache = true;
+                        t.use_inline_weight_relabel = true;
+                        t.use_reusable_key_arena = true;
+                        t.use_scope_stamp_admission = stamped;
+                        let result = t.count((1..=p.n).collect(), 0).unwrap();
+                        (result, t)
+                    };
+                    let (baseline, a) = run(false);
+                    let (candidate, b) = run(true);
+                    assert_eq!(
+                        (baseline.sat, &baseline.count.re, &baseline.count.im),
+                        (candidate.sat, &candidate.count.re, &candidate.count.im)
+                    );
+                    assert_eq!(
+                        (a.stats.nodes, a.stats.cache_hits, a.stats.decompositions),
+                        (b.stats.nodes, b.stats.cache_hits, b.stats.decompositions)
+                    );
+                    assert_eq!(a.scope_stamp_probes, 0);
+                    assert!(b.scope_stamp_probes > 0);
+                    assert_eq!(a.key_arena_calls, b.key_arena_calls);
+                    assert_eq!(a.key_arena_flat_reuses, b.key_arena_flat_reuses);
+                    assert_eq!(a.key_arena_view_reuses, b.key_arena_view_reuses);
+                    assert!(b.trail.is_empty());
+                    assert!(b.assigned.iter().all(|&value| value == 0));
+                    observed += b.scope_stamp_probes;
+                }
+            }
+        }
+        assert!(observed > 0);
+    }
+
 }

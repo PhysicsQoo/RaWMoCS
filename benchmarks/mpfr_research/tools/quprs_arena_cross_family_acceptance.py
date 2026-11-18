@@ -219,7 +219,14 @@ def audit_family(report: dict, kind: str) -> tuple[list[dict], list[dict]]:
                       and status["gpmc"] == "COMPLETED"
                       and all(status[arm].startswith("CENSORED_") for arm in ARMS[1:]),
                       f"ORIGINAL_GROVER_NEGATIVE_CONTROL_DRIFT:{bits}")
-                negatives.append({"case": name, "bits": bits, "status": status})
+                negative_sha = {r.get("source_checkout_sha") for r in c["records"]}
+                check(len(negative_sha) == 1
+                      and is_checkout_sha(next(iter(negative_sha))),
+                      f"ORIGINAL_GROVER_REVISION_PROVENANCE_MISSING:{bits}")
+                negatives.append({
+                    "case": name, "bits": bits, "status": status,
+                    "source_checkout_sha": next(iter(negative_sha)),
+                })
                 continue
             check(c["status"] == (
                 "MATCHED" if kind == "feynman"
@@ -239,6 +246,8 @@ def audit(feynman: dict, mqt: dict) -> dict:
     revisions = {r["source_checkout_sha"] for r in all_rows}
     check(len(revisions) == 1, "MIXED_FEYNMAN_MQT_CODE_REVISIONS")
     checkout_sha = next(iter(revisions))
+    check(all(r["source_checkout_sha"] == checkout_sha for r in negative),
+          "GROVER_NEGATIVE_AND_SUCCESS_CODE_REVISIONS_MISMATCH")
     hard = [next(x for x in all_rows
                  if (x["case"], x["bits"]) == pair) for pair in HARD]
     winner = all(x["meets_performance_gate"] for x in hard)

@@ -10,6 +10,9 @@ pub(crate) struct FillPlan {
     pub(crate) fill_edges: usize,
     pub(crate) candidate_evaluations: u64,
     pub(crate) capped: bool,
+    /// Variables of the first infeasible bucket on the same primal graph.
+    /// Structural witness for bounded conditioning research only.
+    pub(crate) first_over_bucket_vars: Vec<usize>,
 }
 
 /// Min-fill with an explicit feasible-width-first admission guard.
@@ -86,6 +89,10 @@ pub(crate) fn plan(
         result.max_bucket = result.max_bucket.max(bucket);
         if over {
             result.capped = true;
+            result.first_over_bucket_vars.push(var);
+            result.first_over_bucket_vars.extend(neighbors.iter().map(|&i| vars[i]));
+            result.first_over_bucket_vars.sort_unstable();
+            result.first_over_bucket_vars.dedup();
             return result;
         }
         for (k, &a) in neighbors.iter().enumerate() {

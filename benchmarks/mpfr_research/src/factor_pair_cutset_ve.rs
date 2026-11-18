@@ -5,7 +5,7 @@
 //! source-CNF cofactors using the existing dense complex Factor-VE.
 //! If any planner, wall-clock work gate, factor arithmetic, or branch fails,
 //! discard all partial data and run the original source Trail in the caller.
-use crate::{factor_minfill_order, factor_variable_elimination, C, Clause, Outcome, Problem};
+use crate::{factor_minfill_order, factor_pair_fastgraph::FastGraph, factor_variable_elimination, C, Clause, Outcome, Problem};
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -25,6 +25,8 @@ pub(crate) struct PairStats {
     pub(crate) capped: bool,
     pub(crate) reason: &'static str,
     pub(crate) root_bucket: usize,
+    pub(crate) fast_graph: bool,
+    pub(crate) graph_build_ns: u128,
     pub(crate) vertex_candidates: usize,
     pub(crate) pair_probes: usize,
     pub(crate) feasible_pairs: usize,
@@ -92,13 +94,23 @@ fn cofactor(clauses: &[Clause], x: usize, vx: bool, y: usize, vy: bool) -> Vec<C
 
 pub(crate) fn count(p: &Problem, scope: &[usize], bits: u32)
     -> (Option<Outcome>, PairStats) {
-    let mut stats = PairStats::default();
-    let answer = attempt(p, scope, bits, &mut stats);
+    count_with_graph(p, scope, bits, false)
+}
+
+pub(crate) fn count_fast(p: &Problem, scope: &[usize], bits: u32)
+    -> (Option<Outcome>, PairStats) {
+    count_with_graph(p, scope, bits, true)
+}
+
+fn count_with_graph(p: &Problem, scope: &[usize], bits: u32, fast: bool)
+    -> (Option<Outcome>, PairStats) {
+    let mut stats = PairStats { fast_graph: fast, ..PairStats::default() };
+    let answer = attempt(p, scope, bits, fast, &mut stats);
     (answer, stats)
 }
 
-fn attempt(p: &Problem, scope: &[usize], bits: u32, stats: &mut PairStats)
-    -> Option<Outcome> {
+fn attempt(p: &Problem, scope: &[usize], bits: u32, fast: bool,
+           stats: &mut PairStats) -> Option<Outcome> {
     if p.n == 0 || p.n > MAX_SOURCE_VARS || scope.len() < 3
         || scope.len() > MAX_SCOPE || p.clauses.len() > MAX_CLAUSES
         || p.weights.len() < p.n {
@@ -124,7 +136,21 @@ fn attempt(p: &Problem, scope: &[usize], bits: u32, stats: &mut PairStats)
     if root.max_bucket > MAX_ROOT_BUCKET { return reject(stats, "pair_root_too_wide"); }
 
     let begin = Instant::now();
-    let ranked = rank_candidates(&p.clauses, scope);
+    let graph_begin = Instant::now();
+    let fast_graph = if fast {
+        match FastGraph::build(&p.clauses, scope) {
+            Some(g) => Some(g),
+            None => return reject(stats, "pair_fast_graph_source"),
+        }
+    } else {
+        None
+    };
+    stats.graph_build_ns = graph_begin.elapsed().as_nanos();
+    let ranked = if let Some(graph) = &fast_graph {
+        graph.ranked(MAX_TOP_VERTICES)
+    } else {
+        rank_candidates(&p.clauses, scope)
+    };
     stats.vertex_candidates = ranked.len();
     let mut selected: Option<(usize, usize, Vec<usize>, usize)> = None;
 
@@ -141,8 +167,12 @@ fn attempt(p: &Problem, scope: &[usize], bits: u32, stats: &mut PairStats)
             // every possible conditioned cofactor graph. If it fits
             // width 11, it proves at least one safe elimination order
             // for all four conditioned branches without doing arithmetic.
-            let graph = deleted_graph_clauses(&p.clauses, x, y);
-            let plan = factor_minfill_order::plan(&graph, &remaining, MAX_BAG);
+            let plan = if let Some(graph) = &fast_graph {
+                graph.plan_deleted(x, y, MAX_BAG)
+            } else {
+                let clauses = deleted_graph_clauses(&p.clauses, x, y);
+                factor_minfill_order::plan(&clauses, &remaining, MAX_BAG)
+            };
             if !plan.capped {
                 stats.feasible_pairs += 1;
                 selected = Some((x, y, remaining, plan.max_bucket));

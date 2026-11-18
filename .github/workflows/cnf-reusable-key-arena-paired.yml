@@ -24,7 +24,9 @@ permissions:
 
 concurrency:
   group: same-cnf-reusable-key-arena-feynman-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: false
+  # Superseded research commits are not final-head evidence: avoid wasting
+  # long source-locked GPMC builds on obsolete PR checkout revisions.
+  cancel-in-progress: true
 
 jobs:
   paired-weighted-cnf:

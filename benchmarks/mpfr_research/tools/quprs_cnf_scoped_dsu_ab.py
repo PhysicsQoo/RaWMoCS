@@ -112,6 +112,9 @@ def sample(command: list[str], arm: str, digits: int) -> dict:
                 scoped_dsu = re.search(
                     r"^RESEARCH_MPFR_SCOPED_DSU enabled=(true|false) "
                     r"calls=(\d+) slots=(\d+)$", proc.stderr, re.M)
+                ordered = re.search(
+                    r"^RESEARCH_MPFR_ORDERED_KEY_FASTPATH enabled=(true|false) "
+                    r"probes=(\d+) hits=(\d+)$", proc.stderr, re.M)
                 component = re.search(
                     r"^RESEARCH_MPFR_COMPONENT_LOCAL_VE enabled=(true|false) "
                     r"attempts=(\d+) completed=(\d+) capped=(\d+) "
@@ -198,6 +201,9 @@ def sample(command: list[str], arm: str, digits: int) -> dict:
                            scoped_dsu_enabled=scoped_dsu.group(1) == "true",
                            scoped_dsu_calls=int(scoped_dsu.group(2)),
                            scoped_dsu_slots=int(scoped_dsu.group(3)),
+                           ordered_key_enabled=(ordered.group(1) == "true") if ordered else False,
+                           ordered_key_probes=int(ordered.group(2)) if ordered else 0,
+                           ordered_key_hits=int(ordered.group(3)) if ordered else 0,
                            precision_bits=fields[8])
                 stage = re.search(
                     r"^RESEARCH_MPFR_TRAIL_STAGE_PROFILE enabled=(true|false) "

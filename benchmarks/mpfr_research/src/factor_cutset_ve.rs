@@ -98,6 +98,8 @@ pub(crate) fn count(p: &Problem, scope: &[usize], bits: u32)
     (answer, stats)
 }
 
+type CutsetSelection = (usize, Vec<usize>, Vec<Clause>, Vec<Clause>, usize, usize);
+
 fn attempt(p: &Problem, scope: &[usize], bits: u32, stats: &mut CutsetStats)
     -> Option<Outcome> {
     if p.n == 0 || p.n > 4096 || scope.len() < 2 ||
@@ -131,7 +133,7 @@ fn attempt(p: &Problem, scope: &[usize], bits: u32, stats: &mut CutsetStats)
         return reject(stats, "cutset_root_width");
     }
 
-    let mut selected: Option<(usize, Vec<usize>, Vec<Clause>, Vec<Clause>, usize, usize)> = None;
+    let mut selected: Option<CutsetSelection> = None;
     for variable in rank_candidates(&p.clauses, scope) {
         stats.candidate_probes += 1;
         let remaining: Vec<usize> = scope.iter().copied().filter(|&v| v != variable).collect();
@@ -212,10 +214,10 @@ mod tests {
             }
             sat = true;
             let mut weighted = C::one(bits);
-            for v in 0..p.n {
+            for (v, weights) in p.weights.iter().enumerate().take(p.n) {
                 weighted = weighted.mul(if mask & (1 << v) != 0 {
-                    &p.weights[v].positive
-                } else { &p.weights[v].negative }, bits);
+                    &weights.positive
+                } else { &weights.negative }, bits);
             }
             total = total.add(&weighted, bits);
         }

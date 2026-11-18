@@ -3190,4 +3190,112 @@ c p weight 1 1 0 0\nc p weight -1 -1 0 0\n\
             }
         }
     }
+
+    #[test]
+    fn reversible_active_clause_bitmap_is_exact_across_multiword_undo() {
+        let mut source = "p cnf 70 70\nc t wmc\n".to_owned();
+        for variable in 1..=70 {
+            source.push_str(&format!("{variable} 0\n"));
+        }
+        for bits in [100_u32, 333] {
+            let p = parse_emitted(&source, bits).unwrap();
+            let mut control = TrailEngine::new(&p, bits, 128, 100_000);
+            let mut bitmap = TrailEngine::new(&p, bits, 128, 100_000);
+            control.use_reusable_key_arena = true;
+            bitmap.use_reusable_key_arena = true;
+            bitmap.enable_active_clause_bitmap();
+            assert_eq!(bitmap.active_clause_bits.as_ref().unwrap().len(), 2);
+            assert_eq!(bitmap.active_clause_bits.as_ref().unwrap()[1], 63);
+            let full = (1..=p.n).collect::<Vec<_>>();
+            let parents = (0..p.clauses.len()).rev().collect::<Vec<_>>();
+            for assignments in [vec![], vec![1], vec![1, 65], vec![-70]] {
+                let checkpoint = control.trail.len();
+                for &lit in &assignments {
+                    assert_eq!(control.apply(lit, None), bitmap.apply(lit, None));
+                }
+                for cid in 0..bitmap.clauses.len() {
+                    let present = bitmap.active_clause_bits.as_ref().unwrap()[cid / 64]
+                        & (1_u64 << (cid % 64))
+                        != 0;
+                    assert_eq!(present, bitmap.satisfied[cid] == 0);
+                }
+                for use_parents in [false, true] {
+                    control.use_parent_ids = use_parents;
+                    bitmap.use_parent_ids = use_parents;
+                    for scope in [&full[..], &[1, 2][..], &[65, 66, 67][..]] {
+                        let candidate_ids = use_parents.then_some(parents.as_slice());
+                        assert_eq!(
+                            control.canonical_compact(scope, candidate_ids, false),
+                            bitmap.canonical_compact(scope, candidate_ids, false)
+                        );
+                    }
+                }
+                control.undo(checkpoint);
+                bitmap.undo(checkpoint);
+                assert_eq!(
+                    control.canonical_compact(&full, None, false),
+                    bitmap.canonical_compact(&full, None, false)
+                );
+            }
+            assert!(bitmap.active_bitmap_key_visits > 0);
+            assert!(bitmap.trail.is_empty());
+            assert!(bitmap.assigned.iter().all(|&value| value == 0));
+        }
+    }
+
+    #[test]
+    fn active_clause_bitmap_preserves_exact_weighted_solve_and_topology() {
+        let sources = [
+            "p cnf 4 4\nc t wmc\nc p weight 1 0.5 0.25 0\nc p weight -1 -0.25 0.125 0\n1 4 0\n2 3 0\n-1 2 0\n-2 -3 0\n",
+            "p cnf 3 2\nc t wmc\n1 0\n-1 0\n",
+            "p cnf 4 3\nc t wmc\nc p weight 3 -0.125 0.25 0\nc p weight -3 0.5 -0.25 0\n1 2 0\n-1 3 0\n2 4 0\n",
+        ];
+        for bits in [100_u32, 333] {
+            for source in sources {
+                let p = parse_emitted(source, bits).unwrap();
+                for capacity in [0_usize, 1, 128] {
+                    let run = |use_bitmap: bool| {
+                        let mut t = TrailEngine::new(&p, bits, capacity, 100_000);
+                        t.use_parent_ids = true;
+                        t.use_compact_residual = true;
+                        t.use_prehashed_cache = true;
+                        t.use_fused_compact = true;
+                        t.use_weight_class_cache = true;
+                        t.use_inline_weight_relabel = true;
+                        t.use_reusable_key_arena = true;
+                        if use_bitmap {
+                            t.enable_active_clause_bitmap();
+                        }
+                        let answer = t.count((1..=p.n).collect(), 0).unwrap();
+                        (answer, t)
+                    };
+                    let (expected, base) = run(false);
+                    let (got, bitmap) = run(true);
+                    assert_eq!(
+                        (expected.sat, &expected.count.re, &expected.count.im),
+                        (got.sat, &got.count.re, &got.count.im)
+                    );
+                    assert_eq!(
+                        (base.stats.nodes, base.stats.cache_hits, base.stats.decompositions),
+                        (
+                            bitmap.stats.nodes,
+                            bitmap.stats.cache_hits,
+                            bitmap.stats.decompositions
+                        )
+                    );
+                    assert_eq!(base.active_bitmap_key_visits, 0);
+                    assert!(bitmap.active_bitmap_key_visits > 0);
+                    assert!(bitmap.trail.is_empty());
+                    assert!(bitmap.assigned.iter().all(|&value| value == 0));
+                    for cid in 0..bitmap.clauses.len() {
+                        let present = bitmap.active_clause_bits.as_ref().unwrap()[cid / 64]
+                            & (1_u64 << (cid % 64))
+                            != 0;
+                        assert_eq!(present, bitmap.satisfied[cid] == 0);
+                    }
+                }
+            }
+        }
+    }
+
 }

@@ -55,9 +55,11 @@ jobs:
             benchmarks/mpfr_research/tools/quprs_cnf_scoped_dsu_ab.py \
             benchmarks/mpfr_research/tools/quprs_cnf_trail_stage_profile.py \
             benchmarks/mpfr_research/tools/quprs_cnf_key_arena_ab.py \
-            benchmarks/mpfr_research/tools/quprs_mqt_key_arena_ab.py
+            benchmarks/mpfr_research/tools/quprs_mqt_key_arena_ab.py \
+            benchmarks/mpfr_research/tools/quprs_arena_cross_family_acceptance.py
           python3 benchmarks/mpfr_research/tools/quprs_cnf_key_arena_ab.py --self-test
           python3 benchmarks/mpfr_research/tools/quprs_mqt_key_arena_ab.py --self-test
+          python3 benchmarks/mpfr_research/tools/quprs_arena_cross_family_acceptance.py --self-test
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: .upstream/quprs/rust -> target

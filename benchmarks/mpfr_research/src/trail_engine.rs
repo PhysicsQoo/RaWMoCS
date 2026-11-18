@@ -540,9 +540,9 @@ impl<'a> TrailEngine<'a> {
             parent
                 .iter()
                 .filter(|&&cid| {
-                    active_words.as_ref().is_none_or(|words| {
-                        words[cid / 64] & (1_u64 << (cid % 64)) != 0
-                    })
+                    active_words
+                        .as_ref()
+                        .is_none_or(|words| words[cid / 64] & (1_u64 << (cid % 64)) != 0)
                 })
                 .all(|&cid| {
                     bitmap_visits += u64::from(active_words.is_some());
@@ -3276,7 +3276,11 @@ c p weight 1 1 0 0\nc p weight -1 -1 0 0\n\
                         (got.sat, &got.count.re, &got.count.im)
                     );
                     assert_eq!(
-                        (base.stats.nodes, base.stats.cache_hits, base.stats.decompositions),
+                        (
+                            base.stats.nodes,
+                            base.stats.cache_hits,
+                            base.stats.decompositions
+                        ),
                         (
                             bitmap.stats.nodes,
                             bitmap.stats.cache_hits,
@@ -3297,5 +3301,4 @@ c p weight 1 1 0 0\nc p weight -1 -1 0 0\n\
             }
         }
     }
-
 }

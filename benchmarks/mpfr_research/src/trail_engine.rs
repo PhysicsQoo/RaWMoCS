@@ -2885,8 +2885,16 @@ c p weight 1 1 0 0\nc p weight -1 -1 0 0\n\
                                 (control.sat, &control.count.re, &control.count.im)
                             );
                             assert_eq!(
-                                (arena.stats.nodes, arena.stats.cache_hits, arena.stats.decompositions),
-                                (base.stats.nodes, base.stats.cache_hits, base.stats.decompositions)
+                                (
+                                    arena.stats.nodes,
+                                    arena.stats.cache_hits,
+                                    arena.stats.decompositions
+                                ),
+                                (
+                                    base.stats.nodes,
+                                    base.stats.cache_hits,
+                                    base.stats.decompositions
+                                )
                             );
                             assert_eq!(
                                 (arena.ordered_key_probes, arena.ordered_key_hits),
@@ -2964,5 +2972,4 @@ c p weight 1 1 0 0\nc p weight -1 -1 0 0\n\
             }
         }
     }
-
 }

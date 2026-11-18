@@ -453,9 +453,9 @@ impl<'a> TrailEngine<'a> {
         // representative IDs can affect deterministic Trail search topology.
         let already_ordered = if self.use_ordered_key_fastpath && views.len() >= 2 {
             self.ordered_key_probes += 1;
-            let increasing = views.windows(2).all(|pair| {
-                flat[pair[0].start..pair[0].end] < flat[pair[1].start..pair[1].end]
-            });
+            let increasing = views
+                .windows(2)
+                .all(|pair| flat[pair[0].start..pair[0].end] < flat[pair[1].start..pair[1].end]);
             if increasing {
                 self.ordered_key_hits += 1;
             }
@@ -2586,7 +2586,10 @@ c p weight 1 1 0 0\nc p weight -1 -1 0 0\n\
                 baseline.canonical_compact(&scope, None, false),
                 optimized.canonical_compact(&scope, None, false)
             );
-            assert_eq!((optimized.ordered_key_probes, optimized.ordered_key_hits), (1, 1));
+            assert_eq!(
+                (optimized.ordered_key_probes, optimized.ordered_key_hits),
+                (1, 1)
+            );
             assert!(baseline.apply(-1, None));
             assert!(optimized.apply(-1, None));
             let reduced = vec![2, 3, 4];
@@ -2594,7 +2597,10 @@ c p weight 1 1 0 0\nc p weight -1 -1 0 0\n\
                 baseline.canonical_compact(&reduced, None, false),
                 optimized.canonical_compact(&reduced, None, false)
             );
-            assert_eq!((optimized.ordered_key_probes, optimized.ordered_key_hits), (2, 1));
+            assert_eq!(
+                (optimized.ordered_key_probes, optimized.ordered_key_hits),
+                (2, 1)
+            );
 
             let d = parse_emitted(duplicate_source, bits).unwrap();
             let mut original = TrailEngine::new(&d, bits, 128, 100_000);
@@ -2610,7 +2616,10 @@ c p weight 1 1 0 0\nc p weight -1 -1 0 0\n\
                 original.canonical_compact(&[2], None, false),
                 shortcut.canonical_compact(&[2], None, false)
             );
-            assert_eq!((shortcut.ordered_key_probes, shortcut.ordered_key_hits), (1, 0));
+            assert_eq!(
+                (shortcut.ordered_key_probes, shortcut.ordered_key_hits),
+                (1, 0)
+            );
             assert_eq!(original.trail.len(), shortcut.trail.len());
         }
     }
@@ -2667,15 +2676,24 @@ c p weight 1 1 0 0\nc p weight -1 -1 0 0\n\
                     };
                     let (control, baseline) = run(false);
                     let (result, fast) = run(true);
-                    assert_eq!((result.sat, &result.count.re, &result.count.im),
-                               (control.sat, &control.count.re, &control.count.im));
+                    assert_eq!(
+                        (result.sat, &result.count.re, &result.count.im),
+                        (control.sat, &control.count.re, &control.count.im)
+                    );
                     assert_eq!(result.sat, expected_sat);
                     assert_eq!(result.count.re, expected_count.re);
                     assert_eq!(result.count.im, expected_count.im);
                     assert_eq!(
-                        (fast.stats.nodes, fast.stats.cache_hits, fast.stats.decompositions),
-                        (baseline.stats.nodes, baseline.stats.cache_hits,
-                         baseline.stats.decompositions)
+                        (
+                            fast.stats.nodes,
+                            fast.stats.cache_hits,
+                            fast.stats.decompositions
+                        ),
+                        (
+                            baseline.stats.nodes,
+                            baseline.stats.cache_hits,
+                            baseline.stats.decompositions
+                        )
                     );
                     assert_eq!(baseline.ordered_key_probes, 0);
                     assert_eq!(baseline.ordered_key_hits, 0);
@@ -2690,5 +2708,4 @@ c p weight 1 1 0 0\nc p weight -1 -1 0 0\n\
         assert!(total_probes > 0);
         assert!(total_hits > 0);
     }
-
 }

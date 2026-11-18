@@ -25,6 +25,7 @@ mod factor_variable_elimination;
 mod factor_add_elimination;
 mod factor_boolean_bdd;
 mod factor_cutset_ve;
+mod factor_pair_cutset_ve;
 mod factor_minfill_order;
 mod factor_primal_minor_bound;
 
@@ -936,6 +937,10 @@ fn run() -> Result<(), String> {
     let cache_first = if bdd_reverse_minfill {
         args.next().ok_or("missing mode after --factor-bdd-reverse-minfill")?
     } else { cache_first };
+    let factor_pair_cutset = cache_first.to_str() == Some("--factor-pair-cutset-ve");
+    let cache_first = if factor_pair_cutset {
+        args.next().ok_or("missing mode after --factor-pair-cutset-ve")?
+    } else { cache_first };
     let factor_cutset = cache_first.to_str() == Some("--factor-cutset-ve");
     let cache_first = if factor_cutset {
         args.next().ok_or("missing mode after --factor-cutset-ve")?
@@ -1014,6 +1019,12 @@ fn run() -> Result<(), String> {
     }
     if bdd_reverse_minfill && !factor_boolean_bdd {
         return Err("--factor-bdd-reverse-minfill requires --factor-boolean-bdd".into());
+    }
+    if factor_pair_cutset && (!weighted_equivalence || !trail_count || factor_ve
+        || factor_add || factor_boolean_bdd || factor_cutset || residual_factor_ve
+        || root_failed_literal || post_unit_cache || articulation_pivot
+        || primal_order || unit_closure_pivot) {
+        return Err("--factor-pair-cutset-ve requires weighted-equivalence + trail-count without other root transformations".into());
     }
     if factor_cutset && (!weighted_equivalence || !trail_count || factor_ve
         || factor_add || factor_boolean_bdd || residual_factor_ve || root_failed_literal
@@ -1107,6 +1118,14 @@ fn run() -> Result<(), String> {
     };
     let add_ns = add_start.elapsed().as_nanos();
     let add_completed = add_candidate.is_some();
+    let pair_start = Instant::now();
+    let (pair_candidate, pair_stats) = if factor_pair_cutset {
+        factor_pair_cutset_ve::count(source, &scope, bits)
+    } else {
+        (None, factor_pair_cutset_ve::PairStats::default())
+    };
+    let pair_ns = pair_start.elapsed().as_nanos();
+    let pair_completed = pair_candidate.is_some();
     let cutset_start = Instant::now();
     let (cutset_candidate, cutset_stats) = if factor_cutset {
         factor_cutset_ve::count(source, &scope, bits)
@@ -1156,7 +1175,7 @@ fn run() -> Result<(), String> {
     engine.indexed_activation_node = indexed_activation_node;
     let mut residual_ve_metrics = (0_u64, 0_u64, 0_u64, 0_u64, 0_usize);
     let (answer, solver_stats, trail_profile, primal_scans, primal_overrides) =
-        if let Some(answer) = cutset_candidate.or(bdd_candidate).or(add_candidate).or(ve_candidate) {
+        if let Some(answer) = pair_candidate.or(cutset_candidate).or(bdd_candidate).or(add_candidate).or(ve_candidate) {
             // A complete factor-semiring count has NO DPLL nodes.
             // Report VE product count separately instead of pretending
             // zero Shannon nodes is a direct DPLL-node improvement.
@@ -1227,6 +1246,14 @@ fn run() -> Result<(), String> {
         add_stats.nodes, add_stats.terminals, add_stats.apply_calls,
         add_stats.apply_hits, add_stats.abstractions, add_stats.factors,
         add_stats.eliminated, add_stats.max_bucket, add_ns);
+    eprintln!("RESEARCH_MPFR_PAIR_CUTSET enabled={} completed={} eligible={} capped={} reason={} root_bucket={} vertex_candidates={} pair_probes={} feasible_pairs={} x={} y={} graph_upper_bucket={} branch_width={} branches_completed={} products={} planning_ns={} pair_ns={}",
+        factor_pair_cutset, pair_completed, pair_stats.eligible, pair_stats.capped,
+        if pair_stats.reason.is_empty() { "none" } else { pair_stats.reason },
+        pair_stats.root_bucket, pair_stats.vertex_candidates,
+        pair_stats.pair_probes, pair_stats.feasible_pairs,
+        pair_stats.x, pair_stats.y, pair_stats.graph_upper_bucket,
+        pair_stats.branch_width, pair_stats.branches_completed,
+        pair_stats.products, pair_stats.planning_ns, pair_ns);
     eprintln!("RESEARCH_MPFR_CUTSET_VE enabled={} completed={} eligible={} capped={} reason={} root_bucket={} candidate_probes={} feasible_candidates={} selected_variable={} lower_bucket={} upper_bucket={} branches_completed={} products={} scope={} clauses={} cutset_ns={}",
         factor_cutset, cutset_completed, cutset_stats.eligible, cutset_stats.capped,
         if cutset_stats.reason.is_empty() { "none" } else { cutset_stats.reason },

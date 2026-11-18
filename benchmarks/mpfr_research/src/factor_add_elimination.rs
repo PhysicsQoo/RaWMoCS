@@ -371,17 +371,17 @@ mod tests {
         for mask in 0..(1_usize << p.n) {
             if !p.clauses.iter().all(|clause| clause.iter().any(|&lit| {
                 let v = lit.unsigned_abs() as usize - 1;
-                ((((mask >> v) & 1) == 1) == (lit > 0))
+                (((mask >> v) & 1) == 1) == (lit > 0)
             })) {
                 continue;
             }
             sat = true;
             let mut product = C::one(bits);
-            for v in 0..p.n {
+            for (v, weights) in p.weights.iter().enumerate().take(p.n) {
                 let w = if ((mask >> v) & 1) == 1 {
-                    &p.weights[v].positive
+                    &weights.positive
                 } else {
-                    &p.weights[v].negative
+                    &weights.negative
                 };
                 product = product.mul(w, bits);
             }

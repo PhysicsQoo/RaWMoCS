@@ -68,11 +68,72 @@ def statistics_for(rows: list[dict], arm: str) -> dict:
     return result
 
 
+
+def validate_stage(row: dict, arm: str) -> None:
+    """Fail closed on disabled clocks, overlapping clocks and invalid solver time."""
+    enabled = arm.endswith("_profile")
+    if row.get("stage_enabled") != enabled:
+        raise ValueError(f"STAGE_ENABLEMENT_DRIFT: {arm}")
+    if enabled:
+        stage_values = [row[f"stage_{stage}_ns"] for stage in STAGES]
+        solver_ns = row["solver_ns"]
+        stage_sum = sum(stage_values)
+        if stage_values[0] <= 0 or min(stage_values) < 0 or solver_ns <= 0 or stage_sum > solver_ns:
+            raise ValueError(f"INVALID_OR_OVERLAPPING_STAGE_MEASUREMENT: {arm}")
+        row["stage_sum_ns"] = stage_sum
+        row["unattributed_solver_ns"] = solver_ns - stage_sum
+        row["stage_coverage_fraction"] = stage_sum / solver_ns
+    elif any(row.get(f"stage_{stage}_ns", 0) for stage in STAGES):
+        raise ValueError(f"DISABLED_STAGE_TIMER_HAS_COST: {arm}")
+
+
+def self_test() -> None:
+    good = {
+        "arm": "inline_profile", "wall_ns": 140, "peak_rss_kib": 12,
+        "solver_ns": 100, "stage_enabled": True, "stage_key_ns": 20,
+        "stage_lookup_ns": 10, "stage_unit_ns": 10,
+        "stage_frequency_ns": 5, "stage_components_ns": 5,
+    }
+    validate_stage(good, "inline_profile")
+    assert good["stage_sum_ns"] == 50
+    assert good["unattributed_solver_ns"] == 50
+    assert good["stage_coverage_fraction"] == .5
+    stats = statistics_for([good], "inline_profile")
+    assert stats["p50_instrumented_stage_sum_ms"] == .00005
+    assert stats["p50_unattributed_solver_ms"] == .00005
+    for invalid in (
+        {**good, "stage_enabled": False},
+        {**good, "stage_key_ns": 101},
+        {**good, "solver_ns": 0},
+        {**good, "stage_unit_ns": -1},
+    ):
+        try:
+            validate_stage(invalid, "inline_profile")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("invalid profiled stage evidence passed")
+    try:
+        validate_stage({**good, "stage_enabled": False, "stage_key_ns": 1}, "inline_full")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("disabled profiler accepted nonzero clock")
+    validate_stage({"stage_enabled": False, "stage_key_ns": 0}, "inline_full")
+    print("STAGE_PROFILE_ORACLE_SELF_TEST_PASS", flush=True)
+
 def main() -> None:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--self-test", action="store_true")
     for name in ("quprs", "gpmc-source", "corpus", "gpmc", "mpfr", "report"):
-        ap.add_argument("--" + name, type=Path, required=True)
+        ap.add_argument("--" + name, type=Path)
     args = ap.parse_args()
+    if args.self_test:
+        self_test()
+        return
+    for name in ("quprs", "gpmc_source", "corpus", "gpmc", "mpfr", "report"):
+        if getattr(args, name) is None:
+            ap.error(f"missing --{name.replace('_', '-')}")
     if source_head(args.quprs) != QU_PRS_SHA or source_head(args.gpmc_source) != GPMC_SHA:
         raise SystemExit("PINNED_SOURCE_REVISION_DRIFT")
     args.report.parent.mkdir(parents=True, exist_ok=True)
@@ -136,19 +197,10 @@ def main() -> None:
                         raise SystemExit(f"SIGNED_COMPLEX_WMC_DRIFT: {case} {bits} {trial} {arm}")
                     if (row["nodes"], row["cache_hits"], row["decompositions"]) != expected_topology:
                         raise SystemExit(f"SEARCH_TOPOLOGY_DRIFT: {case} {bits} {trial} {arm}")
-                    if row.get("stage_enabled") != arm.endswith("_profile"):
-                        raise SystemExit(f"STAGE_ENABLEMENT_DRIFT: {arm}")
-                    if arm.endswith("_profile"):
-                        stage_sum = sum(row[f"stage_{stage}_ns"] for stage in STAGES)
-                        if row["stage_key_ns"] <= 0 or any(
-                            row[f"stage_{stage}_ns"] < 0 for stage in STAGES
-                        ) or row["solver_ns"] <= 0 or stage_sum > row["solver_ns"]:
-                            raise SystemExit(f"INVALID_OR_OVERLAPPING_STAGE_MEASUREMENT: {arm}")
-                        row["stage_sum_ns"] = stage_sum
-                        row["unattributed_solver_ns"] = row["solver_ns"] - stage_sum
-                        row["stage_coverage_fraction"] = stage_sum / row["solver_ns"]
-                    elif any(row.get(f"stage_{stage}_ns", 0) for stage in STAGES):
-                        raise SystemExit(f"DISABLED_STAGE_TIMER_HAS_COST: {arm}")
+                    try:
+                        validate_stage(row, arm)
+                    except (KeyError, ValueError, TypeError) as exc:
+                        raise SystemExit(str(exc)) from exc)
                 if group["scoped_profile"]["scoped_dsu_slots"] > group["inline_profile"]["scoped_dsu_slots"]:
                     raise SystemExit("SCOPED_DSU_SLOT_REGRESSION")
             cohort["status"] = "MATCHED"

@@ -2048,6 +2048,91 @@ mod tests {
     }
 
     #[test]
+    fn component_local_ve_matches_independent_signed_complex_enumeration() {
+        // Component A is an 8-cycle; component B is an unrelated edge.
+        // A 10-variable brute-force assignment oracle has no solver cache,
+        // AND/OR decomposition routine, or factor elimination.
+        let source = "p cnf 10 9\nc t wmc\n\
+c p weight 1 0.5 0.25 0\nc p weight -1 -0.25 -0.5 0\n\
+c p weight 8 -0.125 0.5 0\nc p weight -8 0.25 -0.25 0\n\
+c p weight 9 -0.5 0.125 0\nc p weight -9 0.25 -0.5 0\n\
+1 2 0\n2 3 0\n3 4 0\n4 5 0\n5 6 0\n6 7 0\n7 8 0\n8 1 0\n9 10 0\n";
+        for bits in [100_u32, 333] {
+            let p = parse_emitted(source, bits).unwrap();
+            let scope: Vec<usize> = (1..=p.n).collect();
+            let mut sat = false;
+            let mut sum = C::zero(bits);
+            for assignment in 0..(1_usize << p.n) {
+                let accepted = p.clauses.iter().all(|clause| clause.iter().any(|&lit| {
+                    let index = lit.unsigned_abs() as usize - 1;
+                    ((assignment & (1 << index) != 0) == (lit > 0))
+                }));
+                if !accepted { continue; }
+                sat = true;
+                let mut product = C::one(bits);
+                for var in 0..p.n {
+                    product = product.mul(if assignment & (1 << var) != 0 {
+                        &p.weights[var].positive
+                    } else { &p.weights[var].negative }, bits);
+                }
+                sum = sum.add(&product, bits);
+            }
+            for cache_limit in [0_usize, 1, 128] {
+                let mut old = TrailEngine::new(&p, bits, cache_limit, 100_000);
+                old.use_parent_ids = true;
+                old.use_compact_residual = true;
+                old.use_prehashed_cache = true;
+                old.use_fused_compact = true;
+                old.use_weight_class_cache = true;
+                old.use_inline_weight_relabel = true;
+                let expected = old.count(scope.clone(), 0).unwrap();
+
+                let mut candidate = TrailEngine::new(&p, bits, cache_limit, 100_000);
+                candidate.use_parent_ids = true;
+                candidate.use_compact_residual = true;
+                candidate.use_prehashed_cache = true;
+                candidate.use_fused_compact = true;
+                candidate.use_weight_class_cache = true;
+                candidate.use_inline_weight_relabel = true;
+                candidate.use_component_local_ve = true;
+                let got = candidate.count(scope.clone(), 0).unwrap();
+                assert_eq!(got.sat, sat);
+                assert_eq!(got.count.re, sum.re);
+                assert_eq!(got.count.im, sum.im);
+                assert_eq!(got.sat, expected.sat);
+                assert_eq!(got.count.re, expected.count.re);
+                assert_eq!(got.count.im, expected.count.im);
+                assert!(candidate.component_ve_attempts >= 1);
+                assert!(candidate.component_ve_completed >= 1);
+                assert!(candidate.component_ve_attempts <= 8);
+                assert!(candidate.component_ve_scans > 0);
+                assert_eq!(candidate.assigned.iter().filter(|&&v| v != 0).count(), 0);
+                assert!(candidate.trail.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn component_local_ve_is_skipped_for_connected_formula() {
+        // Admission is exclusively at an existing exact AND/OR split.
+        let source = "p cnf 10 10\nc t wmc\n\
+1 2 0\n2 3 0\n3 4 0\n4 5 0\n5 6 0\n6 7 0\n7 8 0\n8 9 0\n9 10 0\n10 1 0\n";
+        for bits in [100_u32, 333] {
+            let p = parse_emitted(source, bits).unwrap();
+            let mut baseline = TrailEngine::new(&p, bits, 128, 100_000);
+            let old = baseline.count((1..=p.n).collect(), 0).unwrap();
+            let mut candidate = TrailEngine::new(&p, bits, 128, 100_000);
+            candidate.use_component_local_ve = true;
+            let got = candidate.count((1..=p.n).collect(), 0).unwrap();
+            assert_eq!(old.sat, got.sat);
+            assert_eq!(old.count.re, got.count.re);
+            assert_eq!(old.count.im, got.count.im);
+            assert!(candidate.component_ve_attempts <= 8);
+            assert!(candidate.assigned.iter().all(|&v| v == 0));
+        }
+    }
+
+    #[test]
     fn bounded_post_unit_factor_ve_preserves_signed_complex_wmc() {
         // Exact Boolean SAT must remain separate from cancellations to zero.
         let cases = [

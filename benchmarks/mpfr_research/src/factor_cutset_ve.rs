@@ -141,19 +141,10 @@ fn attempt(p: &Problem, scope: &[usize], bits: u32, stats: &mut CutsetStats)
         let hi = factor_minfill_order::plan(&positive, &remaining, DENSE_MAX_BAG);
         if !lo.capped && !hi.capped {
             stats.feasible_candidates += 1;
-            let score = (
-                lo.max_bucket.max(hi.max_bucket),
-                lo.fill_edges + hi.fill_edges,
-                variable,
-            );
-            if selected.as_ref().is_none_or(|(old, _, _, _, low_bucket, high_bucket)| {
-                score < (low_bucket.max(high_bucket), usize::MAX, *old)
-            }) {
-                selected = Some((
-                    variable, remaining, negative, positive,
-                    lo.max_bucket, hi.max_bucket,
-                ));
-            }
+            selected = Some((
+                variable, remaining, negative, positive,
+                lo.max_bucket, hi.max_bucket,
+            ));
             // A verified single-variable cutset suffices. The first admissible
             // high-degree variable avoids costly per-candidate dense attempts.
             break;

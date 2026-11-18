@@ -938,6 +938,10 @@ fn run() -> Result<(), String> {
     let cache_first = if bdd_reverse_minfill {
         args.next().ok_or("missing mode after --factor-bdd-reverse-minfill")?
     } else { cache_first };
+    let pair_polarity_graph = cache_first.to_str() == Some("--factor-pair-polarity-graph");
+    let cache_first = if pair_polarity_graph {
+        args.next().ok_or("missing mode after --factor-pair-polarity-graph")?
+    } else { cache_first };
     let pair_fast_graph = cache_first.to_str() == Some("--factor-pair-fastgraph");
     let cache_first = if pair_fast_graph {
         args.next().ok_or("missing mode after --factor-pair-fastgraph")?
@@ -1024,6 +1028,9 @@ fn run() -> Result<(), String> {
     }
     if bdd_reverse_minfill && !factor_boolean_bdd {
         return Err("--factor-bdd-reverse-minfill requires --factor-boolean-bdd".into());
+    }
+    if pair_polarity_graph && (!pair_fast_graph || !factor_pair_cutset) {
+        return Err("--factor-pair-polarity-graph requires --factor-pair-fastgraph and --factor-pair-cutset-ve".into());
     }
     if pair_fast_graph && !factor_pair_cutset {
         return Err("--factor-pair-fastgraph requires --factor-pair-cutset-ve".into());
@@ -1128,7 +1135,9 @@ fn run() -> Result<(), String> {
     let add_completed = add_candidate.is_some();
     let pair_start = Instant::now();
     let (pair_candidate, pair_stats) = if factor_pair_cutset {
-        if pair_fast_graph {
+        if pair_polarity_graph {
+            factor_pair_cutset_ve::count_polarity(source, &scope, bits)
+        } else if pair_fast_graph {
             factor_pair_cutset_ve::count_fast(source, &scope, bits)
         } else {
             factor_pair_cutset_ve::count(source, &scope, bits)
@@ -1260,6 +1269,9 @@ fn run() -> Result<(), String> {
         add_stats.eliminated, add_stats.max_bucket, add_ns);
     eprintln!("RESEARCH_MPFR_PAIR_GRAPH_PLANNER fast={} graph_build_ns={}",
         pair_fast_graph, pair_stats.graph_build_ns);
+    eprintln!("RESEARCH_MPFR_PAIR_POLARITY enabled={} cofactor_graphs={} feasible_pairs={}",
+        pair_polarity_graph, pair_stats.cofactor_graphs_probed,
+        pair_stats.polarity_feasible_pairs);
     eprintln!("RESEARCH_MPFR_PAIR_CUTSET enabled={} completed={} eligible={} capped={} reason={} root_bucket={} vertex_candidates={} pair_probes={} feasible_pairs={} x={} y={} graph_upper_bucket={} branch_width={} branches_completed={} products={} planning_ns={} pair_ns={}",
         factor_pair_cutset, pair_completed, pair_stats.eligible, pair_stats.capped,
         if pair_stats.reason.is_empty() { "none" } else { pair_stats.reason },

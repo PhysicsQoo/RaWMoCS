@@ -74,6 +74,15 @@ pub(crate) struct TrailEngine<'a> {
     // try bounded dense signed-complex WMC on small *whole components*.
     // Other components stay on original Trail and exact component cache.
     pub(crate) use_component_local_ve: bool,
+    // Research-only source-exact compact DSU over still-live variables.
+    // Unlike the existing n+1 DSU, untouched/assigned source vars are
+    // not initialized in every recursive component traversal.
+    pub(crate) use_scoped_component_dsu: bool,
+    pub(crate) component_dsu_calls: u64,
+    pub(crate) component_dsu_slots: u64,
+    scoped_component_index: Vec<usize>,
+    scoped_component_stamp: Vec<u64>,
+    scoped_component_epoch: u64,
     pub(crate) component_ve_attempts: u64,
     pub(crate) component_ve_completed: u64,
     pub(crate) component_ve_capped: u64,
@@ -167,6 +176,12 @@ impl<'a> TrailEngine<'a> {
             use_articulation_pivot: false,
             use_residual_factor_ve: false,
             use_component_local_ve: false,
+            use_scoped_component_dsu: false,
+            component_dsu_calls: 0,
+            component_dsu_slots: 0,
+            scoped_component_index: vec![0; problem.n + 1],
+            scoped_component_stamp: vec![0; problem.n + 1],
+            scoped_component_epoch: 0,
             component_ve_attempts: 0,
             component_ve_completed: 0,
             component_ve_capped: 0,
@@ -510,7 +525,53 @@ impl<'a> TrailEngine<'a> {
         result
     }
 
-    fn components(&self, ids: &[usize], active: &[usize]) -> Vec<Vec<usize>> {
+    fn components(&mut self, ids: &[usize], active: &[usize]) -> Vec<Vec<usize>> {
+        self.component_dsu_calls += 1;
+        if self.use_scoped_component_dsu {
+            self.component_dsu_slots += active.len() as u64;
+            self.scoped_component_epoch += 1;
+            let stamp = self.scoped_component_epoch;
+            for (i, &variable) in active.iter().enumerate() {
+                self.scoped_component_stamp[variable] = stamp;
+                self.scoped_component_index[variable] = i;
+            }
+            let mut parents: Vec<_> = (0..active.len()).collect();
+            for &cid in ids {
+                if self.satisfied[cid] != 0 { continue; }
+                let mut first = None;
+                for &lit in &self.clauses[cid] {
+                    let variable = lit.unsigned_abs() as usize;
+                    if self.assigned[variable] != 0 { continue; }
+                    // Every live literal in the current residual's canonical
+                    // clause set must belong to the provided active scope.
+                    // This invariant is already needed by the original DSU.
+                    if self.scoped_component_stamp[variable] != stamp {
+                        // Preserve original semantics on unexpected
+                        // out-of-scope literals; no heuristic result.
+                        return self.components_full(ids, active);
+                    }
+                    let local = self.scoped_component_index[variable];
+                    if let Some(previous) = first {
+                        let a = root(&mut parents, previous);
+                        let b = root(&mut parents, local);
+                        parents[b] = a;
+                    } else {
+                        first = Some(local);
+                    }
+                }
+            }
+            let mut groups: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+            for (i, &variable) in active.iter().enumerate() {
+                let representative = active[root(&mut parents, i)];
+                groups.entry(representative).or_default().push(variable);
+            }
+            return groups.into_values().collect();
+        }
+        self.component_dsu_slots += (self.problem.n + 1) as u64;
+        self.components_full(ids, active)
+    }
+
+    fn components_full(&self, ids: &[usize], active: &[usize]) -> Vec<Vec<usize>> {
         let mut parents: Vec<_> = (0..=self.problem.n).collect();
         for &cid in ids {
             if self.satisfied[cid] != 0 {

@@ -479,7 +479,7 @@ impl<'a> TrailEngine<'a> {
         let complete = if let Some(parent) = parent_ids.filter(|_| self.use_parent_ids) {
             parent.iter().all(|&cid| visit(cid))
         } else {
-            (0..self.clauses.len()).all(|cid| visit(cid))
+            (0..self.clauses.len()).all(&mut visit)
         };
         drop(visit);
         if !complete {

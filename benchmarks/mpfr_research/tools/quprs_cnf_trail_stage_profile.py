@@ -49,12 +49,21 @@ def statistics_for(rows: list[dict], arm: str) -> dict:
             stage: statistics.median(x[f"stage_{stage}_ns"] for x in arm_rows) / 1e6
             for stage in STAGES
         }
-        result["profiled_instrumentation_lower_bound_ms"] = sum(
-            result["stage_p50_ms"].values()
+        result["p50_instrumented_stage_sum_ms"] = statistics.median(
+            sum(x[f"stage_{stage}_ns"] for stage in STAGES) for x in arm_rows
+        ) / 1e6
+        result["p50_unattributed_solver_ms"] = statistics.median(
+            x["solver_ns"] - sum(x[f"stage_{stage}_ns"] for stage in STAGES)
+            for x in arm_rows
+        ) / 1e6
+        result["p50_stage_coverage_fraction"] = statistics.median(
+            sum(x[f"stage_{stage}_ns"] for stage in STAGES) / x["solver_ns"]
+            for x in arm_rows
         )
         result["caveat"] = (
-            "Stage clocks are opt-in and exclusive but do not cover all work. "
-            "They are observational lower bounds, not uninstrumented solver cost."
+            "Each stage timer is opt-in and exclusive. The per-trial stage sum "
+            "does not exhaust solve time, and its p50 need not equal the sum "
+            "of the independent stage p50 values."
         )
     return result
 
@@ -130,16 +139,34 @@ def main() -> None:
                     if row.get("stage_enabled") != arm.endswith("_profile"):
                         raise SystemExit(f"STAGE_ENABLEMENT_DRIFT: {arm}")
                     if arm.endswith("_profile"):
+                        stage_sum = sum(row[f"stage_{stage}_ns"] for stage in STAGES)
                         if row["stage_key_ns"] <= 0 or any(
                             row[f"stage_{stage}_ns"] < 0 for stage in STAGES
-                        ):
-                            raise SystemExit(f"INVALID_STAGE_MEASUREMENT: {arm}")
+                        ) or row["solver_ns"] <= 0 or stage_sum > row["solver_ns"]:
+                            raise SystemExit(f"INVALID_OR_OVERLAPPING_STAGE_MEASUREMENT: {arm}")
+                        row["stage_sum_ns"] = stage_sum
+                        row["unattributed_solver_ns"] = row["solver_ns"] - stage_sum
+                        row["stage_coverage_fraction"] = stage_sum / row["solver_ns"]
                     elif any(row.get(f"stage_{stage}_ns", 0) for stage in STAGES):
                         raise SystemExit(f"DISABLED_STAGE_TIMER_HAS_COST: {arm}")
                 if group["scoped_profile"]["scoped_dsu_slots"] > group["inline_profile"]["scoped_dsu_slots"]:
                     raise SystemExit("SCOPED_DSU_SLOT_REGRESSION")
             cohort["status"] = "MATCHED"
             cohort["stats"] = {arm: statistics_for(rows, arm) for arm in ARMS}
+            for profile_arm, control_arm in (
+                ("inline_profile", "inline_full"),
+                ("scoped_profile", "scoped_dsu"),
+            ):
+                differences = []
+                for trial in range(trials):
+                    matched_pairs = {e["arm"]: e for e in rows if e["trial"] == trial}
+                    differences.append(
+                        matched_pairs[profile_arm]["wall_ns"] -
+                        matched_pairs[control_arm]["wall_ns"]
+                    )
+                cohort["stats"][profile_arm]["p50_paired_profile_wall_overhead_ms"] = (
+                    statistics.median(differences) / 1e6
+                )
             matched += 1
             p = cohort["stats"]["inline_profile"]["stage_p50_ms"]
             print(f"STAGE_MATCH case={case} bits={bits} "

@@ -82,6 +82,12 @@ pub(crate) struct TrailEngine<'a> {
     // Unlike the existing n+1 DSU, untouched/assigned source vars are
     // not initialized in every recursive component traversal.
     pub(crate) use_scoped_component_dsu: bool,
+    // Research-only: bypass sort/dedup if original reduced clause spans
+    // are provably already strictly increasing. Duplicates/inversions
+    // always execute the exact original sort/dedup path.
+    pub(crate) use_ordered_key_fastpath: bool,
+    pub(crate) ordered_key_probes: u64,
+    pub(crate) ordered_key_hits: u64,
     // Disabled by default: stage timers measure opt-in instrumentation cost,
     // never a claim about the uninstrumented solver's stage distribution.
     pub(crate) stage_profile: bool,
@@ -189,6 +195,9 @@ impl<'a> TrailEngine<'a> {
             use_residual_factor_ve: false,
             use_component_local_ve: false,
             use_scoped_component_dsu: false,
+            use_ordered_key_fastpath: false,
+            ordered_key_probes: 0,
+            ordered_key_hits: 0,
             stage_profile: false,
             stage_key_ns: 0,
             stage_lookup_ns: 0,
@@ -349,7 +358,7 @@ impl<'a> TrailEngine<'a> {
     // materializes only one contiguous literal arena (never child CNFs),
     // sorting small immutable spans of that arena instead.
     fn canonical_compact(
-        &self,
+        &mut self,
         scope: &[usize],
         parent_ids: Option<&[usize]>,
         inline_weight_relabel: bool,
@@ -437,8 +446,27 @@ impl<'a> TrailEngine<'a> {
                 }
             }
         }
-        views.sort_unstable_by(|a, b| flat[a.start..a.end].cmp(&flat[b.start..b.end]));
-        views.dedup_by(|a, b| flat[a.start..a.end] == flat[b.start..b.end]);
+        // The parent residual is often already in exact lexicographic order.
+        // If every *adjacent* pair remains strictly increasing after source
+        // assignments, a complete sort and duplicate elimination is redundant.
+        // Equality must take the original path too: unstable-sort duplicate
+        // representative IDs can affect deterministic Trail search topology.
+        let already_ordered = if self.use_ordered_key_fastpath && views.len() >= 2 {
+            self.ordered_key_probes += 1;
+            let increasing = views.windows(2).all(|pair| {
+                flat[pair[0].start..pair[0].end] < flat[pair[1].start..pair[1].end]
+            });
+            if increasing {
+                self.ordered_key_hits += 1;
+            }
+            increasing
+        } else {
+            false
+        };
+        if !already_ordered {
+            views.sort_unstable_by(|a, b| flat[a.start..a.end].cmp(&flat[b.start..b.end]));
+            views.dedup_by(|a, b| flat[a.start..a.end] == flat[b.start..b.end]);
+        }
         let mut ids = Vec::with_capacity(views.len());
         let mut literals = Vec::with_capacity(flat.len() + views.len());
         for view in views {

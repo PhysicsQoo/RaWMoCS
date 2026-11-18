@@ -108,8 +108,15 @@ def check_grover_negative(rows: list[dict], checkout: str) -> None:
     trials = {r.get("trial") for r in rows}
     checked(trials == {0}, "GROVER_NEGATIVE_TRIAL_DRIFT")
     ref = next(r for r in rows if r["arm"] == "gpmc")
-    checked(ref["status"] == "COMPLETED" and ref["exit_code"] == 0,
-            "ORIGINAL_GPMC_GROVER_CONTROL_DID_NOT_COMPLETE")
+    # Grover is a deliberately censored negative control, not a qualified
+    # performance cohort. Original GPMC may itself exceed the unchanged 30s
+    # budget at the higher precision; do not erase its negative outcome.
+    gpmc_completed = ref["status"] == "COMPLETED" and ref["exit_code"] == 0
+    gpmc_timed_out = (
+        ref["status"] == "CENSORED_TIME" and ref.get("exit_code") == 124
+    ) or ref["status"] == "CENSORED_OUTER_TIMEOUT"
+    checked(gpmc_completed or gpmc_timed_out,
+            "ORIGINAL_GPMC_GROVER_CONTROL_INVALID_STATUS")
     for row in rows:
         checked(row.get("source_checkout_sha") == checkout,
                 "GROVER_NEGATIVE_CHECKOUT_DRIFT")
@@ -224,6 +231,19 @@ def self_test() -> None:
         for arm in ARMS
     ]
     check_grover_negative(negative, "a" * 40)
+    timed_gpmc = [dict(row) for row in negative]
+    timed_gpmc[0]["status"] = "CENSORED_TIME"
+    timed_gpmc[0]["exit_code"] = 124
+    check_grover_negative(timed_gpmc, "a" * 40)
+    broken_gpmc = [dict(row) for row in timed_gpmc]
+    broken_gpmc[0]["status"] = "CENSORED_EXIT"
+    broken_gpmc[0]["exit_code"] = 2
+    try:
+        check_grover_negative(broken_gpmc, "a" * 40)
+    except ValueError as ex:
+        assert "ORIGINAL_GPMC" in str(ex)
+    else:
+        raise AssertionError("undocumented original GPMC Grover failure accepted")
     negative[1]["stderr_tail"] = "resource exhausted"
     try:
         check_grover_negative(negative, "a" * 40)
@@ -341,7 +361,12 @@ def main() -> None:
                     break
             if case == "feynman_grover_5":
                 check_grover_negative(cohort["records"], checkout)
-                # Full, unchanged per-arm failures are archived, never a pass.
+                # Original GPMC completion may vary with precision and
+                # runner load. Preserve the actual independent status.
+                cohort["gpmc_native_status"] = next(
+                    row["status"] for row in cohort["records"]
+                    if row["arm"] == "gpmc"
+                )
                 cohort["status"] = "CENSORED_NODE_BUDGET_NEGATIVE"
                 negative += 1
                 save()

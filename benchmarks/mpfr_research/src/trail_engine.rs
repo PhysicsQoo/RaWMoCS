@@ -2741,4 +2741,63 @@ c p weight 1 1 0 0\nc p weight -1 -1 0 0\n\
         assert!(total_probes > 0);
         assert!(total_hits > 0);
     }
+
+    #[test]
+    fn key_subphase_profile_is_nested_and_preserves_ordered_shortcut_result() {
+        let sources = [
+            "p cnf 4 4\nc t wmc\nc p weight 1 0.5 0.25 0\nc p weight -1 -0.25 0.125 0\n1 4 0\n2 3 0\n-1 2 0\n-2 -3 0\n",
+            "p cnf 3 2\nc t wmc\n1 0\n-1 0\n",
+            "p cnf 3 2\nc t wmc\nc p weight 1 0 0 0\nc p weight -1 0 0 0\n1 2 0\n-2 3 0\n",
+        ];
+        for bits in [100_u32, 333] {
+            for source in sources {
+                let p = parse_emitted(source, bits).unwrap();
+                for capacity in [0_usize, 1, 128] {
+                    let run = |profile: bool| {
+                        let mut e = TrailEngine::new(&p, bits, capacity, 100_000);
+                        e.use_parent_ids = true;
+                        e.use_compact_residual = true;
+                        e.use_prehashed_cache = true;
+                        e.use_fused_compact = true;
+                        e.use_weight_class_cache = true;
+                        e.use_inline_weight_relabel = true;
+                        e.use_ordered_key_fastpath = true;
+                        e.stage_profile = profile;
+                        let result = e.count((1..=p.n).collect(), 0).unwrap();
+                        (result, e)
+                    };
+                    let (control, a) = run(false);
+                    let (profiled, b) = run(true);
+                    assert_eq!(
+                        (control.sat, &control.count.re, &control.count.im),
+                        (profiled.sat, &profiled.count.re, &profiled.count.im)
+                    );
+                    assert_eq!(
+                        (a.stats.nodes, a.stats.cache_hits, a.stats.decompositions),
+                        (b.stats.nodes, b.stats.cache_hits, b.stats.decompositions)
+                    );
+                    assert_eq!(
+                        (a.ordered_key_probes, a.ordered_key_hits),
+                        (b.ordered_key_probes, b.ordered_key_hits)
+                    );
+                    assert_eq!(
+                        (
+                            a.stage_key_materialize_ns,
+                            a.stage_key_order_ns,
+                            a.stage_key_pack_ns,
+                        ),
+                        (0, 0, 0)
+                    );
+                    let nested = b.stage_key_materialize_ns
+                        + b.stage_key_order_ns
+                        + b.stage_key_pack_ns;
+                    assert!(nested > 0);
+                    assert!(nested <= b.stage_key_ns);
+                    assert!(b.trail.is_empty());
+                    assert!(b.assigned.iter().all(|&x| x == 0));
+                }
+            }
+        }
+    }
+
 }

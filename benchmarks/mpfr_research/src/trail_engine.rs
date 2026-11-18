@@ -2570,4 +2570,125 @@ c p weight 1 1 0 0\nc p weight -1 -1 0 0\n\
             }
         }
     }
+    #[test]
+    fn ordered_residual_fastpath_is_exact_for_strict_and_fallback_views() {
+        let ordered_source = "p cnf 4 2\nc t wmc\n1 4 0\n2 3 0\n";
+        let duplicate_source = "p cnf 3 2\nc t wmc\n1 2 0\n2 3 0\n";
+        for bits in [100_u32, 333] {
+            let p = parse_emitted(ordered_source, bits).unwrap();
+            let mut baseline = TrailEngine::new(&p, bits, 128, 100_000);
+            let mut optimized = TrailEngine::new(&p, bits, 128, 100_000);
+            baseline.use_fused_compact = true;
+            optimized.use_fused_compact = true;
+            optimized.use_ordered_key_fastpath = true;
+            let scope = (1..=p.n).collect::<Vec<_>>();
+            assert_eq!(
+                baseline.canonical_compact(&scope, None, false),
+                optimized.canonical_compact(&scope, None, false)
+            );
+            assert_eq!((optimized.ordered_key_probes, optimized.ordered_key_hits), (1, 1));
+            assert!(baseline.apply(-1, None));
+            assert!(optimized.apply(-1, None));
+            let reduced = vec![2, 3, 4];
+            assert_eq!(
+                baseline.canonical_compact(&reduced, None, false),
+                optimized.canonical_compact(&reduced, None, false)
+            );
+            assert_eq!((optimized.ordered_key_probes, optimized.ordered_key_hits), (2, 1));
+
+            let d = parse_emitted(duplicate_source, bits).unwrap();
+            let mut original = TrailEngine::new(&d, bits, 128, 100_000);
+            let mut shortcut = TrailEngine::new(&d, bits, 128, 100_000);
+            original.use_fused_compact = true;
+            shortcut.use_fused_compact = true;
+            shortcut.use_ordered_key_fastpath = true;
+            for e in [&mut original, &mut shortcut] {
+                assert!(e.apply(-1, None));
+                assert!(e.apply(-3, None));
+            }
+            assert_eq!(
+                original.canonical_compact(&[2], None, false),
+                shortcut.canonical_compact(&[2], None, false)
+            );
+            assert_eq!((shortcut.ordered_key_probes, shortcut.ordered_key_hits), (1, 0));
+            assert_eq!(original.trail.len(), shortcut.trail.len());
+        }
+    }
+
+    #[test]
+    fn ordered_residual_fastpath_matches_independent_signed_complex_oracle() {
+        let fixtures = [
+            "p cnf 4 4\nc t wmc\nc p weight 1 0.5 0.25 0\nc p weight -1 -0.25 0.125 0\n1 4 0\n2 3 0\n-1 2 0\n-2 -3 0\n",
+            "p cnf 4 3\nc t wmc\nc p weight 3 -0.125 0.25 0\nc p weight -3 0.5 -0.25 0\n1 2 0\n-1 3 0\n2 4 0\n",
+            "p cnf 3 2\nc t wmc\n1 0\n-1 0\n",
+            "p cnf 3 2\nc t wmc\nc p weight 1 0 0 0\nc p weight -1 0 0 0\n1 2 0\n-2 3 0\n",
+        ];
+        let mut total_probes = 0_u64;
+        let mut total_hits = 0_u64;
+        for bits in [100_u32, 333] {
+            for source in fixtures {
+                let p = parse_emitted(source, bits).unwrap();
+                let mut expected_sat = false;
+                let mut expected_count = C::zero(bits);
+                for mask in 0..(1_usize << p.n) {
+                    let accepted = p.clauses.iter().all(|clause| {
+                        clause.iter().any(|&lit| {
+                            let index = lit.unsigned_abs() as usize - 1;
+                            (mask & (1 << index) != 0) == (lit > 0)
+                        })
+                    });
+                    if !accepted {
+                        continue;
+                    }
+                    expected_sat = true;
+                    let mut product = C::one(bits);
+                    for (variable, weight) in p.weights.iter().enumerate().take(p.n) {
+                        let factor = if mask & (1 << variable) != 0 {
+                            &weight.positive
+                        } else {
+                            &weight.negative
+                        };
+                        product = product.mul(factor, bits);
+                    }
+                    expected_count = expected_count.add(&product, bits);
+                }
+                for capacity in [0_usize, 1, 128] {
+                    let run = |fast: bool| {
+                        let mut e = TrailEngine::new(&p, bits, capacity, 100_000);
+                        e.use_parent_ids = true;
+                        e.use_compact_residual = true;
+                        e.use_prehashed_cache = true;
+                        e.use_fused_compact = true;
+                        e.use_weight_class_cache = true;
+                        e.use_inline_weight_relabel = true;
+                        e.use_ordered_key_fastpath = fast;
+                        let result = e.count((1..=p.n).collect(), 0).unwrap();
+                        (result, e)
+                    };
+                    let (control, baseline) = run(false);
+                    let (result, fast) = run(true);
+                    assert_eq!((result.sat, &result.count.re, &result.count.im),
+                               (control.sat, &control.count.re, &control.count.im));
+                    assert_eq!(result.sat, expected_sat);
+                    assert_eq!(result.count.re, expected_count.re);
+                    assert_eq!(result.count.im, expected_count.im);
+                    assert_eq!(
+                        (fast.stats.nodes, fast.stats.cache_hits, fast.stats.decompositions),
+                        (baseline.stats.nodes, baseline.stats.cache_hits,
+                         baseline.stats.decompositions)
+                    );
+                    assert_eq!(baseline.ordered_key_probes, 0);
+                    assert_eq!(baseline.ordered_key_hits, 0);
+                    assert!(fast.ordered_key_hits <= fast.ordered_key_probes);
+                    assert!(fast.trail.is_empty());
+                    assert!(fast.assigned.iter().all(|&v| v == 0));
+                    total_probes += fast.ordered_key_probes;
+                    total_hits += fast.ordered_key_hits;
+                }
+            }
+        }
+        assert!(total_probes > 0);
+        assert!(total_hits > 0);
+    }
+
 }

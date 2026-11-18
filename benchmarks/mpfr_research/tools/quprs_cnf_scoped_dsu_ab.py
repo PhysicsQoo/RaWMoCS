@@ -129,7 +129,7 @@ def sample(command: list[str], arm: str, digits: int) -> dict:
                     raise ValueError("residual VE arm flag mismatch")
                 if (component.group(1) == "true") != (arm == "component_local_ve"):
                     raise ValueError("component local VE arm flag mismatch")
-                if (scoped_dsu.group(1) == "true") != (arm == "scoped_dsu"):
+                if (scoped_dsu.group(1) == "true") != (arm in ("scoped_dsu", "scoped_profile")):
                     raise ValueError("scoped DSU arm flag mismatch")
                 fields = [int(v) for v in phase.groups()]
                 if fields[7] != digits or fields[8] != BITS[digits]:

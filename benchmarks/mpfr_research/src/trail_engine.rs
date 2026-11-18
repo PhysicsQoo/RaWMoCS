@@ -16,6 +16,17 @@ use std::collections::{BTreeMap, BinaryHeap};
 use std::hash::BuildHasher;
 use std::time::Instant;
 
+#[derive(Clone, Copy)]
+struct ResidualKeyView {
+    cid: usize,
+    start: usize,
+    end: usize,
+}
+
+// Bound retained capacity: no stale child CNF/MPFR state is retained.
+const KEY_ARENA_MAX_LITERALS: usize = 131_072;
+const KEY_ARENA_MAX_VIEWS: usize = 16_384;
+
 pub(crate) struct TrailEngine<'a> {
     problem: &'a Problem,
     bits: u32,
@@ -86,6 +97,14 @@ pub(crate) struct TrailEngine<'a> {
     // are provably already strictly increasing. Duplicates/inversions
     // always execute the exact original sort/dedup path.
     pub(crate) use_ordered_key_fastpath: bool,
+    // Exact opt-in reuse of transient flat literals + clause views only.
+    // Cache-owned canonical PackedKey remains independently allocated.
+    pub(crate) use_reusable_key_arena: bool,
+    key_arena_flat: Vec<i32>,
+    key_arena_views: Vec<ResidualKeyView>,
+    pub(crate) key_arena_calls: u64,
+    pub(crate) key_arena_flat_reuses: u64,
+    pub(crate) key_arena_view_reuses: u64,
     pub(crate) ordered_key_probes: u64,
     pub(crate) ordered_key_hits: u64,
     // Disabled by default: stage timers measure opt-in instrumentation cost,
@@ -201,6 +220,12 @@ impl<'a> TrailEngine<'a> {
             use_component_local_ve: false,
             use_scoped_component_dsu: false,
             use_ordered_key_fastpath: false,
+            use_reusable_key_arena: false,
+            key_arena_flat: Vec::new(),
+            key_arena_views: Vec::new(),
+            key_arena_calls: 0,
+            key_arena_flat_reuses: 0,
+            key_arena_view_reuses: 0,
             ordered_key_probes: 0,
             ordered_key_hits: 0,
             stage_profile: false,
@@ -371,15 +396,24 @@ impl<'a> TrailEngine<'a> {
         parent_ids: Option<&[usize]>,
         inline_weight_relabel: bool,
     ) -> Option<(Vec<usize>, Vec<i32>)> {
-        #[derive(Clone, Copy)]
-        struct View {
-            cid: usize,
-            start: usize,
-            end: usize,
-        }
         let materialize_started = self.stage_profile.then(Instant::now);
-        let mut flat = Vec::<i32>::new();
-        let mut views = Vec::<View>::new();
+        let mut flat = if self.use_reusable_key_arena {
+            self.key_arena_calls += 1;
+            let arena = std::mem::take(&mut self.key_arena_flat);
+            self.key_arena_flat_reuses += u64::from(arena.capacity() > 0);
+            arena
+        } else {
+            Vec::new()
+        };
+        let mut views = if self.use_reusable_key_arena {
+            let arena = std::mem::take(&mut self.key_arena_views);
+            self.key_arena_view_reuses += u64::from(arena.capacity() > 0);
+            arena
+        } else {
+            Vec::new()
+        };
+        flat.clear();
+        views.clear();
         let mut visit = |cid: usize| {
             if self.satisfied[cid] != 0 {
                 return true;
@@ -435,25 +469,31 @@ impl<'a> TrailEngine<'a> {
                 }
             }
             debug_assert_eq!(flat.len() - start, self.live[cid]);
-            views.push(View {
+            views.push(ResidualKeyView {
                 cid,
                 start,
                 end: flat.len(),
             });
             true
         };
-        if let Some(parent) = parent_ids.filter(|_| self.use_parent_ids) {
-            for &cid in parent {
-                if !visit(cid) {
-                    return None;
-                }
-            }
+        let complete = if let Some(parent) = parent_ids.filter(|_| self.use_parent_ids) {
+            parent.iter().all(|&cid| visit(cid))
         } else {
-            for cid in 0..self.clauses.len() {
-                if !visit(cid) {
-                    return None;
+            (0..self.clauses.len()).all(|cid| visit(cid))
+        };
+        drop(visit);
+        if !complete {
+            // A Boolean contradiction never becomes a numeric zero WMC
+            // certificate. Restore transient arena even on failed paths.
+            if self.use_reusable_key_arena {
+                if flat.capacity() <= KEY_ARENA_MAX_LITERALS {
+                    self.key_arena_flat = flat;
+                }
+                if views.capacity() <= KEY_ARENA_MAX_VIEWS {
+                    self.key_arena_views = views;
                 }
             }
+            return None;
         }
         if let Some(start) = materialize_started {
             self.stage_key_materialize_ns += start.elapsed().as_nanos();
@@ -493,6 +533,16 @@ impl<'a> TrailEngine<'a> {
         }
         if let Some(start) = pack_started {
             self.stage_key_pack_ns += start.elapsed().as_nanos();
+        }
+        if self.use_reusable_key_arena {
+            // Never retain an oversized branch arena across later DPLL nodes.
+            // All returned source clause IDs and signed literals are owned.
+            if flat.capacity() <= KEY_ARENA_MAX_LITERALS {
+                self.key_arena_flat = flat;
+            }
+            if views.capacity() <= KEY_ARENA_MAX_VIEWS {
+                self.key_arena_views = views;
+            }
         }
         Some((ids, literals))
     }

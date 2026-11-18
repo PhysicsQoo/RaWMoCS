@@ -1295,7 +1295,7 @@ fn run() -> Result<(), String> {
         add_stats.apply_hits, add_stats.abstractions, add_stats.factors,
         add_stats.eliminated, add_stats.max_bucket, add_ns);
     eprintln!("RESEARCH_MPFR_PAIR_GRAPH_PLANNER fast={} graph_build_ns={}",
-        pair_fast_graph, pair_stats.graph_build_ns);
+        pair_stats.fast_graph, pair_stats.graph_build_ns);
     eprintln!("RESEARCH_MPFR_PAIR_CUTSET enabled={} completed={} eligible={} capped={} reason={} root_bucket={} vertex_candidates={} pair_probes={} feasible_pairs={} x={} y={} graph_upper_bucket={} branch_width={} branches_completed={} products={} planning_ns={} pair_ns={}",
         factor_pair_cutset, pair_completed, pair_stats.eligible, pair_stats.capped,
         if pair_stats.reason.is_empty() { "none" } else { pair_stats.reason },

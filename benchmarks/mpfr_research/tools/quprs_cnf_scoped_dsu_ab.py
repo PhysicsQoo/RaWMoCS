@@ -199,6 +199,19 @@ def sample(command: list[str], arm: str, digits: int) -> dict:
                            scoped_dsu_calls=int(scoped_dsu.group(2)),
                            scoped_dsu_slots=int(scoped_dsu.group(3)),
                            precision_bits=fields[8])
+                stage = re.search(
+                    r"^RESEARCH_MPFR_TRAIL_STAGE_PROFILE enabled=(true|false) "
+                    r"key_ns=(\d+) lookup_ns=(\d+) unit_ns=(\d+) "
+                    r"frequency_ns=(\d+) components_ns=(\d+)$",
+                    proc.stderr, re.M,
+                )
+                if stage is not None:
+                    row.update(stage_enabled=stage.group(1) == "true",
+                               stage_key_ns=int(stage.group(2)),
+                               stage_lookup_ns=int(stage.group(3)),
+                               stage_unit_ns=int(stage.group(4)),
+                               stage_frequency_ns=int(stage.group(5)),
+                               stage_components_ns=int(stage.group(6)))
         except (OSError, ValueError) as exc:
             row["status"] = "CENSORED_INVALID_OUTPUT"
             row["error"] = str(exc)[:250]

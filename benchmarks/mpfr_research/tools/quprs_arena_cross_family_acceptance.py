@@ -13,7 +13,12 @@ from hashlib import sha256
 import json
 from pathlib import Path
 import statistics
+import sys
 
+# The original MQT numerical oracle scales both complex components
+# by the same full-complex magnitude, including cancellation cases.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "rust_core" / "tools"))
+from quprs_mqtbench_original_cnf_ab import complex_relative_witness
 from quprs_cnf_scoped_dsu_ab import numerically_agree, percentile
 
 ARMS = (
@@ -44,7 +49,7 @@ def is_sha(value: object) -> bool:
             and all(letter in "0123456789abcdef" for letter in value))
 
 
-def audit_trials(cohort: dict, case: str, bits: int) -> dict:
+def audit_trials(cohort: dict, case: str, bits: int, kind: str) -> dict:
     digits = {v: k for k, v in PRECISION.items()}[bits]
     rows = cohort["records"]
     check(len(rows) == 7 * len(ARMS), f"INCOMPLETE_NATIVE_TRIALS:{case}:{bits}")
@@ -76,15 +81,17 @@ def audit_trials(cohort: dict, case: str, bits: int) -> dict:
             r = by_trial[(trial, arm)]
             check(r["precision_bits"] == bits, f"PRECISION_DRIFT:{case}:{bits}:{arm}")
             check(r["sat"] == original["sat"], f"SAT_DRIFT:{case}:{bits}:{arm}")
-            check(
-                numerically_agree(
-                    Fraction(r["real"]), Fraction(original["real"]), digits,
+            numeric_agrees = (
+                complex_relative_witness(original, r, digits)["pass"]
+                if kind == "mqt" else (
+                    numerically_agree(
+                        Fraction(r["real"]), Fraction(original["real"]), digits,
+                    ) and numerically_agree(
+                        Fraction(r["imag"]), Fraction(original["imag"]), digits,
+                    )
                 )
-                and numerically_agree(
-                    Fraction(r["imag"]), Fraction(original["imag"]), digits,
-                ),
-                f"SIGNED_COMPLEX_DRIFT:{case}:{bits}:{arm}",
             )
+            check(numeric_agrees, f"SIGNED_COMPLEX_DRIFT:{case}:{bits}:{arm}")
             check(
                 r["stdout_sha256"] == inline["stdout_sha256"]
                 and (r["nodes"], r["cache_hits"], r["decompositions"]) == topology,
@@ -205,7 +212,7 @@ def audit_family(report: dict, kind: str) -> tuple[list[dict], list[dict]]:
                 "MATCHED" if kind == "feynman"
                 else "MATCHED_SOURCE_EXACT_CROSS_SOLVER"
             ), f"UNQUALIFIED_NATIVE_COHORT:{name}:{bits}")
-            accepted.append(audit_trials(c, name, bits))
+            accepted.append(audit_trials(c, name, bits, kind))
     return accepted, negatives
 
 
@@ -263,12 +270,12 @@ def self_test() -> None:
             "ordered_key_enabled": ordered,
         }
     rows = [fake_run(arm, trial) for trial in range(7) for arm in ARMS]
-    good = audit_trials({"records": rows}, "synthetic", 100)
+    good = audit_trials({"records": rows}, "synthetic", 100, "feynman")
     assert good["meets_performance_gate"] and good["paired_wins"] == 7
     damaged = [dict(row) for row in rows]
     damaged[3]["imag"] = "1/8"
     try:
-        audit_trials({"records": damaged}, "synthetic", 100)
+        audit_trials({"records": damaged}, "synthetic", 100, "feynman")
     except ValueError as ex:
         assert "SIGNED_COMPLEX_DRIFT" in str(ex)
     else:
@@ -277,7 +284,7 @@ def self_test() -> None:
     for row in damaged:
         if row["arm"] == "arena_reuse":
             row["wall_ns"] = 120_000_000
-    rejected = audit_trials({"records": damaged}, "synthetic", 100)
+    rejected = audit_trials({"records": damaged}, "synthetic", 100, "feynman")
     assert not rejected["meets_performance_gate"]
     print("EXACT_ARENA_CROSS_FAMILY_ACCEPTANCE_SELF_TEST_PASS")
 

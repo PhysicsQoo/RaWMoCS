@@ -281,3 +281,96 @@ without breaking numeric-comparison success. The original GPMC
 gap is shown separately; even passing this incremental
 screen would not authorize production routing or merging the
 entire long-lived stacked research branch.
+
+
+## Independent native bitmap No-Go and fused pre-unit analysis
+
+[Final-head Feynman native CI #44318897630](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/44318897630) and
+[independent MQT CI #44318897307](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/44318897307)
+both **PASS**: 111 Rust tests, all six ordinary Feynman cohorts and
+14 original MQT QASM×precision cohorts preserve SAT, original GPMC
+signed-complex real and imaginary WMC, same 100/333-bit Rust
+outputs and cache/branch/decomposition topology. All six platform
+Rust Science jobs and metadata hygiene also passed. Original Grover5
+C++ GPMC and Rust node-budget negative controls were preserved;
+no censored child was excluded from the original report.
+
+The predeclared **independent marginal performance screen
+Bitmap versus Arena-only** fails in all four hard cases,
+despite perfect arithmetic/search parity:
+
+| Original source | Precision | Arena p50 | Bitmap p50 | p50 incremental gain | p90 incremental gain | Paired wins |
+|---|---:|---:|---:|---:|---:|---:|
+| HWB6 | 100-bit | 589.830ms | 592.830ms | **−0.509%** | +0.479% | 2/7 |
+| HWB6 | 333-bit | 628.932ms | 633.598ms | **−0.742%** | **−0.844%** | 0/7 |
+| MQT QNN4 | 100-bit | 28.691ms | 28.727ms | **−0.125%** | **−0.855%** | 1/7 |
+| MQT QNN4 | 333-bit | 30.076ms | 30.249ms | **−0.574%** | +0.996% | 2/7 |
+
+HWB6 recorded median ~6,252,362 bitmap key visits and QNN4
+~363,311, without reducing full process WallTime.
+Retained [Feynman source evidence](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/44318897630/artifacts/14436055929) and [independent MQT evidence](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/44318897307/artifacts/14432504870)
+are exact original-corpus results, not an invented synthetic
+benchmark. **Decision: bitmap correctness PASS; incremental
+performance NO-GO**. The research-only switch remains disabled
+by default; original seven-arm Arena controls are unchanged.
+Stop both bitmap and Scope Stamp micro-optimization branches.
+
+### Next isolated hypothesis: fuse post-unit frequency and component DSU
+
+The original non-post-unit Trail path currently counts live-variable
+frequencies by scanning still-live source clauses *after Boolean
+unit propagation*, then scans substantially the same clauses again
+to build DSU-connected components. Unlike Scope Stamp or active
+clause bitmaps, this proposal eliminates a redundant source-literal
+traversal, while retaining each variable's old frequency score
+and the same canonical representative grouping.
+
+New opt-in \`--trail-fused-pre-analysis\` requires the existing
+exact bounded Arena-only research arm, excludes both prior
+No-Go Scope Stamp and Bitmap arms, and never changes the
+production solver. It initializes exact source-sized DSU parent IDs
+only for the experiment, then during each canonical original
+post-unit clause traversal:
+1. increments the original frequency counter for every still
+   unassigned signed literal;
+2. performs the exact source-ordered DSU union that the original
+   \`components_full\` would later perform, with identical root
+   compression and representative assignment.
+
+The candidate then reuses that completed parent vector when
+collecting the **same BTreeMap-sorted connected components**.
+Original cache key bytes, SAT, MPFR signed weights, free-variable
+sum-product contributions, unit propagation and Shannon pivot
+ranking remain unchanged. If all variables are eliminated,
+no component result is manufactured: the old empty-active result
+applies. With the optimization disabled, the old separate
+frequency and component scans remain the baseline.
+
+New Rust regressions verify exact signed Complex WMC, cache hits,
+DPLL nodes and decomposition topology at 100/333 bits, across
+cache limits 0/1/128, forced contradictions and disconnected
+weighted components. Native stdout emits
+\`RESEARCH_MPFR_FUSED_PRE_ANALYSIS enabled=... clause_scans=... dsu_merges=...\`;
+these counts demonstrate traversal, not speed.
+
+The **new incremental three-arm experiment** replaces the now
+concluded Bitmap three-arm CI step while preserving all unchanged
+original seven-arm Arena controls. It compares original unmodified
+C++ GPMC with original source CNF, Rust Arena-only and Rust Arena
++ fused post-unit analysis; seven order-rotated independent child
+processes/cohort, process-complete WallTime p50/p90, RSS,
+precisely paired GPMC decimal digits and Rust MPFR bits.
+It uses the exact same pinned QuPRS/MQT original sources,
+CNF/phase sidecars, original Grover5 censored controls,
+signed-complex numeric oracle and deterministic Rust
+output/cache/decomposition checks.
+
+The marginal **research-only Go screen** requires
+>=5% unprofiled full-process improvement **in both p50 and p90**
+on four original HWB6/QNN4×100/333-bit hard cohorts, >=5/7
+paired wins and <=5% median peak RSS growth, before considering
+further integration. Any failed cohort is No-Go.
+This is **not** a relaxation of the original Arena-versus-Inline
+>=10% p50 **and** p90 requirement, and not a claim of
+GPMC parity or production acceptance. Source-exact
+final-head CI for the fused variant remains outstanding.

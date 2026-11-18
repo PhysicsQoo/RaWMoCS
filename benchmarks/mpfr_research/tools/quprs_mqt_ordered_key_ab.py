@@ -98,15 +98,49 @@ def certify_trial(records: list[dict], trial: int, digits: int) -> None:
 
 def self_test() -> None:
     preflight()
-    try:
-        parse_manifest(Path("/definitely-nonexistent-manifest"))
-    except FileNotFoundError:
-        pass
-    else:
-        raise AssertionError("unexpected manifest path exists")
-    # A complete cohort can legitimately have zero strictly ordered
-    # hits; this is negative evidence, not an invalid solver result.
-    assert 0 <= 0 <= 0
+
+    def fake(arm: str) -> dict:
+        profiled = arm.endswith("_profile")
+        ordered = arm.startswith("ordered")
+        return {
+            "arm": arm, "trial": 0,
+            "sat": True, "real": "1/2", "imag": "-1/8",
+            "nodes": 10, "cache_hits": 2, "decompositions": 1,
+            "stdout_sha256": "unchanged-signed-complex-output",
+            "precision_bits": 100, "scoped_dsu_enabled": False,
+            "factor_ve_enabled": False,
+            "ordered_key_enabled": ordered,
+            "ordered_key_probes": 2 if ordered else 0,
+            "ordered_key_hits": 0,
+            "stage_enabled": profiled,
+            "stage_key_ns": 5 if profiled else 0,
+            "stage_lookup_ns": 2 if profiled else 0,
+            "stage_unit_ns": 2 if profiled else 0,
+            "stage_frequency_ns": 2 if profiled else 0,
+            "stage_components_ns": 2 if profiled else 0,
+            "solver_ns": 100,
+        }
+
+    baseline = [fake(arm) for arm in ARMS]
+    certify_trial(baseline, 0, 30)
+    for arm, field, bad in (
+        ("ordered_key", "imag", "1/8"),
+        ("ordered_key", "nodes", 11),
+        ("ordered_key", "ordered_key_enabled", False),
+        ("ordered_key", "ordered_key_hits", 3),
+        ("ordered_key", "precision_bits", 333),
+        ("ordered_profile", "stage_enabled", False),
+        ("ordered_profile", "stage_key_ns", 200),
+    ):
+        records = [dict(row) for row in baseline]
+        candidate = next(r for r in records if r["arm"] == arm)
+        candidate[field] = bad
+        try:
+            certify_trial(records, 0, 30)
+        except (KeyError, ValueError, TypeError):
+            pass
+        else:
+            raise AssertionError(f"invalid trial passed {arm} {field}")
     print("ORIGINAL_MQT_ORDERED_KEY_PREFLIGHT_PASS", flush=True)
 
 

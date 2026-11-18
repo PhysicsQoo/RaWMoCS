@@ -133,6 +133,10 @@ def sample(command: list[str], arm: str, digits: int) -> dict:
                     r"^RESEARCH_MPFR_SCOPE_STAMP_ADMISSION enabled=(true|false) "
                     r"probes=(\d+)$", proc.stderr, re.M,
                 )
+                active_bitmap = re.search(
+                    r"^RESEARCH_MPFR_ACTIVE_CLAUSE_BITMAP enabled=(true|false) "
+                    r"key_visits=(\d+)$", proc.stderr, re.M,
+                )
                 component = re.search(
                     r"^RESEARCH_MPFR_COMPONENT_LOCAL_VE enabled=(true|false) "
                     r"attempts=(\d+) completed=(\d+) capped=(\d+) "
@@ -228,6 +232,8 @@ def sample(command: list[str], arm: str, digits: int) -> dict:
                            key_arena_view_reuses=int(key_arena.group(4)) if key_arena else 0,
                            scope_stamp_enabled=(scope_stamp.group(1) == "true") if scope_stamp else False,
                            scope_stamp_probes=int(scope_stamp.group(2)) if scope_stamp else 0,
+                           active_bitmap_enabled=(active_bitmap.group(1) == "true") if active_bitmap else False,
+                           active_bitmap_key_visits=int(active_bitmap.group(2)) if active_bitmap else 0,
                            precision_bits=fields[8])
                 stage = re.search(
                     r"^RESEARCH_MPFR_TRAIL_STAGE_PROFILE enabled=(true|false) "

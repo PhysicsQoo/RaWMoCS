@@ -2126,15 +2126,15 @@ c p weight 9 -0.5 0.125 0\nc p weight -9 0.25 -0.5 0\n\
             for assignment in 0..(1_usize << p.n) {
                 let accepted = p.clauses.iter().all(|clause| clause.iter().any(|&lit| {
                     let index = lit.unsigned_abs() as usize - 1;
-                    ((assignment & (1 << index) != 0) == (lit > 0))
+                    (assignment & (1 << index) != 0) == (lit > 0)
                 }));
                 if !accepted { continue; }
                 sat = true;
                 let mut product = C::one(bits);
-                for var in 0..p.n {
+                for (var, weight) in p.weights.iter().enumerate().take(p.n) {
                     product = product.mul(if assignment & (1 << var) != 0 {
-                        &p.weights[var].positive
-                    } else { &p.weights[var].negative }, bits);
+                        &weight.positive
+                    } else { &weight.negative }, bits);
                 }
                 sum = sum.add(&product, bits);
             }

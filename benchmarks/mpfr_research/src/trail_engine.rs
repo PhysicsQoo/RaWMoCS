@@ -110,6 +110,12 @@ pub(crate) struct TrailEngine<'a> {
     // order, weight classes, or cache-key ownership. Opt-in only.
     active_clause_bits: Option<Vec<u64>>,
     pub(crate) active_bitmap_key_visits: u64,
+    // Research only: combine the existing post-unit frequency pass
+    // with the exact same DSU unions that components_full would do.
+    // Does not alter the weighted sum-product or branch selection.
+    pub(crate) use_fused_pre_analysis: bool,
+    pub(crate) fused_pre_clause_scans: u64,
+    pub(crate) fused_pre_dsu_merges: u64,
     key_arena_flat: Vec<i32>,
     key_arena_views: Vec<ResidualKeyView>,
     pub(crate) key_arena_calls: u64,
@@ -235,6 +241,9 @@ impl<'a> TrailEngine<'a> {
             scope_stamp_probes: 0,
             active_clause_bits: None,
             active_bitmap_key_visits: 0,
+            use_fused_pre_analysis: false,
+            fused_pre_clause_scans: 0,
+            fused_pre_dsu_merges: 0,
             key_arena_flat: Vec::new(),
             key_arena_views: Vec::new(),
             key_arena_calls: 0,
@@ -1046,13 +1055,33 @@ impl<'a> TrailEngine<'a> {
             frequency.resize(self.problem.n + 1, 0);
         }
         frequency.fill(0);
+        let mut fused_parents = self
+            .use_fused_pre_analysis
+            .then(|| (0..=self.problem.n).collect::<Vec<_>>());
         for &cid in &ids {
             if self.satisfied[cid] != 0 {
                 continue;
             }
+            if self.use_fused_pre_analysis {
+                self.fused_pre_clause_scans += 1;
+            }
+            let mut first = None;
             for &lit in &self.clauses[cid] {
-                if self.assigned[lit.unsigned_abs() as usize] == 0 {
-                    frequency[lit.unsigned_abs() as usize] += 1;
+                let var = lit.unsigned_abs() as usize;
+                if self.assigned[var] == 0 {
+                    frequency[var] += 1;
+                    if let Some(ref mut parents) = fused_parents {
+                        if let Some(first_var) = first {
+                            // Same exact union sequence as components_full,
+                            // including the original canonical clause order.
+                            let a = root(parents, first_var);
+                            let b = root(parents, var);
+                            parents[b] = a;
+                            self.fused_pre_dsu_merges += 1;
+                        } else {
+                            first = Some(var);
+                        }
+                    }
                 }
             }
         }
@@ -1084,7 +1113,17 @@ impl<'a> TrailEngine<'a> {
             ));
         }
         let components_started = self.stage_profile.then(Instant::now);
-        let pieces = self.components(&ids, &active);
+        let pieces = if let Some(mut parents) = fused_parents {
+            self.component_dsu_calls += 1;
+            self.component_dsu_slots += (self.problem.n + 1) as u64;
+            let mut groups = BTreeMap::<usize, Vec<usize>>::new();
+            for &var in &active {
+                groups.entry(root(&mut parents, var)).or_default().push(var);
+            }
+            groups.into_values().collect()
+        } else {
+            self.components(&ids, &active)
+        };
         if let Some(start) = components_started {
             self.stage_components_ns += start.elapsed().as_nanos();
         }
@@ -3300,5 +3339,53 @@ c p weight 1 1 0 0\nc p weight -1 -1 0 0\n\
                 }
             }
         }
+    }
+
+    #[test]
+    fn fused_pre_unit_frequency_dsu_matches_exact_separate_source_scans() {
+        let cases = [
+            "p cnf 7 5\nc t wmc\nc p weight 1 0.5 0.25 0\nc p weight -1 0.25 -0.125 0\n1 2 0\n-1 2 0\n3 4 0\n-3 4 0\n5 6 0\n",
+            "p cnf 4 4\nc t wmc\n1 2 0\n-1 3 0\n-3 4 0\n-4 -2 0\n",
+            "p cnf 3 2\nc t wmc\n1 0\n-1 0\n",
+        ];
+        let mut fused_scans = 0_u64;
+        for bits in [100_u32, 333] {
+            for src in cases {
+                let p = parse_emitted(src, bits).unwrap();
+                for capacity in [0_usize, 1, 128] {
+                    let run = |fused: bool| {
+                        let mut t = TrailEngine::new(&p, bits, capacity, 100_000);
+                        t.use_parent_ids = true;
+                        t.use_compact_residual = true;
+                        t.use_prehashed_cache = true;
+                        t.use_fused_compact = true;
+                        t.use_weight_class_cache = true;
+                        t.use_inline_weight_relabel = true;
+                        t.use_reusable_key_arena = true;
+                        t.use_fused_pre_analysis = fused;
+                        let value = t.count((1..=p.n).collect(), 0).unwrap();
+                        (value, t)
+                    };
+                    let (expected, a) = run(false);
+                    let (actual, b) = run(true);
+                    assert_eq!(
+                        (expected.sat, &expected.count.re, &expected.count.im),
+                        (actual.sat, &actual.count.re, &actual.count.im)
+                    );
+                    assert_eq!(
+                        (a.stats.nodes, a.stats.cache_hits, a.stats.decompositions),
+                        (b.stats.nodes, b.stats.cache_hits, b.stats.decompositions)
+                    );
+                    assert_eq!(a.fused_pre_clause_scans, 0);
+                    assert_eq!(a.fused_pre_dsu_merges, 0);
+                    assert_eq!(a.component_dsu_calls, b.component_dsu_calls);
+                    assert_eq!(a.component_dsu_slots, b.component_dsu_slots);
+                    assert!(b.trail.is_empty());
+                    assert!(b.assigned.iter().all(|&x| x == 0));
+                    fused_scans += b.fused_pre_clause_scans;
+                }
+            }
+        }
+        assert!(fused_scans > 0);
     }
 }

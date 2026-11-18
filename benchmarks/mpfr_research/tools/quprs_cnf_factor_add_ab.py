@@ -1,0 +1,264 @@
+#!/usr/bin/env python3
+"""Same original signed-complex Weighted CNF, source-locked ADD research pilot.
+All arithmetic, retries, resource censors and native process times are reported.
+"""
+from __future__ import annotations
+import argparse
+from fractions import Fraction
+from hashlib import sha256
+import json
+from pathlib import Path
+import re
+import statistics
+import subprocess
+import sys
+import tempfile
+import time
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "rust_core" / "tools"))
+from quprs_paired_native import parse_out
+from quprs_long_feynman_pilot import numerically_agree
+from quprs_cnf_projected_ab import SOURCE, BITS, QU_PRS_SHA, GPMC_SHA, sha, source_head, percentile
+
+ARMS = ("gpmc", "inline_full", "factor_ve_minfill320", "factor_add")
+BUDGET_S = 30
+AS_BYTES = 2_147_483_648
+FLAGS = (
+    "--weighted-equivalence", "--trail-count", "--trail-parent-ids",
+    "--trail-compact-residual", "--trail-prehashed-cache",
+    "--trail-fused-compact", "--trail-weight-class-cache",
+    "--trail-inline-weight-relabel",
+)
+ADD_RE = re.compile(
+    r"^RESEARCH_MPFR_FACTOR_ADD enabled=(true|false) completed=(true|false) "
+    r"eligible=(true|false) capped=(true|false) reason=([a-z_]+) "
+    r"nodes=(\d+) terminals=(\d+) apply_calls=(\d+) apply_hits=(\d+) "
+    r"abstractions=(\d+) factors=(\d+) eliminated=(\d+) "
+    r"max_bucket=(\d+) add_ns=(\d+)$", re.M)
+VE_RE = re.compile(
+    r"^RESEARCH_MPFR_FACTOR_VE enabled=(true|false) completed=(true|false) "
+    r"eligible=(true|false) capped=(true|false) "
+    r"input_factors=(\d+) eliminated=(\d+) width=(\d+) "
+    r"cells=(\d+) products=(\d+) zero_sat=(\d+) ve_ns=(\d+)$", re.M)
+PHASE_RE = re.compile(
+    r"^RESEARCH_MPFR_PHASE_NS read=(\d+) parse=(\d+) solve=(\d+) "
+    r"output=(\d+) nodes=(\d+) cache_hits=(\d+) decompositions=(\d+) "
+    r"digits=(\d+) bits=(\d+)$", re.M)
+
+
+def command(args, arm, digits, cnf, case):
+    if arm == "gpmc":
+        return [str(args.gpmc.resolve()), "-mode=1", f"-prec={digits}", str(cnf.resolve())]
+    cmd = [str(args.mpfr.resolve())]
+    if case in ("feynman_hwb6", "feynman_grover_5"):
+        cmd.append("--node-budget=1000000")
+    cmd.extend(("--cache-limit=50000", "--indexed-unit-prop-csr-after-8192",
+                "--packed-residual-key-fast", "--fast-assign",
+                "--reuse-frequency-scratch", *FLAGS))
+    if arm == "factor_ve_minfill320":
+        cmd.extend(("--factor-variable-elimination",
+                    "--factor-ve-scope-probe-320", "--factor-ve-minfill-order"))
+    if arm == "factor_add":
+        cmd.append("--factor-add-elimination")
+    cmd.extend(("--hashbrown-borrowed", str(digits), str(cnf.resolve())))
+    return cmd
+
+
+def sample(cmd, arm, digits):
+    with tempfile.TemporaryDirectory() as tmp:
+        rss_file = Path(tmp) / "maxrss"
+        timed = ["/usr/bin/timeout", "-k", "2s", f"{BUDGET_S}s",
+                 "prlimit", f"--as={AS_BYTES}", "--",
+                 "/usr/bin/time", "-f", "%M", "-o", str(rss_file), *cmd]
+        start = time.perf_counter_ns()
+        try:
+            proc = subprocess.run(timed, capture_output=True, text=True,
+                                  timeout=BUDGET_S + 7)
+        except subprocess.TimeoutExpired:
+            return {"arm": arm, "status": "CENSORED_OUTER_TIMEOUT"}
+        entry = {
+            "arm": arm, "wall_ns": time.perf_counter_ns() - start,
+            "exit_code": proc.returncode, "status": (
+                "COMPLETED" if proc.returncode == 0 else
+                "CENSORED_TIME" if proc.returncode == 124 else "CENSORED_EXIT"),
+        }
+        if proc.returncode:
+            entry["stderr_tail"] = proc.stderr[-1000:]
+            return entry
+        try:
+            sat, (real, imag) = parse_out(
+                proc.stdout, "gpmc" if arm == "gpmc" else "rawmocs_mpfr")
+            entry.update(
+                sat=sat, real=str(real), imag=str(imag),
+                peak_rss_kib=int(rss_file.read_text().strip()),
+                stdout_sha256=sha256(proc.stdout.encode()).hexdigest())
+            if arm != "gpmc":
+                a, ve, phase = (
+                    ADD_RE.search(proc.stderr), VE_RE.search(proc.stderr),
+                    PHASE_RE.search(proc.stderr))
+                if not a or not ve or not phase:
+                    raise ValueError("missing mandatory paired solver diagnostics")
+                if (a.group(1) == "true") != (arm == "factor_add"):
+                    raise ValueError("ADD mode mismatch")
+                if (ve.group(1) == "true") != (arm == "factor_ve_minfill320"):
+                    raise ValueError("Dense VE mode mismatch")
+                if int(phase.group(8)) != digits or int(phase.group(9)) != BITS[digits]:
+                    raise ValueError("effective MPFR precision mismatch")
+                entry.update(
+                    dpll_nodes=int(phase.group(5)),
+                    solver_ns=int(phase.group(3)),
+                    add_complete=a.group(2) == "true",
+                    add_eligible=a.group(3) == "true",
+                    add_capped=a.group(4) == "true",
+                    add_cap_reason=a.group(5),
+                    add_nodes=int(a.group(6)),
+                    add_terminals=int(a.group(7)),
+                    add_apply_calls=int(a.group(8)),
+                    add_apply_hits=int(a.group(9)),
+                    add_abstractions=int(a.group(10)),
+                    add_factors=int(a.group(11)),
+                    add_eliminated=int(a.group(12)),
+                    add_max_bucket=int(a.group(13)),
+                    add_ns=int(a.group(14)),
+                    dense_complete=ve.group(2) == "true",
+                    dense_width=int(ve.group(7)),
+                    dense_products=int(ve.group(9)),
+                )
+                if arm == "factor_add":
+                    if entry["add_complete"] == entry["add_capped"]:
+                        raise ValueError("ADD completed/capped classification inconsistent")
+                    if entry["add_complete"] and not entry["add_eligible"]:
+                        raise ValueError("ADD result without eligibility")
+                    if entry["add_nodes"] > 30000 or entry["add_terminals"] > 4096:
+                        raise ValueError("ADD hard resource limit exceeded")
+                else:
+                    if any((entry["add_complete"], entry["add_capped"],
+                            entry["add_nodes"], entry["add_apply_calls"])):
+                        raise ValueError("opt-out ADD path unexpectedly ran")
+        except (OSError, ValueError) as exc:
+            entry["status"] = "CENSORED_INVALID_OUTPUT"
+            entry["error"] = str(exc)[:300]
+        return entry
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    for name in ("quprs", "gpmc-source", "corpus", "gpmc", "mpfr", "report"):
+        ap.add_argument("--" + name, required=True, type=Path)
+    ap.add_argument("--trials", required=True, type=int)
+    args = ap.parse_args()
+    if args.trials != 7:
+        raise SystemExit("FULL_STUDY_REQUIRES_SEVEN_FRESH_ROTATED_PROCESSES")
+    if (source_head(args.quprs) != QU_PRS_SHA
+            or source_head(args.gpmc_source) != GPMC_SHA):
+        raise SystemExit("ORIGINAL_SOURCE_SHA_DRIFT")
+    report = {
+        "study": "original QuPRS Weighted CNF: signed-complex bounded ADD",
+        "source_lock": {"quprs": QU_PRS_SHA, "gpmc": GPMC_SHA},
+        "precision": "GPMC 30/100 decimal digits ↔ Rust 100/333 MPFR bits",
+        "budget": {"child_wall_seconds": BUDGET_S,
+                   "address_space_bytes": AS_BYTES,
+                   "rss": "measured, not the strict process memory limit"},
+        "arms": ARMS, "rows": [],
+    }
+    def write():
+        args.report.parent.mkdir(parents=True, exist_ok=True)
+        args.report.write_text(json.dumps(report, indent=2) + "\n")
+    qualified = 0
+    for case, source in SOURCE.items():
+        cnf, qasm = args.corpus / f"{case}-gpmc.cnf", args.quprs / source
+        if not cnf.is_file() or not qasm.is_file() or not cnf.read_bytes().startswith(b"p cnf "):
+            raise SystemExit("MISSING_ORIGINAL_WEIGHTED_CNF_SOURCE")
+        row = {
+            "case": case, "qasm_sha256": sha(qasm),
+            "cnf_sha256": sha(cnf), "cnf_bytes": cnf.stat().st_size,
+            "precisions": [],
+        }
+        report["rows"].append(row)
+        for digits, bits in BITS.items():
+            # Grover5 remains one costly negative at 100 bits; no hidden 333-bit claim.
+            if case == "feynman_grover_5" and digits != 30:
+                continue
+            trials = 1 if case == "feynman_grover_5" else args.trials
+            cohort = {"digits": digits, "bits": bits, "status": "INCOMPLETE", "records": []}
+            row["precisions"].append(cohort)
+            for trial in range(trials):
+                ordered = ARMS[trial % len(ARMS):] + ARMS[:trial % len(ARMS)]
+                for arm in ordered:
+                    entry = sample(command(args, arm, digits, cnf, case), arm, digits)
+                    entry["trial"] = trial
+                    cohort["records"].append(entry)
+                    write()
+                    print(f"ADD_PILOT case={case} bits={bits} trial={trial} arm={arm} "
+                          f"status={entry['status']} add_complete={entry.get('add_complete','NA')}",
+                          flush=True)
+            completed = [e for e in cohort["records"] if e["status"] == "COMPLETED"]
+            if len(completed) != len(ARMS) * trials:
+                cohort["status"] = "CENSORED_ARMS"
+                write()
+                if case == "feynman_grover_5":
+                    continue
+                raise SystemExit("CENSORED_REQUIRED_ORIGINAL_COHORT")
+            for trial in range(trials):
+                selected = {e["arm"]: e for e in completed if e["trial"] == trial}
+                if len(selected) != len(ARMS):
+                    raise SystemExit("UNBALANCED_FRESH_PROCESSES")
+                original = selected["gpmc"]
+                for arm in ARMS[1:]:
+                    current = selected[arm]
+                    if current["sat"] != original["sat"] or not (
+                        numerically_agree(Fraction(current["real"]),
+                                          Fraction(original["real"]), digits)
+                        and numerically_agree(Fraction(current["imag"]),
+                                              Fraction(original["imag"]), digits)
+                    ):
+                        cohort["status"] = "FAILED_SIGNED_COMPLEX_WMC"
+                        cohort["failed_arm"] = arm
+                        cohort["trial"] = trial
+                        write()
+                        raise SystemExit("FAILED_SAT_OR_SIGNED_COMPLEX_WMC")
+                add = selected["factor_add"]
+                inline = selected["inline_full"]
+                if not add["add_complete"] and add["add_capped"]:
+                    if add["dpll_nodes"] != inline["dpll_nodes"]:
+                        cohort["status"] = "FALLBACK_TOPOLOGY_DRIFT"
+                        write()
+                        raise SystemExit("FALLBACK_TOPOLOGY_DRIFT")
+            cohort["status"] = "MATCHED"
+            cohort["stats"] = {
+                arm: {
+                    "p50_wall_ms": statistics.median(
+                        e["wall_ns"] for e in completed if e["arm"] == arm) / 1e6,
+                    "p90_wall_ms": percentile(
+                        [e["wall_ns"] for e in completed if e["arm"] == arm], 0.9) / 1e6,
+                    "p50_rss_kib": statistics.median(
+                        e["peak_rss_kib"] for e in completed if e["arm"] == arm),
+                    "add_completed": all(
+                        e.get("add_complete", False) for e in completed if e["arm"] == arm)
+                    if arm == "factor_add" else None,
+                    "add_capped_reasons": sorted({
+                        e.get("add_cap_reason", "none")
+                        for e in completed if e["arm"] == arm
+                    }) if arm == "factor_add" else None,
+                    "p50_add_nodes": statistics.median(
+                        [e["add_nodes"] for e in completed if e["arm"] == arm]
+                    ) if arm == "factor_add" else None,
+                } for arm in ARMS
+            }
+            qualified += 1
+            write()
+            print("ADD_MATCH " + f"case={case} bits={bits} " +
+                  " ".join(f"{arm}_ms={cohort['stats'][arm]['p50_wall_ms']:.3f}"
+                           for arm in ARMS) +
+                  f" add_complete={cohort['stats']['factor_add']['add_completed']}"
+                  f" cap={cohort['stats']['factor_add']['add_capped_reasons']}", flush=True)
+    report["qualified_cohorts"] = qualified
+    report["status"] = "QUALIFIED_WITH_CENSORS" if qualified == 6 else "INCOMPLETE"
+    write()
+    if qualified != 6:
+        raise SystemExit("INCOMPLETE_SIX_ORIGINAL_FYENMAN_COHORTS")
+    print(f"ADD_PILOT_FINISHED qualified={qualified}", flush=True)
+
+
+if __name__ == "__main__":
+    main()

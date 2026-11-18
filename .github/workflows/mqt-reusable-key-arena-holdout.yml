@@ -10,6 +10,7 @@ on:
       - "benchmarks/mpfr_research/tools/quprs_cnf_key_arena_ab.py"
       - "benchmarks/mpfr_research/tools/quprs_scope_stamp_paired.py"
       - "benchmarks/mpfr_research/tools/quprs_active_bitmap_paired.py"
+      - "benchmarks/mpfr_research/tools/quprs_fused_pre_paired.py"
       - "benchmarks/mpfr_research/tools/quprs_cnf_scoped_dsu_ab.py"
       - "benchmarks/mpfr_research/tools/quprs_cnf_scoped_dsu_ab.py"
       - "benchmarks/rust_core/tools/quprs_mqtbench_original_cnf.rs"
@@ -62,7 +63,9 @@ jobs:
             benchmarks/mpfr_research/tools/quprs_mqt_key_arena_ab.py \
             benchmarks/mpfr_research/tools/quprs_arena_cross_family_acceptance.py \
             benchmarks/mpfr_research/tools/quprs_scope_stamp_paired.py \
-            benchmarks/mpfr_research/tools/quprs_active_bitmap_paired.py
+            benchmarks/mpfr_research/tools/quprs_active_bitmap_paired.py \
+            benchmarks/mpfr_research/tools/quprs_fused_pre_paired.py
+          python3 benchmarks/mpfr_research/tools/quprs_fused_pre_paired.py --self-test
           python3 benchmarks/mpfr_research/tools/quprs_active_bitmap_paired.py --self-test
           python3 benchmarks/mpfr_research/tools/quprs_scope_stamp_paired.py --self-test
           python3 benchmarks/mpfr_research/tools/quprs_cnf_key_arena_ab.py --self-test
@@ -131,18 +134,18 @@ jobs:
             --report .research/mqtbench/mqt-arena-seven-arm.json \
             | tee .research/mqtbench/mqt-arena-seven-arm.log
 
-      - name: Independent original MQT GPMC versus Arena reversible active-clause bitmap native A/B
+      - name: Independent original MQT GPMC versus Arena exact fused frequency and components native A/B
         shell: bash
         run: |
           set -euo pipefail
-          python3 benchmarks/mpfr_research/tools/quprs_active_bitmap_paired.py \
+          python3 benchmarks/mpfr_research/tools/quprs_fused_pre_paired.py \
             --family mqt --quprs .upstream/quprs \
             --gpmc-source .upstream/gpmc \
             --corpus .research/mqtbench \
             --gpmc .upstream/gpmc/build/gpmc \
             --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
-            --report .research/mqtbench/active-bitmap-three-arm.json \
-            | tee .research/mqtbench/active-bitmap-three-arm.log
+            --report .research/mqtbench/fused-pre-three-arm.json \
+            | tee .research/mqtbench/fused-pre-three-arm.log
 
       - name: Archive source statuses and every paired/censored record
         if: always()

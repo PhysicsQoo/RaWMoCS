@@ -23,6 +23,7 @@ mod separator_pivot;
 mod primal_centroid;
 mod factor_variable_elimination;
 mod factor_add_elimination;
+mod factor_boolean_bdd;
 mod factor_minfill_order;
 mod factor_primal_minor_bound;
 
@@ -926,6 +927,14 @@ fn run() -> Result<(), String> {
     let cache_first = if factor_add {
         args.next().ok_or("missing mode after --factor-add-elimination")?
     } else { cache_first };
+    let factor_boolean_bdd = cache_first.to_str() == Some("--factor-boolean-bdd");
+    let cache_first = if factor_boolean_bdd {
+        args.next().ok_or("missing mode after --factor-boolean-bdd")?
+    } else { cache_first };
+    let bdd_reverse_minfill = cache_first.to_str() == Some("--factor-bdd-reverse-minfill");
+    let cache_first = if bdd_reverse_minfill {
+        args.next().ok_or("missing mode after --factor-bdd-reverse-minfill")?
+    } else { cache_first };
     let residual_factor_ve = cache_first.to_str() == Some("--trail-residual-factor-ve");
     let cache_first = if residual_factor_ve {
         args.next().ok_or("missing mode after --trail-residual-factor-ve")?
@@ -997,6 +1006,14 @@ fn run() -> Result<(), String> {
     }
     if scope_probe_320 && !factor_ve {
         return Err("--factor-ve-scope-probe-320 requires --factor-variable-elimination".into());
+    }
+    if bdd_reverse_minfill && !factor_boolean_bdd {
+        return Err("--factor-bdd-reverse-minfill requires --factor-boolean-bdd".into());
+    }
+    if factor_boolean_bdd && (!weighted_equivalence || !trail_count || factor_ve
+        || factor_add || residual_factor_ve || root_failed_literal
+        || post_unit_cache || articulation_pivot || primal_order || unit_closure_pivot) {
+        return Err("--factor-boolean-bdd requires weighted-equivalence + trail-count without other root transformations".into());
     }
     if factor_add && (!weighted_equivalence || !trail_count || factor_ve
         || residual_factor_ve || root_failed_literal || post_unit_cache
@@ -1080,6 +1097,14 @@ fn run() -> Result<(), String> {
     };
     let add_ns = add_start.elapsed().as_nanos();
     let add_completed = add_candidate.is_some();
+    let bdd_start = Instant::now();
+    let (bdd_candidate, bdd_stats) = if factor_boolean_bdd {
+        factor_boolean_bdd::count(source, &scope, bits, bdd_reverse_minfill)
+    } else {
+        (None, factor_boolean_bdd::BddStats::default())
+    };
+    let bdd_ns = bdd_start.elapsed().as_nanos();
+    let bdd_completed = bdd_candidate.is_some();
     eprintln!("RESEARCH_MPFR_FACTOR_VE_SCOPE_PROBE enabled={} limit={}",
         scope_probe_320, if scope_probe_320 { 320 } else { 256 });
     if ve_min_fill {
@@ -1113,7 +1138,7 @@ fn run() -> Result<(), String> {
     engine.indexed_activation_node = indexed_activation_node;
     let mut residual_ve_metrics = (0_u64, 0_u64, 0_u64, 0_u64, 0_usize);
     let (answer, solver_stats, trail_profile, primal_scans, primal_overrides) =
-        if let Some(answer) = add_candidate.or(ve_candidate) {
+        if let Some(answer) = bdd_candidate.or(add_candidate).or(ve_candidate) {
             // A complete factor-semiring count has NO DPLL nodes.
             // Report VE product count separately instead of pretending
             // zero Shannon nodes is a direct DPLL-node improvement.
@@ -1184,6 +1209,12 @@ fn run() -> Result<(), String> {
         add_stats.nodes, add_stats.terminals, add_stats.apply_calls,
         add_stats.apply_hits, add_stats.abstractions, add_stats.factors,
         add_stats.eliminated, add_stats.max_bucket, add_ns);
+    eprintln!("RESEARCH_MPFR_BOOL_BDD enabled={} completed={} eligible={} capped={} reason={} reverse_minfill={} vars={} clauses={} nodes={} apply_calls={} apply_hits={} eval_calls={} eval_hits={} minfill_bucket={} bdd_ns={}",
+        factor_boolean_bdd, bdd_completed, bdd_stats.eligible, bdd_stats.capped,
+        if bdd_stats.reason.is_empty() { "none" } else { bdd_stats.reason },
+        bdd_stats.reverse_minfill, bdd_stats.variables, bdd_stats.clauses,
+        bdd_stats.nodes, bdd_stats.apply_calls, bdd_stats.apply_hits,
+        bdd_stats.eval_calls, bdd_stats.eval_hits, bdd_stats.minfill_bucket, bdd_ns);
     let empty_profile = primal_centroid::Profile::default();
     let td = primal_profile.as_ref().unwrap_or(&empty_profile);
     eprintln!("RESEARCH_MPFR_PRIMAL_BAG_CENTROID enabled={} root_only={} eligible={} capped={} vars={} edges={} width={} fill={} distance={} build_ns={} scans={} overrides={}",

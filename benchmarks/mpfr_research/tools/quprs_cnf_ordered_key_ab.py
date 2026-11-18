@@ -56,6 +56,13 @@ def statistics_for(rows: list[dict], arm: str) -> dict:
             stage: statistics.median(x[f"stage_{stage}_ns"] for x in arm_rows) / 1e6
             for stage in STAGES
         }
+        result["key_subphase_p50_ms"] = {
+            phase: statistics.median(x[f"key_{phase}_ns"] for x in arm_rows) / 1e6
+            for phase in ("materialize", "order", "pack")
+        }
+        result["p50_key_unattributed_ms"] = statistics.median(
+            x["key_unattributed_ns"] for x in arm_rows
+        ) / 1e6
         result["p50_instrumented_stage_sum_ms"] = statistics.median(
             sum(x[f"stage_{stage}_ns"] for stage in STAGES) for x in arm_rows
         ) / 1e6
@@ -81,6 +88,9 @@ def validate_stage(row: dict, arm: str) -> None:
     enabled = arm.endswith("_profile")
     if row.get("stage_enabled") != enabled:
         raise ValueError(f"STAGE_ENABLEMENT_DRIFT: {arm}")
+    if row.get("key_subphase_enabled") != enabled:
+        raise ValueError(f"KEY_SUBPHASE_ENABLEMENT_DRIFT: {arm}")
+    subphases = [row[f"key_{part}_ns"] for part in ("materialize", "order", "pack")]
     if enabled:
         stage_values = [row[f"stage_{stage}_ns"] for stage in STAGES]
         solver_ns = row["solver_ns"]
@@ -90,8 +100,14 @@ def validate_stage(row: dict, arm: str) -> None:
         row["stage_sum_ns"] = stage_sum
         row["unattributed_solver_ns"] = solver_ns - stage_sum
         row["stage_coverage_fraction"] = stage_sum / solver_ns
-    elif any(row.get(f"stage_{stage}_ns", 0) for stage in STAGES):
-        raise ValueError(f"DISABLED_STAGE_TIMER_HAS_COST: {arm}")
+        key_sum = sum(subphases)
+        if min(subphases) < 0 or key_sum <= 0 or key_sum > row["stage_key_ns"]:
+            raise ValueError(f"INVALID_OR_OVERLAPPING_KEY_SUBPHASE: {arm}")
+        row["key_subphase_sum_ns"] = key_sum
+        row["key_unattributed_ns"] = row["stage_key_ns"] - key_sum
+        row["key_subphase_coverage_fraction"] = key_sum / row["stage_key_ns"]
+    elif any(row.get(f"stage_{stage}_ns", 0) for stage in STAGES) or any(subphases):
+        raise ValueError(f"DISABLED_STAGE_OR_KEY_TIMER_HAS_COST: {arm}")
 
 
 def self_test() -> None:
@@ -100,11 +116,15 @@ def self_test() -> None:
         "solver_ns": 100, "stage_enabled": True, "stage_key_ns": 20,
         "stage_lookup_ns": 10, "stage_unit_ns": 10,
         "stage_frequency_ns": 5, "stage_components_ns": 5,
+        "key_subphase_enabled": True, "key_materialize_ns": 8,
+        "key_order_ns": 4, "key_pack_ns": 3,
     }
     validate_stage(good, "inline_profile")
     assert good["stage_sum_ns"] == 50
     assert good["unattributed_solver_ns"] == 50
     assert good["stage_coverage_fraction"] == .5
+    assert good["key_subphase_sum_ns"] == 15
+    assert good["key_unattributed_ns"] == 5
     stats = statistics_for([good], "inline_profile")
     assert stats["p50_instrumented_stage_sum_ms"] == .00005
     assert stats["p50_unattributed_solver_ms"] == .00005
@@ -113,6 +133,9 @@ def self_test() -> None:
         {**good, "stage_key_ns": 101},
         {**good, "solver_ns": 0},
         {**good, "stage_unit_ns": -1},
+        {**good, "key_subphase_enabled": False},
+        {**good, "key_materialize_ns": 25},
+        {**good, "key_order_ns": -1},
     ):
         try:
             validate_stage(invalid, "inline_profile")
@@ -121,12 +144,19 @@ def self_test() -> None:
         else:
             raise AssertionError("invalid profiled stage evidence passed")
     try:
-        validate_stage({**good, "stage_enabled": False, "stage_key_ns": 1}, "inline_full")
+        validate_stage({
+            **good, "stage_enabled": False, "key_subphase_enabled": False,
+            "stage_key_ns": 1,
+        }, "inline_full")
     except ValueError:
         pass
     else:
         raise AssertionError("disabled profiler accepted nonzero clock")
-    validate_stage({"stage_enabled": False, "stage_key_ns": 0}, "inline_full")
+    validate_stage({
+        "stage_enabled": False, "stage_key_ns": 0,
+        "key_subphase_enabled": False,
+        "key_materialize_ns": 0, "key_order_ns": 0, "key_pack_ns": 0,
+    }, "inline_full")
     print("ORDERED_KEY_PROFILE_ORACLE_SELF_TEST_PASS", flush=True)
 
 def main() -> None:

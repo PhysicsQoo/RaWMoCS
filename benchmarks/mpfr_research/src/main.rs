@@ -1235,6 +1235,7 @@ fn run() -> Result<(), String> {
     let mut scoped_dsu_metrics = (0_u64, 0_u64);
     let mut ordered_key_metrics = (0_u64, 0_u64);
     let mut stage_metrics = (0_u128, 0_u128, 0_u128, 0_u128, 0_u128);
+    let mut key_subphase_metrics = (0_u128, 0_u128, 0_u128);
     let (answer, solver_stats, trail_profile, primal_scans, primal_overrides) =
         if let Some(answer) = pair_candidate.or(cutset_candidate).or(bdd_candidate).or(add_candidate).or(ve_candidate) {
             // A complete factor-semiring count has NO DPLL nodes.
@@ -1282,6 +1283,11 @@ fn run() -> Result<(), String> {
         stage_metrics = (trail.stage_key_ns, trail.stage_lookup_ns,
                          trail.stage_unit_ns, trail.stage_frequency_ns,
                          trail.stage_components_ns);
+        key_subphase_metrics = (
+            trail.stage_key_materialize_ns,
+            trail.stage_key_order_ns,
+            trail.stage_key_pack_ns,
+        );
         (outcome, trail.stats,
          Some((trail.assignments, trail.cache_keys, trail.normalized_cache_keys,
                trail.source_cache_keys, trail.post_unit_hits, trail.post_unit_visited,
@@ -1315,6 +1321,13 @@ fn run() -> Result<(), String> {
     eprintln!("RESEARCH_MPFR_TRAIL_STAGE_PROFILE enabled={} key_ns={} lookup_ns={} unit_ns={} frequency_ns={} components_ns={}",
         trail_stage_profile, stage_metrics.0, stage_metrics.1,
         stage_metrics.2, stage_metrics.3, stage_metrics.4);
+    eprintln!(
+        "RESEARCH_MPFR_TRAIL_KEY_SUBPHASE enabled={} materialize_ns={} order_ns={} pack_ns={}",
+        trail_stage_profile,
+        key_subphase_metrics.0,
+        key_subphase_metrics.1,
+        key_subphase_metrics.2
+    );
     eprintln!("RESEARCH_MPFR_COMPONENT_LOCAL_VE enabled={} attempts={} completed={} capped={} products={} scans={}",
         component_local_ve, component_ve_metrics.0, component_ve_metrics.1,
         component_ve_metrics.2, component_ve_metrics.3, component_ve_metrics.4);

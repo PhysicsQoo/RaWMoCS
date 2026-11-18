@@ -24,6 +24,7 @@ mod primal_centroid;
 mod factor_variable_elimination;
 mod factor_add_elimination;
 mod factor_boolean_bdd;
+mod factor_cutset_ve;
 mod factor_minfill_order;
 mod factor_primal_minor_bound;
 
@@ -935,6 +936,10 @@ fn run() -> Result<(), String> {
     let cache_first = if bdd_reverse_minfill {
         args.next().ok_or("missing mode after --factor-bdd-reverse-minfill")?
     } else { cache_first };
+    let factor_cutset = cache_first.to_str() == Some("--factor-cutset-ve");
+    let cache_first = if factor_cutset {
+        args.next().ok_or("missing mode after --factor-cutset-ve")?
+    } else { cache_first };
     let residual_factor_ve = cache_first.to_str() == Some("--trail-residual-factor-ve");
     let cache_first = if residual_factor_ve {
         args.next().ok_or("missing mode after --trail-residual-factor-ve")?
@@ -1009,6 +1014,11 @@ fn run() -> Result<(), String> {
     }
     if bdd_reverse_minfill && !factor_boolean_bdd {
         return Err("--factor-bdd-reverse-minfill requires --factor-boolean-bdd".into());
+    }
+    if factor_cutset && (!weighted_equivalence || !trail_count || factor_ve
+        || factor_add || factor_boolean_bdd || residual_factor_ve || root_failed_literal
+        || post_unit_cache || articulation_pivot || primal_order || unit_closure_pivot) {
+        return Err("--factor-cutset-ve requires weighted-equivalence + trail-count without other root transformations".into());
     }
     if factor_boolean_bdd && (!weighted_equivalence || !trail_count || factor_ve
         || factor_add || residual_factor_ve || root_failed_literal
@@ -1097,6 +1107,14 @@ fn run() -> Result<(), String> {
     };
     let add_ns = add_start.elapsed().as_nanos();
     let add_completed = add_candidate.is_some();
+    let cutset_start = Instant::now();
+    let (cutset_candidate, cutset_stats) = if factor_cutset {
+        factor_cutset_ve::count(source, &scope, bits)
+    } else {
+        (None, factor_cutset_ve::CutsetStats::default())
+    };
+    let cutset_ns = cutset_start.elapsed().as_nanos();
+    let cutset_completed = cutset_candidate.is_some();
     let bdd_start = Instant::now();
     let (bdd_candidate, bdd_stats) = if factor_boolean_bdd {
         factor_boolean_bdd::count(source, &scope, bits, bdd_reverse_minfill)
@@ -1138,7 +1156,7 @@ fn run() -> Result<(), String> {
     engine.indexed_activation_node = indexed_activation_node;
     let mut residual_ve_metrics = (0_u64, 0_u64, 0_u64, 0_u64, 0_usize);
     let (answer, solver_stats, trail_profile, primal_scans, primal_overrides) =
-        if let Some(answer) = bdd_candidate.or(add_candidate).or(ve_candidate) {
+        if let Some(answer) = cutset_candidate.or(bdd_candidate).or(add_candidate).or(ve_candidate) {
             // A complete factor-semiring count has NO DPLL nodes.
             // Report VE product count separately instead of pretending
             // zero Shannon nodes is a direct DPLL-node improvement.
@@ -1209,6 +1227,14 @@ fn run() -> Result<(), String> {
         add_stats.nodes, add_stats.terminals, add_stats.apply_calls,
         add_stats.apply_hits, add_stats.abstractions, add_stats.factors,
         add_stats.eliminated, add_stats.max_bucket, add_ns);
+    eprintln!("RESEARCH_MPFR_CUTSET_VE enabled={} completed={} eligible={} capped={} reason={} root_bucket={} candidate_probes={} feasible_candidates={} selected_variable={} lower_bucket={} upper_bucket={} branches_completed={} products={} scope={} clauses={} cutset_ns={}",
+        factor_cutset, cutset_completed, cutset_stats.eligible, cutset_stats.capped,
+        if cutset_stats.reason.is_empty() { "none" } else { cutset_stats.reason },
+        cutset_stats.original_bucket, cutset_stats.candidate_probes,
+        cutset_stats.feasible_candidates, cutset_stats.selected_variable,
+        cutset_stats.negative_bucket, cutset_stats.positive_bucket,
+        cutset_stats.branches_completed, cutset_stats.branch_products,
+        cutset_stats.source_scope, cutset_stats.source_clauses, cutset_ns);
     eprintln!("RESEARCH_MPFR_BOOL_BDD enabled={} completed={} eligible={} capped={} reason={} reverse_minfill={} vars={} clauses={} nodes={} apply_calls={} apply_hits={} eval_calls={} eval_hits={} minfill_bucket={} bdd_ns={}",
         factor_boolean_bdd, bdd_completed, bdd_stats.eligible, bdd_stats.capped,
         if bdd_stats.reason.is_empty() { "none" } else { bdd_stats.reason },

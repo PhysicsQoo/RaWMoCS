@@ -2848,4 +2848,121 @@ c p weight 1 1 0 0\nc p weight -1 -1 0 0\n\
             }
         }
     }
+
+    #[test]
+    fn bounded_key_arena_reuse_preserves_weighted_wmc_and_branch_topology() {
+        let sources = [
+            "p cnf 4 4\nc t wmc\nc p weight 1 0.5 0.25 0\nc p weight -1 -0.25 0.125 0\n1 4 0\n2 3 0\n-1 2 0\n-2 -3 0\n",
+            "p cnf 3 2\nc t wmc\n1 0\n-1 0\n",
+            "p cnf 3 2\nc t wmc\nc p weight 1 0 0 0\nc p weight -1 0 0 0\n1 2 0\n-2 3 0\n",
+            "p cnf 4 3\nc t wmc\nc p weight 3 -0.125 0.25 0\nc p weight -3 0.5 -0.25 0\n1 2 0\n-1 3 0\n2 4 0\n",
+        ];
+        let mut observed_reuses = 0;
+        for bits in [100_u32, 333] {
+            for source in sources {
+                let p = parse_emitted(source, bits).unwrap();
+                for capacity in [0_usize, 1, 128] {
+                    for ordered in [false, true] {
+                        for profiled in [false, true] {
+                            let run = |reuse: bool| {
+                                let mut t = TrailEngine::new(&p, bits, capacity, 100_000);
+                                t.use_parent_ids = true;
+                                t.use_compact_residual = true;
+                                t.use_prehashed_cache = true;
+                                t.use_fused_compact = true;
+                                t.use_weight_class_cache = true;
+                                t.use_inline_weight_relabel = true;
+                                t.use_reusable_key_arena = reuse;
+                                t.use_ordered_key_fastpath = ordered;
+                                t.stage_profile = profiled;
+                                let value = t.count((1..=p.n).collect(), 0).unwrap();
+                                (value, t)
+                            };
+                            let (control, base) = run(false);
+                            let (candidate, arena) = run(true);
+                            assert_eq!(
+                                (candidate.sat, &candidate.count.re, &candidate.count.im),
+                                (control.sat, &control.count.re, &control.count.im)
+                            );
+                            assert_eq!(
+                                (arena.stats.nodes, arena.stats.cache_hits, arena.stats.decompositions),
+                                (base.stats.nodes, base.stats.cache_hits, base.stats.decompositions)
+                            );
+                            assert_eq!(
+                                (arena.ordered_key_probes, arena.ordered_key_hits),
+                                (base.ordered_key_probes, base.ordered_key_hits)
+                            );
+                            assert_eq!(base.key_arena_calls, 0);
+                            assert_eq!(base.key_arena_flat_reuses, 0);
+                            assert_eq!(base.key_arena_view_reuses, 0);
+                            assert!(arena.key_arena_calls > 0);
+                            assert!(arena.key_arena_flat_reuses <= arena.key_arena_calls);
+                            assert!(arena.key_arena_view_reuses <= arena.key_arena_calls);
+                            assert!(arena.key_arena_flat.capacity() <= KEY_ARENA_MAX_LITERALS);
+                            assert!(arena.key_arena_views.capacity() <= KEY_ARENA_MAX_VIEWS);
+                            if profiled {
+                                assert!(arena.stage_key_materialize_ns > 0);
+                                assert!(
+                                    arena.stage_key_materialize_ns
+                                        + arena.stage_key_order_ns
+                                        + arena.stage_key_pack_ns
+                                        <= arena.stage_key_ns
+                                );
+                            } else {
+                                assert_eq!(
+                                    (
+                                        arena.stage_key_materialize_ns,
+                                        arena.stage_key_order_ns,
+                                        arena.stage_key_pack_ns,
+                                    ),
+                                    (0, 0, 0)
+                                );
+                            }
+                            assert!(arena.trail.is_empty());
+                            assert!(arena.assigned.iter().all(|&value| value == 0));
+                            observed_reuses += arena.key_arena_flat_reuses;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(observed_reuses > 0);
+    }
+
+    #[test]
+    fn bounded_key_arena_preserves_duplicates_inversions_and_rollback() {
+        let src = "p cnf 4 3\nc t wmc\n1 2 0\n2 3 0\n1 4 0\n";
+        for bits in [100_u32, 333] {
+            let p = parse_emitted(src, bits).unwrap();
+            for ordered in [false, true] {
+                let mut control = TrailEngine::new(&p, bits, 128, 100_000);
+                let mut candidate = TrailEngine::new(&p, bits, 128, 100_000);
+                control.use_fused_compact = true;
+                candidate.use_fused_compact = true;
+                control.use_ordered_key_fastpath = ordered;
+                candidate.use_ordered_key_fastpath = ordered;
+                candidate.use_reusable_key_arena = true;
+                let scope = (1..=p.n).collect::<Vec<_>>();
+                for literal in [-1, -3] {
+                    assert_eq!(
+                        control.canonical_compact(&scope, None, false),
+                        candidate.canonical_compact(&scope, None, false)
+                    );
+                    let checkpoint = control.trail.len();
+                    assert_eq!(control.apply(literal, None), candidate.apply(literal, None));
+                    control.undo(checkpoint);
+                    candidate.undo(checkpoint);
+                    assert_eq!(
+                        control.canonical_compact(&scope, None, false),
+                        candidate.canonical_compact(&scope, None, false)
+                    );
+                }
+                assert!(candidate.key_arena_calls > 0);
+                assert!(candidate.key_arena_flat_reuses > 0);
+                assert!(candidate.key_arena_view_reuses > 0);
+                assert!(candidate.trail.is_empty());
+            }
+        }
+    }
+
 }

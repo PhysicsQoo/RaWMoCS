@@ -932,6 +932,10 @@ fn run() -> Result<(), String> {
     let cache_first = if ve_bag14 {
         args.next().ok_or("missing mode after --factor-ve-bag-probe-14")?
     } else { cache_first };
+    let ve_preflight = cache_first.to_str() == Some("--factor-ve-preflight-cost");
+    let cache_first = if ve_preflight {
+        args.next().ok_or("missing mode after --factor-ve-preflight-cost")?
+    } else { cache_first };
     let factor_add = cache_first.to_str() == Some("--factor-add-elimination");
     let cache_first = if factor_add {
         args.next().ok_or("missing mode after --factor-add-elimination")?
@@ -1061,6 +1065,9 @@ fn run() -> Result<(), String> {
     }
     if fused_post_analysis && !projected_post_key {
         return Err("--trail-fused-post-analysis requires --trail-post-unit-projected".into());
+    }
+    if ve_preflight && !ve_bag14 {
+        return Err("--factor-ve-preflight-cost requires the bounded min-fill bag14 research arm".into());
     }
     if ve_bag14 && (!ve_min_fill || !scope_probe_320 || !factor_ve) {
         return Err("--factor-ve-bag-probe-14 requires --factor-variable-elimination --factor-ve-scope-probe-320 --factor-ve-minfill-order".into());
@@ -1213,7 +1220,9 @@ fn run() -> Result<(), String> {
     let primal_build_ns = td_start.elapsed().as_nanos();
     let ve_start = Instant::now();
     let (ve_candidate, ve_stats) = if factor_ve {
-        if ve_bag14 {
+        if ve_preflight {
+            factor_variable_elimination::count_scope_probe_minfill_bag14_preflight(source, &scope, bits)
+        } else if ve_bag14 {
             factor_variable_elimination::count_scope_probe_minfill_bag14(source, &scope, bits)
         } else if ve_min_fill {
             factor_variable_elimination::count_scope_probe_minfill(source, &scope, bits)
@@ -1274,6 +1283,9 @@ fn run() -> Result<(), String> {
     }
     eprintln!("RESEARCH_MPFR_FACTOR_VE_BAG_PROBE enabled={} limit={}",
         ve_bag14, if ve_bag14 { 14 } else { 11 });
+    eprintln!("RESEARCH_MPFR_FACTOR_VE_PREFLIGHT enabled={} products_upper={} cells_upper={} rejected={}",
+        ve_preflight, ve_stats.preflight_products_upper, ve_stats.preflight_cells_upper,
+        ve_stats.cap_reason.starts_with("preflight_"));
     eprintln!("RESEARCH_MPFR_FACTOR_VE_ORDER minfill={} predicted_width={} fill_edges={} candidates={} plan_ns={}",
         ve_min_fill, ve_stats.minfill_plan_width, ve_stats.minfill_fill_edges,
         ve_stats.minfill_candidates, ve_stats.minfill_plan_ns);

@@ -43,6 +43,9 @@ pub(crate) struct VeStats {
     pub(crate) minfill_fill_edges: usize,
     pub(crate) minfill_candidates: u64,
     pub(crate) minfill_plan_ns: u128,
+    pub(crate) preflight_enabled: bool,
+    pub(crate) preflight_products_upper: usize,
+    pub(crate) preflight_cells_upper: usize,
 }
 
 fn reject(mut stats: VeStats, reason: &'static str) -> (Option<Outcome>, VeStats) {
@@ -102,6 +105,60 @@ fn selected_bucket(factors: &[Factor], remaining: &[usize]) -> (usize, Vec<usize
     (v, incident, union)
 }
 
+/// A scope-only upper bound on the sum-product loop work. It never reads
+/// weights or builds MPFR tables; signed/zero weights cannot invalidate it.
+/// UNSAT factor entries may short-circuit, so this is not a lower bound.
+fn projected_minfill_work(
+    clauses: &[Clause], scope: &[usize], order: &[usize],
+) -> (usize, usize) {
+    let mut scopes: Vec<Vec<usize>> = clauses
+        .iter()
+        .map(|clause| {
+            let mut vars: Vec<usize> = clause
+                .iter()
+                .map(|literal| literal.unsigned_abs() as usize)
+                .collect();
+            vars.sort_unstable();
+            vars.dedup();
+            vars
+        })
+        .collect();
+    let mut cells = scopes.iter().fold(0_usize, |total, vars| {
+        total.saturating_add(1_usize << vars.len())
+    });
+    cells = cells.saturating_add(scope.len().saturating_mul(2));
+    for &variable in scope {
+        scopes.push(vec![variable]);
+    }
+    let mut products = 0_usize;
+    for &variable in order {
+        let mut union = Vec::new();
+        let mut affected = 0_usize;
+        for vars in &scopes {
+            if vars.binary_search(&variable).is_ok() {
+                affected += 1;
+                union.extend(vars);
+            }
+        }
+        union.sort_unstable();
+        union.dedup();
+        if union.is_empty() || union.len() > PROBE_BAG {
+            return (usize::MAX, usize::MAX);
+        }
+        let rest: Vec<usize> = union.into_iter()
+            .filter(|&var| var != variable)
+            .collect();
+        let n_cells = 1_usize << rest.len();
+        cells = cells.saturating_add(n_cells);
+        products = products.saturating_add(
+            affected.saturating_mul(n_cells).saturating_mul(2),
+        );
+        scopes.retain(|vars| vars.binary_search(&variable).is_err());
+        scopes.push(rest);
+    }
+    (products, cells)
+}
+
 fn value_at(
     factors: &[&Factor], rest: &[usize], variable: usize, positive: bool,
     assignment: usize, bits: u32, stats: &mut VeStats,
@@ -139,7 +196,7 @@ pub(crate) fn count(
 pub(crate) fn count_scope_probe(
     p: &Problem, scope: &[usize], bits: u32,
 ) -> (Option<Outcome>, VeStats) {
-    count_clauses_with_limit(p, scope, &p.clauses, bits, PROBE_SCOPE, false, MAX_BAG)
+    count_clauses_with_limit(p, scope, &p.clauses, bits, PROBE_SCOPE, false, MAX_BAG, false)
 }
 
 /// Research-only alternative: same 320 source-scope admission and exactly
@@ -147,7 +204,7 @@ pub(crate) fn count_scope_probe(
 pub(crate) fn count_scope_probe_minfill(
     p: &Problem, scope: &[usize], bits: u32,
 ) -> (Option<Outcome>, VeStats) {
-    count_clauses_with_limit(p, scope, &p.clauses, bits, PROBE_SCOPE, true, MAX_BAG)
+    count_clauses_with_limit(p, scope, &p.clauses, bits, PROBE_SCOPE, true, MAX_BAG, false)
 }
 
 /// Research-only scope 320 + width 14 min-fill VE probe. Hard cells/products
@@ -156,7 +213,15 @@ pub(crate) fn count_scope_probe_minfill(
 pub(crate) fn count_scope_probe_minfill_bag14(
     p: &Problem, scope: &[usize], bits: u32,
 ) -> (Option<Outcome>, VeStats) {
-    count_clauses_with_limit(p, scope, &p.clauses, bits, PROBE_SCOPE, true, PROBE_BAG)
+    count_clauses_with_limit(p, scope, &p.clauses, bits, PROBE_SCOPE, true, PROBE_BAG, false)
+}
+
+/// Research-only structural admission before expensive signed-complex tables.
+/// A rejected estimate always returns to the unchanged original DPLL path.
+pub(crate) fn count_scope_probe_minfill_bag14_preflight(
+    p: &Problem, scope: &[usize], bits: u32,
+) -> (Option<Outcome>, VeStats) {
+    count_clauses_with_limit(p, scope, &p.clauses, bits, PROBE_SCOPE, true, PROBE_BAG, true)
 }
 
 /// Count a *live*, already-cofactored residual CNF with unchanged original
@@ -165,7 +230,7 @@ pub(crate) fn count_scope_probe_minfill_bag14(
 pub(crate) fn count_clauses(
     p: &Problem, scope: &[usize], clauses: &[Clause], bits: u32,
 ) -> (Option<Outcome>, VeStats) {
-    count_clauses_with_limit(p, scope, clauses, bits, MAX_SCOPE, false, MAX_BAG)
+    count_clauses_with_limit(p, scope, clauses, bits, MAX_SCOPE, false, MAX_BAG, false)
 }
 
 fn selected_bucket_for_variable(
@@ -186,9 +251,10 @@ fn selected_bucket_for_variable(
 
 fn count_clauses_with_limit(
     p: &Problem, scope: &[usize], clauses: &[Clause], bits: u32,
-    scope_cap: usize, minfill: bool, bag_cap: usize,
+    scope_cap: usize, minfill: bool, bag_cap: usize, preflight: bool,
 ) -> (Option<Outcome>, VeStats) {
     let mut stats = VeStats {
+        preflight_enabled: preflight,
         source_vars: p.n,
         scope_vars: scope.len(),
         source_clauses: clauses.len(),
@@ -205,6 +271,32 @@ fn count_clauses_with_limit(
         if v == 0 || v > p.n || present[v] { return reject(stats, "invalid_scope"); }
         present[v] = true;
     }
+    let early_order = if preflight {
+        let start = Instant::now();
+        let plan = factor_minfill_order::plan(clauses, scope, bag_cap);
+        stats.minfill_plan_ns = start.elapsed().as_nanos();
+        stats.minfill_enabled = true;
+        stats.minfill_plan_width = plan.max_bucket;
+        stats.minfill_fill_edges = plan.fill_edges;
+        stats.minfill_candidates = plan.candidate_evaluations;
+        if plan.capped {
+            stats.width = plan.max_bucket;
+            return reject(stats, "bucket_width");
+        }
+        let (products, cells) = projected_minfill_work(clauses, scope, &plan.order);
+        stats.preflight_products_upper = products;
+        stats.preflight_cells_upper = cells;
+        stats.eligible = true;
+        if products > MAX_PRODUCTS {
+            return reject(stats, "preflight_products");
+        }
+        if cells > MAX_CELLS {
+            return reject(stats, "preflight_cells");
+        }
+        Some(plan.order)
+    } else {
+        None
+    };
     let mut factors = Vec::with_capacity(clauses.len() + scope.len());
     for clause in clauses {
         let mut vars = clause.iter().map(|lit| lit.unsigned_abs() as usize).collect::<Vec<_>>();
@@ -236,7 +328,9 @@ fn count_clauses_with_limit(
     stats.factors = factors.len();
     stats.eligible = true;
     stats.minfill_enabled = minfill;
-    let minfill_order = if minfill {
+    let minfill_order = if early_order.is_some() {
+        early_order
+    } else if minfill {
         let start = Instant::now();
         let plan = factor_minfill_order::plan(clauses, scope, bag_cap);
         stats.minfill_plan_ns = start.elapsed().as_nanos();
@@ -350,6 +444,15 @@ mod tests {
             let (minfill, fill_stats) = count_scope_probe_minfill(&p, &scope, bits);
             assert!(fill_stats.eligible && !fill_stats.capped, "{fill_stats:?}");
             let minfill = minfill.unwrap();
+            let (preflight, admission) =
+                count_scope_probe_minfill_bag14_preflight(&p, &scope, bits);
+            assert!(admission.preflight_enabled);
+            assert!(!admission.capped, "{admission:?}");
+            assert!(admission.preflight_products_upper >= admission.products);
+            let preflight = preflight.unwrap();
+            assert_eq!(preflight.sat, exact.sat);
+            assert_eq!(preflight.count.re, exact.count.re);
+            assert_eq!(preflight.count.im, exact.count.im);
             assert_eq!(minfill.sat, exact.sat);
             assert_eq!(minfill.count.re, exact.count.re);
             assert_eq!(minfill.count.im, exact.count.im);
@@ -446,6 +549,34 @@ c p weight 6 -0.5 0.5 0\nc p weight -6 0.25 -0.25 0\n\
             assert_eq!(answer.sat, old.sat);
             assert_eq!(answer.count.re, old.count.re);
             assert_eq!(answer.count.im, old.count.im);
+        }
+    }
+
+    #[test]
+    fn conservative_cost_preflight_rejects_dense_exact_work_before_mpfr_tables() {
+        let mut cnf = String::from("p cnf 14 91\nc t wmc\n");
+        for i in 1..=14 {
+            for j in (i + 1)..=14 {
+                cnf.push_str(&format!("{i} {j} 0\n"));
+            }
+        }
+        for bits in [100_u32, 333] {
+            let p = parse_emitted(&cnf, bits).unwrap();
+            let scope: Vec<usize> = (1..=14).collect();
+            let (candidate, stats) =
+                count_scope_probe_minfill_bag14_preflight(&p, &scope, bits);
+            assert!(candidate.is_none());
+            assert!(stats.capped);
+            assert_eq!(stats.cap_reason, "preflight_products");
+            assert!(stats.preflight_products_upper > MAX_PRODUCTS);
+            assert_eq!(stats.products, 0);
+            assert_eq!(stats.cells, 0);
+            // Correctness remains the original exhaustive DPLL fallback.
+            let mut trail = TrailEngine::new(&p, bits, 128, 100_000);
+            let answer = trail.count(scope, 0).unwrap();
+            assert!(answer.sat);
+            assert_eq!(answer.count.re, 15);
+            assert_eq!(answer.count.im, 0);
         }
     }
 

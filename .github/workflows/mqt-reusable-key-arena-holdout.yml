@@ -5,6 +5,7 @@ on:
     paths:
       - ".github/workflows/mqt-reusable-key-arena-holdout.yml"
       - "benchmarks/mpfr_research/tools/quprs_mqt_key_arena_ab.py"
+      - "benchmarks/mpfr_research/tools/quprs_mqt_factor_ve_ab.py"
       - "docs/reusable-key-arena-research.md"
       - "benchmarks/mpfr_research/src/trail_engine.rs"
       - "benchmarks/mpfr_research/tools/quprs_cnf_key_arena_ab.py"
@@ -62,6 +63,7 @@ jobs:
             benchmarks/mpfr_research/tools/quprs_cnf_trail_stage_profile.py \
             benchmarks/mpfr_research/tools/quprs_cnf_key_arena_ab.py \
             benchmarks/mpfr_research/tools/quprs_mqt_key_arena_ab.py \
+            benchmarks/mpfr_research/tools/quprs_mqt_factor_ve_ab.py \
             benchmarks/mpfr_research/tools/quprs_arena_cross_family_acceptance.py \
             benchmarks/mpfr_research/tools/quprs_scope_stamp_paired.py \
             benchmarks/mpfr_research/tools/quprs_active_bitmap_paired.py \
@@ -73,6 +75,7 @@ jobs:
           python3 benchmarks/mpfr_research/tools/quprs_scope_stamp_paired.py --self-test
           python3 benchmarks/mpfr_research/tools/quprs_cnf_key_arena_ab.py --self-test
           python3 benchmarks/mpfr_research/tools/quprs_mqt_key_arena_ab.py --self-test
+          python3 benchmarks/mpfr_research/tools/quprs_mqt_factor_ve_ab.py --self-test
           python3 benchmarks/mpfr_research/tools/quprs_arena_cross_family_acceptance.py --self-test
       - uses: Swatinem/rust-cache@v2
         with:
@@ -137,6 +140,19 @@ jobs:
             --report .research/mqtbench/mqt-arena-seven-arm.json \
             | tee .research/mqtbench/mqt-arena-seven-arm.log
 
+
+      - name: Independent original MQT bounded exact Factor-VE bag11 versus bag14 four-arm holdout
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 benchmarks/mpfr_research/tools/quprs_mqt_factor_ve_ab.py \
+            --quprs .upstream/quprs \
+            --gpmc-source .upstream/gpmc \
+            --corpus .research/mqtbench \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --report .research/mqtbench/factor-ve-bag14-four-arm.json \
+            | tee .research/mqtbench/factor-ve-bag14-four-arm.log
 
       - name: Archive source statuses and every paired/censored record
         if: always()

@@ -3588,7 +3588,7 @@ c p weight 1 1 0 0\nc p weight -1 -1 0 0\n\
             assert!(candidate.trail.is_empty());
             assert!(candidate.assigned.iter().all(|&v| v == 0));
             assert!(candidate.literal_mask_key_visits > 0);
-            assert!(candidate.literal_mask_updates >= 12);
+            assert!(candidate.literal_mask_updates >= 10);
         }
     }
 

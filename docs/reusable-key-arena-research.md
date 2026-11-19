@@ -374,3 +374,57 @@ This is **not** a relaxation of the original Arena-versus-Inline
 >=10% p50 **and** p90 requirement, and not a claim of
 GPMC parity or production acceptance. Source-exact
 final-head CI for the fused variant remains outstanding.
+
+
+## 2026-11-19: Reversible Literal Mask final exact-source No-Go
+
+Final original-Feynman [CI #44439271063](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/44439271063)
+and independent original-MQT [CI #44439270806](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/44439270806)
+both passed; **115 Rust tests**, all **6/6** ordinary Feynman and **14/14**
+independent MQT QASM×precision cohorts matched signed Complex real/imag
+WMC, SAT, original GPMC precision, Rust stdout SHA and exact
+nodes/cache/decomposition topology. Original Feynman Grover5 node-budget
+censors were retained. Full raw seven rotated process pairs, wall p50/p90,
+RSS and positive/negative source hashes are archived in the original
+GitHub Actions artifacts for each run.
+
+The second-stage reversible source-literal-position mask arm was
+**correct but strictly not faster** than the same-generation Arena-only
+control on the four predeclared hard original-CNF cohorts:
+
+| Original source | MPFR bits | Arena native WallTime p50 | Arena+Literal Mask p50 | Paired faster |
+|---|---:|---:|---:|---:|
+| Feynman HWB6 | 100 | 464.489 ms | 469.631 ms | 1/7 |
+| Feynman HWB6 | 333 | 493.958 ms | 493.589 ms | 4/7 |
+| MQT QNN4 | 100 | 27.572 ms | 27.949 ms | 2/7 |
+| MQT QNN4 | 333 | 29.202 ms | 29.495 ms | 0/7 |
+
+**Incremental No-Go 4/4** under the already registered >=5% improvement
+on both unprofiled full-process p50 and p90, >=5/7 independent paired
+wins and <=5% p50 RSS increase. A lower number of scanned inactive
+literals does not make the added occurrence-position and bit-update
+maintenance free. Do not route, enable by default, or merge this arm.
+
+The associated native three-arm **expensive** study was removed from
+the two recurring source-exact workflows after the final evidence
+was archived. The small self-test, exact reversible-key Rust regressions,
+historical executable flag and all archival negative data remain. This
+prevents repeating scientifically concluded No-Go work, rather than
+suppressing a negative observation.
+
+### Algorithmic next step
+
+Do not continue allocating another occurrence-index per source clause
+without a wall-time cost model. Next investigate either (a) a **bounded
+exact weighted component decomposition** that changes the actual DPLL
+search-node count without falsifying SAT/Complex WMC, or (b) an
+incremental per-residual cost model that *only activates* a structural
+scan-skip when the measured number of avoided literal visits exceeds
+the reversible-index update cost. Any new path requires separate
+opt-in comparisons against original Arena and unchanged original GPMC;
+source-exact Feynman/MQT original QASM, signed weights, matched 100/333
+MPFR bits, 30s/2GiB, seven process-order rotations and complete
+WallTime p50/p90/RSS remain mandatory. In particular, a successful
+small example is not sufficient to promote a hard-case algorithm.
+
+The research PR remains Draft and no production solver default changes.

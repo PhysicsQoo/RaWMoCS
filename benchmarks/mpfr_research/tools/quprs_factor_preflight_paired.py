@@ -43,7 +43,7 @@ CASES = {
 
 def command_for(args: argparse.Namespace, case: str, digits: int,
                 arm: str, cnf: Path) -> list[str]:
-    if arm not in ARMS:
+    if arm not in ARMS_QUICK:
         raise ValueError("UNKNOWN_PREFLIGHT_ARM")
     legacy = ("factor_ve_minfill_bag14" if args.family == "feynman"
               else "factor_ve_bag14")

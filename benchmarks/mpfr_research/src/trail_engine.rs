@@ -575,9 +575,7 @@ impl<'a> TrailEngine<'a> {
                 // Read each active source clause at most once and stop
                 // immediately for a clause outside the current scope.
                 let mut first_unassigned = true;
-                if self.use_full_live_clause_fastpath
-                    && self.live[cid] == self.clauses[cid].len()
-                {
+                if self.use_full_live_clause_fastpath && self.live[cid] == self.clauses[cid].len() {
                     // The exact reversible live counter is decremented for
                     // both true and false assignments and restored on undo.
                     // Since the clause is not satisfied, equality with the
@@ -585,7 +583,10 @@ impl<'a> TrailEngine<'a> {
                     let first = self.clauses[cid]
                         .first()
                         .expect("still-live source clause must be nonempty");
-                    if scope.binary_search(&(first.unsigned_abs() as usize)).is_err() {
+                    if scope
+                        .binary_search(&(first.unsigned_abs() as usize))
+                        .is_err()
+                    {
                         return true;
                     }
                     debug_assert!(self.clauses[cid]
@@ -3140,7 +3141,6 @@ c p weight 1 1 0 0\nc p weight -1 -1 0 0\n\
         }
     }
 
-
     #[test]
     fn exact_fully_live_source_clause_shortcut_preserves_keys_and_complex_wmc() {
         // Includes partial assigned clauses, duplicate projections, signed
@@ -3179,23 +3179,27 @@ c p weight 1 1 0 0\nc p weight -1 -1 0 0\n\
                         );
                         assert_eq!(
                             (
-                                old.stats.nodes, old.stats.cache_hits,
-                                old.stats.decompositions,
+                                original.stats.nodes,
+                                original.stats.cache_hits,
+                                original.stats.decompositions,
                             ),
                             (
-                                candidate.stats.nodes, candidate.stats.cache_hits,
+                                candidate.stats.nodes,
+                                candidate.stats.cache_hits,
                                 candidate.stats.decompositions,
                             )
                         );
                         assert_eq!(
-                            (old.ordered_key_probes, old.ordered_key_hits),
+                            (original.ordered_key_probes, original.ordered_key_hits),
                             (candidate.ordered_key_probes, candidate.ordered_key_hits)
                         );
                         assert_eq!(original.full_live_key_hits, 0);
                         assert!(candidate.full_live_key_hits > 0);
                         assert!(candidate.trail.is_empty());
                         assert!(candidate.assigned.iter().all(|v| *v == 0));
-                        assert!(candidate.live.iter()
+                        assert!(candidate
+                            .live
+                            .iter()
                             .zip(candidate.clauses.iter())
                             .all(|(l, c)| *l == c.len()));
                         assert!(candidate.satisfied.iter().all(|v| *v == 0));

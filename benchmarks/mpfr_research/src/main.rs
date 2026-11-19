@@ -926,6 +926,12 @@ fn run() -> Result<(), String> {
     let cache_first = if ve_min_fill {
         args.next().ok_or("missing mode after --factor-ve-minfill-order")?
     } else { cache_first };
+    // Increase only the bounded exact factor-bag admission limit from 11
+    // to 14 under an explicit research flag; production remains unchanged.
+    let ve_bag14 = cache_first.to_str() == Some("--factor-ve-bag-probe-14");
+    let cache_first = if ve_bag14 {
+        args.next().ok_or("missing mode after --factor-ve-bag-probe-14")?
+    } else { cache_first };
     let factor_add = cache_first.to_str() == Some("--factor-add-elimination");
     let cache_first = if factor_add {
         args.next().ok_or("missing mode after --factor-add-elimination")?
@@ -1055,6 +1061,9 @@ fn run() -> Result<(), String> {
     }
     if fused_post_analysis && !projected_post_key {
         return Err("--trail-fused-post-analysis requires --trail-post-unit-projected".into());
+    }
+    if ve_bag14 && (!ve_min_fill || !scope_probe_320 || !factor_ve) {
+        return Err("--factor-ve-bag-probe-14 requires --factor-variable-elimination --factor-ve-scope-probe-320 --factor-ve-minfill-order".into());
     }
     if ve_min_fill && (!scope_probe_320 || !factor_ve) {
         return Err("--factor-ve-minfill-order requires --factor-variable-elimination --factor-ve-scope-probe-320".into());
@@ -1204,7 +1213,9 @@ fn run() -> Result<(), String> {
     let primal_build_ns = td_start.elapsed().as_nanos();
     let ve_start = Instant::now();
     let (ve_candidate, ve_stats) = if factor_ve {
-        if ve_min_fill {
+        if ve_bag14 {
+            factor_variable_elimination::count_scope_probe_minfill_bag14(source, &scope, bits)
+        } else if ve_min_fill {
             factor_variable_elimination::count_scope_probe_minfill(source, &scope, bits)
         } else if scope_probe_320 {
             factor_variable_elimination::count_scope_probe(source, &scope, bits)
@@ -1261,6 +1272,8 @@ fn run() -> Result<(), String> {
             !minor.capped, minor.treewidth_lower, minor.treewidth_lower + 1,
             minor.contractions, begin.elapsed().as_nanos());
     }
+    eprintln!("RESEARCH_MPFR_FACTOR_VE_BAG_PROBE enabled={} limit={}",
+        ve_bag14, if ve_bag14 { 14 } else { 11 });
     eprintln!("RESEARCH_MPFR_FACTOR_VE_ORDER minfill={} predicted_width={} fill_edges={} candidates={} plan_ns={}",
         ve_min_fill, ve_stats.minfill_plan_width, ve_stats.minfill_fill_edges,
         ve_stats.minfill_candidates, ve_stats.minfill_plan_ns);

@@ -428,3 +428,52 @@ WallTime p50/p90/RSS remain mandatory. In particular, a successful
 small example is not sufficient to promote a hard-case algorithm.
 
 The research PR remains Draft and no production solver default changes.
+
+
+## 2026-11-19: independent exact bounded Factor-VE 11 vs 14 MQT holdout
+
+As the reversible Literal Mask original-CNF native experiment did not
+close the GPMC gap, the **next independent algorithmic hypothesis** is
+an exact bounded root-level sum-product variable-elimination path that
+can reduce DPLL nodes rather than only reduce source-literal scans.
+
+This study is intentionally **first-stage MQT-only**, not a qualified
+cross-family production speed claim. It reuses the existing source-locked
+MQT original QASM→QuPRS Weighted CNF exporter and the original,
+unmodified GPMC C++ executable, with unchanged signed Complex literal
+weights, phase sidecars, 30/100 GPMC decimal digits and 100/333 Rust
+MPFR bits. Four independently rotated native subprocess arms are
+compared in seven trials per MQT QASM×precision cohort:
+
+1. Original GPMC C++, unchanged source.
+2. Original Rust Inline DPLL, exactly 1M node cap.
+3. Opt-in exact root Factor-VE (existing 11-bag bounded admission).
+4. Opt-in exact Factor-VE min-fill/320-scope probe with the **14-bag**
+   research cap, holding the original maximum factor products and
+   table-cell budget unchanged.
+
+Every completed result must preserve Boolean SAT and real **and**
+imaginary signed Complex WMC agreement with original GPMC under the
+same MPFR precision. A VE attempt that fails its exact bound must
+fall back to original Rust DPLL with unchanged nodes/cache/decomposition
+and **byte-identical Rust output**; zero-DPLL-node VE completion is
+tracked separately and must not be interpreted as a numeric shortcut
+or comparable DPLL branch count. Product/cell and width caps are
+fail-closed; a cancelled, OOM, timed-out, or unsupported case remains
+explicit in the raw study, not silently filtered.
+
+The CI first runs the original MQT Arena seven-arm baseline unchanged
+and only then the separately reported four-arm Factor-VE experiment,
+using its own JSON, shell log, and the same archived original CNFs.
+A different algorithm may change the solver's search topology, so
+topology equality is required for *fallback*, but never imposed on
+completed exact VE. The full native p50/p90 WallTime, seven paired
+trials, peak RSS, original-GPMC gap, bounded width, cells, products,
+completion vs fallbacks and all censored cases are required before
+considering the result.
+
+**Promotion remains forbidden** until this MQT independent experiment
+shows robust gains on a meaningful difficult QASM cohort, followed by
+source-locked Feynman replication on the same matched precision and
+a focused main-based production diff. Do not introduce another PR for
+this exploratory stage. The sole open research PR remains Draft.

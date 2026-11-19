@@ -7,6 +7,8 @@ on:
       - "benchmarks/mpfr_research/tools/quprs_mqt_key_arena_ab.py"
       - "benchmarks/mpfr_research/tools/quprs_mqt_factor_ve_ab.py"
       - "benchmarks/mpfr_research/tools/quprs_factor_preflight_paired.py"
+      - "benchmarks/mpfr_research/tools/quprs_full_live_key_paired.py"
+      - "docs/full-live-clause-residual-key-research.md"
       - "docs/reusable-key-arena-research.md"
       - "benchmarks/mpfr_research/src/trail_engine.rs"
       - "benchmarks/mpfr_research/tools/quprs_cnf_key_arena_ab.py"
@@ -184,6 +186,21 @@ jobs:
             --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
             --report .research/mqtbench/quick-scope-five-arm.json \
             | tee .research/mqtbench/quick-scope-five-arm.log
+      - name: Independent original MQT fully-live key three-arm native holdout
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile benchmarks/mpfr_research/tools/quprs_full_live_key_paired.py
+          python3 benchmarks/mpfr_research/tools/quprs_full_live_key_paired.py --self-test
+          python3 benchmarks/mpfr_research/tools/quprs_full_live_key_paired.py \
+            --family mqt \
+            --quprs .upstream/quprs \
+            --gpmc-source .upstream/gpmc \
+            --corpus .research/mqtbench \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --report .research/mqtbench/full-live-key-three-arm.json \
+            | tee .research/mqtbench/full-live-key-three-arm.log
       - name: Archive source statuses and every paired/censored record
         if: always()
         uses: actions/upload-artifact@v4

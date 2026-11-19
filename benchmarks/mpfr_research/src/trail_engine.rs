@@ -23,6 +23,15 @@ struct ResidualKeyView {
     end: usize,
 }
 
+// Exact signed-literal position masks, updated alongside the existing
+// occurrence-adjacent Trail counters. Each clause's bit order is its
+// original source-sorted literal order. No cache key borrows these words.
+struct ReversibleLiteralMask {
+    words: Vec<u64>,
+    offsets: Vec<usize>,
+    occurrence_positions: Vec<Vec<usize>>,
+}
+
 // Bound retained capacity: no stale child CNF/MPFR state is retained.
 const KEY_ARENA_MAX_LITERALS: usize = 131_072;
 const KEY_ARENA_MAX_VIEWS: usize = 16_384;
@@ -110,6 +119,13 @@ pub(crate) struct TrailEngine<'a> {
     // order, weight classes, or cache-key ownership. Opt-in only.
     active_clause_bits: Option<Vec<u64>>,
     pub(crate) active_bitmap_key_visits: u64,
+    // Opt-in reversible literal-level incidence index. Unlike the
+    // previously measured no-go active CLAUSE bitmap, this avoids
+    // scanning assigned literals inside surviving wide source clauses.
+    // Additional occurrence updates are always included in WallTime.
+    literal_mask: Option<ReversibleLiteralMask>,
+    pub(crate) literal_mask_key_visits: u64,
+    pub(crate) literal_mask_updates: u64,
     // Research only: combine the existing post-unit frequency pass
     // with the exact same DSU unions that components_full would do.
     // Does not alter the weighted sum-product or branch selection.
@@ -241,6 +257,9 @@ impl<'a> TrailEngine<'a> {
             scope_stamp_probes: 0,
             active_clause_bits: None,
             active_bitmap_key_visits: 0,
+            literal_mask: None,
+            literal_mask_key_visits: 0,
+            literal_mask_updates: 0,
             use_fused_pre_analysis: false,
             fused_pre_clause_scans: 0,
             fused_pre_dsu_merges: 0,
@@ -308,6 +327,53 @@ impl<'a> TrailEngine<'a> {
         self.active_bitmap_key_visits = 0;
     }
 
+    /// Build the literal-position index once, at the root. An entry exists
+    /// for each original normalized source literal (not a copied cofactor).
+    /// The source-bound cap is a fail-closed resource guard, not a
+    /// correctness-changing heuristic.
+    pub(crate) fn enable_reversible_literal_mask(&mut self) -> Result<(), String> {
+        if !self.trail.is_empty() || self.literal_mask.is_some() {
+            return Err("literal mask must be enabled exactly once at the root".into());
+        }
+        let slots = self.occurrence.len();
+        let literal_count: usize = self.clauses.iter().map(Vec::len).sum();
+        let word_count: usize = self.clauses.iter().map(|c| c.len().div_ceil(64)).sum();
+        if literal_count > 1_000_000 || word_count > 262_144 {
+            return Err("exact literal mask source budget exceeded".into());
+        }
+        let mut positions = vec![Vec::<usize>::new(); slots];
+        let mut offsets = Vec::with_capacity(self.clauses.len() + 1);
+        let mut words = Vec::with_capacity(word_count);
+        for clause in &self.clauses {
+            offsets.push(words.len());
+            for chunk in clause.chunks(64) {
+                let word = if chunk.len() == 64 {
+                    u64::MAX
+                } else {
+                    (1_u64 << chunk.len()) - 1
+                };
+                words.push(word);
+            }
+            for (position, &lit) in clause.iter().enumerate() {
+                positions[slot(lit)].push(position);
+            }
+        }
+        offsets.push(words.len());
+        for slot_id in 0..slots {
+            if positions[slot_id].len() != self.occurrence[slot_id].len() {
+                return Err("literal mask occurrence index length drift".into());
+            }
+        }
+        self.literal_mask = Some(ReversibleLiteralMask {
+            words,
+            offsets,
+            occurrence_positions: positions,
+        });
+        self.literal_mask_key_visits = 0;
+        self.literal_mask_updates = 0;
+        Ok(())
+    }
+
     /// One reversible variable assignment. Even if a clause becomes
     /// contradictory, finish the incidence updates so undo is exact.
     fn apply(&mut self, lit: i32, heap: Option<(&mut BinaryHeap<Reverse<usize>>, u64)>) -> bool {
@@ -316,7 +382,12 @@ impl<'a> TrailEngine<'a> {
         self.assigned[var] = if lit > 0 { 1 } else { -1 };
         self.trail.push(var);
         self.assignments += 1;
-        for &cid in &self.occurrence[slot(lit)] {
+        for (position_in_slot, &cid) in self.occurrence[slot(lit)].iter().enumerate() {
+            if let Some(index) = self.literal_mask.as_mut() {
+                let pos = index.occurrence_positions[slot(lit)][position_in_slot];
+                index.words[index.offsets[cid] + pos / 64] &= !(1_u64 << (pos % 64));
+                self.literal_mask_updates += 1;
+            }
             if self.satisfied[cid] == 0 {
                 if let Some(words) = self.active_clause_bits.as_mut() {
                     words[cid / 64] &= !(1_u64 << (cid % 64));
@@ -327,7 +398,12 @@ impl<'a> TrailEngine<'a> {
         }
         let mut conflict = false;
         let mut heap = heap;
-        for &cid in &self.occurrence[slot(-lit)] {
+        for (position_in_slot, &cid) in self.occurrence[slot(-lit)].iter().enumerate() {
+            if let Some(index) = self.literal_mask.as_mut() {
+                let pos = index.occurrence_positions[slot(-lit)][position_in_slot];
+                index.words[index.offsets[cid] + pos / 64] &= !(1_u64 << (pos % 64));
+                self.literal_mask_updates += 1;
+            }
             self.live[cid] -= 1;
             if self.satisfied[cid] == 0 && self.live[cid] == 0 {
                 conflict = true;
@@ -351,7 +427,12 @@ impl<'a> TrailEngine<'a> {
             } else {
                 -(var as i32)
             };
-            for &cid in &self.occurrence[slot(lit)] {
+            for (position_in_slot, &cid) in self.occurrence[slot(lit)].iter().enumerate() {
+                if let Some(index) = self.literal_mask.as_mut() {
+                    let pos = index.occurrence_positions[slot(lit)][position_in_slot];
+                    index.words[index.offsets[cid] + pos / 64] |= 1_u64 << (pos % 64);
+                    self.literal_mask_updates += 1;
+                }
                 self.satisfied[cid] -= 1;
                 if self.satisfied[cid] == 0 {
                     if let Some(words) = self.active_clause_bits.as_mut() {
@@ -360,7 +441,12 @@ impl<'a> TrailEngine<'a> {
                 }
                 self.live[cid] += 1;
             }
-            for &cid in &self.occurrence[slot(-lit)] {
+            for (position_in_slot, &cid) in self.occurrence[slot(-lit)].iter().enumerate() {
+                if let Some(index) = self.literal_mask.as_mut() {
+                    let pos = index.occurrence_positions[slot(-lit)][position_in_slot];
+                    index.words[index.offsets[cid] + pos / 64] |= 1_u64 << (pos % 64);
+                    self.literal_mask_updates += 1;
+                }
                 self.live[cid] += 1;
             }
             self.assigned[var] = 0;
@@ -481,6 +567,37 @@ impl<'a> TrailEngine<'a> {
                 // Read each active source clause at most once and stop
                 // immediately for a clause outside the current scope.
                 let mut first_unassigned = true;
+                if let Some(index) = self.literal_mask.as_ref() {
+                    // Enumerate only currently unassigned literal positions
+                    // in original source-sorted order, across 64-bit words.
+                    // Every bit is reversible with the existing Trail.
+                    for (block, &word) in index.words
+                        [index.offsets[cid]..index.offsets[cid + 1]]
+                        .iter().enumerate()
+                    {
+                        let mut pending = word;
+                        while pending != 0 {
+                            let pos = block * 64 + pending.trailing_zeros() as usize;
+                            pending &= pending - 1;
+                            let lit = self.clauses[cid][pos];
+                            let variable = lit.unsigned_abs() as usize;
+                            debug_assert_eq!(self.assigned[variable], 0);
+                            if first_unassigned {
+                                if scope.binary_search(&variable).is_err() {
+                                    return true;
+                                }
+                                first_unassigned = false;
+                            }
+                            if inline_weight_relabel {
+                                let rank = self.local_variable[variable];
+                                flat.push(if lit < 0 { -rank } else { rank });
+                            } else {
+                                flat.push(lit);
+                            }
+                            self.literal_mask_key_visits += 1;
+                        }
+                    }
+                } else {
                 for &lit in &self.clauses[cid] {
                     let variable = lit.unsigned_abs() as usize;
                     if self.assigned[variable] == 0 {
@@ -514,6 +631,7 @@ impl<'a> TrailEngine<'a> {
                             flat.push(lit);
                         }
                     }
+                }
                 }
                 // A live, unsatisfied clause always has an unassigned
                 // literal; a malformed counter must never be ignored.

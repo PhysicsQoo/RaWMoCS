@@ -3471,6 +3471,128 @@ c p weight 1 1 0 0\nc p weight -1 -1 0 0\n\
     }
 
     #[test]
+    fn reversible_literal_mask_preserves_exact_signed_complex_wmc_and_search() {
+        let sources = [
+            "p cnf 4 4\nc t wmc\nc p weight 1 0.5 0.25 0\nc p weight -1 -0.25 0.125 0\n1 4 0\n2 3 0\n-1 2 0\n-2 -3 0\n",
+            "p cnf 4 3\nc t wmc\nc p weight 3 -0.125 0.25 0\nc p weight -3 0.5 -0.25 0\n1 2 0\n-1 3 0\n2 4 0\n",
+            "p cnf 3 2\nc t wmc\nc p weight 1 0 0 0\nc p weight -1 0 0 0\n1 2 0\n-2 3 0\n",
+        ];
+        for bits in [100_u32, 333] {
+            for source in sources {
+                let p = parse_emitted(source, bits).unwrap();
+                for limit in [0_usize, 1, 128] {
+                    let solve = |enabled: bool| {
+                        let mut t = TrailEngine::new(&p, bits, limit, 100_000);
+                        t.use_parent_ids = true;
+                        t.use_compact_residual = true;
+                        t.use_prehashed_cache = true;
+                        t.use_fused_compact = true;
+                        t.use_weight_class_cache = true;
+                        t.use_inline_weight_relabel = true;
+                        t.use_reusable_key_arena = true;
+                        if enabled {
+                            t.enable_reversible_literal_mask().unwrap();
+                        }
+                        let result = t.count((1..=p.n).collect(), 0).unwrap();
+                        (result, t)
+                    };
+                    let (expected, baseline) = solve(false);
+                    let (actual, index) = solve(true);
+                    assert_eq!(
+                        (expected.sat, &expected.count.re, &expected.count.im),
+                        (actual.sat, &actual.count.re, &actual.count.im)
+                    );
+                    assert_eq!(
+                        (
+                            baseline.stats.nodes,
+                            baseline.stats.cache_hits,
+                            baseline.stats.decompositions,
+                        ),
+                        (
+                            index.stats.nodes,
+                            index.stats.cache_hits,
+                            index.stats.decompositions,
+                        )
+                    );
+                    assert!(index.literal_mask.is_some());
+                    assert!(index.literal_mask_key_visits > 0);
+                    assert!(index.literal_mask_updates > 0);
+                    assert!(index.trail.is_empty());
+                    assert!(index.assigned.iter().all(|&v| v == 0));
+                    for (cid, clause) in index.clauses.iter().enumerate() {
+                        let mask = index.literal_mask.as_ref().unwrap();
+                        let start = mask.offsets[cid];
+                        for pos in 0..clause.len() {
+                            assert!(mask.words[start + pos / 64] & (1_u64 << (pos % 64)) != 0);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reversible_literal_mask_matches_original_keys_across_two_words_and_undo() {
+        let mut source = String::from("p cnf 70 5\nc t wmc\n");
+        for var in 1..=70 {
+            if var != 1 {
+                source.push(' ');
+            }
+            source.push_str(&var.to_string());
+        }
+        source.push_str(" 0\n-1 2 0\n1 -2 0\n-3 4 0\n3 -4 0\n");
+        for bits in [100_u32, 333] {
+            let p = parse_emitted(&source, bits).unwrap();
+            let mut control = TrailEngine::new(&p, bits, 128, 100_000);
+            let mut candidate = TrailEngine::new(&p, bits, 128, 100_000);
+            control.use_fused_compact = true;
+            candidate.use_fused_compact = true;
+            candidate.use_reusable_key_arena = true;
+            candidate.enable_reversible_literal_mask().unwrap();
+            let full = (1..=70).collect::<Vec<_>>();
+            let ids = (0..control.clauses.len()).rev().collect::<Vec<_>>();
+            let wide = candidate.clauses.iter().position(|clause| clause.len() == 70).unwrap();
+            let start = candidate.literal_mask.as_ref().unwrap().offsets[wide];
+            assert_eq!(candidate.literal_mask.as_ref().unwrap().words[start], u64::MAX);
+            assert_eq!(candidate.literal_mask.as_ref().unwrap().words[start + 1], 63);
+            for scope in [&full[..], &[1_usize, 2, 3, 4][..]] {
+                assert_eq!(
+                    control.canonical_compact(scope, None, false),
+                    candidate.canonical_compact(scope, None, false)
+                );
+            }
+            let checkpoint = control.trail.len();
+            for literal in [-1_i32, -64, -65] {
+                assert_eq!(control.apply(literal, None), candidate.apply(literal, None));
+                for scope in [&full[..], &[1_usize, 2, 3, 4][..]] {
+                    assert_eq!(
+                        control.canonical_compact(scope, None, false),
+                        candidate.canonical_compact(scope, None, false)
+                    );
+                    control.use_parent_ids = true;
+                    candidate.use_parent_ids = true;
+                    assert_eq!(
+                        control.canonical_compact(scope, Some(&ids), false),
+                        candidate.canonical_compact(scope, Some(&ids), false)
+                    );
+                }
+            }
+            control.undo(checkpoint);
+            candidate.undo(checkpoint);
+            assert_eq!(
+                control.canonical_compact(&full, None, false),
+                candidate.canonical_compact(&full, None, false)
+            );
+            assert_eq!(candidate.literal_mask.as_ref().unwrap().words[start], u64::MAX);
+            assert_eq!(candidate.literal_mask.as_ref().unwrap().words[start + 1], 63);
+            assert!(candidate.trail.is_empty());
+            assert!(candidate.assigned.iter().all(|&v| v == 0));
+            assert!(candidate.literal_mask_key_visits > 0);
+            assert!(candidate.literal_mask_updates >= 12);
+        }
+    }
+
+    #[test]
     fn fused_pre_unit_frequency_dsu_matches_exact_separate_source_scans() {
         let cases = [
             "p cnf 7 5\nc t wmc\nc p weight 1 0.5 0.25 0\nc p weight -1 0.25 -0.125 0\n1 2 0\n-1 2 0\n3 4 0\n-3 4 0\n5 6 0\n",

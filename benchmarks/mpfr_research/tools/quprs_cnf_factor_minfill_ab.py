@@ -22,7 +22,8 @@ from quprs_paired_native import parse_out
 from quprs_long_feynman_pilot import numerically_agree
 from quprs_cnf_projected_ab import SOURCE, BITS, QU_PRS_SHA, GPMC_SHA, sha, source_head, percentile
 
-ARMS = ("gpmc", "inline_full", "factor_ve", "factor_ve_scope320", "factor_ve_minfill320")
+ARMS = ("gpmc", "inline_full", "factor_ve", "factor_ve_scope320", "factor_ve_minfill320",
+        "factor_ve_minfill_bag14")
 BUDGET_S = 30
 AS_BYTES = 2_147_483_648
 INLINE_FLAGS = (
@@ -41,12 +42,14 @@ def build_command(args: argparse.Namespace, arm: str, digits: int, cnf: Path, ca
     cmd += ["--cache-limit=50000", "--indexed-unit-prop-csr-after-8192",
             "--packed-residual-key-fast", "--fast-assign",
             "--reuse-frequency-scratch", *INLINE_FLAGS]
-    if arm in ("factor_ve", "factor_ve_scope320", "factor_ve_minfill320"):
+    if arm.startswith("factor_ve"):
         cmd.append("--factor-variable-elimination")
-    if arm in ("factor_ve_scope320", "factor_ve_minfill320"):
+    if arm in ("factor_ve_scope320", "factor_ve_minfill320", "factor_ve_minfill_bag14"):
         cmd.append("--factor-ve-scope-probe-320")
-    if arm == "factor_ve_minfill320":
+    if arm in ("factor_ve_minfill320", "factor_ve_minfill_bag14"):
         cmd.append("--factor-ve-minfill-order")
+    if arm == "factor_ve_minfill_bag14":
+        cmd.append("--factor-ve-bag-probe-14")
     cmd += ["--hashbrown-borrowed", str(digits), str(cnf.resolve())]
     return cmd
 
@@ -102,6 +105,9 @@ def sample(command: list[str], arm: str, digits: int) -> dict:
                     r"input_factors=(\d+) eliminated=(\d+) width=(\d+) cells=(\d+) "
                     r"products=(\d+) zero_sat=(\d+) ve_ns=(\d+)$",
                     proc.stderr, re.M)
+                bag_probe = re.search(
+                    r"^RESEARCH_MPFR_FACTOR_VE_BAG_PROBE enabled=(true|false) limit=(11|14)$",
+                    proc.stderr, re.M)
                 scope_probe = re.search(
                     r"^RESEARCH_MPFR_FACTOR_VE_SCOPE_PROBE enabled=(true|false) limit=(256|320)$",
                     proc.stderr, re.M)
@@ -118,22 +124,26 @@ def sample(command: list[str], arm: str, digits: int) -> dict:
                     r"scope_vars=(\d+) source_clauses=(\d+) "
                     r"max_clause_width=(\d+) cap_reason=([a-z_]+)$",
                     proc.stderr, re.M)
-                if not phase or not sep or not root_only or not failed or not centroid or not ve or not admission or not scope_probe or not order:
+                if not phase or not sep or not root_only or not failed or not centroid or not ve or not admission or not scope_probe or not order or not bag_probe:
                     raise ValueError("missing original-CNF solver phase or articulation diagnostics")
-                if (ve.group(1) == "true") != (arm in ("factor_ve", "factor_ve_scope320", "factor_ve_minfill320")):
+                if (ve.group(1) == "true") != arm.startswith("factor_ve"):
                     raise ValueError("factor VE arm flag mismatch")
-                if (scope_probe.group(1) == "true") != (arm in ("factor_ve_scope320", "factor_ve_minfill320")):
+                if (scope_probe.group(1) == "true") != (arm in ("factor_ve_scope320", "factor_ve_minfill320", "factor_ve_minfill_bag14")):
                     raise ValueError("VE scope-probe enabled flag mismatch")
-                if int(scope_probe.group(2)) != (320 if arm in ("factor_ve_scope320", "factor_ve_minfill320") else 256):
+                if int(scope_probe.group(2)) != (320 if arm in ("factor_ve_scope320", "factor_ve_minfill320", "factor_ve_minfill_bag14") else 256):
                     raise ValueError("VE scope probe limit drift")
-                if (order.group(1) == "true") != (arm == "factor_ve_minfill320"):
+                if (order.group(1) == "true") != (arm in ("factor_ve_minfill320", "factor_ve_minfill_bag14")):
                     raise ValueError("min-fill structural planner flag mismatch")
-                if (minor is not None) != (arm == "factor_ve_minfill320"):
+                if (minor is not None) != (arm in ("factor_ve_minfill320", "factor_ve_minfill_bag14")):
                     raise ValueError("minor-bound certificate diagnostic mismatch")
                 if minor is not None:
                     if minor.group(1) != "true" or int(minor.group(3)) != int(minor.group(2)) + 1:
                         raise ValueError("invalid graph minor certificate")
 
+                if (bag_probe.group(1) == "true") != (arm == "factor_ve_minfill_bag14"):
+                    raise ValueError("source-exact wider-bag arm flag mismatch")
+                if int(bag_probe.group(2)) != (14 if arm == "factor_ve_minfill_bag14" else 11):
+                    raise ValueError("source-exact bounded factor-bag cap drift")
                 fields = [int(v) for v in phase.groups()]
                 if fields[7] != digits or fields[8] != BITS[digits]:
                     raise ValueError("GPMC↔Rust MPFR precision drift")
@@ -182,6 +192,8 @@ def sample(command: list[str], arm: str, digits: int) -> dict:
                            factor_ve_zero_sat=int(ve.group(10)),
                            factor_ve_ns=int(ve.group(11)),
                            factor_ve_minfill_enabled=(order.group(1) == "true"),
+                           factor_ve_bag_probe_enabled=(bag_probe.group(1) == "true"),
+                           factor_ve_bag_limit=int(bag_probe.group(2)),
                            minor_treewidth_lower=int(minor.group(2)) if minor else None,
                            minor_bucket_lower=int(minor.group(3)) if minor else None,
                            minor_contractions=int(minor.group(4)) if minor else None,
@@ -215,7 +227,7 @@ def main() -> None:
         raise SystemExit("PINNED_SOURCE_REVISION_DRIFT")
     args.report.parent.mkdir(parents=True, exist_ok=True)
     report = {
-        "study": "Same original weighted CNF: VE 256 versus VE 320 min-union versus VE 320 bounded min-fill order",
+        "study": "Same original weighted CNF: default VE and 320-scope exact min-fill bounded 11 versus 14 bags",
         "source_lock": {"quprs": QU_PRS_SHA, "gpmc": GPMC_SHA},
         "precision": "GPMC 30/100 decimal digits ↔ Rust 100/333 MPFR bits",
         "policy": {"wall_limit_seconds": BUDGET_S, "address_space_bytes": AS_BYTES,
@@ -279,7 +291,8 @@ def main() -> None:
                 baseline = selected["factor_ve"]
                 probe = selected["factor_ve_scope320"]
                 minfill = selected["factor_ve_minfill320"]
-                for candidate in (baseline, probe, minfill):
+                bigger = selected["factor_ve_minfill_bag14"]
+                for candidate in (baseline, probe, minfill, bigger):
                     if not candidate["factor_ve_enabled"]:
                         raise SystemExit("MISSING_FACTOR_VE_FLAG")
                     # A REJECTED trial intentionally records the over-limit
@@ -287,7 +300,7 @@ def main() -> None:
                     # completed unsafe factor work, and must not be confused
                     # with an accepted over-budget result.
                     if candidate["factor_ve_completed"]:
-                        if (candidate["factor_ve_width"] > 11
+                        if (candidate["factor_ve_width"] > candidate["factor_ve_bag_limit"]
                                 or candidate["factor_ve_products"] > 600000
                                 or candidate["factor_ve_cells"] > 150000):
                             raise SystemExit("COMPLETED_UNBOUNDED_FACTOR_VE")
@@ -295,7 +308,7 @@ def main() -> None:
                         reason = candidate["factor_ve_cap_reason"]
                         if not candidate["factor_ve_capped"] or reason == "none":
                             raise SystemExit("UNCLASSIFIED_FACTOR_VE_REJECTION")
-                        if candidate["factor_ve_width"] > 11 and reason != "bucket_width":
+                        if candidate["factor_ve_width"] > candidate["factor_ve_bag_limit"] and reason != "bucket_width":
                             raise SystemExit("INVALID_BAG_BOUND_REASON")
                         if candidate["factor_ve_products"] > 600000 and reason != "bucket_products":
                             raise SystemExit("INVALID_PRODUCT_BOUND_REASON")
@@ -307,11 +320,17 @@ def main() -> None:
                         raise SystemExit("FACTOR_VE_FALLBACK_TOPOLOGY_DRIFT")
                 if baseline["factor_ve_scope_vars"] > 256 and baseline["factor_ve_cap_reason"] != "source_scope":
                     raise SystemExit("BASELINE_SCOPE_ENVELOPE_DRIFT")
-                for candidate in (probe, minfill):
+                for candidate in (probe, minfill, bigger):
                     if candidate["factor_ve_scope_vars"] > 320 and candidate["factor_ve_cap_reason"] != "source_scope":
                         raise SystemExit("PROBE_SCOPE_ENVELOPE_DRIFT")
                 if minfill["minor_bucket_lower"] > minfill["minfill_predicted_width"] and minfill["minfill_predicted_width"] > 0:
                     raise SystemExit("INVALID_LOWER_GREATER_THAN_HEURISTIC_UPPER")
+                if bigger["minor_bucket_lower"] > bigger["minfill_predicted_width"] and bigger["minfill_predicted_width"] > 0:
+                    raise SystemExit("INVALID_BAG14_LOWER_GREATER_THAN_UPPER")
+                if bigger["minfill_predicted_width"] > 14 and bigger["factor_ve_completed"]:
+                    raise SystemExit("BAG14_PLANNER_ACCEPTED_OVERWIDTH_BUCKET")
+                if bigger["minfill_predicted_width"] > 14 and bigger["factor_ve_cap_reason"] != "bucket_width":
+                    raise SystemExit("BAG14_PLANNER_OVERWIDTH_MISCLASSIFIED")
                 if minfill["minfill_predicted_width"] > 11 and minfill["factor_ve_completed"]:
                     raise SystemExit("PLANNER_ACCEPTED_OVERWIDTH_BUCKET")
                 if minfill["minfill_predicted_width"] > 11 and minfill["factor_ve_cap_reason"] != "bucket_width":
@@ -368,7 +387,11 @@ def main() -> None:
                   f" fill_complete={cohort['stats']['factor_ve_minfill320']['p50_factor_ve_completed']}" +
                   f" fill_width={cohort['stats']['factor_ve_minfill320']['p50_factor_ve_width']}" +
                   f" fill_products={cohort['stats']['factor_ve_minfill320']['p50_factor_ve_products']}" +
-                  f" fill_cap_reason={','.join(cohort['stats']['factor_ve_minfill320']['factor_ve_cap_reasons'])}",
+                  f" fill_cap_reason={','.join(cohort['stats']['factor_ve_minfill320']['factor_ve_cap_reasons'])}" +
+                  f" bag14_completed={cohort['stats']['factor_ve_minfill_bag14']['p50_factor_ve_completed']}" +
+                  f" bag14_width={cohort['stats']['factor_ve_minfill_bag14']['p50_factor_ve_width']}" +
+                  f" bag14_products={cohort['stats']['factor_ve_minfill_bag14']['p50_factor_ve_products']}" +
+                  f" bag14_cap_reason={','.join(cohort['stats']['factor_ve_minfill_bag14']['factor_ve_cap_reasons'])}",
 
 
 

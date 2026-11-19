@@ -137,6 +137,10 @@ def sample(command: list[str], arm: str, digits: int) -> dict:
                     r"^RESEARCH_MPFR_ACTIVE_CLAUSE_BITMAP enabled=(true|false) "
                     r"key_visits=(\d+)$", proc.stderr, re.M,
                 )
+                literal_mask = re.search(
+                    r"^RESEARCH_MPFR_REVERSIBLE_LITERAL_MASK enabled=(true|false) "
+                    r"key_visits=(\d+) updates=(\d+)$", proc.stderr, re.M,
+                )
                 fused_pre = re.search(
                     r"^RESEARCH_MPFR_FUSED_PRE_ANALYSIS enabled=(true|false) "
                     r"clause_scans=(\d+) dsu_merges=(\d+)$", proc.stderr, re.M,
@@ -238,6 +242,9 @@ def sample(command: list[str], arm: str, digits: int) -> dict:
                            scope_stamp_probes=int(scope_stamp.group(2)) if scope_stamp else 0,
                            active_bitmap_enabled=(active_bitmap.group(1) == "true") if active_bitmap else False,
                            active_bitmap_key_visits=int(active_bitmap.group(2)) if active_bitmap else 0,
+                           literal_mask_enabled=(literal_mask.group(1) == "true") if literal_mask else False,
+                           literal_mask_key_visits=int(literal_mask.group(2)) if literal_mask else 0,
+                           literal_mask_updates=int(literal_mask.group(3)) if literal_mask else 0,
                            fused_pre_enabled=(fused_pre.group(1) == "true") if fused_pre else False,
                            fused_pre_clause_scans=int(fused_pre.group(2)) if fused_pre else 0,
                            fused_pre_dsu_merges=int(fused_pre.group(3)) if fused_pre else 0,

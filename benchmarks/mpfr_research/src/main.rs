@@ -1284,7 +1284,7 @@ fn run() -> Result<(), String> {
     eprintln!("RESEARCH_MPFR_FACTOR_VE_BAG_PROBE enabled={} limit={}",
         ve_bag14, if ve_bag14 { 14 } else { 11 });
     eprintln!("RESEARCH_MPFR_FACTOR_VE_PREFLIGHT enabled={} products_upper={} cells_upper={} rejected={}",
-        ve_preflight, ve_stats.preflight_products_upper, ve_stats.preflight_cells_upper,
+        ve_stats.preflight_enabled, ve_stats.preflight_products_upper, ve_stats.preflight_cells_upper,
         ve_stats.cap_reason.starts_with("preflight_"));
     eprintln!("RESEARCH_MPFR_FACTOR_VE_ORDER minfill={} predicted_width={} fill_edges={} candidates={} plan_ns={}",
         ve_min_fill, ve_stats.minfill_plan_width, ve_stats.minfill_fill_edges,

@@ -249,6 +249,9 @@ fn selected_bucket_for_variable(
     (variable, incident, union)
 }
 
+// Legacy bounded VE entrypoint carries four independent research-policy knobs.
+// The checked opt-in controls are intentionally explicit; no production ABI changes.
+#[allow(clippy::too_many_arguments)]
 fn count_clauses_with_limit(
     p: &Problem, scope: &[usize], clauses: &[Clause], bits: u32,
     scope_cap: usize, minfill: bool, bag_cap: usize, preflight: bool,

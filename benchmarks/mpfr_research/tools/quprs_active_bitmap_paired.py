@@ -43,7 +43,7 @@ def make_command(args: argparse.Namespace, arm: str, digits: int,
                  cnf: Path, case: str) -> list[str]:
     if arm == "gpmc":
         return command(args, "gpmc", digits, cnf, case)
-    checked(arm in ARMS, "UNKNOWN_STAMP_ARM")
+    checked(arm in ARMS, "UNKNOWN_ACTIVE_BITMAP_ARM")
     cmd = command(args, "arena_reuse", digits, cnf, case)
     if args.family == "mqt":
         cmd.insert(1, "--node-budget=1000000")
@@ -56,7 +56,7 @@ def make_command(args: argparse.Namespace, arm: str, digits: int,
 
 
 def check_trial(group: dict[str, dict], bits: int, digits: int,
-                family: str) -> None:
+                family: str, case: str) -> None:
     checked(set(group) == set(ARMS), "UNBALANCED_ACTIVE_BITMAP_ARMS")
     g, a, b = (group[arm] for arm in ARMS)
     checked(all(r["status"] == "COMPLETED" and r["exit_code"] == 0
@@ -85,11 +85,18 @@ def check_trial(group: dict[str, dict], bits: int, digits: int,
                 "UNRELATED_SEARCH_ARM")
         checked(not rust.get("stage_enabled"),
                 "INSTRUMENTED_NATIVE_WALLTIME_CONTAMINATION")
+    # A completely unit-closed original residual can be solved without
+    # visiting any active source clause during canonical key generation.
+    # Flag enabled does not imply nonzero visits in such exact no-op cases.
+    # Hard performance cohorts must actually exercise the index.
+    visits = b.get("active_bitmap_key_visits")
     checked(a.get("active_bitmap_enabled") is False
             and a.get("active_bitmap_key_visits") == 0
             and b.get("active_bitmap_enabled") is True
-            and b.get("active_bitmap_key_visits", 0) > 0,
+            and type(visits) is int and visits >= 0,
             "ACTIVE_BITMAP_FLAG_OR_ADMISSION_DRIFT")
+    if case in HARD:
+        checked(visits > 0, "HARD_CASE_ACTIVE_BITMAP_NO_INDEX_WORK")
     checked(
         a["stdout_sha256"] == b["stdout_sha256"]
         and tuple(a[k] for k in ("nodes", "cache_hits", "decompositions"))
@@ -194,7 +201,8 @@ def self_test() -> None:
             "peak_rss_kib": 6000,
         }
     rows = [trial(arm, i) for i in range(7) for arm in ARMS]
-    check_trial({r["arm"]: r for r in rows[:3]}, 100, 30, "feynman")
+    check_trial({r["arm"]: r for r in rows[:3]}, 100, 30,
+                "feynman", "feynman_hwb6")
     assert stats(rows)["incremental_research_go"]
     for arm, field, bad in (
         ("arena_active_bitmap", "imag", "1/8"),
@@ -208,11 +216,39 @@ def self_test() -> None:
         broken = [dict(row) for row in rows[:3]]
         next(r for r in broken if r["arm"] == arm)[field] = bad
         try:
-            check_trial({r["arm"]: r for r in broken}, 100, 30, "feynman")
+            check_trial({r["arm"]: r for r in broken}, 100, 30,
+                        "feynman", "feynman_hwb6")
         except ValueError:
             pass
         else:
             raise AssertionError(f"CORRUPTED_ACTIVE_BITMAP_ORACLE: {arm}:{field}")
+    # Genuine no-work unit-closed MQT sources must retain exact WMC
+    # equivalence and must not be rejected by a nonzero-work assumption.
+    zero = [dict(row) for row in rows[:3]]
+    next(r for r in zero if r["arm"] == "arena_active_bitmap")[
+        "active_bitmap_key_visits"
+    ] = 0
+    check_trial({r["arm"]: r for r in zero}, 100, 30,
+                "mqt", "mqt_grover_4")
+    for invalid_value in (-1, 0.0, None, True):
+        invalid = [dict(row) for row in zero]
+        next(r for r in invalid if r["arm"] == "arena_active_bitmap")[
+            "active_bitmap_key_visits"
+        ] = invalid_value
+        try:
+            check_trial({r["arm"]: r for r in invalid}, 100, 30,
+                        "mqt", "mqt_grover_4")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("INVALID_BITMAP_COUNTER_ACCEPTED")
+    try:
+        check_trial({r["arm"]: r for r in zero}, 100, 30,
+                    "feynman", "feynman_hwb6")
+    except ValueError as exc:
+        assert "HARD_CASE_ACTIVE_BITMAP" in str(exc)
+    else:
+        raise AssertionError("HARD_CASE_BITMAP_NEVER_VISITED")
     slow = [dict(row) for row in rows]
     for row in slow:
         if row["arm"] == "arena_active_bitmap":
@@ -380,7 +416,7 @@ def main() -> None:
             for trial_no in range(TRIALS):
                 check_trial({r["arm"]: r for r in cohort["records"]
                              if r["trial"] == trial_no}, bits,
-                            digits, args.family)
+                            digits, args.family, case)
             cohort["status"] = "EXACT_NUMERIC_AND_TOPOLOGY_MATCH"
             cohort["stats"] = stats(cohort["records"])
             complete += 1

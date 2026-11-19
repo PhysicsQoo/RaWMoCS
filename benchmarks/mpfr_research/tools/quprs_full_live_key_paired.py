@@ -127,9 +127,11 @@ def run_one(command: list[str], arm: str, bits: int, digits: int) -> dict:
                 if (full_live.group(1) == "true") != (arm == "full_live_clause"):
                     raise ValueError("FULL_LIVE_RUNTIME_FLAG_MISMATCH")
                 hits = int(full_live.group(2))
-                if (arm == "inline_full" and hits != 0
-                        or arm == "full_live_clause" and hits == 0):
-                    raise ValueError("FULL_LIVE_HIT_COUNTER_INVALID")
+                # A source-exact negative control may have no fully-live
+                # clauses after equivalence/units. Zero candidate hits is
+                # therefore a measured observation, not a failure.
+                if arm == "inline_full" and hits != 0:
+                    raise ValueError("DISABLED_FULL_LIVE_HIT_COUNTER_NONZERO")
                 row.update(
                     nodes=phase_vals[4],
                     cache_hits=phase_vals[5],

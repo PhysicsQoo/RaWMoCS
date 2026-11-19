@@ -137,18 +137,6 @@ jobs:
             --report .research/mqtbench/mqt-arena-seven-arm.json \
             | tee .research/mqtbench/mqt-arena-seven-arm.log
 
-      - name: Independent original MQT GPMC versus Arena exact reversible literal mask native A/B
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 benchmarks/mpfr_research/tools/quprs_reversible_literal_mask_paired.py \
-            --family mqt --quprs .upstream/quprs \
-            --gpmc-source .upstream/gpmc \
-            --corpus .research/mqtbench \
-            --gpmc .upstream/gpmc/build/gpmc \
-            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
-            --report .research/mqtbench/literal-mask-three-arm.json \
-            | tee .research/mqtbench/literal-mask-three-arm.log
 
       - name: Archive source statuses and every paired/censored record
         if: always()

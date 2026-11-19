@@ -976,6 +976,11 @@ fn run() -> Result<(), String> {
     let cache_first = if trail_active_clause_bitmap {
         args.next().ok_or("missing mode after --trail-active-clause-bitmap")?
     } else { cache_first };
+    let trail_reversible_literal_mask =
+        cache_first.to_str() == Some("--trail-reversible-literal-mask");
+    let cache_first = if trail_reversible_literal_mask {
+        args.next().ok_or("missing mode after --trail-reversible-literal-mask")?
+    } else { cache_first };
     let trail_fused_pre_analysis =
         cache_first.to_str() == Some("--trail-fused-pre-analysis");
     let cache_first = if trail_fused_pre_analysis {
@@ -1092,6 +1097,12 @@ fn run() -> Result<(), String> {
         factor_pair_cutset || root_failed_literal || articulation_pivot ||
         primal_order || unit_closure_pivot) {
         return Err("--trail-ordered-key-fastpath requires original fused signed-weight Trail without other experimental search arms".into());
+    }
+    if trail_reversible_literal_mask
+        && (!trail_reuse_key_arena || trail_scope_stamp_admission
+            || trail_active_clause_bitmap || trail_fused_pre_analysis)
+    {
+        return Err("--trail-reversible-literal-mask requires Arena and excludes Stamp/Bitmap/Fused Pre".into());
     }
     if trail_fused_pre_analysis
         && (!trail_reuse_key_arena
@@ -1279,6 +1290,7 @@ fn run() -> Result<(), String> {
     let mut key_arena_metrics = (0_u64, 0_u64, 0_u64);
     let mut scope_stamp_probes = 0_u64;
     let mut active_bitmap_key_visits = 0_u64;
+    let mut literal_mask_metrics = (0_u64, 0_u64);
     let mut fused_pre_metrics = (0_u64, 0_u64);
     let mut stage_metrics = (0_u128, 0_u128, 0_u128, 0_u128, 0_u128);
     let mut key_subphase_metrics = (0_u128, 0_u128, 0_u128);
@@ -1311,6 +1323,9 @@ fn run() -> Result<(), String> {
         if trail_active_clause_bitmap {
             trail.enable_active_clause_bitmap();
         }
+        if trail_reversible_literal_mask {
+            trail.enable_reversible_literal_mask()?;
+        }
         trail.use_fused_pre_analysis = trail_fused_pre_analysis;
         trail.stage_profile = trail_stage_profile;
         if let Some(ref profile) = primal_profile {
@@ -1339,6 +1354,7 @@ fn run() -> Result<(), String> {
         );
         scope_stamp_probes = trail.scope_stamp_probes;
         active_bitmap_key_visits = trail.active_bitmap_key_visits;
+        literal_mask_metrics = (trail.literal_mask_key_visits, trail.literal_mask_updates);
         fused_pre_metrics = (
             trail.fused_pre_clause_scans,
             trail.fused_pre_dsu_merges,
@@ -1397,6 +1413,12 @@ fn run() -> Result<(), String> {
         "RESEARCH_MPFR_ACTIVE_CLAUSE_BITMAP enabled={} key_visits={}",
         trail_active_clause_bitmap,
         active_bitmap_key_visits
+    );
+    eprintln!(
+        "RESEARCH_MPFR_REVERSIBLE_LITERAL_MASK enabled={} key_visits={} updates={}",
+        trail_reversible_literal_mask,
+        literal_mask_metrics.0,
+        literal_mask_metrics.1
     );
     eprintln!(
         "RESEARCH_MPFR_FUSED_PRE_ANALYSIS enabled={} clause_scans={} dsu_merges={}",

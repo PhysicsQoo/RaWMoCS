@@ -12,6 +12,9 @@ pub(crate) const PROBE_SCOPE: usize = 320;
 const MAX_CLAUSES: usize = 3000;
 const MAX_CLAUSE_WIDTH: usize = 12;
 const MAX_BAG: usize = 11;
+// Research-only bounded wider bag admission. Other exponential budgets
+// remain fixed, with no production/default expansion.
+const PROBE_BAG: usize = 14;
 const MAX_CELLS: usize = 150_000;
 const MAX_PRODUCTS: usize = 600_000;
 
@@ -136,7 +139,7 @@ pub(crate) fn count(
 pub(crate) fn count_scope_probe(
     p: &Problem, scope: &[usize], bits: u32,
 ) -> (Option<Outcome>, VeStats) {
-    count_clauses_with_limit(p, scope, &p.clauses, bits, PROBE_SCOPE, false)
+    count_clauses_with_limit(p, scope, &p.clauses, bits, PROBE_SCOPE, false, MAX_BAG)
 }
 
 /// Research-only alternative: same 320 source-scope admission and exactly
@@ -144,7 +147,16 @@ pub(crate) fn count_scope_probe(
 pub(crate) fn count_scope_probe_minfill(
     p: &Problem, scope: &[usize], bits: u32,
 ) -> (Option<Outcome>, VeStats) {
-    count_clauses_with_limit(p, scope, &p.clauses, bits, PROBE_SCOPE, true)
+    count_clauses_with_limit(p, scope, &p.clauses, bits, PROBE_SCOPE, true, MAX_BAG)
+}
+
+/// Research-only scope 320 + width 14 min-fill VE probe. Hard cells/products
+/// and original-circuit signed weights remain unchanged; any exceeded budget
+/// returns None and the caller uses the same original weighted Trail.
+pub(crate) fn count_scope_probe_minfill_bag14(
+    p: &Problem, scope: &[usize], bits: u32,
+) -> (Option<Outcome>, VeStats) {
+    count_clauses_with_limit(p, scope, &p.clauses, bits, PROBE_SCOPE, true, PROBE_BAG)
 }
 
 /// Count a *live*, already-cofactored residual CNF with unchanged original
@@ -153,7 +165,7 @@ pub(crate) fn count_scope_probe_minfill(
 pub(crate) fn count_clauses(
     p: &Problem, scope: &[usize], clauses: &[Clause], bits: u32,
 ) -> (Option<Outcome>, VeStats) {
-    count_clauses_with_limit(p, scope, clauses, bits, MAX_SCOPE, false)
+    count_clauses_with_limit(p, scope, clauses, bits, MAX_SCOPE, false, MAX_BAG)
 }
 
 fn selected_bucket_for_variable(
@@ -174,7 +186,7 @@ fn selected_bucket_for_variable(
 
 fn count_clauses_with_limit(
     p: &Problem, scope: &[usize], clauses: &[Clause], bits: u32,
-    scope_cap: usize, minfill: bool,
+    scope_cap: usize, minfill: bool, bag_cap: usize,
 ) -> (Option<Outcome>, VeStats) {
     let mut stats = VeStats {
         source_vars: p.n,
@@ -226,7 +238,7 @@ fn count_clauses_with_limit(
     stats.minfill_enabled = minfill;
     let minfill_order = if minfill {
         let start = Instant::now();
-        let plan = factor_minfill_order::plan(clauses, scope, MAX_BAG);
+        let plan = factor_minfill_order::plan(clauses, scope, bag_cap);
         stats.minfill_plan_ns = start.elapsed().as_nanos();
         stats.minfill_plan_width = plan.max_bucket;
         stats.minfill_fill_edges = plan.fill_edges;
@@ -248,7 +260,7 @@ fn count_clauses_with_limit(
             selected_bucket(&factors, &remaining)
         };
         stats.width = stats.width.max(union.len());
-        if union.len() > MAX_BAG || union.is_empty() {
+        if union.len() > bag_cap || union.is_empty() {
             return reject(stats, "bucket_width");
         }
         let rest: Vec<usize> = union.into_iter().filter(|&v| v != variable).collect();
@@ -349,6 +361,33 @@ mod tests {
             assert_eq!(result.sat, old.sat);
             assert_eq!(result.count.re, old.count.re);
             assert_eq!(result.count.im, old.count.im);
+        }
+    }
+
+
+    #[test]
+    fn wider_bag14_probe_admits_exact_source_scope_without_changing_default() {
+        // A single twelve-literal original source clause induces a width-12
+        // bucket even though all weights are 1. Default MAX_BAG=11 must
+        // reject it; the separately opt-in bounded bag14 calculates WMC
+        // = 2^12 - 1 exactly, including at 333-bit MPFR precision.
+        let input = "p cnf 12 1\nc t wmc\n1 2 3 4 5 6 7 8 9 10 11 12 0\n";
+        for bits in [100_u32, 333] {
+            let p = parse_emitted(input, bits).unwrap();
+            let scope = (1..=12).collect::<Vec<_>>();
+            let (control, control_stats) = count_scope_probe_minfill(&p, &scope, bits);
+            assert!(control.is_none());
+            assert_eq!(control_stats.cap_reason, "bucket_width");
+            let (trial, stats) = count_scope_probe_minfill_bag14(&p, &scope, bits);
+            assert!(stats.eligible && !stats.capped, "{stats:?}");
+            assert!(stats.width <= PROBE_BAG);
+            assert!(stats.cells <= MAX_CELLS);
+            assert!(stats.products <= MAX_PRODUCTS);
+            let actual = trial.unwrap();
+            assert!(actual.sat);
+            let expected = C::decimal(bits, "4095", "0").unwrap();
+            assert_eq!(actual.count.re, expected.re);
+            assert_eq!(actual.count.im, expected.im);
         }
     }
 

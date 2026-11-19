@@ -10,6 +10,7 @@ on:
       - "benchmarks/mpfr_research/tools/quprs_cnf_key_arena_ab.py"
       - "benchmarks/mpfr_research/tools/quprs_scope_stamp_paired.py"
       - "benchmarks/mpfr_research/tools/quprs_active_bitmap_paired.py"
+      - "benchmarks/mpfr_research/tools/quprs_reversible_literal_mask_paired.py"
       - "benchmarks/mpfr_research/tools/quprs_fused_pre_paired.py"
       - "benchmarks/mpfr_research/tools/quprs_cnf_scoped_dsu_ab.py"
       - "benchmarks/mpfr_research/tools/quprs_cnf_scoped_dsu_ab.py"
@@ -64,8 +65,10 @@ jobs:
             benchmarks/mpfr_research/tools/quprs_arena_cross_family_acceptance.py \
             benchmarks/mpfr_research/tools/quprs_scope_stamp_paired.py \
             benchmarks/mpfr_research/tools/quprs_active_bitmap_paired.py \
-            benchmarks/mpfr_research/tools/quprs_fused_pre_paired.py
+            benchmarks/mpfr_research/tools/quprs_fused_pre_paired.py \
+            benchmarks/mpfr_research/tools/quprs_reversible_literal_mask_paired.py
           python3 benchmarks/mpfr_research/tools/quprs_fused_pre_paired.py --self-test
+          python3 benchmarks/mpfr_research/tools/quprs_reversible_literal_mask_paired.py --self-test
           python3 benchmarks/mpfr_research/tools/quprs_active_bitmap_paired.py --self-test
           python3 benchmarks/mpfr_research/tools/quprs_scope_stamp_paired.py --self-test
           python3 benchmarks/mpfr_research/tools/quprs_cnf_key_arena_ab.py --self-test
@@ -134,18 +137,18 @@ jobs:
             --report .research/mqtbench/mqt-arena-seven-arm.json \
             | tee .research/mqtbench/mqt-arena-seven-arm.log
 
-      - name: Independent original MQT GPMC versus Arena exact fused frequency and components native A/B
+      - name: Independent original MQT GPMC versus Arena exact reversible literal mask native A/B
         shell: bash
         run: |
           set -euo pipefail
-          python3 benchmarks/mpfr_research/tools/quprs_fused_pre_paired.py \
+          python3 benchmarks/mpfr_research/tools/quprs_reversible_literal_mask_paired.py \
             --family mqt --quprs .upstream/quprs \
             --gpmc-source .upstream/gpmc \
             --corpus .research/mqtbench \
             --gpmc .upstream/gpmc/build/gpmc \
             --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
-            --report .research/mqtbench/fused-pre-three-arm.json \
-            | tee .research/mqtbench/fused-pre-three-arm.log
+            --report .research/mqtbench/literal-mask-three-arm.json \
+            | tee .research/mqtbench/literal-mask-three-arm.log
 
       - name: Archive source statuses and every paired/censored record
         if: always()

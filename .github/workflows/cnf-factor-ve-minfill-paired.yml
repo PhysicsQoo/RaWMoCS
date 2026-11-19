@@ -10,6 +10,7 @@ on:
       - benchmarks/mpfr_research/src/factor_minfill_order.rs
       - benchmarks/mpfr_research/src/factor_primal_minor_bound.rs
       - benchmarks/mpfr_research/tools/quprs_cnf_factor_minfill_ab.py
+      - benchmarks/mpfr_research/tools/quprs_factor_preflight_paired.py
       - docs/factor-ve-minfill-research.md
       - docs/factor-ve-primal-minor-bound-research.md
   workflow_dispatch:
@@ -112,6 +113,21 @@ jobs:
             --trials 7 \
             --report .research/weighted-cnf-articulation/factor-ve-minfill-five-arm.json \
             | tee .research/weighted-cnf-articulation/study.log
+      - name: Source-locked Factor-VE structural preflight four-arm native holdout
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile benchmarks/mpfr_research/tools/quprs_factor_preflight_paired.py
+          python3 benchmarks/mpfr_research/tools/quprs_factor_preflight_paired.py --self-test
+          python3 benchmarks/mpfr_research/tools/quprs_factor_preflight_paired.py \
+            --family feynman \
+            --quprs .upstream/quprs \
+            --gpmc-source .upstream/gpmc \
+            --corpus .research/weighted-cnf-articulation \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --report .research/weighted-cnf-articulation/preflight-four-arm.json \
+            | tee .research/weighted-cnf-articulation/preflight-four-arm.log
       - name: Preserve complete positive, negative and censored source evidence
         if: always()
         uses: actions/upload-artifact@v4

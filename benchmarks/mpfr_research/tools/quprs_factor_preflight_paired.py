@@ -32,6 +32,8 @@ from quprs_cnf_projected_ab import SOURCE
 from quprs_mqtbench_original_cnf_ab import ORIGINAL_MQT, complex_relative_witness
 
 ARMS = ("gpmc", "inline_full", "bag14", "bag14_preflight")
+# Additional independent structural negative-control study only.
+ARMS_QUICK = (*ARMS, "bag14_quick_scope")
 TRIALS = 7
 CASES = {
     "feynman": ("feynman_hwb6", "feynman_barenco_tof_5", "feynman_mod_mult_55"),
@@ -49,9 +51,12 @@ def command_for(args: argparse.Namespace, case: str, digits: int,
     command = (feynman_command(args, mapped, digits, cnf, case)
                if args.family == "feynman"
                else mqt_command(args, mapped, digits, cnf, case))
-    if arm == "bag14_preflight":
+    if arm in ("bag14_preflight", "bag14_quick_scope"):
         index = command.index("--hashbrown-borrowed")
         command.insert(index, "--factor-ve-preflight-cost")
+    if arm == "bag14_quick_scope":
+        index = command.index("--hashbrown-borrowed")
+        command.insert(index, "--factor-ve-quick-scope256")
     return command
 
 
@@ -60,16 +65,20 @@ def check_commands() -> None:
         args = argparse.Namespace(
             family=family, gpmc=Path("/original-gpmc"), mpfr=Path("/rust-mpfr"),
         )
-        for arm in ARMS:
+        for arm in ARMS_QUICK:
             cmd = command_for(args, CASES[family][0], 30, arm,
                               Path("/source-locked.cnf"))
-            expected = arm == "bag14_preflight"
+            expected = arm in ("bag14_preflight", "bag14_quick_scope")
             if (cmd.count("--factor-ve-preflight-cost") == 1) != expected:
                 raise SystemExit("PREFLIGHT_ARM_FLAG_DRIFT")
+            if (cmd.count("--factor-ve-quick-scope256") == 1) != (
+                arm == "bag14_quick_scope"
+            ):
+                raise SystemExit("QUICK_SCOPE_FLAG_DRIFT")
             if (("--factor-variable-elimination" in cmd)
-                    != (arm in ("bag14", "bag14_preflight"))):
+                    != arm.startswith("bag14")):
                 raise SystemExit("FACTOR_VE_CONTROL_CONTAMINATION")
-            if arm not in ("bag14", "bag14_preflight"):
+            if not arm.startswith("bag14"):
                 if "--factor-ve-bag-probe-14" in cmd:
                     raise SystemExit("UNMODIFIED_CONTROL_HAS_BAG14")
             elif (cmd.count("--factor-ve-bag-probe-14") != 1
@@ -133,6 +142,8 @@ def source_file(args: argparse.Namespace, case: str) -> Path:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--quick-scope", action="store_true",
+                        help="independent five-arm original-scope negative-control study")
     parser.add_argument("--family", choices=CASES, default="feynman")
     for name in ("quprs", "gpmc-source", "corpus", "gpmc", "mpfr", "report"):
         parser.add_argument("--" + name, type=Path)
@@ -145,9 +156,12 @@ def main() -> None:
             parser.error("missing --" + name.replace("_", "-"))
     if source_head(args.quprs) != QU_PRS_SHA or source_head(args.gpmc_source) != GPMC_SHA:
         raise SystemExit("ORIGINAL_GPMC_OR_QU_PRS_SHA_DRIFT")
+    arms = ARMS_QUICK if args.quick_scope else ARMS
     report = {
-        "study": "Opt-in exact structure-only Factor-VE preflight",
-        "family": args.family, "arms": list(ARMS), "trials": TRIALS,
+        "study": ("Opt-in cheap 256-scope Factor-VE admission negative control"
+                  if args.quick_scope else
+                  "Opt-in exact structure-only Factor-VE preflight"),
+        "family": args.family, "arms": list(arms), "trials": TRIALS,
         "quprs_sha": QU_PRS_SHA, "gpmc_sha": GPMC_SHA,
         "checkout_sha": subprocess.check_output(
             ["git", "rev-parse", "HEAD"], text=True).strip(),
@@ -173,7 +187,7 @@ def main() -> None:
             item["precisions"].append(cohort)
             save()
             for trial in range(TRIALS):
-                rotated = ARMS[trial % len(ARMS):] + ARMS[:trial % len(ARMS)]
+                rotated = arms[trial % len(arms):] + arms[:trial % len(arms)]
                 for arm in rotated:
                     row = sample_arm(args, case, digits, arm, cnf)
                     row["trial"] = trial
@@ -183,7 +197,7 @@ def main() -> None:
                           f"trial={trial} arm={arm} status={row['status']}",
                           flush=True)
             rows = cohort["records"]
-            if len(rows) != TRIALS * len(ARMS) or any(
+            if len(rows) != TRIALS * len(arms) or any(
                 r["status"] != "COMPLETED" for r in rows
             ):
                 cohort["status"] = "CENSORED_OR_INCOMPLETE"
@@ -192,7 +206,7 @@ def main() -> None:
             wins = 0
             for trial in range(TRIALS):
                 selected = {r["arm"]: r for r in rows if r["trial"] == trial}
-                if set(selected) != set(ARMS):
+                if set(selected) != set(arms):
                     raise SystemExit("FACTOR_PREFLIGHT_UNBALANCED_TRIAL")
                 control, inline, bag, candidate = (selected[a] for a in ARMS)
                 for other in (inline, bag, candidate):
@@ -212,7 +226,21 @@ def main() -> None:
                     ):
                         raise SystemExit("FACTOR_PREFLIGHT_FALLBACK_NOT_EXACT")
                 wins += candidate["wall_ns"] < bag["wall_ns"]
-            cohort["stats"] = {arm: metrics(rows, arm) for arm in ARMS}
+                if args.quick_scope:
+                    quick = selected["bag14_quick_scope"]
+                    if (not numeric_match(control, quick, args.family, digits)
+                            or quick["precision_bits"] != bits):
+                        raise SystemExit("QUICK_SCOPE_SIGNED_COMPLEX_OR_PRECISION_DRIFT")
+                    if quick["factor_ve_completed"]:
+                        if (not bag["factor_ve_completed"]
+                                or quick["stdout_sha256"] != bag["stdout_sha256"]):
+                            raise SystemExit("QUICK_SCOPE_COMPLETION_DRIFT")
+                    elif (quick["nodes"], quick["cache_hits"],
+                          quick["decompositions"], quick["stdout_sha256"]) != (
+                              inline["nodes"], inline["cache_hits"],
+                              inline["decompositions"], inline["stdout_sha256"]):
+                        raise SystemExit("QUICK_SCOPE_FALLBACK_TOPOLOGY_DRIFT")
+            cohort["stats"] = {arm: metrics(rows, arm) for arm in arms}
             cohort["paired_wins_preflight_vs_bag14"] = wins
             original_bag = cohort["stats"]["bag14"]
             preflight = cohort["stats"]["bag14_preflight"]
@@ -224,6 +252,31 @@ def main() -> None:
             cohort["gain_vs_bag14_p90"] = gain90
             cohort["rss_ratio_vs_bag14"] = rss_ratio
             cohort["status"] = "MATCHED_SIGNED_COMPLEX_WMC"
+            if args.quick_scope:
+                quick = cohort["stats"]["bag14_quick_scope"]
+                cohort["paired_wins_quick_vs_bag14"] = sum(
+                    next(r for r in rows if r["trial"] == trial
+                         and r["arm"] == "bag14_quick_scope")["wall_ns"]
+                    < next(r for r in rows if r["trial"] == trial
+                           and r["arm"] == "bag14")["wall_ns"]
+                    for trial in range(TRIALS)
+                )
+                cohort["paired_wins_quick_vs_inline"] = sum(
+                    next(r for r in rows if r["trial"] == trial
+                         and r["arm"] == "bag14_quick_scope")["wall_ns"]
+                    < next(r for r in rows if r["trial"] == trial
+                           and r["arm"] == "inline_full")["wall_ns"]
+                    for trial in range(TRIALS)
+                )
+                print(f"FACTOR_QUICK_SCOPE_MATCH case={case} bits={bits} "
+                      f"gpmc_ms={cohort['stats']['gpmc']['p50_wall_ms']:.3f} "
+                      f"inline_ms={cohort['stats']['inline_full']['p50_wall_ms']:.3f} "
+                      f"bag14_ms={original_bag['p50_wall_ms']:.3f} "
+                      f"preflight_ms={preflight['p50_wall_ms']:.3f} "
+                      f"quick_ms={quick['p50_wall_ms']:.3f} "
+                      f"quick_vs_bag_wins={cohort['paired_wins_quick_vs_bag14']}/{TRIALS} "
+                      f"quick_vs_inline_wins={cohort['paired_wins_quick_vs_inline']}/{TRIALS} "
+                      f"quick_completed={quick['completed_ve']}", flush=True)
             save()
             print(f"FACTOR_PREFLIGHT_MATCH case={case} bits={bits} "
                   f"gpmc_ms={cohort['stats']['gpmc']['p50_wall_ms']:.3f} "

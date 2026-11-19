@@ -936,6 +936,10 @@ fn run() -> Result<(), String> {
     let cache_first = if ve_preflight {
         args.next().ok_or("missing mode after --factor-ve-preflight-cost")?
     } else { cache_first };
+    let ve_quick_scope = cache_first.to_str() == Some("--factor-ve-quick-scope256");
+    let cache_first = if ve_quick_scope {
+        args.next().ok_or("missing mode after --factor-ve-quick-scope256")?
+    } else { cache_first };
     let factor_add = cache_first.to_str() == Some("--factor-add-elimination");
     let cache_first = if factor_add {
         args.next().ok_or("missing mode after --factor-add-elimination")?
@@ -1065,6 +1069,9 @@ fn run() -> Result<(), String> {
     }
     if fused_post_analysis && !projected_post_key {
         return Err("--trail-fused-post-analysis requires --trail-post-unit-projected".into());
+    }
+    if ve_quick_scope && !ve_preflight {
+        return Err("--factor-ve-quick-scope256 requires --factor-ve-preflight-cost".into());
     }
     if ve_preflight && !ve_bag14 {
         return Err("--factor-ve-preflight-cost requires the bounded min-fill bag14 research arm".into());
@@ -1220,7 +1227,9 @@ fn run() -> Result<(), String> {
     let primal_build_ns = td_start.elapsed().as_nanos();
     let ve_start = Instant::now();
     let (ve_candidate, ve_stats) = if factor_ve {
-        if ve_preflight {
+        if ve_quick_scope {
+            factor_variable_elimination::count_scope_probe_minfill_bag14_quick_scope(source, &scope, bits)
+        } else if ve_preflight {
             factor_variable_elimination::count_scope_probe_minfill_bag14_preflight(source, &scope, bits)
         } else if ve_bag14 {
             factor_variable_elimination::count_scope_probe_minfill_bag14(source, &scope, bits)
@@ -1283,6 +1292,8 @@ fn run() -> Result<(), String> {
     }
     eprintln!("RESEARCH_MPFR_FACTOR_VE_BAG_PROBE enabled={} limit={}",
         ve_bag14, if ve_bag14 { 14 } else { 11 });
+    eprintln!("RESEARCH_MPFR_FACTOR_VE_QUICK_SCOPE enabled={} limit={}",
+        ve_quick_scope, if ve_quick_scope { 256 } else if scope_probe_320 { 320 } else { 256 });
     eprintln!("RESEARCH_MPFR_FACTOR_VE_PREFLIGHT enabled={} products_upper={} cells_upper={} rejected={}",
         ve_stats.preflight_enabled, ve_stats.preflight_products_upper, ve_stats.preflight_cells_upper,
         ve_stats.cap_reason.starts_with("preflight_"));

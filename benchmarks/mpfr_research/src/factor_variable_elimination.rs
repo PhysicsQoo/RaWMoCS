@@ -224,6 +224,16 @@ pub(crate) fn count_scope_probe_minfill_bag14_preflight(
     count_clauses_with_limit(p, scope, &p.clauses, bits, PROBE_SCOPE, true, PROBE_BAG, true)
 }
 
+/// Research-only *negative control* for the structural admission overhead.
+/// Reuse the original conservative 256-scope limit BEFORE min-fill planning,
+/// retaining bag14/unchanged signed-complex exactness for accepted inputs.
+/// May reject cheap 257..320-variable CNFs: do not promote as a general router.
+pub(crate) fn count_scope_probe_minfill_bag14_quick_scope(
+    p: &Problem, scope: &[usize], bits: u32,
+) -> (Option<Outcome>, VeStats) {
+    count_clauses_with_limit(p, scope, &p.clauses, bits, MAX_SCOPE, true, PROBE_BAG, true)
+}
+
 /// Count a *live*, already-cofactored residual CNF with unchanged original
 /// source literal weights and an exact disjoint residual variable scope.
 /// Callers must separately multiply forced-prefix and free-variable weights.
@@ -485,6 +495,10 @@ mod tests {
             assert!(control.is_none());
             assert_eq!(control_stats.cap_reason, "bucket_width");
             let (trial, stats) = count_scope_probe_minfill_bag14(&p, &scope, bits);
+            let (quick, quick_stats) =
+                count_scope_probe_minfill_bag14_quick_scope(&p, &scope, bits);
+            assert!(quick_stats.preflight_enabled && !quick_stats.capped);
+            assert_eq!(quick.unwrap().count.re, 4095);
             assert!(stats.eligible && !stats.capped, "{stats:?}");
             assert!(stats.width <= PROBE_BAG);
             assert!(stats.cells <= MAX_CELLS);
@@ -532,6 +546,14 @@ c p weight 6 -0.5 0.5 0\nc p weight -6 0.25 -0.25 0\n\
             let p = parse_emitted(&cnf, bits).unwrap();
             let scope: Vec<usize> = (1..=257).collect();
             let (baseline, before) = count(&p, &scope, bits);
+            let (quick, quick_stats) =
+                count_scope_probe_minfill_bag14_quick_scope(&p, &scope, bits);
+            assert!(quick.is_none());
+            assert!(quick_stats.preflight_enabled);
+            assert_eq!(quick_stats.cap_reason, "source_scope");
+            assert_eq!(quick_stats.minfill_candidates, 0);
+            assert_eq!(quick_stats.products, 0);
+            assert_eq!(quick_stats.cells, 0);
             assert!(baseline.is_none());
             assert_eq!(before.cap_reason, "source_scope");
             let (candidate, after) = count_scope_probe(&p, &scope, bits);

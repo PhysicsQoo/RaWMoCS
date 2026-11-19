@@ -170,6 +170,20 @@ jobs:
             --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
             --report .research/mqtbench/preflight-four-arm.json \
             | tee .research/mqtbench/preflight-four-arm.log
+      - name: Independent original MQT cheap scope-gate negative control
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 benchmarks/mpfr_research/tools/quprs_factor_preflight_paired.py \
+            --quick-scope \
+            --family mqt \
+            --quprs .upstream/quprs \
+            --gpmc-source .upstream/gpmc \
+            --corpus .research/mqtbench \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --report .research/mqtbench/quick-scope-five-arm.json \
+            | tee .research/mqtbench/quick-scope-five-arm.log
       - name: Archive source statuses and every paired/censored record
         if: always()
         uses: actions/upload-artifact@v4

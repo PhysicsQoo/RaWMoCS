@@ -571,9 +571,9 @@ impl<'a> TrailEngine<'a> {
                     // Enumerate only currently unassigned literal positions
                     // in original source-sorted order, across 64-bit words.
                     // Every bit is reversible with the existing Trail.
-                    for (block, &word) in index.words
-                        [index.offsets[cid]..index.offsets[cid + 1]]
-                        .iter().enumerate()
+                    for (block, &word) in index.words[index.offsets[cid]..index.offsets[cid + 1]]
+                        .iter()
+                        .enumerate()
                     {
                         let mut pending = word;
                         while pending != 0 {
@@ -598,40 +598,40 @@ impl<'a> TrailEngine<'a> {
                         }
                     }
                 } else {
-                for &lit in &self.clauses[cid] {
-                    let variable = lit.unsigned_abs() as usize;
-                    if self.assigned[variable] == 0 {
-                        if first_unassigned {
-                            let in_scope = if inline_weight_relabel
-                                && self.use_scope_stamp_admission
-                            {
-                                self.scope_stamp_probes += 1;
-                                let stamped = self.local_generation[variable] == self.local_epoch;
-                                debug_assert_eq!(
-                                    stamped,
-                                    scope.binary_search(&variable).is_ok(),
-                                    "exact scope stamp must equal source-sorted membership"
-                                );
-                                stamped
-                            } else {
-                                scope.binary_search(&variable).is_ok()
-                            };
-                            if !in_scope {
-                                return true;
+                    for &lit in &self.clauses[cid] {
+                        let variable = lit.unsigned_abs() as usize;
+                        if self.assigned[variable] == 0 {
+                            if first_unassigned {
+                                let in_scope =
+                                    if inline_weight_relabel && self.use_scope_stamp_admission {
+                                        self.scope_stamp_probes += 1;
+                                        let stamped =
+                                            self.local_generation[variable] == self.local_epoch;
+                                        debug_assert_eq!(
+                                            stamped,
+                                            scope.binary_search(&variable).is_ok(),
+                                            "exact scope stamp must equal source-sorted membership"
+                                        );
+                                        stamped
+                                    } else {
+                                        scope.binary_search(&variable).is_ok()
+                                    };
+                                if !in_scope {
+                                    return true;
+                                }
+                                first_unassigned = false;
                             }
-                            first_unassigned = false;
-                        }
-                        if inline_weight_relabel {
-                            // The component scope is pre-indexed. All local
-                            // ordinal IDs are positive and order-preserving,
-                            // so canonical sorting/dedup remains unchanged.
-                            let rank = self.local_variable[variable];
-                            flat.push(if lit < 0 { -rank } else { rank });
-                        } else {
-                            flat.push(lit);
+                            if inline_weight_relabel {
+                                // The component scope is pre-indexed. All local
+                                // ordinal IDs are positive and order-preserving,
+                                // so canonical sorting/dedup remains unchanged.
+                                let rank = self.local_variable[variable];
+                                flat.push(if lit < 0 { -rank } else { rank });
+                            } else {
+                                flat.push(lit);
+                            }
                         }
                     }
-                }
                 }
                 // A live, unsatisfied clause always has an unassigned
                 // literal; a malformed counter must never be ignored.
@@ -3551,10 +3551,20 @@ c p weight 1 1 0 0\nc p weight -1 -1 0 0\n\
             candidate.enable_reversible_literal_mask().unwrap();
             let full = (1..=70).collect::<Vec<_>>();
             let ids = (0..control.clauses.len()).rev().collect::<Vec<_>>();
-            let wide = candidate.clauses.iter().position(|clause| clause.len() == 70).unwrap();
+            let wide = candidate
+                .clauses
+                .iter()
+                .position(|clause| clause.len() == 70)
+                .unwrap();
             let start = candidate.literal_mask.as_ref().unwrap().offsets[wide];
-            assert_eq!(candidate.literal_mask.as_ref().unwrap().words[start], u64::MAX);
-            assert_eq!(candidate.literal_mask.as_ref().unwrap().words[start + 1], 63);
+            assert_eq!(
+                candidate.literal_mask.as_ref().unwrap().words[start],
+                u64::MAX
+            );
+            assert_eq!(
+                candidate.literal_mask.as_ref().unwrap().words[start + 1],
+                63
+            );
             for scope in [&full[..], &[1_usize, 2, 3, 4][..]] {
                 assert_eq!(
                     control.canonical_compact(scope, None, false),
@@ -3583,8 +3593,14 @@ c p weight 1 1 0 0\nc p weight -1 -1 0 0\n\
                 control.canonical_compact(&full, None, false),
                 candidate.canonical_compact(&full, None, false)
             );
-            assert_eq!(candidate.literal_mask.as_ref().unwrap().words[start], u64::MAX);
-            assert_eq!(candidate.literal_mask.as_ref().unwrap().words[start + 1], 63);
+            assert_eq!(
+                candidate.literal_mask.as_ref().unwrap().words[start],
+                u64::MAX
+            );
+            assert_eq!(
+                candidate.literal_mask.as_ref().unwrap().words[start + 1],
+                63
+            );
             assert!(candidate.trail.is_empty());
             assert!(candidate.assigned.iter().all(|&v| v == 0));
             assert!(candidate.literal_mask_key_visits > 0);

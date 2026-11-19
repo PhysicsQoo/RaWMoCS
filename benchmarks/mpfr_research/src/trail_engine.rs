@@ -78,6 +78,12 @@ pub(crate) struct TrailEngine<'a> {
     pub(crate) source_cache_keys: u64,
     // Opt-in: compact signed residual literals directly in canonical local IDs.
     pub(crate) use_inline_weight_relabel: bool,
+    // Opt-in exact full-source-clause path: live[cid] == source clause length
+    // proves that no literal in a still-unsatisfied clause is assigned.
+    // Reuse its source order without per-literal assigned[] probes.
+    // Other clauses retain the original fused filtering path unchanged.
+    pub(crate) use_full_live_clause_fastpath: bool,
+    pub(crate) full_live_key_hits: u64,
     // Exact weighted residual memo AFTER Boolean unit-closure, opt-in only.
     pub(crate) use_post_unit_cache: bool,
     pub(crate) post_unit_hits: u64,
@@ -241,6 +247,8 @@ impl<'a> TrailEngine<'a> {
             normalized_cache_keys: 0,
             source_cache_keys: 0,
             use_inline_weight_relabel: false,
+            use_full_live_clause_fastpath: false,
+            full_live_key_hits: 0,
             use_post_unit_cache: false,
             post_unit_hits: 0,
             post_unit_visited: 0,
@@ -567,7 +575,33 @@ impl<'a> TrailEngine<'a> {
                 // Read each active source clause at most once and stop
                 // immediately for a clause outside the current scope.
                 let mut first_unassigned = true;
-                if let Some(index) = self.literal_mask.as_ref() {
+                if self.use_full_live_clause_fastpath
+                    && self.live[cid] == self.clauses[cid].len()
+                {
+                    // The exact reversible live counter is decremented for
+                    // both true and false assignments and restored on undo.
+                    // Since the clause is not satisfied, equality with the
+                    // original length proves every source literal unassigned.
+                    let first = self.clauses[cid]
+                        .first()
+                        .expect("still-live source clause must be nonempty");
+                    if scope.binary_search(&(first.unsigned_abs() as usize)).is_err() {
+                        return true;
+                    }
+                    debug_assert!(self.clauses[cid]
+                        .iter()
+                        .all(|lit| self.assigned[lit.unsigned_abs() as usize] == 0));
+                    first_unassigned = false;
+                    self.full_live_key_hits += 1;
+                    if inline_weight_relabel {
+                        for &lit in &self.clauses[cid] {
+                            let rank = self.local_variable[lit.unsigned_abs() as usize];
+                            flat.push(if lit < 0 { -rank } else { rank });
+                        }
+                    } else {
+                        flat.extend_from_slice(&self.clauses[cid]);
+                    }
+                } else if let Some(index) = self.literal_mask.as_ref() {
                     // Enumerate only currently unassigned literal positions
                     // in original source-sorted order, across 64-bit words.
                     // Every bit is reversible with the existing Trail.
@@ -3104,6 +3138,105 @@ c p weight 1 1 0 0\nc p weight -1 -1 0 0\n\
                 }
             }
         }
+    }
+
+
+    #[test]
+    fn exact_fully_live_source_clause_shortcut_preserves_keys_and_complex_wmc() {
+        // Includes partial assigned clauses, duplicate projections, signed
+        // imaginary weights, SAT with zero WMC and Boolean UNSAT.
+        let cases = [
+            "p cnf 4 4\nc t wmc\nc p weight 1 0.5 0.25 0\nc p weight -1 -0.25 0.125 0\n1 4 0\n2 3 0\n-1 2 0\n-2 -3 0\n",
+            "p cnf 4 3\nc t wmc\nc p weight 3 -0.125 0.25 0\nc p weight -3 0.5 -0.25 0\n1 2 0\n-1 3 0\n2 4 0\n",
+            "p cnf 3 2\nc t wmc\nc p weight 1 0 0 0\nc p weight -1 0 0 0\n1 2 0\n-2 3 0\n",
+            "p cnf 3 2\nc t wmc\n1 0\n-1 0\n",
+            "p cnf 4 3\nc t wmc\n1 2 0\n-1 2 0\n-1 3 0\n",
+        ];
+        let mut hits = 0_u64;
+        for bits in [100_u32, 333] {
+            for source in cases {
+                let p = parse_emitted(source, bits).unwrap();
+                for capacity in [0_usize, 1, 128] {
+                    for ordered in [false, true] {
+                        let count = |fast: bool| {
+                            let mut t = TrailEngine::new(&p, bits, capacity, 100_000);
+                            t.use_parent_ids = true;
+                            t.use_compact_residual = true;
+                            t.use_prehashed_cache = true;
+                            t.use_fused_compact = true;
+                            t.use_weight_class_cache = true;
+                            t.use_inline_weight_relabel = true;
+                            t.use_ordered_key_fastpath = ordered;
+                            t.use_full_live_clause_fastpath = fast;
+                            let result = t.count((1..=p.n).collect(), 0).unwrap();
+                            (result, t)
+                        };
+                        let (old, original) = count(false);
+                        let (new, candidate) = count(true);
+                        assert_eq!(
+                            (old.sat, &old.count.re, &old.count.im),
+                            (new.sat, &new.count.re, &new.count.im)
+                        );
+                        assert_eq!(
+                            (
+                                old.stats.nodes, old.stats.cache_hits,
+                                old.stats.decompositions,
+                            ),
+                            (
+                                candidate.stats.nodes, candidate.stats.cache_hits,
+                                candidate.stats.decompositions,
+                            )
+                        );
+                        assert_eq!(
+                            (old.ordered_key_probes, old.ordered_key_hits),
+                            (candidate.ordered_key_probes, candidate.ordered_key_hits)
+                        );
+                        assert_eq!(original.full_live_key_hits, 0);
+                        assert!(candidate.full_live_key_hits > 0);
+                        assert!(candidate.trail.is_empty());
+                        assert!(candidate.assigned.iter().all(|v| *v == 0));
+                        assert!(candidate.live.iter()
+                            .zip(candidate.clauses.iter())
+                            .all(|(l, c)| *l == c.len()));
+                        assert!(candidate.satisfied.iter().all(|v| *v == 0));
+                        hits += candidate.full_live_key_hits;
+                    }
+                }
+            }
+        }
+        assert!(hits > 0);
+    }
+
+    #[test]
+    fn fully_live_clauses_keep_source_exact_key_across_undo() {
+        let p = parse_emitted("p cnf 4 4\nc t wmc\n1 2 0\n-1 3 0\n2 4 0\n-2 3 0\n", 100).unwrap();
+        let mut baseline = TrailEngine::new(&p, 100, 128, 100_000);
+        let mut candidate = TrailEngine::new(&p, 100, 128, 100_000);
+        baseline.use_fused_compact = true;
+        candidate.use_fused_compact = true;
+        candidate.use_full_live_clause_fastpath = true;
+        let all = vec![1, 2, 3, 4];
+        assert_eq!(
+            baseline.canonical_compact(&all, None, false),
+            candidate.canonical_compact(&all, None, false)
+        );
+        assert!(baseline.apply(1, None));
+        assert!(candidate.apply(1, None));
+        let reduced = vec![2, 3, 4];
+        assert_eq!(
+            baseline.canonical_compact(&reduced, None, false),
+            candidate.canonical_compact(&reduced, None, false)
+        );
+        baseline.undo(0);
+        candidate.undo(0);
+        assert_eq!(
+            baseline.canonical_compact(&all, None, false),
+            candidate.canonical_compact(&all, None, false)
+        );
+        assert_eq!(baseline.assigned, candidate.assigned);
+        assert_eq!(baseline.live, candidate.live);
+        assert_eq!(baseline.satisfied, candidate.satisfied);
+        assert!(candidate.full_live_key_hits > 0);
     }
 
     #[test]

@@ -886,6 +886,10 @@ fn run() -> Result<(), String> {
     let cache_first = if inline_weight_relabel {
         args.next().ok_or("missing cache policy or precision after --trail-inline-weight-relabel")?
     } else { cache_first };
+    let trail_full_live_clause = cache_first.to_str() == Some("--trail-full-live-clause-fastpath");
+    let cache_first = if trail_full_live_clause {
+        args.next().ok_or("missing mode after --trail-full-live-clause-fastpath")?
+    } else { cache_first };
     let post_unit_cache = cache_first.to_str() == Some("--trail-post-unit-cache");
     let cache_first = if post_unit_cache {
         args.next().ok_or("missing cache policy or precision after --trail-post-unit-cache")?
@@ -1058,6 +1062,13 @@ fn run() -> Result<(), String> {
         && trail_compact_residual && trail_prehashed_cache
         && trail_fused_compact && weighted_component_cache) {
         return Err("--trail-inline-weight-relabel requires fused weighted-class trail cache".into());
+    }
+    if trail_full_live_clause && !(weighted_equivalence && trail_count
+        && trail_parent_ids && trail_compact_residual
+        && trail_prehashed_cache && trail_fused_compact
+        && weighted_component_cache && inline_weight_relabel)
+    {
+        return Err("--trail-full-live-clause-fastpath requires original fused exact weighted Trail".into());
     }
     if post_unit_cache && !(trail_count && trail_parent_ids
         && trail_compact_residual && trail_prehashed_cache
@@ -1324,6 +1335,7 @@ fn run() -> Result<(), String> {
     let mut scoped_dsu_metrics = (0_u64, 0_u64);
     let mut ordered_key_metrics = (0_u64, 0_u64);
     let mut key_arena_metrics = (0_u64, 0_u64, 0_u64);
+    let mut full_live_key_hits = 0_u64;
     let mut scope_stamp_probes = 0_u64;
     let mut active_bitmap_key_visits = 0_u64;
     let mut literal_mask_metrics = (0_u64, 0_u64);
@@ -1345,6 +1357,7 @@ fn run() -> Result<(), String> {
         trail.use_weight_class_cache = weighted_component_cache;
         trail.weight_cache_scope_max = weight_cache_scope_max;
         trail.use_inline_weight_relabel = inline_weight_relabel;
+        trail.use_full_live_clause_fastpath = trail_full_live_clause;
         trail.use_post_unit_cache = post_unit_cache;
         trail.use_projected_post_key = projected_post_key;
         trail.use_fused_post_analysis = fused_post_analysis;
@@ -1388,6 +1401,7 @@ fn run() -> Result<(), String> {
             trail.key_arena_flat_reuses,
             trail.key_arena_view_reuses,
         );
+        full_live_key_hits = trail.full_live_key_hits;
         scope_stamp_probes = trail.scope_stamp_probes;
         active_bitmap_key_visits = trail.active_bitmap_key_visits;
         literal_mask_metrics = (trail.literal_mask_key_visits, trail.literal_mask_updates);
@@ -1439,6 +1453,10 @@ fn run() -> Result<(), String> {
         key_arena_metrics.0,
         key_arena_metrics.1,
         key_arena_metrics.2
+    );
+    eprintln!(
+        "RESEARCH_MPFR_FULL_LIVE_KEY enabled={} hits={}",
+        trail_full_live_clause, full_live_key_hits
     );
     eprintln!(
         "RESEARCH_MPFR_SCOPE_STAMP_ADMISSION enabled={} probes={}",

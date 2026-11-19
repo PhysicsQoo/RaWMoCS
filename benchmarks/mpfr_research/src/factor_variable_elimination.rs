@@ -554,10 +554,12 @@ c p weight 6 -0.5 0.5 0\nc p weight -6 0.25 -0.25 0\n\
 
     #[test]
     fn conservative_cost_preflight_rejects_dense_exact_work_before_mpfr_tables() {
-        let mut cnf = String::from("p cnf 14 91\nc t wmc\n");
+        let mut cnf = String::from("p cnf 14 364\nc t wmc\n");
         for i in 1..=14 {
             for j in (i + 1)..=14 {
-                cnf.push_str(&format!("{i} {j} 0\n"));
+                for _ in 0..4 {
+                    cnf.push_str(&format!("{i} {j} 0\n"));
+                }
             }
         }
         for bits in [100_u32, 333] {

@@ -298,4 +298,38 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn reversible_trail_forest_dp_reduces_search_nodes_without_weight_loss() {
+        use crate::trail_engine::TrailEngine;
+        let clauses: Vec<Clause> = (1..10)
+            .map(|v| vec![v, -(v + 1)])
+            .collect();
+        for bits in [100_u32, 333] {
+            let p = problem(10, clauses.clone(), bits);
+            for capacity in [0_usize, 1, 128] {
+                let run = |enabled: bool| {
+                    let mut t = TrailEngine::new(&p, bits, capacity, 100_000);
+                    t.use_parent_ids = true;
+                    t.use_compact_residual = true;
+                    t.use_prehashed_cache = true;
+                    t.use_fused_compact = true;
+                    t.use_weight_class_cache = true;
+                    t.use_inline_weight_relabel = true;
+                    t.use_forest_dp = enabled;
+                    let out = t.count((1..=p.n).collect(), 0).unwrap();
+                    assert!(t.trail.is_empty());
+                    (out, t)
+                };
+                let (base, control) = run(false);
+                let (fast, candidate) = run(true);
+                assert_eq!(fast.sat, base.sat);
+                assert_eq!(fast.count.re, base.count.re);
+                assert_eq!(fast.count.im, base.count.im);
+                assert_eq!(control.forest_dp_completed, 0);
+                assert!(candidate.forest_dp_completed > 0);
+                assert!(candidate.stats.nodes < control.stats.nodes);
+            }
+        }
+    }
+
 }

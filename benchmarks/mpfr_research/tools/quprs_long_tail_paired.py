@@ -1,0 +1,367 @@
+#!/usr/bin/env python3
+"""Source-pinned long-tail discovery, then strictly bounded original-CNF comparison.
+
+This is a scout, NOT evidence that a large QASM is a hard WMC instance.
+Every 100-bit original C++ GPMC and Rust screen is actually timed; >=10s
+or a censored 30s screen is required before a candidate enters the pilot.
+No solver or source changes, no synthetic CNF, no inferred timeout result.
+"""
+from __future__ import annotations
+
+import argparse
+from fractions import Fraction
+from hashlib import sha256
+import json
+from pathlib import Path
+import re
+import statistics
+import subprocess
+import sys
+import tempfile
+import time
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parents[1] / "rust_core" / "tools"))
+from quprs_cnf_factor_minfill_ab import build_command
+from quprs_mqtbench_original_cnf_ab import complex_relative_witness
+from quprs_paired_native import parse_out
+from quprs_encoder_validate import parse_cnf
+
+QU_PRS_SHA = "0b28736651b3740ed3b201edd2efdef3da541e0d"
+GPMC_SHA = "89bbc89d0de918e7a5385740355df55765039230"
+BITS = {30: 100, 100: 333}
+ARMS = ("gpmc", "inline_full")
+EXPORTED_CASES = 16
+MIN_LONG_SECONDS = 10
+EXPORT_S = 35
+SCREEN_S = 30
+PAIR_S = 120
+PILOT_TRIALS = 2
+MAX_PAIRED_LONG_CASES = 2
+AS_BYTES = 3_221_225_472
+FS_BYTES = 16_777_216
+CNF_MAX_BYTES = 12_000_000
+
+def sha(path: Path) -> str:
+    return sha256(path.read_bytes()).hexdigest()
+
+def git_sha(path: Path) -> str:
+    return subprocess.check_output(
+        ["git", "-C", str(path), "rev-parse", "HEAD"], text=True
+    ).strip()
+
+def source_index(content: str) -> dict[str, str]:
+    index = {}
+    for line in content.splitlines():
+        row = line.split("\t")
+        if len(row) != 2:
+            raise ValueError("INVALID_SOURCE_INDEX")
+        name, rel = row
+        path = Path(rel)
+        if (not re.fullmatch(r"(feynman|mqt)_[a-z0-9_]+", name)
+                or name in index or path.is_absolute() or ".." in path.parts
+                or not rel.endswith(".qasm")
+                or not (rel.startswith("benchmarks/Feynman/")
+                        or rel.startswith("benchmarks/MQTBench/"))):
+            raise ValueError("UNTRUSTED_OR_DUPLICATE_ORIGINAL_SOURCE")
+        index[name] = rel
+    if len(index) != EXPORTED_CASES:
+        raise ValueError("UNEXPECTED_ORIGINAL_SOURCE_COUNT")
+    return index
+
+def command(args: argparse.Namespace, name: str, cnf: Path, digits: int, arm: str) -> list[str]:
+    if arm not in ARMS or digits not in BITS:
+        raise ValueError("INVALID_ARM_OR_PRECISION")
+    # Reuse the checked source-original native flags; no 1M-node research
+    # cap is applied to these NEW cases. Symmetric wall/AS budgets apply.
+    cmd = build_command(args, arm, digits, cnf, name)
+    if arm == "gpmc":
+        if cmd[1:3] != ["-mode=1", f"-prec={digits}"]:
+            raise ValueError("GPMC_NATIVE_CONTROL_DRIFT")
+    elif not all(x in cmd for x in
+                 ("--weighted-equivalence", "--trail-count",
+                  "--trail-inline-weight-relabel", "--hashbrown-borrowed")):
+        raise ValueError("RUST_NATIVE_CONTROL_DRIFT")
+    return cmd
+
+def native(cmd: list[str], arm: str, duration: int, digits: int | None) -> dict:
+    with tempfile.TemporaryDirectory() as td:
+        rss = Path(td) / "rss"
+        wrapped = [
+            "/usr/bin/timeout", "-k", "2s", f"{duration}s",
+            "prlimit", f"--as={AS_BYTES}", f"--fsize={FS_BYTES}", "--",
+            "/usr/bin/time", "-f", "%M", "-o", str(rss), *cmd,
+        ]
+        started = time.perf_counter_ns()
+        try:
+            process = subprocess.run(
+                wrapped, capture_output=True, text=True, timeout=duration + 7
+            )
+        except subprocess.TimeoutExpired:
+            return {"arm": arm, "status": "CENSORED_OUTER_TIMEOUT",
+                    "wall_ns_lower_bound": duration * 1_000_000_000}
+        except OSError as error:
+            return {"arm": arm, "status": "CENSORED_LAUNCH_ERROR",
+                    "error": str(error)[:250]}
+        elapsed = time.perf_counter_ns() - started
+        row = {"arm": arm, "wall_ns": elapsed,
+               "exit_code": process.returncode,
+               "status": ("COMPLETED" if process.returncode == 0 else
+                          "CENSORED_TIME" if process.returncode == 124 else
+                          "CENSORED_EXIT_OR_RESOURCE"),
+               "stderr_tail": process.stderr[-1000:]}
+        if rss.is_file():
+            try:
+                row["peak_rss_kib"] = int(rss.read_text().strip())
+            except ValueError:
+                pass
+        if process.returncode:
+            return row
+        if arm == "source":
+            return row
+        try:
+            sat, (real, imag) = parse_out(
+                process.stdout, "gpmc" if arm == "gpmc" else "rawmocs_mpfr"
+            )
+            row.update(sat=sat, real=str(real), imag=str(imag),
+                       stdout_sha256=sha256(process.stdout.encode()).hexdigest())
+            if arm != "gpmc":
+                match = re.search(
+                    r"^RESEARCH_MPFR_PHASE_NS read=(\d+) parse=(\d+) solve=(\d+) "
+                    r"output=(\d+) nodes=(\d+) cache_hits=(\d+) decompositions=(\d+) "
+                    r"digits=(\d+) bits=(\d+)$",
+                    process.stderr, re.M,
+                )
+                if not match or int(match.group(8)) != digits or \
+                        int(match.group(9)) != BITS[digits]:
+                    raise ValueError("INVALID_OR_MISSING_MPFR_PRECISION")
+                row.update(precision_bits=int(match.group(9)),
+                           solve_ns=int(match.group(3)),
+                           nodes=int(match.group(5)),
+                           cache_hits=int(match.group(6)),
+                           decompositions=int(match.group(7)))
+        except (ValueError, OSError) as err:
+            row["status"] = "CENSORED_INVALID_NUMERIC_OUTPUT"
+            row["error"] = str(err)[:300]
+        return row
+
+def long_screen(row: dict) -> bool:
+    if row["status"] == "COMPLETED":
+        return row["wall_ns"] >= MIN_LONG_SECONDS * 1_000_000_000
+    return row["status"] in ("CENSORED_TIME", "CENSORED_OUTER_TIMEOUT")
+
+def score_screen(rows: dict) -> tuple:
+    # Prefer confirmed completed high-cost cases over censored screen cases.
+    completed = all(x["status"] == "COMPLETED" for x in rows.values())
+    seconds = max(
+        (v.get("wall_ns", v.get("wall_ns_lower_bound", 0)) / 1e9)
+        for v in rows.values()
+    )
+    return (int(completed), seconds)
+
+def persist(args: argparse.Namespace, report: dict) -> None:
+    args.report.parent.mkdir(parents=True, exist_ok=True)
+    args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+def self_test() -> None:
+    fake = argparse.Namespace(gpmc=Path("/original/gpmc"),
+                              mpfr=Path("/original/rust"))
+    for digits, bits in BITS.items():
+        assert bits == (100 if digits == 30 else 333)
+        for arm in ARMS:
+            cmd = command(fake, "mqt_qnn_12",
+                          Path("/original-weighted.cnf"), digits, arm)
+            assert ("--hashbrown-borrowed" in cmd) == (arm != "gpmc")
+            assert ("--factor-variable-elimination" in cmd) is False
+    assert long_screen({"status": "COMPLETED", "wall_ns": 10_000_000_000})
+    assert not long_screen({"status": "COMPLETED", "wall_ns": 9_999_999_999})
+    assert long_screen({"status": "CENSORED_TIME"})
+    assert not long_screen({"status": "CENSORED_EXIT_OR_RESOURCE"})
+    sample = "\n".join(
+        f"feynman_test_{i}\tbenchmarks/Feynman/a{i}.qasm" for i in range(EXPORTED_CASES)
+    )
+    assert len(source_index(sample)) == EXPORTED_CASES
+    try:
+        source_index(sample + "\nmqt_bad\t../private.qasm")
+        raise AssertionError("index rejects untrusted path")
+    except ValueError:
+        pass
+    print("ORIGINAL_LONGTAIL_SOURCE_PRECISION_ARM_PREFLIGHT_PASS", flush=True)
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--self-test", action="store_true")
+    for field in ("quprs", "gpmc-source", "exporter", "gpmc", "mpfr", "corpus", "report"):
+        ap.add_argument("--" + field, type=Path)
+    args = ap.parse_args()
+    self_test()
+    if args.self_test:
+        return
+    for field in ("quprs", "gpmc_source", "exporter", "gpmc", "mpfr", "corpus", "report"):
+        if getattr(args, field) is None:
+            ap.error("missing --" + field.replace("_", "-"))
+    if git_sha(args.quprs) != QU_PRS_SHA or git_sha(args.gpmc_source) != GPMC_SHA:
+        raise SystemExit("ORIGINAL_QU_PRS_GPMC_SOURCE_LOCK_DRIFT")
+    args.corpus.mkdir(parents=True, exist_ok=True)
+    original = subprocess.check_output(
+        [str(args.exporter.resolve()), "--list-sources"],
+        text=True, timeout=10,
+    )
+    index = source_index(original)
+    (args.corpus / "source-index.tsv").write_text(original, encoding="utf-8")
+    report = {
+        "status": "IN_PROGRESS", "study": "Long-tail ORIGINAL QASM -> QuPRS Weighted CNF",
+        "do_not_label_oversized_circuit_as_long_wmc": True,
+        "precisions": {"GPMC_decimal_30": 100, "GPMC_decimal_100": 333},
+        "source_revisions": {"quprs": QU_PRS_SHA, "gpmc": GPMC_SHA},
+        "source_provenance": "unchanged committed Feynman/MQTBench QASM; pinned QuPRS WmcManager; not MQT-published CNFs",
+        "not_independently_certified": "WMC solver agreement is not an independent proof",
+        "selection": {"screen_each_arm_seconds": SCREEN_S,
+                      "min_screen_wall_seconds": MIN_LONG_SECONDS,
+                      "max_paired_cases": MAX_PAIRED_LONG_CASES,
+                      "pilot_trials": PILOT_TRIALS,
+                      "exclude_microbenchmarks": True},
+        "limits": {"export_wall_s": EXPORT_S, "pilot_wall_s": PAIR_S,
+                   "AS_bytes_each_process": AS_BYTES,
+                   "max_source_cnf_bytes": CNF_MAX_BYTES},
+        "cases": [], "selected": [],
+    }
+    numeric_disagreement = False
+    for case, rel in index.items():
+        src = args.quprs / rel
+        item = {"case": case, "original_qasm": rel, "family": case.split("_")[0],
+                "source_qasm_sha256": sha(src), "source_bytes": src.stat().st_size,
+                "source_status": "IN_PROGRESS", "screen": {},
+                "pilot": []}
+        report["cases"].append(item)
+        persist(args, report)
+        proc = native(
+            [str(args.exporter.resolve()), case, str(args.quprs.resolve()),
+             str(args.corpus.resolve())], "source", EXPORT_S, None,
+        )
+        (args.corpus / f"{case}.export.log").write_text(
+            proc.get("stderr_tail", "") + "\n", encoding="utf-8"
+        )
+        item["export"] = proc
+        copied = args.corpus / f"{case}.qasm"
+        cnf = args.corpus / f"{case}-gpmc.cnf"
+        if proc["status"] != "COMPLETED" or not copied.is_file() or not cnf.is_file():
+            item["source_status"] = "CENSORED_SOURCE_EXPORT"
+        elif copied.read_bytes() != src.read_bytes():
+            item["source_status"] = "FATAL_SOURCE_QASM_DRIFT"
+            persist(args, report)
+            raise SystemExit(f"ORIGINAL_QASM_BYTES_CHANGED {case}")
+        elif not 0 < cnf.stat().st_size <= CNF_MAX_BYTES:
+            item["source_status"] = "CENSORED_CNF_BYTES"
+        else:
+            try:
+                parsed = parse_cnf(cnf, "gpmc")
+                item["source_status"] = "SOURCE_EXACT"
+                item["cnf_sha256"] = sha(cnf)
+                item["cnf_bytes"] = cnf.stat().st_size
+                item["cnf_variables"] = parsed["variables"]
+                item["cnf_clauses"] = len(parsed["clauses"])
+            except (ValueError, OSError) as error:
+                item["source_status"] = "CENSORED_INVALID_SOURCE_CNF"
+                item["source_error"] = str(error)[:300]
+        if item["source_status"] == "SOURCE_EXACT":
+            for arm in ARMS:
+                sample = native(command(args, case, cnf, 30, arm), arm, SCREEN_S, 30)
+                item["screen"][arm] = sample
+                persist(args, report)
+            scr = item["screen"]
+            item["long_candidate"] = any(long_screen(x) for x in scr.values())
+            if all(x["status"] == "COMPLETED" for x in scr.values()):
+                witness = complex_relative_witness(scr["gpmc"], scr["inline_full"], 30)
+                item["screen_numeric_witness"] = witness
+                if scr["gpmc"]["sat"] != scr["inline_full"]["sat"] or not witness["pass"]:
+                    numeric_disagreement = True
+                    item["screen_disagreement"] = "SAT_OR_SIGNED_COMPLEX_MISMATCH"
+            print(f"LONGTAIL_SCREEN case={case} gpmc={scr['gpmc']['status']} "
+                  f"rust={scr['inline_full']['status']} "
+                  f"long_candidate={item['long_candidate']}", flush=True)
+        else:
+            item["long_candidate"] = False
+            print(f"LONGTAIL_SOURCE_CENSORED case={case} reason={item['source_status']}",
+                  flush=True)
+        persist(args, report)
+    # Select by OBSERVED cost only. Never infer difficulty from QASM gates,
+    # qubit count or CNF size, and never cherry-pick by Rust winning.
+    qualified = [x for x in report["cases"] if x.get("long_candidate") and
+                 "screen_disagreement" not in x]
+    qualified.sort(key=lambda x: score_screen(x["screen"]), reverse=True)
+    selected = qualified[:MAX_PAIRED_LONG_CASES]
+    report["selected"] = [x["case"] for x in selected]
+    persist(args, report)
+    for item in selected:
+        case = item["case"]
+        cnf = args.corpus / f"{case}-gpmc.cnf"
+        for digits, bits in BITS.items():
+            cohort = {"digits": digits, "bits": bits, "status": "IN_PROGRESS",
+                      "trials": [], "design": "EXPLORATORY_TWO_TRIALS_NOT_PRODUCTION_GO"}
+            item["pilot"].append(cohort)
+            persist(args, report)
+            for trial in range(PILOT_TRIALS):
+                ordered = ARMS if trial % 2 == 0 else tuple(reversed(ARMS))
+                for arm in ordered:
+                    row = native(command(args, case, cnf, digits, arm),
+                                 arm, PAIR_S, digits)
+                    row["trial"] = trial
+                    cohort["trials"].append(row)
+                    persist(args, report)
+                    print(f"LONGTAIL_TRIAL case={case} bits={bits} "
+                          f"trial={trial} arm={arm} status={row['status']}", flush=True)
+            rows = cohort["trials"]
+            if any(x["status"] != "COMPLETED" for x in rows):
+                cohort["status"] = "CENSORED_PILOT_ONE_OR_BOTH_SOLVERS"
+                cohort["completion_counts"] = {
+                    arm: sum(x["status"] == "COMPLETED" for x in rows if x["arm"] == arm)
+                    for arm in ARMS
+                }
+            else:
+                for trial in range(PILOT_TRIALS):
+                    members = {x["arm"]: x for x in rows if x["trial"] == trial}
+                    witness = complex_relative_witness(
+                        members["gpmc"], members["inline_full"], digits
+                    )
+                    if (members["gpmc"]["sat"] != members["inline_full"]["sat"]
+                            or not witness["pass"]):
+                        numeric_disagreement = True
+                        cohort["status"] = "FAIL_SAT_OR_SIGNED_COMPLEX_WMC"
+                        cohort["numeric_witness"] = witness
+                        break
+                else:
+                    gpmc = [x["wall_ns"] for x in rows if x["arm"] == "gpmc"]
+                    rust = [x["wall_ns"] for x in rows if x["arm"] == "inline_full"]
+                    cohort["status"] = "EXPLORATORY_TWO_TRIALS_SIGNED_COMPLEX_MATCH"
+                    cohort["gpmc_p50_ms"] = statistics.median(gpmc) / 1e6
+                    cohort["rust_p50_ms"] = statistics.median(rust) / 1e6
+                    cohort["rust_over_gpmc_wall_ratio"] = (
+                        statistics.median(rust) / statistics.median(gpmc)
+                    )
+                    cohort["rust_paired_wins"] = sum(
+                        rows[2 * i + (1 if i % 2 == 0 else 0)]["wall_ns"] <
+                        rows[2 * i + (0 if i % 2 == 0 else 1)]["wall_ns"]
+                        for i in range(PILOT_TRIALS)
+                    )
+            persist(args, report)
+            print(f"LONGTAIL_PILOT case={case} bits={bits} "
+                  f"status={cohort['status']} "
+                  f"gpmc_p50_ms={cohort.get('gpmc_p50_ms', 'CENSORED')} "
+                  f"rust_p50_ms={cohort.get('rust_p50_ms', 'CENSORED')}",
+                  flush=True)
+    if numeric_disagreement:
+        report["status"] = "NUMERIC_DISAGREEMENT_FAIL"
+    elif selected:
+        report["status"] = "LONGTAIL_SCOUT_AND_EXPLORATORY_PILOT_COMPLETE"
+    else:
+        report["status"] = "NO_ACTUALLY_MEASURED_LONG_CASES_IN_SOURCE_BATCH"
+    persist(args, report)
+    print(f"LONGTAIL_FINAL status={report['status']} "
+          f"source_cases={len(report['cases'])} "
+          f"screen_long={len(qualified)} paired_cases={len(selected)}", flush=True)
+    if numeric_disagreement:
+        raise SystemExit("FAIL_SAT_OR_SIGNED_COMPLEX_WMC")
+
+if __name__ == "__main__":
+    main()

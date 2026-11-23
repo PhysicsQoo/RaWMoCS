@@ -13,7 +13,6 @@ const MAX_SOURCE_VARS: usize = 8_192;
 pub(crate) struct ForestStats {
     pub(crate) eligible: bool,
     pub(crate) reason: &'static str,
-    pub(crate) vertices: usize,
     pub(crate) edges: usize,
     pub(crate) roots: usize,
     pub(crate) states: usize,
@@ -55,9 +54,7 @@ fn clause_mask(first: i32, second: i32, low: usize) -> u8 {
 pub(crate) fn count_clauses(
     p: &Problem, scope: &[usize], clauses: &[Clause], bits: u32,
 ) -> (Option<Outcome>, ForestStats) {
-    let mut stats = ForestStats {
-        vertices: scope.len(), ..ForestStats::default()
-    };
+    let mut stats = ForestStats::default();
     if scope.len() > MAX_SCOPE || clauses.len() > MAX_CLAUSES || p.n > MAX_SOURCE_VARS {
         stats.reason = "BUDGET";
         return (None, stats);

@@ -137,6 +137,19 @@ def run_one(command: list[str], arm: str, bits: int, digits: int) -> dict:
                 # therefore a measured observation, not a failure.
                 if arm == "inline_full" and hits != 0:
                     raise ValueError("DISABLED_FULL_LIVE_HIT_COUNTER_NONZERO")
+                if "--trail-forest-dp" in command:
+                    forest = re.search(
+                        r"^RESEARCH_MPFR_FOREST_DP enabled=(true|false) "
+                        r"attempts=(\d+) completed=(\d+) rejected=(\d+) scans=(\d+)$",
+                        proc.stderr, re.M)
+                    if not forest or forest.group(1) != "true":
+                        raise ValueError("MISSING_EXACT_FOREST_DP_DIAGNOSTIC")
+                    row.update(
+                        forest_attempts=int(forest.group(2)),
+                        forest_completed=int(forest.group(3)),
+                        forest_rejected=int(forest.group(4)),
+                        forest_scans=int(forest.group(5)),
+                    )
                 row.update(
                     nodes=phase_vals[4],
                     cache_hits=phase_vals[5],

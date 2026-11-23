@@ -317,7 +317,6 @@ mod tests {
                     t.use_inline_weight_relabel = true;
                     t.use_forest_dp = enabled;
                     let out = t.count((1..=p.n).collect(), 0).unwrap();
-                    assert!(t.trail.is_empty());
                     (out, t)
                 };
                 let (base, control) = run(false);

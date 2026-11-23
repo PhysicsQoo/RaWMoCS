@@ -61,3 +61,54 @@ p90/RSS, and the unchanged GPMC hard-case deficit materially
 shrinks, could a separate minimal main-based production PR be
 considered. Otherwise retain a documented NO-GO and do not
 promote this research flag or change the default Router.
+
+## Final-head native outcome — 2026-11-19 (performance NO-GO)
+
+The final research HEAD `4b7eea7e426393449e32b9003e51f3cae879ff24`
+completed both independent original-source three-arm workflows:
+[Feynman #44468652605](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/44468652605)
+and [MQT #44468652217](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/44468652217).
+The full-live three-arm steps succeeded in both jobs. All six cohorts per family
+(three original QASM sources at two effective MPFR precisions) preserved SAT,
+signed Complex real/imag WMC, original Rust stdout and search topology. These
+checks establish numerical/source correctness, **not** a speedup.
+
+Unprofiled full-process same-runner native medians, in milliseconds; 7 rotated
+fresh trials per arm and original source+weighted CNF, GPMC and Rust precision
+locks were retained. This table never combines observations from separate batches.
+
+| Original source / precision | GPMC p50 | Inline p50 | Fastpath p50 | Inline p90 | Fastpath p90 | Paired wins |
+|---|---:|---:|---:|---:|---:|---:|
+| Feynman HWB6 / 100-bit | 168.952 | 504.395 | 504.661 | 561.973 | 524.791 | 3/7 |
+| Feynman HWB6 / 333-bit | 185.588 | 535.409 | 535.323 | 558.143 | 571.495 | 2/7 |
+| MQT QNN4 / 100-bit | 13.724 | 31.643 | 31.532 | 32.349 | 31.746 | 6/7 |
+| MQT QNN4 / 333-bit | 14.370 | 33.198 | 33.213 | 33.844 | 33.349 | 6/7 |
+
+The remaining Barenco5/ModMult55 and VQE4/QPEexact8 cohorts also matched
+source/Complex WMC, but offer no consistent p50/p90 benefit. In particular,
+HWB6/100-bit has 2,465,529 exact fully-live clause hits yet **regresses p50**;
+HWB6/333-bit **regresses p90**; QNN4/333-bit **regresses p50**. Counter hits
+are not a substitute for a native end-to-end speedup. Current tests preserve
+RSS measurements in raw CI artifacts; no standalone observed RSS reduction is
+claimed.
+
+**Decision: correctness PASS, performance NO-GO for this opt-in full-live clause
+fastpath.** Keep the source-exact negative evidence, do not enable the flag by
+default, do not change the production solver/Router and do not treat the
+successful GitHub Actions result as a performance acceptance. The experiment's
+runner-level status `SOURCE_LOCKED_NUMERIC_EVIDENCE_NOT_PRODUCTION_GO` is
+consistent with this stricter scientific conclusion; it is not an automatic
+production promotion gate.
+
+### Next independent, solver-owned hypothesis
+
+The unmodified GPMC feature-ablation [MQT native #44468652565](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/44468652565)
+reports QNN4/100-bit GPMC default 13.917ms versus *no tree decomposition*
+18.134ms (333-bit 15.584ms versus 18.902ms) on the same original CNF. This
+motivates a separate **count-safe structure-aware decomposition/branching**
+study, not a claim that the feature toggle proves causality in Rust. Its
+required control is original GPMC, unchanged Rust Inline and one opt-in
+Rust structural candidate on identical signed Weighted CNF, at 100/333 bits,
+with independent SAT+Full Complex WMC, search-work counters, p50/p90 full
+WallTime, peak RSS and unchanged Grover5 censored cases. Prefer changed
+search/component workload over further literal-scanning micro-optimizations.

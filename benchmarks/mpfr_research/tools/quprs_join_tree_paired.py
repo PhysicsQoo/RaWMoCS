@@ -19,7 +19,7 @@ TRIALS = 7
 def command(args: argparse.Namespace, case: str, cnf: Path,
             digits: int, arm: str) -> list[str]:
     if arm not in ARMS:
-        raise ValueError("UNKNOWN_FOREST_ARM")
+        raise ValueError("UNKNOWN_JOIN_TREE_ARM")
     base = "gpmc" if arm == "gpmc" else "inline_full"
     out = command_for(args, case, cnf, digits, base)
     if arm == "join_tree":
@@ -131,6 +131,14 @@ def main() -> None:
                 join_tree_attempts=attempts, join_tree_completions=completions,
                 performance="FAMILY_SIGNAL_ONLY" if signal else "PERFORMANCE_NO_GO")
             persist(args, report)
+            control_nodes = statistics.median(
+                r["nodes"] for r in rows if r["arm"] == "inline_full")
+            candidate_nodes = statistics.median(
+                r["nodes"] for r in rows if r["arm"] == "join_tree")
+            candidate_products = statistics.median(
+                r["join_tree_products"] for r in rows if r["arm"] == "join_tree")
+            candidate_max_bag = max(
+                r["join_tree_max_bag"] for r in rows if r["arm"] == "join_tree")
             print(f"JOIN_TREE_MATCH case={case} bits={bits} "
                   f"gpmc_ms={stats['gpmc']['p50_wall_ms']:.3f} "
                   f"inline_ms={control['p50_wall_ms']:.3f} "
@@ -138,6 +146,8 @@ def main() -> None:
                   f"p90_inline_ms={control['p90_wall_ms']:.3f} "
                   f"p90_join_tree_ms={candidate['p90_wall_ms']:.3f} "
                   f"wins={wins}/{TRIALS} attempts={attempts} completions={completions} "
+                  f"nodes_inline={control_nodes:.0f} nodes_join={candidate_nodes:.0f} "
+                  f"products={candidate_products:.0f} max_bag={candidate_max_bag} "
                   f"performance={cohort['performance']}", flush=True)
     report["status"] = "SOURCE_LOCKED_NUMERIC_EVIDENCE_NOT_PRODUCTION_GO"
     persist(args, report)

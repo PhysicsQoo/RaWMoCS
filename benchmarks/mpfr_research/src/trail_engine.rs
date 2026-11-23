@@ -1008,7 +1008,9 @@ impl<'a> TrailEngine<'a> {
             let mut outside = false;
             for &literal in &self.clauses[cid] {
                 let var = literal.unsigned_abs() as usize;
-                if self.assigned[var] != 0 { continue; }
+                if self.assigned[var] != 0 {
+                    continue;
+                }
                 if part.binary_search(&var).is_ok() {
                     intersects = true;
                 } else {
@@ -1033,7 +1035,10 @@ impl<'a> TrailEngine<'a> {
             return None;
         }
         let (answer, metrics) = factor_variable_elimination::count_clauses_bounded_join_tree(
-            self.problem, part, &residual, self.bits,
+            self.problem,
+            part,
+            &residual,
+            self.bits,
         );
         self.join_tree_products += metrics.products as u64;
         self.join_tree_max_bag = self.join_tree_max_bag.max(metrics.width);

@@ -51,3 +51,35 @@ evidence remains permanent: zero completions in all twelve original
 source×precision cohorts. If Join-tree also does not hit genuine
 hard cases, report NO-GO; do not blindly raise width, products, memory
 or probe budgets. This is not a general high-treewidth separator solver.
+
+## First source-pinned native results (2026-11-23)
+
+The first code HEAD `4cd41cf` passed 123 independent Rust research tests,
+all six Feynman and six MQT original source×precision numeric cohorts
+(SAT plus both signed Complex channels), and both source-locked native
+benchmark jobs. A subset of unrelated existing research CI jobs failed
+strict `rustfmt` on two added Trail lines; the next patch corrects
+formatting, so **final-head full CI is not yet qualified**.
+
+Crucial research outcome: exact bounded Join-tree **completed** four
+source subproblems in each 7-trial solve for HWB6 and QNN4 (28/28
+completed per source×precision cohort), unlike width-one Forest's zero
+completions, yet full native performance still failed the Gate:
+
+| Original case | GPMC p50 | original Inline p50 | Join-tree p50 | result |
+| --- | ---: | ---: | ---: | --- |
+| Feynman HWB6 / 100-bit | 173.927 ms | 516.150 ms | 516.861 ms | NO-GO |
+| Feynman HWB6 / 333-bit | 190.678 ms | 540.194 ms | 543.578 ms | NO-GO |
+| MQT QNN4 / 100-bit | 16.801 ms | 35.020 ms | 36.428 ms | NO-GO |
+| MQT QNN4 / 333-bit | 17.713 ms | 36.492 ms | 38.368 ms | NO-GO |
+
+Original Feynman native evidence: [CI #45098598145](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/45098598145).
+Independent MQT holdout: [CI #45098598058](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/45098598058).
+
+Interpretation: finishing bounded width-14 message tables does not prove
+that search work is avoided economically. Four successful small residual
+plans may cost more than the original Trail branches. The next study
+must report *actual same-run DPLL node reduction vs extra MPFR factor
+products* and full WallTime / RSS, not count completions alone. Do not
+increase width14 or the four-probe cap without an independent longer
+hard-case net benefit. The algorithm remains default-off/NO-GO.

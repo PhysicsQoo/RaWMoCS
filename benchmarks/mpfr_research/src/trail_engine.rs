@@ -107,6 +107,14 @@ pub(crate) struct TrailEngine<'a> {
     // Bounded width-one exact sum-product on source-CNF binary forests.
     // Enabled only by an explicit research CLI switch.
     pub(crate) use_forest_dp: bool,
+    // Research-only join-tree VE. No change to original DPLL defaults.
+    pub(crate) use_bounded_join_tree_ve: bool,
+    pub(crate) join_tree_attempts: u64,
+    pub(crate) join_tree_completed: u64,
+    pub(crate) join_tree_capped: u64,
+    pub(crate) join_tree_products: u64,
+    pub(crate) join_tree_scans: u64,
+    pub(crate) join_tree_max_bag: usize,
     pub(crate) forest_dp_attempts: u64,
     pub(crate) forest_dp_completed: u64,
     pub(crate) forest_dp_rejected: u64,
@@ -266,6 +274,13 @@ impl<'a> TrailEngine<'a> {
             use_residual_factor_ve: false,
             use_component_local_ve: false,
             use_forest_dp: false,
+            use_bounded_join_tree_ve: false,
+            join_tree_attempts: 0,
+            join_tree_completed: 0,
+            join_tree_capped: 0,
+            join_tree_products: 0,
+            join_tree_scans: 0,
+            join_tree_max_bag: 0,
             forest_dp_attempts: 0,
             forest_dp_completed: 0,
             forest_dp_rejected: 0,
@@ -968,6 +983,68 @@ impl<'a> TrailEngine<'a> {
         outcome
     }
 
+    /// Opt-in exact sum-product using the already verified bounded
+    /// dense Factor-VE kernel as a post-unit Join-tree bucket message plan.
+    /// Structurally complete scopes only; caps/rejections leave original
+    /// Trail assignment, cache and weight ownership unchanged.
+    fn try_bounded_join_tree(&mut self, part: &[usize], ids: &[usize]) -> Option<Outcome> {
+        if !self.use_bounded_join_tree_ve
+            || self.join_tree_attempts >= 4
+            || !(8..=64).contains(&part.len())
+            || ids.len() > 512
+        {
+            return None;
+        }
+        // Count rejected structural probes, not only successful VE plans.
+        self.join_tree_attempts += 1;
+        let mut residual = Vec::<Clause>::with_capacity(ids.len());
+        for &cid in ids {
+            if self.satisfied[cid] != 0 {
+                continue;
+            }
+            self.join_tree_scans += 1;
+            let mut clause = Vec::new();
+            let mut intersects = false;
+            let mut outside = false;
+            for &literal in &self.clauses[cid] {
+                let var = literal.unsigned_abs() as usize;
+                if self.assigned[var] != 0 { continue; }
+                if part.binary_search(&var).is_ok() {
+                    intersects = true;
+                } else {
+                    outside = true;
+                }
+                clause.push(literal);
+            }
+            if intersects {
+                if outside || clause.len() > 12 || clause.is_empty() {
+                    self.join_tree_capped += 1;
+                    return None;
+                }
+                residual.push(clause);
+                if residual.len() > 512 {
+                    self.join_tree_capped += 1;
+                    return None;
+                }
+            }
+        }
+        if residual.is_empty() {
+            self.join_tree_capped += 1;
+            return None;
+        }
+        let (answer, metrics) = factor_variable_elimination::count_clauses_bounded_join_tree(
+            self.problem, part, &residual, self.bits,
+        );
+        self.join_tree_products += metrics.products as u64;
+        self.join_tree_max_bag = self.join_tree_max_bag.max(metrics.width);
+        if answer.is_some() {
+            self.join_tree_completed += 1;
+        } else {
+            self.join_tree_capped += 1;
+        }
+        answer
+    }
+
     fn components(&mut self, ids: &[usize], active: &[usize]) -> Vec<Vec<usize>> {
         self.component_dsu_calls += 1;
         if self.use_scoped_component_dsu {
@@ -1366,6 +1443,8 @@ impl<'a> TrailEngine<'a> {
             for part in pieces {
                 let result = if let Some(exact) = self.try_forest_dp(&part, &ids) {
                     exact
+                } else if let Some(exact) = self.try_bounded_join_tree(&part, &ids) {
+                    exact
                 } else if let Some(exact) = self.try_component_factor_ve(&part, &ids) {
                     exact
                 } else {
@@ -1386,6 +1465,16 @@ impl<'a> TrailEngine<'a> {
             ));
         }
         if let Some(answer) = self.try_forest_dp(&active, &ids) {
+            return Ok(self.save(
+                key,
+                key_hash,
+                Outcome {
+                    sat: answer.sat,
+                    count: prefix.mul(&answer.count, self.bits),
+                },
+            ));
+        }
+        if let Some(answer) = self.try_bounded_join_tree(&active, &ids) {
             return Ok(self.save(
                 key,
                 key_hash,
@@ -1825,6 +1914,8 @@ impl<'a> TrailEngine<'a> {
             let mut value = C::one(self.bits);
             for part in pieces {
                 let result = if let Some(exact) = self.try_forest_dp(&part, &ids) {
+                    exact
+                } else if let Some(exact) = self.try_bounded_join_tree(&part, &ids) {
                     exact
                 } else if let Some(exact) = self.try_component_factor_ve(&part, &ids) {
                     exact

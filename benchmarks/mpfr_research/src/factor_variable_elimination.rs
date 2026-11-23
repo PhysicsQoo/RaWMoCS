@@ -243,6 +243,16 @@ pub(crate) fn count_clauses(
     count_clauses_with_limit(p, scope, clauses, bits, MAX_SCOPE, false, MAX_BAG, false)
 }
 
+/// Certified bounded residual Join-tree / bucket sum-product:
+/// preflight min-fill order, table width at most 14, and unchanged
+/// hard 150k cells / 600k products. The caller owns forced/free weights
+/// outside this complete residual scope and falls back on any rejection.
+pub(crate) fn count_clauses_bounded_join_tree(
+    p: &Problem, scope: &[usize], clauses: &[Clause], bits: u32,
+) -> (Option<Outcome>, VeStats) {
+    count_clauses_with_limit(p, scope, clauses, bits, 64, true, PROBE_BAG, true)
+}
+
 fn selected_bucket_for_variable(
     factors: &[Factor], variable: usize,
 ) -> (usize, Vec<usize>, Vec<usize>) {
@@ -616,4 +626,73 @@ c p weight 6 -0.5 0.5 0\nc p weight -6 0.25 -0.25 0\n\
         let (answer, stats) = count(&p, &(1..=p.n).collect::<Vec<_>>(), 100);
         assert!(answer.is_none() && stats.capped);
     }
+
+    #[test]
+    fn bounded_join_tree_exact_cycle_and_reversible_trail_search_reduction() {
+        let mut source = String::from(
+            "p cnf 10 11\nc t wmc\nc p weight 1 0.25 -0.125 0\n\
+             c p weight -1 -0.5 0.25 0\n\
+             c p weight 2 -0.25 0.125 0\n\
+             c p weight -2 0.5 -0.25 0\n",
+        );
+        for v in 1..=9 { source.push_str(&format!("{v} -{} 0\n", v + 1)); }
+        source.push_str("10 -1 0\n1 4 -7 0\n");
+        for bits in [100_u32, 333] {
+            let p = parse_emitted(&source, bits).unwrap();
+            let scope = (1..=p.n).collect::<Vec<_>>();
+            let independent = independent_brute(&p, bits);
+            let (exact, stats) =
+                count_clauses_bounded_join_tree(&p, &scope, &p.clauses, bits);
+            assert!(stats.preflight_enabled && stats.minfill_enabled);
+            assert!(!stats.capped, "{stats:?}");
+            assert!(stats.minfill_plan_width > 2);
+            assert_eq!(exact.as_ref().unwrap().sat, independent.sat);
+            assert_eq!(exact.as_ref().unwrap().count.re, independent.count.re);
+            assert_eq!(exact.as_ref().unwrap().count.im, independent.count.im);
+            for cap in [0_usize, 1, 128] {
+                let run = |enabled: bool| {
+                    let mut solver = TrailEngine::new(&p, bits, cap, 100_000);
+                    solver.use_parent_ids = true;
+                    solver.use_compact_residual = true;
+                    solver.use_prehashed_cache = true;
+                    solver.use_fused_compact = true;
+                    solver.use_weight_class_cache = true;
+                    solver.use_inline_weight_relabel = true;
+                    solver.use_bounded_join_tree_ve = enabled;
+                    let answer = solver.count(scope.clone(), 0).unwrap();
+                    (answer, solver)
+                };
+                let (baseline, baseline_engine) = run(false);
+                let (candidate, research_engine) = run(true);
+                assert_eq!(candidate.sat, baseline.sat);
+                assert_eq!(candidate.count.re, baseline.count.re);
+                assert_eq!(candidate.count.im, baseline.count.im);
+                assert_eq!(candidate.sat, independent.sat);
+                assert_eq!(candidate.count.re, independent.count.re);
+                assert_eq!(candidate.count.im, independent.count.im);
+                assert!(research_engine.join_tree_completed > 0);
+                assert!(research_engine.stats.nodes < baseline_engine.stats.nodes);
+            }
+        }
+    }
+
+    #[test]
+    fn bounded_join_tree_rejects_width_fifteen_without_partial_weights() {
+        let mut source = String::from("p cnf 15 105\nc t wmc\n");
+        for u in 1..=15 {
+            for v in (u + 1)..=15 { source.push_str(&format!("{u} {v} 0\n")); }
+        }
+        for bits in [100_u32, 333] {
+            let p = parse_emitted(&source, bits).unwrap();
+            let (candidate, stats) = count_clauses_bounded_join_tree(
+                &p, &(1..=15).collect::<Vec<_>>(), &p.clauses, bits,
+            );
+            assert!(candidate.is_none());
+            assert!(stats.capped && stats.preflight_enabled);
+            assert_eq!(stats.cap_reason, "bucket_width");
+            assert_eq!(stats.cells, 0);
+            assert_eq!(stats.products, 0);
+        }
+    }
+
 }

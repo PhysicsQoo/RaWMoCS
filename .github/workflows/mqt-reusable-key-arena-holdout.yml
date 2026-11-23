@@ -9,6 +9,8 @@ on:
       - "benchmarks/mpfr_research/tools/quprs_factor_preflight_paired.py"
       - "benchmarks/mpfr_research/tools/quprs_full_live_key_paired.py"
       - "benchmarks/mpfr_research/tools/quprs_forest_dp_paired.py"
+      - "benchmarks/mpfr_research/tools/quprs_join_tree_paired.py"
+      - "docs/bounded-residual-join-tree-research.md"
       - "benchmarks/mpfr_research/src/factor_forest_dp.rs"
       - "docs/exact-forest-component-dp-research.md"
       - "docs/full-live-clause-residual-key-research.md"
@@ -219,6 +221,21 @@ jobs:
             --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
             --report .research/mqtbench/forest-dp-three-arm.json \
             | tee .research/mqtbench/forest-dp-three-arm.log
+      - name: Bounded exact residual Join-tree original MQT signed Complex WMC
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile benchmarks/mpfr_research/tools/quprs_join_tree_paired.py
+          python3 benchmarks/mpfr_research/tools/quprs_join_tree_paired.py --self-test
+          python3 benchmarks/mpfr_research/tools/quprs_join_tree_paired.py \
+            --family mqt \
+            --quprs .upstream/quprs \
+            --gpmc-source .upstream/gpmc \
+            --corpus .research/mqtbench \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --report .research/mqtbench/join-tree-three-arm.json \
+            | tee .research/mqtbench/join-tree-three-arm.log
       - name: Archive source statuses and every paired/censored record
         if: always()
         uses: actions/upload-artifact@v4

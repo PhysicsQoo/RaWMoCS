@@ -1018,6 +1018,10 @@ fn run() -> Result<(), String> {
     let cache_first = if forest_dp {
         args.next().ok_or("missing mode after --trail-forest-dp")?
     } else { cache_first };
+    let join_tree = cache_first.to_str() == Some("--trail-bounded-join-tree-ve");
+    let cache_first = if join_tree {
+        args.next().ok_or("missing mode after --trail-bounded-join-tree-ve")?
+    } else { cache_first };
     let cache_policy = match cache_first.to_str() {
         Some("--hashbrown-owned") => CachePolicy::HbOwned,
         Some("--hashbrown-borrowed") => CachePolicy::HbBorrowed,
@@ -1199,6 +1203,18 @@ fn run() -> Result<(), String> {
         trail_fused_pre_analysis) {
         return Err("--trail-forest-dp requires original inline exact weighted Trail without other research branches".into());
     }
+    if join_tree && (!weighted_equivalence || !trail_count ||
+        !trail_parent_ids || !trail_compact_residual || !trail_prehashed_cache ||
+        !trail_fused_compact || !weighted_component_cache || !inline_weight_relabel ||
+        forest_dp || component_local_ve || residual_factor_ve || factor_ve ||
+        factor_add || factor_boolean_bdd || factor_cutset || factor_pair_cutset ||
+        root_failed_literal || post_unit_cache || articulation_pivot || primal_order ||
+        unit_closure_pivot || trail_ordered_key_fastpath || trail_reuse_key_arena ||
+        trail_full_live_clause || trail_scope_stamp_admission ||
+        trail_active_clause_bitmap || trail_reversible_literal_mask ||
+        trail_fused_pre_analysis) {
+        return Err("--trail-bounded-join-tree-ve requires original inline exact weighted Trail without other research branches".into());
+    }
     if residual_factor_ve && (!weighted_equivalence || !trail_count || factor_ve
         || post_unit_cache || articulation_pivot || primal_order || root_failed_literal) {
         return Err("--trail-residual-factor-ve requires weighted-equivalence + trail-count, without other root transforms".into());
@@ -1351,6 +1367,7 @@ fn run() -> Result<(), String> {
     let mut residual_ve_metrics = (0_u64, 0_u64, 0_u64, 0_u64, 0_usize);
     let mut component_ve_metrics = (0_u64, 0_u64, 0_u64, 0_u64, 0_u64);
     let mut forest_dp_metrics = (0_u64, 0_u64, 0_u64, 0_u64);
+    let mut join_tree_metrics = (0_u64, 0_u64, 0_u64, 0_u64, 0_u64, 0_usize);
     let mut scoped_dsu_metrics = (0_u64, 0_u64);
     let mut ordered_key_metrics = (0_u64, 0_u64);
     let mut key_arena_metrics = (0_u64, 0_u64, 0_u64);
@@ -1385,6 +1402,7 @@ fn run() -> Result<(), String> {
         trail.use_residual_factor_ve = residual_factor_ve;
         trail.use_component_local_ve = component_local_ve;
         trail.use_forest_dp = forest_dp;
+        trail.use_bounded_join_tree_ve = join_tree;
         trail.use_scoped_component_dsu = scoped_component_dsu;
         trail.use_ordered_key_fastpath = trail_ordered_key_fastpath;
         trail.use_reusable_key_arena = trail_reuse_key_arena;
@@ -1417,6 +1435,11 @@ fn run() -> Result<(), String> {
         forest_dp_metrics = (
             trail.forest_dp_attempts, trail.forest_dp_completed,
             trail.forest_dp_rejected, trail.forest_dp_scans,
+        );
+        join_tree_metrics = (
+            trail.join_tree_attempts, trail.join_tree_completed,
+            trail.join_tree_capped, trail.join_tree_products,
+            trail.join_tree_scans, trail.join_tree_max_bag,
         );
         scoped_dsu_metrics = (trail.component_dsu_calls, trail.component_dsu_slots);
         ordered_key_metrics = (trail.ordered_key_probes, trail.ordered_key_hits);
@@ -1513,6 +1536,12 @@ fn run() -> Result<(), String> {
         key_subphase_metrics.0,
         key_subphase_metrics.1,
         key_subphase_metrics.2
+    );
+    eprintln!(
+        "RESEARCH_MPFR_JOIN_TREE_VE enabled={} attempts={} completed={} capped={} products={} scans={} max_bag={}",
+        join_tree, join_tree_metrics.0, join_tree_metrics.1,
+        join_tree_metrics.2, join_tree_metrics.3, join_tree_metrics.4,
+        join_tree_metrics.5
     );
     eprintln!(
         "RESEARCH_MPFR_FOREST_DP enabled={} attempts={} completed={} rejected={} scans={}",

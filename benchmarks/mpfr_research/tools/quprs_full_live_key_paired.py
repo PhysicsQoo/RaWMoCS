@@ -137,6 +137,22 @@ def run_one(command: list[str], arm: str, bits: int, digits: int) -> dict:
                 # therefore a measured observation, not a failure.
                 if arm == "inline_full" and hits != 0:
                     raise ValueError("DISABLED_FULL_LIVE_HIT_COUNTER_NONZERO")
+                if "--trail-bounded-join-tree-ve" in command:
+                    join_tree = re.search(
+                        r"^RESEARCH_MPFR_JOIN_TREE_VE enabled=(true|false) "
+                        r"attempts=(\d+) completed=(\d+) capped=(\d+) "
+                        r"products=(\d+) scans=(\d+) max_bag=(\d+)$",
+                        proc.stderr, re.M)
+                    if not join_tree or join_tree.group(1) != "true":
+                        raise ValueError("MISSING_EXACT_JOIN_TREE_DIAGNOSTIC")
+                    row.update(
+                        join_tree_attempts=int(join_tree.group(2)),
+                        join_tree_completed=int(join_tree.group(3)),
+                        join_tree_capped=int(join_tree.group(4)),
+                        join_tree_products=int(join_tree.group(5)),
+                        join_tree_scans=int(join_tree.group(6)),
+                        join_tree_max_bag=int(join_tree.group(7)),
+                    )
                 if "--trail-forest-dp" in command:
                     forest = re.search(
                         r"^RESEARCH_MPFR_FOREST_DP enabled=(true|false) "

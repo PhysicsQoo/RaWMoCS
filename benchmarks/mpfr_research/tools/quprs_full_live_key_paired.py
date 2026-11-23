@@ -38,6 +38,11 @@ CASES = {
 TRIALS = 7
 DEADLINE_S = 30
 ADDRESS_SPACE = 2_147_483_648
+HARD_CASES = {"feynman": "feynman_hwb6", "mqt": "mqt_qnn_4"}
+# Prospective research-only thresholds, never production acceptance.
+MIN_WALL_GAIN = 0.05
+MIN_PAIRED_WINS = 5
+MAX_RSS_RATIO = 1.05
 
 
 def command_for(args: argparse.Namespace, case: str, cnf: Path,
@@ -170,6 +175,82 @@ def summary(records: list[dict], arm: str) -> dict:
     }
 
 
+
+def hard_case_performance_gate(cohort: dict) -> dict:
+    """Fail-closed native performance signal; numeric correctness is separate.
+
+    At least 5% p50 and p90 speedup, >=5/7 paired wins and no more than
+    5% median RSS growth must all hold. Only compare arms in this cohort.
+    A passing family signal is never a global or production GO.
+    """
+    if cohort.get("status") != "MATCHED_SAT_AND_SIGNED_COMPLEX_WMC":
+        return {"status": "PERFORMANCE_NO_GO", "reason": "NUMERIC_NOT_QUALIFIED"}
+    try:
+        stats = cohort["stats"]
+        gpmc, inline, fast = (stats[arm] for arm in ARMS)
+        p50 = (gpmc["p50_wall_ms"], inline["p50_wall_ms"],
+               fast["p50_wall_ms"])
+        p90 = (inline["p90_wall_ms"], fast["p90_wall_ms"])
+        rss = (inline["p50_peak_rss_kib"], fast["p50_peak_rss_kib"])
+        wins = cohort["paired_wins_vs_original_inline"]
+        if (any(not isinstance(value, (float, int)) or value <= 0
+                for value in (*p50, *p90, *rss))
+                or not isinstance(wins, int) or not 0 <= wins <= TRIALS):
+            raise ValueError("invalid native performance fields")
+    except (KeyError, TypeError, ValueError):
+        return {"status": "PERFORMANCE_NO_GO", "reason": "MISSING_OR_INVALID_METRIC"}
+    checks = {
+        "p50_gain_at_least_5pct": p50[2] <= (1 - MIN_WALL_GAIN) * p50[1],
+        "p90_gain_at_least_5pct": p90[1] <= (1 - MIN_WALL_GAIN) * p90[0],
+        "paired_wins_at_least_5_of_7": wins >= MIN_PAIRED_WINS,
+        "median_rss_within_105pct": rss[1] <= MAX_RSS_RATIO * rss[0],
+        "gpmc_gap_narrows": p50[2] / p50[0] < p50[1] / p50[0],
+    }
+    return {
+        "status": ("FAMILY_HARD_CASE_SIGNAL_ONLY" if all(checks.values())
+                   else "PERFORMANCE_NO_GO"),
+        "checks": checks,
+        "gpmc_gap_before": p50[1] / p50[0],
+        "gpmc_gap_after": p50[2] / p50[0],
+    }
+
+
+def hard_case_gate_self_test() -> None:
+    """Positive and adversarial negatives must stay distinct from numeric CI."""
+    good = {
+        "status": "MATCHED_SAT_AND_SIGNED_COMPLEX_WMC",
+        "paired_wins_vs_original_inline": 6,
+        "stats": {
+            "gpmc": {"p50_wall_ms": 50},
+            "inline_full": {
+                "p50_wall_ms": 100, "p90_wall_ms": 120,
+                "p50_peak_rss_kib": 10_000,
+            },
+            "full_live_clause": {
+                "p50_wall_ms": 94, "p90_wall_ms": 112,
+                "p50_peak_rss_kib": 10_200,
+            },
+        },
+    }
+    assert hard_case_performance_gate(good)["status"] == "FAMILY_HARD_CASE_SIGNAL_ONLY"
+    for change in ("p50", "p90", "wins", "rss", "missing", "numeric"):
+        bad = json.loads(json.dumps(good))
+        if change == "p50":
+            bad["stats"]["full_live_clause"]["p50_wall_ms"] = 99
+        elif change == "p90":
+            bad["stats"]["full_live_clause"]["p90_wall_ms"] = 122
+        elif change == "wins":
+            bad["paired_wins_vs_original_inline"] = 4
+        elif change == "rss":
+            bad["stats"]["full_live_clause"]["p50_peak_rss_kib"] = 11_000
+        elif change == "missing":
+            del bad["stats"]["gpmc"]["p50_wall_ms"]
+        else:
+            bad["status"] = "CENSORED_OR_INCOMPLETE"
+        assert hard_case_performance_gate(bad)["status"] == "PERFORMANCE_NO_GO", change
+    print("FULL_LIVE_HARD_CASE_GATE_SELF_TEST_PASS", flush=True)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--self-test", action="store_true")
@@ -179,6 +260,7 @@ def main() -> None:
     args = ap.parse_args()
     command_preflight()
     if args.self_test:
+        hard_case_gate_self_test()
         return
     for attr in ("quprs", "gpmc_source", "corpus", "gpmc", "mpfr", "report"):
         if getattr(args, attr) is None:
@@ -248,6 +330,11 @@ def main() -> None:
             cohort["stats"] = {a: summary(rows, a) for a in ARMS}
             cohort["paired_wins_vs_original_inline"] = wins
             cohort["status"] = "MATCHED_SAT_AND_SIGNED_COMPLEX_WMC"
+            if case == HARD_CASES[args.family]:
+                cohort["hard_case_performance_gate"] = hard_case_performance_gate(cohort)
+                print(f"FULL_LIVE_HARD_CASE_GATE case={case} bits={bits} "
+                      f"decision={cohort['hard_case_performance_gate']['status']}",
+                      flush=True)
             persist()
             s = cohort["stats"]
             print(f"FULL_LIVE_KEY_MATCH case={case} bits={bits} "
@@ -259,6 +346,18 @@ def main() -> None:
                   f"wins={wins}/{TRIALS} "
                   f"hits={s['full_live_clause']['p50_source_full_live_hits']:.0f}",
                   flush=True)
+    hard = [cohort["hard_case_performance_gate"]
+            for item in report["cases"]
+            for cohort in item["precisions"]
+            if "hard_case_performance_gate" in cohort]
+    report["family_performance_gate"] = (
+        "FAMILY_HARD_CASE_SIGNAL_ONLY"
+        if len(hard) == len(BITS)
+        and all(x["status"] == "FAMILY_HARD_CASE_SIGNAL_ONLY" for x in hard)
+        else "HARD_CASE_PERFORMANCE_NO_GO"
+    )
+    # Even a two-precision family signal cannot pass independent
+    # cross-family or production gates without the other family.
     report["status"] = "SOURCE_LOCKED_NUMERIC_EVIDENCE_NOT_PRODUCTION_GO"
     persist()
     print("FULL_LIVE_KEY_STUDY_FINISHED status=" + report["status"], flush=True)

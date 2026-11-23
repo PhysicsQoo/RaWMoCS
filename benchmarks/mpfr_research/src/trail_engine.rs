@@ -921,6 +921,10 @@ impl<'a> TrailEngine<'a> {
         {
             return None;
         }
+        // Count *every* screened probe against the strict 32-probe cap,
+        // including wide/cross-scope negatives. Dense hard cases must not
+        // repeatedly pay unbounded unsuccessful admission scans.
+        self.forest_dp_attempts += 1;
         let mut residual = Vec::<Clause>::new();
         for &cid in ids {
             if self.satisfied[cid] != 0 {
@@ -944,15 +948,16 @@ impl<'a> TrailEngine<'a> {
             }
             if intersects {
                 if outside || clause.is_empty() || clause.len() > 2 {
+                    self.forest_dp_rejected += 1;
                     return None;
                 }
                 residual.push(clause);
             }
         }
         if residual.is_empty() {
+            self.forest_dp_rejected += 1;
             return None;
         }
-        self.forest_dp_attempts += 1;
         let (outcome, _) =
             factor_forest_dp::count_clauses(self.problem, part, &residual, self.bits);
         if outcome.is_some() {

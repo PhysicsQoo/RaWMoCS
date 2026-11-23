@@ -22,6 +22,7 @@ mod trail_engine;
 mod separator_pivot;
 mod primal_centroid;
 mod factor_variable_elimination;
+mod factor_forest_dp;
 mod factor_add_elimination;
 mod factor_boolean_bdd;
 mod factor_cutset_ve;
@@ -1012,6 +1013,11 @@ fn run() -> Result<(), String> {
     let cache_first = if residual_factor_ve {
         args.next().ok_or("missing mode after --trail-residual-factor-ve")?
     } else { cache_first };
+    // New research-only exact width-one component message passing.
+    let forest_dp = cache_first.to_str() == Some("--trail-forest-dp");
+    let cache_first = if forest_dp {
+        args.next().ok_or("missing mode after --trail-forest-dp")?
+    } else { cache_first };
     let cache_policy = match cache_first.to_str() {
         Some("--hashbrown-owned") => CachePolicy::HbOwned,
         Some("--hashbrown-borrowed") => CachePolicy::HbBorrowed,
@@ -1181,6 +1187,18 @@ fn run() -> Result<(), String> {
         || root_failed_literal || articulation_pivot || primal_order || unit_closure_pivot) {
         return Err("--trail-component-local-ve requires weighted-equivalence + trail-count with unchanged original branch routing".into());
     }
+    if forest_dp && (!weighted_equivalence || !trail_count ||
+        !trail_parent_ids || !trail_compact_residual || !trail_prehashed_cache ||
+        !trail_fused_compact || !weighted_component_cache || !inline_weight_relabel ||
+        component_local_ve || residual_factor_ve || factor_ve || factor_add ||
+        factor_boolean_bdd || factor_cutset || factor_pair_cutset || root_failed_literal ||
+        post_unit_cache || articulation_pivot || primal_order || unit_closure_pivot ||
+        trail_ordered_key_fastpath || trail_reuse_key_arena ||
+        trail_full_live_clause || trail_scope_stamp_admission ||
+        trail_active_clause_bitmap || trail_reversible_literal_mask ||
+        trail_fused_pre_analysis) {
+        return Err("--trail-forest-dp requires original inline exact weighted Trail without other research branches".into());
+    }
     if residual_factor_ve && (!weighted_equivalence || !trail_count || factor_ve
         || post_unit_cache || articulation_pivot || primal_order || root_failed_literal) {
         return Err("--trail-residual-factor-ve requires weighted-equivalence + trail-count, without other root transforms".into());
@@ -1332,6 +1350,7 @@ fn run() -> Result<(), String> {
     engine.indexed_activation_node = indexed_activation_node;
     let mut residual_ve_metrics = (0_u64, 0_u64, 0_u64, 0_u64, 0_usize);
     let mut component_ve_metrics = (0_u64, 0_u64, 0_u64, 0_u64, 0_u64);
+    let mut forest_dp_metrics = (0_u64, 0_u64, 0_u64, 0_u64);
     let mut scoped_dsu_metrics = (0_u64, 0_u64);
     let mut ordered_key_metrics = (0_u64, 0_u64);
     let mut key_arena_metrics = (0_u64, 0_u64, 0_u64);
@@ -1365,6 +1384,7 @@ fn run() -> Result<(), String> {
         trail.articulation_root_only = articulation_root_only;
         trail.use_residual_factor_ve = residual_factor_ve;
         trail.use_component_local_ve = component_local_ve;
+        trail.use_forest_dp = forest_dp;
         trail.use_scoped_component_dsu = scoped_component_dsu;
         trail.use_ordered_key_fastpath = trail_ordered_key_fastpath;
         trail.use_reusable_key_arena = trail_reuse_key_arena;
@@ -1393,6 +1413,10 @@ fn run() -> Result<(), String> {
             trail.component_ve_attempts, trail.component_ve_completed,
             trail.component_ve_capped, trail.component_ve_products,
             trail.component_ve_scans,
+        );
+        forest_dp_metrics = (
+            trail.forest_dp_attempts, trail.forest_dp_completed,
+            trail.forest_dp_rejected, trail.forest_dp_scans,
         );
         scoped_dsu_metrics = (trail.component_dsu_calls, trail.component_dsu_slots);
         ordered_key_metrics = (trail.ordered_key_probes, trail.ordered_key_hits);
@@ -1489,6 +1513,11 @@ fn run() -> Result<(), String> {
         key_subphase_metrics.0,
         key_subphase_metrics.1,
         key_subphase_metrics.2
+    );
+    eprintln!(
+        "RESEARCH_MPFR_FOREST_DP enabled={} attempts={} completed={} rejected={} scans={}",
+        forest_dp, forest_dp_metrics.0, forest_dp_metrics.1,
+        forest_dp_metrics.2, forest_dp_metrics.3
     );
     eprintln!("RESEARCH_MPFR_COMPONENT_LOCAL_VE enabled={} attempts={} completed={} capped={} products={} scans={}",
         component_local_ve, component_ve_metrics.0, component_ve_metrics.1,

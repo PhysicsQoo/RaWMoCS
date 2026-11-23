@@ -5,6 +5,7 @@ on:
     paths:
       - ".github/workflows/quprs-feynman-long-source-scout.yml"
       - "benchmarks/rust_core/tools/quprs_long_feynman_reference.rs"
+      - "benchmarks/mpfr_research/tools/quprs_long_tail_mechanism.py"
       - "benchmarks/rust_core/tools/quprs_long_tail_source_bridge.rs"
       - "benchmarks/mpfr_research/tools/quprs_long_tail_paired.py"
       - "docs/original-long-tail-weighted-cnf-benchmark.md"
@@ -401,5 +402,93 @@ jobs:
           path: |
             .research/long-tail/long-tail-pilot-${{ matrix.case }}.json
             .research/long-tail/long-tail-pilot-${{ matrix.case }}.log
+          retention-days: 30
+          if-no-files-found: warn
+
+  original-gpmc-complete-rust-timeout-mechanism:
+    # The user-valued long-tail counterexamples: original GPMC completes,
+    # original-CNF Rust research solver exceeds symmetric 30s window.
+    # 7 fresh alternating head-to-head trials per precision; GPMC feature
+    # toggles are separate single-trial exploratory mechanism probes.
+    needs: original-long-tail-source-locked-screen
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.number == 128
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [feynman_gf2_6_mult, mqt_qnn_8, mqt_wstate_16]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout RaWMoCS independent mechanism research
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Checkout pinned QuPRS original QASM corpus
+        uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/QuPRS
+          ref: 0b28736651b3740ed3b201edd2efdef3da541e0d
+          path: .upstream/quprs
+          persist-credentials: false
+      - name: Checkout unchanged GPMC native C++ source
+        uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/GPMC
+          ref: 89bbc89d0de918e7a5385740355df55765039230
+          path: .upstream/gpmc
+          submodules: recursive
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/mpfr_research -> target
+          key: source-locked-high-cost-cohort
+      - name: Download unchanged original source screening evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: original-rawmocs-gpmc-long-tail-screen
+          path: .research/long-tail
+      - name: Verify original upstream source locks and install MPFR
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C .upstream/quprs rev-parse HEAD)" = "0b28736651b3740ed3b201edd2efdef3da541e0d"
+          test "$(git -C .upstream/gpmc rev-parse HEAD)" = "89bbc89d0de918e7a5385740355df55765039230"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build libgmp-dev libmpfr-dev zlib1g-dev time pkg-config
+      - name: Build pinned unchanged native GPMC
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S .upstream/gpmc -B .upstream/gpmc/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build .upstream/gpmc/build --target gpmc-bin --parallel 2
+      - name: Build same-source original-CNF MPFR Rust research solver
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --manifest-path benchmarks/mpfr_research/Cargo.toml
+      - name: Same-source seven-trial 100/333-bit GPMC/Rust and GPMC mechanism toggles
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile benchmarks/mpfr_research/tools/quprs_long_tail_mechanism.py
+          python3 benchmarks/mpfr_research/tools/quprs_long_tail_mechanism.py --self-test
+          python3 benchmarks/mpfr_research/tools/quprs_long_tail_mechanism.py \
+            --case "${{ matrix.case }}" \
+            --quprs .upstream/quprs \
+            --gpmc-source .upstream/gpmc \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --corpus .research/long-tail \
+            --report ".research/long-tail/long-tail-mechanism-${{ matrix.case }}.json" \
+            | tee ".research/long-tail/long-tail-mechanism-${{ matrix.case }}.log"
+      - name: Save case-specific seven-trial raw and censored evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: original-rawmocs-gpmc-mechanism-${{ matrix.case }}
+          path: |
+            .research/long-tail/long-tail-mechanism-${{ matrix.case }}.json
+            .research/long-tail/long-tail-mechanism-${{ matrix.case }}.log
           retention-days: 30
           if-no-files-found: warn

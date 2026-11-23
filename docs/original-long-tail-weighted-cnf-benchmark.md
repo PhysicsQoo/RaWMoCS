@@ -153,3 +153,44 @@ cohort. On any future changes to source selection, do not silently
 benchmark a different case: update the cohort and verify source
 lock explicitly. These remain exploratory two-trial pilots, not
 the eventual seven-trial p50/p90 long-time acceptance evidence.
+
+## 2026-11-24: seven-trial GPMC-completed/Rust-timeout mechanism cohort
+
+The source-screen and all three 120s two-sided-timeout pilots passed in
+[CI #45169735316](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/45169735316).
+Each hard case produced its own original-CNF source-locked artifact.
+For original QNN12, Feynman GF(2)8 Mult, and Ham15-med, both solvers
+reached 120s at 100 and 333 bits, two trials per precision. Their
+signed Complex WMC values remain unavailable; do not label their
+timeout times as finished solver WallTime or a solver ranking.
+
+The highest-priority *discriminating* source-locked cohort comes from
+the same 100-bit original QuPRS source screen: Feynman GF(2)6 Mult
+(GPMC 5.612s, Rust >30s), MQT QNN8 (1.349s versus >30s), and
+MQT W-state16 (6.870s versus >30s).
+
+An **additional matrix job in the same existing workflow** now uses
+the completed source-screen artifact (no re-encoding) and verifies
+all 16 original QASM paths/hashes, copied source bytes, original
+Weighted CNF SHA, pinned upstream commits, both numeric precisions,
+and that each predeclared case was actually GPMC-completed/Rust-
+timeout in the 100-bit screen.
+
+For each of these three cases it measures **seven fresh, alternating
+GPMC-versus-Rust native processes** at *both* 100 and 333 bits,
+under equal 30s/3GiB and explicit, finite research-only Rust
+1B-node bounds. For every GPMC completion it checks stable SAT and
+signed Complex real/imag outputs at the stated precision. For any
+dual completion it additionally verifies GPMC versus Rust numeric
+agreement; a mismatch fails closed and preserves complete evidence.
+If Rust remains censored, it reports only a **strict lower bound**
+of Rust time / GPMC p50, with a null Rust p50 and null p90
+rather than estimating an unobserved completion time.
+
+The same original C++ GPMC build additionally receives one
+single-trial *exploratory* feature-toggle probe per precision:
+combined -no-pp_ee/-no-pp_ve/-no-pp_cs, -no-td, and -no-bj.
+Each is still original-CNF, source- and precision-matched, and
+timeout-limited. A toggle can change downstream solver states:
+it is **hypothesis triage, not isolated causal proof**.
+No new workflow, environment or production solver changes.

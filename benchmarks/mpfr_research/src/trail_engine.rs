@@ -7,8 +7,8 @@
 //!
 //! This is NOT CDCL and does not perform weight-unsafe SAT simplification.
 use crate::{
-    factor_forest_dp, factor_variable_elimination, normalize, separator_pivot, Clause, Outcome, PackedKey, Problem,
-    Stats, C,
+    factor_forest_dp, factor_variable_elimination, normalize, separator_pivot, Clause, Outcome,
+    PackedKey, Problem, Stats, C,
 };
 use hashbrown::{hash_map::RawEntryMut, HashMap};
 use std::cmp::{Ordering, Reverse};

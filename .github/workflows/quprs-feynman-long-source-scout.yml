@@ -230,12 +230,12 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-  original-long-tail-source-locked-pilot:
+  original-long-tail-source-locked-screen:
     # One existing workflow, no new workflows/environment/branch. This costly
     # study is limited to the research PR or explicit manual dispatch.
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.number == 128
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 25
     steps:
       - name: Checkout RaWMoCS research-only exporter and runner
         uses: actions/checkout@v4
@@ -292,7 +292,7 @@ jobs:
           set -euo pipefail
           cargo test --release --manifest-path benchmarks/mpfr_research/Cargo.toml
           cargo build --release --manifest-path benchmarks/mpfr_research/Cargo.toml
-      - name: Original source 16-case GPMC/Rust high-cost scout and equal-precision pilot
+      - name: Original source 16-case GPMC/Rust 30s screens
         shell: bash
         run: |
           set -euo pipefail
@@ -300,6 +300,7 @@ jobs:
           python3 -m py_compile benchmarks/mpfr_research/tools/quprs_long_tail_paired.py
           python3 benchmarks/mpfr_research/tools/quprs_long_tail_paired.py --self-test
           python3 benchmarks/mpfr_research/tools/quprs_long_tail_paired.py \
+            --stage screen \
             --quprs .upstream/quprs \
             --gpmc-source .upstream/gpmc \
             --exporter .upstream/quprs/rust/target/release/examples/quprs_long_tail_source_bridge \
@@ -308,11 +309,97 @@ jobs:
             --corpus .research/long-tail \
             --report .research/long-tail/long-tail-source-locked-evidence.json \
             | tee .research/long-tail/long-tail-scout.log
-      - name: Preserve source byte hashes, full native observations and censored cases
+      - name: Archive hash-locked 16-source screens before long pilots
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: original-rawmocs-gpmc-long-tail-source-locked
+          name: original-rawmocs-gpmc-long-tail-screen
           path: .research/long-tail/
+          retention-days: 30
+          if-no-files-found: warn
+
+  original-long-tail-source-locked-pilot:
+    # Keep one existing workflow, parallelize the three previously
+    # source-qualified hard cases with independent timeout/artifact.
+    needs: original-long-tail-source-locked-screen
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.number == 128
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [mqt_qnn_12, feynman_gf2_8_mult, feynman_ham15_med]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout RaWMoCS research source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Checkout pinned original QuPRS
+        uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/QuPRS
+          ref: 0b28736651b3740ed3b201edd2efdef3da541e0d
+          path: .upstream/quprs
+          persist-credentials: false
+      - name: Checkout unchanged original GPMC C++
+        uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/GPMC
+          ref: 89bbc89d0de918e7a5385740355df55765039230
+          path: .upstream/gpmc
+          submodules: recursive
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/mpfr_research -> target
+          key: source-locked-high-cost-cohort
+      - name: Download unmodified source and CNF screening artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: original-rawmocs-gpmc-long-tail-screen
+          path: .research/long-tail
+      - name: Verify source locks and install native MPFR libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C .upstream/quprs rev-parse HEAD)" = "0b28736651b3740ed3b201edd2efdef3da541e0d"
+          test "$(git -C .upstream/gpmc rev-parse HEAD)" = "89bbc89d0de918e7a5385740355df55765039230"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build libgmp-dev libmpfr-dev zlib1g-dev time pkg-config
+      - name: Build original native GPMC C++
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S .upstream/gpmc -B .upstream/gpmc/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build .upstream/gpmc/build --target gpmc-bin --parallel 2
+      - name: Build source-locked RaWMoCS research MPFR solver
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --manifest-path benchmarks/mpfr_research/Cargo.toml
+      - name: Independently time one 100/333-bit 120s original-CNF pilot
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile benchmarks/mpfr_research/tools/quprs_long_tail_paired.py
+          python3 benchmarks/mpfr_research/tools/quprs_long_tail_paired.py --self-test
+          python3 benchmarks/mpfr_research/tools/quprs_long_tail_paired.py \
+            --stage pilot --pilot-case "${{ matrix.case }}" \
+            --quprs .upstream/quprs \
+            --gpmc-source .upstream/gpmc \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --corpus .research/long-tail \
+            --report .research/long-tail/long-tail-source-locked-evidence.json \
+            | tee ".research/long-tail/long-tail-pilot-${{ matrix.case }}.log"
+      - name: Save independent case artifact even after timeout or failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: original-rawmocs-gpmc-long-tail-${{ matrix.case }}-pilot
+          path: |
+            .research/long-tail/long-tail-pilot-${{ matrix.case }}.json
+            .research/long-tail/long-tail-pilot-${{ matrix.case }}.log
           retention-days: 30
           if-no-files-found: warn

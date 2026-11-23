@@ -113,3 +113,43 @@ Screening remains source-neutral and does not rank by which solver wins.
 Any potential solver win on a censored GPMC run lacks a dual-solver
 full numeric witness, so it is **not** a certified WMC comparison.
 These are *research bounds only*, not production API changes.
+
+## 2026-11-23: screen-first archive and parallel independent hard-case pilots
+
+Completed corrected research [CI #45136524085](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/45136524085)
+generated 16 pinned source candidates, 14 original Weighted CNF exports
+and 3 cases where *both* solvers timed out after 120s:
+MQT QNN12, Feynman GF(2)8 Mult and Feynman Ham15-med.
+Each case was attempted twice at 100-bit and twice at 333-bit
+precision for each solver, with no dual completion or independent
+full Complex WMC witness. Calling these ties or speedups is invalid.
+
+The same original 100-bit CNF screen also shows several *clear
+timeout-bound regressions*: GPMC GF(2)6 Mult 4.350s versus
+Rust >30s, QNN8 1.034s versus Rust >30s, Adder8 0.202s
+versus Rust >30s, and W-state16 5.215s versus Rust >30s.
+Those should be prioritized for algorithmic diagnostics; do not
+promote small-case victories to general long-case superiority.
+
+The single prior job serialized up to 48 minutes of native solver
+timeout windows. It is now split **inside the same existing workflow**
+into (a) a bounded 16-case source and 30-second GPMC/Rust screening
+job, with independent immutable source/CNF SHA and censored-result
+artifact, and (b) three independently bounded, parallel matrix jobs
+for the three *previously confirmed* long cases.
+
+Each matrix pilot first downloads the identical screening artifact,
+verifies pinned QuPRS/GPMC revisions, all 16 source QASM identifiers,
+original QASM and QuPRS-generated Weighted CNF SHA-256 values,
+precision and high research-only Rust node budget, and that its
+precommitted case is actually selected in the screened data.
+It **does not regenerate** Weighted CNF or redo expensive screening.
+Each case uploads its own per-case JSON/logs even when other
+cases time out or fail. There is no new GitHub workflow, Pages
+environment, branch, or production API change.
+
+Matrix cases are intentionally pinned to this independent screening
+cohort. On any future changes to source selection, do not silently
+benchmark a different case: update the cohort and verify source
+lock explicitly. These remain exploratory two-trial pilots, not
+the eventual seven-trial p50/p90 long-time acceptance evidence.

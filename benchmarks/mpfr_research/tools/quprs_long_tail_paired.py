@@ -389,6 +389,12 @@ def main() -> None:
         selected = qualified[:MAX_PAIRED_LONG_CASES]
         report["selected"] = [x["case"] for x in selected]
         persist(args, report)
+        # Preserve independent original-CNF numeric evidence and fail
+        # closed before allowing any expensive pilot to reuse this screen.
+        if numeric_disagreement:
+            report["status"] = "NUMERIC_DISAGREEMENT_FAIL"
+            persist(args, report)
+            raise SystemExit("FAIL_SAT_OR_SIGNED_COMPLEX_WMC")
         # Upload the complete 30-second source evidence before any pilot.
         report["status"] = "LONGTAIL_SCREEN_COMPLETE"
         persist(args, report)

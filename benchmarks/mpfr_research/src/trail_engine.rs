@@ -7,7 +7,7 @@
 //!
 //! This is NOT CDCL and does not perform weight-unsafe SAT simplification.
 use crate::{
-    factor_variable_elimination, normalize, separator_pivot, Clause, Outcome, PackedKey, Problem,
+    factor_forest_dp, factor_variable_elimination, normalize, separator_pivot, Clause, Outcome, PackedKey, Problem,
     Stats, C,
 };
 use hashbrown::{hash_map::RawEntryMut, HashMap};
@@ -104,6 +104,13 @@ pub(crate) struct TrailEngine<'a> {
     // try bounded dense signed-complex WMC on small *whole components*.
     // Other components stay on original Trail and exact component cache.
     pub(crate) use_component_local_ve: bool,
+    // Bounded width-one exact sum-product on source-CNF binary forests.
+    // Enabled only by an explicit research CLI switch.
+    pub(crate) use_forest_dp: bool,
+    pub(crate) forest_dp_attempts: u64,
+    pub(crate) forest_dp_completed: u64,
+    pub(crate) forest_dp_rejected: u64,
+    pub(crate) forest_dp_scans: u64,
     // Research-only source-exact compact DSU over still-live variables.
     // Unlike the existing n+1 DSU, untouched/assigned source vars are
     // not initialized in every recursive component traversal.
@@ -258,6 +265,11 @@ impl<'a> TrailEngine<'a> {
             use_articulation_pivot: false,
             use_residual_factor_ve: false,
             use_component_local_ve: false,
+            use_forest_dp: false,
+            forest_dp_attempts: 0,
+            forest_dp_completed: 0,
+            forest_dp_rejected: 0,
+            forest_dp_scans: 0,
             use_scoped_component_dsu: false,
             use_ordered_key_fastpath: false,
             use_reusable_key_arena: false,
@@ -899,6 +911,58 @@ impl<'a> TrailEngine<'a> {
         result
     }
 
+    /// Count only a complete, proven independently-owned residual scope.
+    /// Never lose outside component literals or forced/free weight factors.
+    fn try_forest_dp(&mut self, part: &[usize], ids: &[usize]) -> Option<Outcome> {
+        if !self.use_forest_dp
+            || self.forest_dp_attempts >= 32
+            || !(8..=512).contains(&part.len())
+            || ids.len() > 2_048
+        {
+            return None;
+        }
+        let mut residual = Vec::<Clause>::new();
+        for &cid in ids {
+            if self.satisfied[cid] != 0 {
+                continue;
+            }
+            self.forest_dp_scans += 1;
+            let mut clause = Vec::new();
+            let mut intersects = false;
+            let mut outside = false;
+            for &literal in &self.clauses[cid] {
+                let var = literal.unsigned_abs() as usize;
+                if self.assigned[var] != 0 {
+                    continue;
+                }
+                if part.binary_search(&var).is_ok() {
+                    intersects = true;
+                } else {
+                    outside = true;
+                }
+                clause.push(literal);
+            }
+            if intersects {
+                if outside || clause.is_empty() || clause.len() > 2 {
+                    return None;
+                }
+                residual.push(clause);
+            }
+        }
+        if residual.is_empty() {
+            return None;
+        }
+        self.forest_dp_attempts += 1;
+        let (outcome, _) =
+            factor_forest_dp::count_clauses(self.problem, part, &residual, self.bits);
+        if outcome.is_some() {
+            self.forest_dp_completed += 1;
+        } else {
+            self.forest_dp_rejected += 1;
+        }
+        outcome
+    }
+
     fn components(&mut self, ids: &[usize], active: &[usize]) -> Vec<Vec<usize>> {
         self.component_dsu_calls += 1;
         if self.use_scoped_component_dsu {
@@ -1295,7 +1359,9 @@ impl<'a> TrailEngine<'a> {
             self.stats.decompositions += 1;
             let mut value = C::one(self.bits);
             for part in pieces {
-                let result = if let Some(exact) = self.try_component_factor_ve(&part, &ids) {
+                let result = if let Some(exact) = self.try_forest_dp(&part, &ids) {
+                    exact
+                } else if let Some(exact) = self.try_component_factor_ve(&part, &ids) {
                     exact
                 } else {
                     self.count_relevant(part, depth + 1, Some(&ids))?
@@ -1311,6 +1377,16 @@ impl<'a> TrailEngine<'a> {
                 Outcome {
                     sat: true,
                     count: prefix.mul(&value, self.bits),
+                },
+            ));
+        }
+        if let Some(answer) = self.try_forest_dp(&active, &ids) {
+            return Ok(self.save(
+                key,
+                key_hash,
+                Outcome {
+                    sat: answer.sat,
+                    count: prefix.mul(&answer.count, self.bits),
                 },
             ));
         }
@@ -1743,7 +1819,9 @@ impl<'a> TrailEngine<'a> {
             self.stats.decompositions += 1;
             let mut value = C::one(self.bits);
             for part in pieces {
-                let result = if let Some(exact) = self.try_component_factor_ve(&part, &ids) {
+                let result = if let Some(exact) = self.try_forest_dp(&part, &ids) {
+                    exact
+                } else if let Some(exact) = self.try_component_factor_ve(&part, &ids) {
                     exact
                 } else {
                     self.count_relevant(part, depth + 1, Some(&ids))?

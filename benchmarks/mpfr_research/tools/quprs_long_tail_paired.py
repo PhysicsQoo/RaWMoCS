@@ -37,7 +37,11 @@ EXPORT_S = 35
 SCREEN_S = 30
 PAIR_S = 120
 PILOT_TRIALS = 2
-MAX_PAIRED_LONG_CASES = 2
+MAX_PAIRED_LONG_CASES = 3
+# Research-only large, but finite DPLL limit. This does NOT alter the
+# production solver or the standalone research executable default.
+# 30/120s and 3GiB native-process limits remain the binding controls.
+LONG_TAIL_NODE_BUDGET = "--node-budget=1000000000"
 AS_BYTES = 3_221_225_472
 FS_BYTES = 16_777_216
 CNF_MAX_BYTES = 12_000_000
@@ -72,17 +76,35 @@ def source_index(content: str) -> dict[str, str]:
 def command(args: argparse.Namespace, name: str, cnf: Path, digits: int, arm: str) -> list[str]:
     if arm not in ARMS or digits not in BITS:
         raise ValueError("INVALID_ARM_OR_PRECISION")
-    # Reuse the checked source-original native flags; no 1M-node research
-    # cap is applied to these NEW cases. Symmetric wall/AS budgets apply.
+    # Reuse checked same-original-CNF flags. The research-only high node
+    # budget is explicit, finite, and restricted to the native Rust arm.
+    # GPMC and Rust still share the SAME full-process time/AS limits.
     cmd = build_command(args, arm, digits, cnf, name)
     if arm == "gpmc":
         if cmd[1:3] != ["-mode=1", f"-prec={digits}"]:
             raise ValueError("GPMC_NATIVE_CONTROL_DRIFT")
-    elif not all(x in cmd for x in
-                 ("--weighted-equivalence", "--trail-count",
-                  "--trail-inline-weight-relabel", "--hashbrown-borrowed")):
-        raise ValueError("RUST_NATIVE_CONTROL_DRIFT")
+        if any(arg.startswith("--node-budget=") for arg in cmd):
+            raise ValueError("GPMC_NONORIGINAL_NODE_FLAG")
+    else:
+        if any(arg.startswith("--node-budget=") for arg in cmd):
+            raise ValueError("UNEXPECTED_PREEXISTING_RUST_NODE_CAP")
+        cmd.insert(1, LONG_TAIL_NODE_BUDGET)
+        if cmd[1] != LONG_TAIL_NODE_BUDGET or not all(x in cmd for x in
+               ("--weighted-equivalence", "--trail-count",
+                "--trail-inline-weight-relabel", "--hashbrown-borrowed")):
+            raise ValueError("RUST_NATIVE_CONTROL_DRIFT")
     return cmd
+
+def classify_native_failure(returncode: int, stderr: str) -> str:
+    # CLI cap is not a solver time measurement. Never label as OOM/timeout.
+    if returncode == 124:
+        return "CENSORED_TIME"
+    if returncode == 2 and "RESEARCH_MPFR_FAIL_CLOSED: node limit" in stderr:
+        return "CENSORED_NODE_BUDGET"
+    if returncode == 2 and "RESEARCH_MPFR_FAIL_CLOSED: depth limit" in stderr:
+        return "CENSORED_DEPTH_BUDGET"
+    return "CENSORED_EXIT_OR_RESOURCE"
+
 
 def native(cmd: list[str], arm: str, duration: int, digits: int | None) -> dict:
     with tempfile.TemporaryDirectory() as td:
@@ -107,8 +129,7 @@ def native(cmd: list[str], arm: str, duration: int, digits: int | None) -> dict:
         row = {"arm": arm, "wall_ns": elapsed,
                "exit_code": process.returncode,
                "status": ("COMPLETED" if process.returncode == 0 else
-                          "CENSORED_TIME" if process.returncode == 124 else
-                          "CENSORED_EXIT_OR_RESOURCE"),
+                          classify_native_failure(process.returncode, process.stderr)),
                "stderr_tail": process.stderr[-1000:]}
         if rss.is_file():
             try:
@@ -151,13 +172,18 @@ def long_screen(row: dict) -> bool:
     return row["status"] in ("CENSORED_TIME", "CENSORED_OUTER_TIMEOUT")
 
 def score_screen(rows: dict) -> tuple:
-    # Prefer confirmed completed high-cost cases over censored screen cases.
+    # Precommitted long-tail selection: first genuine GPMC>=10s or GPMC
+    # 30s timeout, then original source-high-cost Rust-only cases.
+    # GPMC timeout is retained as censored, not interpreted as a score.
+    gpmc = rows["gpmc"]
+    gpmc_long = long_screen(gpmc)
     completed = all(x["status"] == "COMPLETED" for x in rows.values())
     seconds = max(
         (v.get("wall_ns", v.get("wall_ns_lower_bound", 0)) / 1e9)
         for v in rows.values()
     )
-    return (int(completed), seconds)
+    gpmc_seconds = gpmc.get("wall_ns", gpmc.get("wall_ns_lower_bound", 0)) / 1e9
+    return (int(gpmc_long), int(completed), gpmc_seconds, seconds)
 
 def persist(args: argparse.Namespace, report: dict) -> None:
     args.report.parent.mkdir(parents=True, exist_ok=True)
@@ -173,10 +199,24 @@ def self_test() -> None:
                           Path("/original-weighted.cnf"), digits, arm)
             assert ("--hashbrown-borrowed" in cmd) == (arm != "gpmc")
             assert ("--factor-variable-elimination" in cmd) is False
+            assert cmd.count(LONG_TAIL_NODE_BUDGET) == (arm != "gpmc")
+            assert not any(x.startswith("--node-budget=") for x in
+                           (cmd[1:] if arm == "gpmc" else cmd[2:]))
     assert long_screen({"status": "COMPLETED", "wall_ns": 10_000_000_000})
     assert not long_screen({"status": "COMPLETED", "wall_ns": 9_999_999_999})
     assert long_screen({"status": "CENSORED_TIME"})
     assert not long_screen({"status": "CENSORED_EXIT_OR_RESOURCE"})
+    assert not long_screen({"status": "CENSORED_NODE_BUDGET"})
+    assert classify_native_failure(2, "RESEARCH_MPFR_FAIL_CLOSED: node limit") == "CENSORED_NODE_BUDGET"
+    assert classify_native_failure(124, "") == "CENSORED_TIME"
+    assert classify_native_failure(2, "allocation failed") == "CENSORED_EXIT_OR_RESOURCE"
+    assert score_screen({
+        "gpmc": {"status": "CENSORED_TIME", "wall_ns": 30_000_000_000},
+        "inline_full": {"status": "COMPLETED", "wall_ns": 1_000_000_000},
+    }) > score_screen({
+        "gpmc": {"status": "COMPLETED", "wall_ns": 1_000_000_000},
+        "inline_full": {"status": "COMPLETED", "wall_ns": 20_000_000_000},
+    })
     sample = "\n".join(
         f"feynman_test_{i}\tbenchmarks/Feynman/a{i}.qasm" for i in range(EXPORTED_CASES)
     )
@@ -220,8 +260,11 @@ def main() -> None:
                       "min_screen_wall_seconds": MIN_LONG_SECONDS,
                       "max_paired_cases": MAX_PAIRED_LONG_CASES,
                       "pilot_trials": PILOT_TRIALS,
+                      "case_rank": "GPMC-measured hard first, then Rust-hard; no winner selection",
                       "exclude_microbenchmarks": True},
-        "limits": {"export_wall_s": EXPORT_S, "pilot_wall_s": PAIR_S,
+        "limits": {"export_wall_s": EXPORT_S, "screen_wall_s": SCREEN_S,
+                   "pilot_wall_s": PAIR_S, "rust_node_budget_research": 1_000_000_000,
+                   "default_research_node_budget_unchanged": 100_000,
                    "AS_bytes_each_process": AS_BYTES,
                    "max_source_cnf_bytes": CNF_MAX_BYTES},
         "cases": [], "selected": [],
@@ -316,6 +359,10 @@ def main() -> None:
                 cohort["status"] = "CENSORED_PILOT_ONE_OR_BOTH_SOLVERS"
                 cohort["completion_counts"] = {
                     arm: sum(x["status"] == "COMPLETED" for x in rows if x["arm"] == arm)
+                    for arm in ARMS
+                }
+                cohort["censored_by_arm"] = {
+                    arm: [x["status"] for x in rows if x["arm"] == arm]
                     for arm in ARMS
                 }
             else:

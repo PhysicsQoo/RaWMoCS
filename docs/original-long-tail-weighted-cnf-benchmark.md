@@ -82,3 +82,34 @@ state NO_ACTUALLY_MEASURED_LONG_CASES_IN_SOURCE_BATCH rather than use
 short cases as a substitute. In that case, extend acquisition of
 source-verified original CNF collections before making a broad
 competitive solver-performance claim.
+
+## 2026-11-23: first run and node-budget fairness correction
+
+Source-locked original [run #45131338063](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/45131338063)
+completed successfully. 16 source cases, 14 CNF exports, 3 GPMC 30s
+timeouts (`mqt_qnn_12`, `feynman_ham15_med`,
+`feynman_gf2_8_mult`), 2 sources censored at the exporter.
+All four selected 120s GPMC 100/333-bit cohorts reached 120s timeout.
+Rust had `RESEARCH_MPFR_FAIL_CLOSED: node limit` exit 2 at the
+research executable's **default 100,000 nodes**, well before the wall
+limit. These are NOT completed Rust results, solver timeouts or OOMs.
+No native long-tail Rust/GPMC ranking can be concluded from that run.
+
+The corrected, opt-in Rust research CLI flag
+`--node-budget=1000000000` permits up to one billion DPLL nodes;
+**the research executable's 100k-node default remains unchanged**,
+as do its existing 250k/1M explicit limits. The long-tail paired runner
+adds this flag *only to the Rust arm*; it does **not** disable
+`/usr/bin/timeout` (30s screen, 120s pilot),
+`prlimit --as=3221225472` (3GiB virtual address), or output limits.
+A node-limit hit remains a separately recorded
+`CENSORED_NODE_BUDGET`, not a timeout or an invented solver duration.
+
+Up to **three** actually measured long-screen sources are admitted to
+pilot, with GPMC>=10s/GPMC timed-out cases prioritized before
+Rust-only long cases. This preserves difficult original-source evidence
+and avoids spending the entire expensive pilot on short GPMC cases.
+Screening remains source-neutral and does not rank by which solver wins.
+Any potential solver win on a censored GPMC run lacks a dual-solver
+full numeric witness, so it is **not** a certified WMC comparison.
+These are *research bounds only*, not production API changes.

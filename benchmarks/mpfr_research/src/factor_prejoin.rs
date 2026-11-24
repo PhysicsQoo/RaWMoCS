@@ -42,9 +42,25 @@ fn checked(x:R)->Result<R,String>{
     }
     Ok(x)
 }
-fn rmul(a:&R,b:&R)->Result<R,String>{
+fn rmul_full(a:&R,b:&R)->Result<R,String>{
     checked((Rational::from(&a.0*&b.0)-Rational::from(&a.1*&b.1),
              Rational::from(&a.0*&b.1)+Rational::from(&a.1*&b.0)))
+}
+// Exact axes and Boolean support depend on exact rational equality.
+// Shortcuts only for algebraic identities, never rounded MPFR comparisons.
+fn rmul(a:&R,b:&R)->Result<R,String>{
+    if (a.0==0&&a.1==0)||(b.0==0&&b.1==0){
+        return Ok((Rational::from(0),Rational::from(0)));
+    }
+    if a.0==1&&a.1==0{return checked(b.clone());}
+    if b.0==1&&b.1==0{return checked(a.clone());}
+    if a.0== -1&&a.1==0{return checked((-b.0.clone(),-b.1.clone()));}
+    if b.0== -1&&b.1==0{return checked((-a.0.clone(),-a.1.clone()));}
+    if a.0==0&&a.1==1{return checked((-b.1.clone(),b.0.clone()));}
+    if b.0==0&&b.1==1{return checked((-a.1.clone(),a.0.clone()));}
+    if a.0==0&&a.1== -1{return checked((b.1.clone(),-b.0.clone()));}
+    if b.0==0&&b.1== -1{return checked((a.1.clone(),-a.0.clone()));}
+    rmul_full(a,b)
 }
 fn radd(a:Cell<R>,b:Cell<R>)->Result<Cell<R>,String>{
     match(a,b){(Some(a),Some(b))=>Ok(Some(checked((a.0+b.0,a.1+b.1))?)),(a,None)|(None,a)=>Ok(a)}
@@ -355,6 +371,22 @@ pub(crate) fn run(mut args:impl Iterator<Item=std::ffi::OsString>)->Result<(),St
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]
+    fn exact_rational_identity_shortcuts_match_full_formula(){
+        let values=[(0,0),(1,0),(-1,0),(0,1),(0,-1),(2,3),(-3,2)];
+        let mut x:Vec<R>=values.into_iter().map(|(r,i)|(Rational::from(r),Rational::from(i))).collect();
+        x.push((decimal("-1.0000000000000000").unwrap(),decimal("1.2246467991473532e-16").unwrap()));
+        x.push((decimal("0.12345678901234567890123456789").unwrap(),decimal("-1e-80").unwrap()));
+        x.push((decimal("1e80").unwrap(),decimal("1e-80").unwrap()));
+        for a in &x{for b in &x{
+            assert_eq!(rmul(a,b).unwrap(),rmul_full(a,b).unwrap());
+        }}
+        // A supported exact zero is still Some, not Boolean impossibility.
+        let z=Some(rmul(&x[0],&x[7]).unwrap());
+        assert!(z.is_some());
+        assert_eq!(z,Some((Rational::from(0),Rational::from(0))));
+        assert_eq!(rscalar(None,Some(one())).unwrap(),None);
+    }
     #[test]
     fn exact_local_support_and_free_axes(){
         for bits in [100,333]{

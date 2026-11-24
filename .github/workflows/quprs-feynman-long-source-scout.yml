@@ -451,7 +451,26 @@ jobs:
             --corpus .research/long-tail \
             --report .research/long-tail/mqt-residual-followup.json \
             --shard ${{ matrix.shard }} --locked-long --residual-followup | tee .research/long-tail/mqt-residual-followup.log
-      - name: Independent interval and seven matched pairs for four original MQT long controls
+      - name: Checkout frozen scratch-only RaWMoCS predecessor for same-run native A/B
+        if: github.event.label.name == 'run-mqt-certified-long'
+        uses: actions/checkout@v4
+        with:
+          ref: ee4bd72142c6939a0ea094c8776108bd524810c7
+          path: .upstream/rawmocs-native-ab-baseline
+          persist-credentials: false
+      - name: Build pinned native A/B baseline with same toolchain and Cargo lock
+        if: github.event.label.name == 'run-mqt-certified-long'
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline=.upstream/rawmocs-native-ab-baseline
+          test "$(git -C "$baseline" rev-parse HEAD)" = ee4bd72142c6939a0ea094c8776108bd524810c7
+          cmp "$baseline/benchmarks/mpfr_research/Cargo.lock" benchmarks/mpfr_research/Cargo.lock
+          cargo build --locked --release --manifest-path "$baseline/benchmarks/mpfr_research/Cargo.toml"
+          git -C "$baseline" diff --exit-code -- benchmarks/mpfr_research/Cargo.lock
+          rustc -Vv
+          sha256sum "$baseline/benchmarks/mpfr_research/target/release/rawmocs-mpfr-research" benchmarks/mpfr_research/target/release/rawmocs-mpfr-research
+      - name: Independent interval and seven matched native triples for five original MQT long controls
         if: github.event.label.name == 'run-mqt-certified-long'
         shell: bash
         run: |
@@ -466,6 +485,7 @@ jobs:
             --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
             --corpus .research/long-tail \
             --report .research/long-tail/mqt-certified-long.json \
+            --native-ab-baseline .upstream/rawmocs-native-ab-baseline/benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
             --shard ${{ matrix.shard }} --locked-long --certified-long | tee .research/long-tail/mqt-certified-long.log
       - name: Archive hash-locked 16-source screens before long pilots
         if: always()

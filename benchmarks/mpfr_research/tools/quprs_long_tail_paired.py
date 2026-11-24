@@ -156,6 +156,12 @@ def native(cmd: list[str], arm: str, duration: int, digits: int | None) -> dict:
                 if not match or int(match.group(8)) != digits or \
                         int(match.group(9)) != BITS[digits]:
                     raise ValueError("INVALID_OR_MISSING_MPFR_PRECISION")
+                if arm == "indexed_fused":
+                    ve = re.search(r"^RESEARCH_MPFR_FACTOR_VE enabled=true completed=(true|false) eligible=(true|false) capped=(true|false) ", process.stderr, re.M)
+                    if not ve:
+                        raise ValueError("MISSING_INDEXED_FUSED_PATH_EVIDENCE")
+                    row["factor_ve_completed"] = ve.group(1) == "true"
+                    row["factor_ve_capped"] = ve.group(3) == "true"
                 row.update(precision_bits=int(match.group(9)),
                            solve_ns=int(match.group(3)),
                            nodes=int(match.group(5)),

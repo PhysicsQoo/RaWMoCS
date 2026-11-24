@@ -6,6 +6,7 @@ on:
       - ".github/workflows/quprs-feynman-long-source-scout.yml"
       - "benchmarks/rust_core/tools/quprs_long_feynman_reference.rs"
       - "benchmarks/mpfr_research/tools/quprs_long_tail_mechanism.py"
+      - "benchmarks/mpfr_research/src/factor_indexed_fused.rs"
       - "benchmarks/mpfr_research/tools/quprs_long_tail_scc_poc.py"
       - "benchmarks/rust_core/tools/quprs_long_tail_source_bridge.rs"
       - "benchmarks/mpfr_research/tools/quprs_long_tail_paired.py"
@@ -426,7 +427,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        case: [feynman_gf2_6_mult, mqt_qnn_8, mqt_wstate_16]
+        case: [feynman_gf2_6_mult, mqt_qnn_8, mqt_wstate_16, mqt_qwalk_5]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -485,6 +486,7 @@ jobs:
           python3 -m py_compile benchmarks/mpfr_research/tools/quprs_long_tail_mechanism.py
           python3 benchmarks/mpfr_research/tools/quprs_long_tail_mechanism.py --self-test
           python3 benchmarks/mpfr_research/tools/quprs_long_tail_mechanism.py \
+            --indexed-fused \
             --case "${{ matrix.case }}" \
             --quprs .upstream/quprs \
             --gpmc-source .upstream/gpmc \

@@ -23,7 +23,15 @@ from quprs_long_tail_paired import (
     source_index, complex_relative_witness, EXPORTED_CASES, persist,
 )
 
-CASES = ("feynman_gf2_6_mult", "mqt_qnn_8", "mqt_wstate_16")
+CASES = ("feynman_gf2_6_mult", "mqt_qnn_8", "mqt_wstate_16", "mqt_qwalk_5")
+INDEXED_ARM = "indexed_fused"
+
+def indexed_command(args, name, cnf, digits):
+    cmd = command(args, name, cnf, digits, "inline_full")
+    position = cmd.index("--hashbrown-borrowed")
+    cmd[position:position] = ["--factor-variable-elimination", "--factor-ve-indexed-fused"]
+    return cmd
+
 TRIALS = 7
 # Validated against pinned GPMC BoolOptions in original Config.cc. A
 # toggle changes multiple downstream states: exploratory, NOT causality.
@@ -173,13 +181,15 @@ def summarize(cohort: dict, digits: int) -> bool:
 def self_test() -> None:
     assert TRIALS == 7 and set(BITS.items()) == {(30, 100), (100, 333)}
     assert LONG_TAIL_NODE_BUDGET == "--node-budget=1000000000"
-    assert set(CASES) == {"feynman_gf2_6_mult", "mqt_qnn_8", "mqt_wstate_16"}
+    assert set(CASES) == {"feynman_gf2_6_mult", "mqt_qnn_8", "mqt_wstate_16", "mqt_qwalk_5"}
     fake = argparse.Namespace(gpmc=Path("/pinned/gpmc"), mpfr=Path("/pinned/mpfr"))
     cnf = Path("/pinned/source-gpmc.cnf")
     for digits in BITS:
         for arm in ARMS:
             cmd = command(fake, CASES[0], cnf, digits, arm)
             assert (LONG_TAIL_NODE_BUDGET in cmd) == (arm == "inline_full")
+        indexed = indexed_command(fake, CASES[0], cnf, digits)
+        assert indexed.index("--factor-ve-indexed-fused") + 1 == indexed.index("--hashbrown-borrowed")
         for name in GPMC_ABLATIONS:
             cmd = gpmc_ablation_cmd(fake, cnf, digits, name)
             assert cmd[1:3] == ["-mode=1", f"-prec={digits}"]
@@ -192,6 +202,7 @@ def self_test() -> None:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--self-test", action="store_true")
+    ap.add_argument("--indexed-fused", action="store_true")
     ap.add_argument("--case", choices=CASES)
     for name in ("quprs", "gpmc-source", "corpus", "gpmc", "mpfr", "report"):
         ap.add_argument("--" + name, type=Path)
@@ -215,7 +226,8 @@ def main() -> None:
         "source_lock": {"quprs": QU_PRS_SHA, "gpmc": GPMC_SHA},
         "research_bound": {"seconds_per_solver": MAX_WALL_SECONDS, "AS_bytes": AS_BYTES,
                            "rust_node_budget": 1_000_000_000},
-        "design": "seven fresh order-rotated native GPMC+Rust pairs per 100/333 bits; one exploratory native GPMC feature-toggle sample each",
+        "design": "seven fresh rotated native processes per arm and precision; one exploratory native GPMC feature-toggle sample each",
+        "indexed_fused_enabled": args.indexed_fused,
         "not_a_production_go": True,
         "full_oracle_caveat": ORACLE_LIMIT, "cohorts": [],
     }
@@ -227,11 +239,14 @@ def main() -> None:
                   "native_trials": [], "gpmc_single_trial_ablations": {}}
         result["cohorts"].append(cohort)
         persist(args, result)
+        arms = (*ARMS, INDEXED_ARM) if args.indexed_fused else ARMS
         for trial in range(TRIALS):
-            rotated = ARMS if trial % 2 == 0 else tuple(reversed(ARMS))
+            shift = trial % len(arms)
+            rotated = arms[shift:] + arms[:shift]
             for arm in rotated:
-                record = native(command(args, args.case, cnf, digits, arm),
-                                arm, MAX_WALL_SECONDS, digits)
+                cmd = (indexed_command(args, args.case, cnf, digits) if arm == INDEXED_ARM
+                       else command(args, args.case, cnf, digits, arm))
+                record = native(cmd, arm, MAX_WALL_SECONDS, digits)
                 record["trial"] = trial
                 cohort["native_trials"].append(record)
                 persist(args, result)
@@ -246,6 +261,23 @@ def main() -> None:
             print(f"LONGTAIL_GPMC_TOGGLE case={args.case} bits={bits} "
                   f"arm={name} status={record['status']}", flush=True)
         failures = summarize(cohort, digits) or failures
+        if args.indexed_fused:
+            candidates = [r for r in cohort["native_trials"] if r["arm"] == INDEXED_ARM]
+            assert len(candidates) == TRIALS
+            refs = [r for r in cohort["native_trials"] if r["arm"] == "gpmc" and r["status"] == "COMPLETED"]
+            completed = [r for r in candidates if r["status"] == "COMPLETED"]
+            for row in completed:
+                if refs:
+                    witness = same_complex(refs[0], row, digits)
+                    row["source_locked_complex_numeric_witness"] = witness
+                    failures = not witness["pass"] or failures
+            cohort["indexed_fused_completions"] = len(completed)
+            cohort["indexed_fused_fastpath_completions"] = sum(r.get("factor_ve_completed") is True for r in completed)
+            cohort["indexed_fused_p50_wall_ms"] = statistics.median(r["wall_ns"] for r in completed) / 1e6 if len(completed) == TRIALS else None
+            cohort["indexed_fused_p90_wall_ms"] = percentile([r["wall_ns"] for r in completed], .9) / 1e6 if len(completed) == TRIALS else None
+            rss = [r["peak_rss_kib"] for r in completed if r.get("peak_rss_kib") is not None]
+            cohort["indexed_fused_p50_rss_kib"] = statistics.median(rss) if len(rss) == TRIALS else None
+            cohort["indexed_fused_promotion"] = "NOT_AUTHORIZED_RESEARCH_ONLY"
         persist(args, result)
         print(f"LONGTAIL_7TRIAL_RESULT case={args.case} bits={bits} "
               f"status={cohort['status']} "

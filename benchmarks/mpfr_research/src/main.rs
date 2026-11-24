@@ -22,6 +22,7 @@ mod trail_engine;
 mod separator_pivot;
 mod primal_centroid;
 mod factor_variable_elimination;
+mod factor_indexed_fused;
 mod factor_forest_dp;
 mod factor_add_elimination;
 mod factor_boolean_bdd;
@@ -926,6 +927,10 @@ fn run() -> Result<(), String> {
     let cache_first = if factor_ve {
         args.next().ok_or("missing mode after --factor-variable-elimination")?
     } else { cache_first };
+    let ve_indexed_fused = cache_first.to_str() == Some("--factor-ve-indexed-fused");
+    let cache_first = if ve_indexed_fused {
+        args.next().ok_or("missing mode after --factor-ve-indexed-fused")?
+    } else { cache_first };
     let scope_probe_320 = cache_first.to_str() == Some("--factor-ve-scope-probe-320");
     let cache_first = if scope_probe_320 {
         args.next().ok_or("missing mode after --factor-ve-scope-probe-320")?
@@ -1093,6 +1098,9 @@ fn run() -> Result<(), String> {
     }
     if fused_post_analysis && !projected_post_key {
         return Err("--trail-fused-post-analysis requires --trail-post-unit-projected".into());
+    }
+    if ve_indexed_fused && (!factor_ve || scope_probe_320 || ve_min_fill || ve_bag14 || ve_preflight || ve_quick_scope) {
+        return Err("--factor-ve-indexed-fused requires --factor-variable-elimination without other VE policy flags".into());
     }
     if ve_quick_scope && !ve_preflight {
         return Err("--factor-ve-quick-scope256 requires --factor-ve-preflight-cost".into());
@@ -1275,7 +1283,9 @@ fn run() -> Result<(), String> {
     let primal_build_ns = td_start.elapsed().as_nanos();
     let ve_start = Instant::now();
     let (ve_candidate, ve_stats) = if factor_ve {
-        if ve_quick_scope {
+        if ve_indexed_fused {
+            factor_indexed_fused::count(source, &scope, bits)
+        } else if ve_quick_scope {
             factor_variable_elimination::count_scope_probe_minfill_bag14_quick_scope(source, &scope, bits)
         } else if ve_preflight {
             factor_variable_elimination::count_scope_probe_minfill_bag14_preflight(source, &scope, bits)

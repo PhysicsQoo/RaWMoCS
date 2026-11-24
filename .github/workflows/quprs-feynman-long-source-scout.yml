@@ -241,9 +241,9 @@ jobs:
   original-long-tail-source-locked-screen:
     # One existing workflow, no new workflows/environment/branch. This costly
     # study is limited to the research PR or explicit manual dispatch.
-    if: inputs.suite == 'full' || (github.event_name == 'pull_request' && (github.event.label.name == 'run-gpmc-completer-scout' || github.event.label.name == 'run-mqt-long-holdouts' || github.event.label.name == 'run-mqt-locked-long' || github.event.label.name == 'run-mqt-residual-followup' || github.event.label.name == 'run-mqt-certified-long' || github.event.label.name == 'run-mqt-adaptive-scout' || github.event.label.name == 'run-qpe-resource-pilot' || github.event.label.name == 'run-qpe-certified-repeat' || github.event.label.name == 'run-qpe-independent-prejoin') && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/mpfr-exact-residual-arena-reuse-20261118')
+    if: inputs.suite == 'full' || (github.event_name == 'pull_request' && (github.event.label.name == 'run-gpmc-completer-scout' || github.event.label.name == 'run-mqt-long-holdouts' || github.event.label.name == 'run-mqt-locked-long' || github.event.label.name == 'run-mqt-residual-followup' || github.event.label.name == 'run-mqt-certified-long' || github.event.label.name == 'run-mqt-adaptive-scout' || github.event.label.name == 'run-qpe-resource-pilot' || github.event.label.name == 'run-qpe-certified-repeat' || github.event.label.name == 'run-qpe-independent-prejoin' || github.event.label.name == 'run-qft-prejoin-pilot') && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/mpfr-exact-residual-arena-reuse-20261118')
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ github.event.label.name == 'run-qpe-independent-prejoin' && 20 || github.event.label.name == 'run-mqt-adaptive-scout' && 60 || 40 }}
+    timeout-minutes: ${{ (github.event.label.name == 'run-qpe-independent-prejoin' || github.event.label.name == 'run-qft-prejoin-pilot') && 20 || github.event.label.name == 'run-mqt-adaptive-scout' && 60 || 40 }}
     strategy:
       fail-fast: false
       matrix:
@@ -386,8 +386,8 @@ jobs:
             --corpus .research/long-tail \
             --report .research/long-tail/qpe-resource-pilot.json \
             --shard ${{ matrix.shard }} | tee .research/long-tail/qpe-resource-pilot.log
-      - name: Bounded independent exact-local and prejoin interval for original QPE
-        if: github.event.label.name == 'run-qpe-independent-prejoin'
+      - name: Bounded independent exact-local and prejoin interval for original QPE or QFT
+        if: github.event.label.name == 'run-qpe-independent-prejoin' || github.event.label.name == 'run-qft-prejoin-pilot'
         shell: bash
         run: |
           set -euo pipefail
@@ -396,7 +396,11 @@ jobs:
           python3 -m py_compile "$oracle"
           python3 "$oracle" --self-test
           shard=${{ matrix.shard }}
-          if (( shard < 2 )); then
+          if [[ "${{ github.event.label.name }}" == run-qft-prejoin-pilot ]]; then
+            case=extended_mqt_qft_24_8b50d9b6cdf2
+            rel=benchmarks/MQTBench/Random_Rotation/qft_nativegates_ibm_qiskit_opt0_24.qasm
+            expected=7c47b2dc52f5331eb2fb5bd3123593c4a095abf229862f5607d4fc6855fecc51
+          elif (( shard < 2 )); then
             case=extended_mqt_qpeexact_21_5e0db86c6ca4
             rel=benchmarks/MQTBench/Random_Rotation/qpeexact_nativegates_ibm_qiskit_opt0_21.qasm
             expected=ff9bb2ceca9cd9ee7a61026a6c01498a7f8175df6512df80dc8fed2db848dfb4
@@ -415,10 +419,13 @@ jobs:
           cat .research/long-tail/prejoin-reference.json
           python3 -c 'import json; r=json.load(open(".research/long-tail/prejoin-reference.json")); assert r["status"]=="INDEPENDENT_INTERVAL_COMPLETE" and r["bits"]==550 and r["width"]<=19 and r["work"]<=40000000 and r["peak"]<=2000000'
           python3 -m py_compile benchmarks/mpfr_research/tools/quprs_prejoin_native_pilot.py
-          target=30
-          if (( shard % 2 == 1 )); then target=100; fi
-          python3 benchmarks/mpfr_research/tools/quprs_prejoin_native_pilot.py \
-            --repeat-target "$target" \
+          flags=()
+          if [[ "${{ github.event.label.name }}" == run-qpe-independent-prejoin ]]; then
+            target=30
+            if (( shard % 2 == 1 )); then target=100; fi
+            flags+=(--repeat-target "$target")
+          fi
+          python3 benchmarks/mpfr_research/tools/quprs_prejoin_native_pilot.py "${flags[@]}" \
             --cnf ".research/long-tail/$case-gpmc.cnf" \
             --reference .research/long-tail/prejoin-reference.json \
             --gpmc .upstream/gpmc/build/gpmc \
@@ -542,7 +549,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.event.label.name == 'run-qpe-independent-prejoin' && format('original-qpe-independent-prejoin-{0}', matrix.shard) || github.event.label.name == 'run-mqt-certified-long' && format('original-mqt-certified-long-{0}', matrix.shard) || github.event.label.name == 'run-mqt-residual-followup' && format('original-mqt-residual-followup-{0}', matrix.shard) || github.event.label.name == 'run-mqt-locked-long' && format('original-mqt-locked-long-{0}', matrix.shard) || github.event.label.name == 'run-mqt-long-holdouts' && format('original-mqt-long-holdouts-{0}', matrix.shard) || github.event.label.name == 'run-qpe-certified-repeat' && format('original-qpe-certified-repeat-{0}', matrix.shard) || github.event.label.name == 'run-qpe-resource-pilot' && format('original-qpe-resource-pilot-{0}', matrix.shard) || github.event.label.name == 'run-mqt-adaptive-scout' && format('original-mqt-adaptive-scout-{0}', matrix.shard) || github.event.label.name == 'run-gpmc-completer-scout' && format('original-gpmc-completer-scout-{0}', matrix.shard) || 'original-rawmocs-gpmc-long-tail-screen' }}
+          name: ${{ github.event.label.name == 'run-qft-prejoin-pilot' && 'original-qft24-prejoin-pilot' || github.event.label.name == 'run-qpe-independent-prejoin' && format('original-qpe-independent-prejoin-{0}', matrix.shard) || github.event.label.name == 'run-mqt-certified-long' && format('original-mqt-certified-long-{0}', matrix.shard) || github.event.label.name == 'run-mqt-residual-followup' && format('original-mqt-residual-followup-{0}', matrix.shard) || github.event.label.name == 'run-mqt-locked-long' && format('original-mqt-locked-long-{0}', matrix.shard) || github.event.label.name == 'run-mqt-long-holdouts' && format('original-mqt-long-holdouts-{0}', matrix.shard) || github.event.label.name == 'run-qpe-certified-repeat' && format('original-qpe-certified-repeat-{0}', matrix.shard) || github.event.label.name == 'run-qpe-resource-pilot' && format('original-qpe-resource-pilot-{0}', matrix.shard) || github.event.label.name == 'run-mqt-adaptive-scout' && format('original-mqt-adaptive-scout-{0}', matrix.shard) || github.event.label.name == 'run-gpmc-completer-scout' && format('original-gpmc-completer-scout-{0}', matrix.shard) || 'original-rawmocs-gpmc-long-tail-screen' }}
           path: .research/long-tail/
           retention-days: 30
           if-no-files-found: warn

@@ -14,6 +14,8 @@ type Extraction = (Vec<Gate>, Vec<i32>, BTreeMap<usize, bool>, BTreeSet<Set>);
 
 mod definitional;
 mod affine;
+mod adaptive;
+pub(super) use adaptive::run as run_adaptive;
 pub(super) use affine::{run as run_affine_plan,run_taylor as run_affine_taylor};
 
 const MAX_CELLS: usize = 500_000;
@@ -199,13 +201,10 @@ fn minfill(g:&Graph,v:usize)->(usize,usize,usize) {
     (missing,n.len(),v)
 }
 
-fn count(p:&Problem,raw:&str,bits:u32,trace:&mut Trace)->Result<Outcome,String> {
-    let start=Instant::now();
-    let (gates,rep,units,residual)=extract(p,1024)?;
-    if !residual.is_empty() {return Err("unclosed hard clauses".into());}
-    let free:BTreeSet<_>=rep.iter().copied().filter(|&l|l!=0&&!units.contains_key(&var(l))).map(var).collect();
-    trace.free=free.len();trace.gates=gates.len();
-    let keys=phase_keys(raw,p.n);
+type MappedGates=Vec<(i32,[i32;2])>;
+type CliqueCandidates=Vec<(BTreeSet<usize>,Vec<(usize,usize,usize)>)>;
+fn recognize_cliques(gates:&[Gate],rep:&[i32],free:&BTreeSet<usize>,keys:&[PhaseKey])
+    ->Result<(MappedGates,CliqueCandidates),String>{
     let mut groups:PhaseEdges=BTreeMap::new();
     let mut mapped=Vec::new();
     for (i,(o,a)) in gates.iter().enumerate() {
@@ -241,6 +240,17 @@ fn count(p:&Problem,raw:&str,bits:u32,trace:&mut Trace)->Result<Outcome,String> 
     }
     candidates.sort_by_key(|(c,_)|(std::cmp::Reverse(c.len()),c.first().copied()));
     if candidates.len()<2 {return Err("missing uniform cliques".into());}
+    Ok((mapped,candidates))
+}
+
+fn count(p:&Problem,raw:&str,bits:u32,trace:&mut Trace)->Result<Outcome,String> {
+    let start=Instant::now();
+    let (gates,rep,units,residual)=extract(p,1024)?;
+    if !residual.is_empty() {return Err("unclosed hard clauses".into());}
+    let free:BTreeSet<_>=rep.iter().copied().filter(|&l|l!=0&&!units.contains_key(&var(l))).map(var).collect();
+    trace.free=free.len();trace.gates=gates.len();
+    let keys=phase_keys(raw,p.n);
+    let (mapped,candidates)=recognize_cliques(&gates,&rep,&free,&keys)?;
     let mut used=BTreeSet::new();let mut marked=BTreeMap::new();let mut phases=Vec::new();
     for (group,(c,es)) in candidates.into_iter().take(2).enumerate() {
         if c.iter().any(|v|marked.contains_key(v)) {return Err("overlapping cliques".into());}

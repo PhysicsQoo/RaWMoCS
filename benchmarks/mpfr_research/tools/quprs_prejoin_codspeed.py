@@ -18,7 +18,7 @@ BLOB="01078415cf504c48fa770c5eea3fa9ccdd22fecd"
 # Historical QPE16 preflight source, independently rehashed from artifact.
 QPE16_CNF_SHA256="6385f6e460c2cf56e40094d2df99815f68deac55d6846e93d5ef627c66822696"
 # First qualified execution freezes the CNF hash; later commits must match it.
-EXPECTED=None
+EXPECTED="00f15ebed71b50746e11ececde9915ec19a46af1fac203d23e27877d814b14f9"
 CASE="extended_qpe8_prejoin_focus"
 ARMS=("gpmc","adaptive","prejoin")
 DIGITS,BITS,TARGET=60,200,30

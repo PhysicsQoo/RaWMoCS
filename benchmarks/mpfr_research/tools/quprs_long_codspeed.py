@@ -57,9 +57,10 @@ def prepare(case, digits):
     ROOT.mkdir(parents=True, exist_ok=True)
     exporter = quprs / "rust/target/release/examples/quprs_long_tail_source_bridge"
     # Use the existing exporter directly on the original tracked QASM.
-    cnf = ROOT / (case + "-gpmc.cnf")
-    qasm = ROOT / (case + ".qasm")
-    export = native([str(exporter.resolve()),case,str(quprs.resolve()),str(ROOT.resolve()),rel],
+    export_id = "extended_" + case
+    cnf = ROOT / (export_id + "-gpmc.cnf")
+    qasm = ROOT / (export_id + ".qasm")
+    export = native([str(exporter.resolve()),export_id,str(quprs.resolve()),str(ROOT.resolve()),rel],
                     "source",EXPORT_S,None)
     if (export["status"] != "COMPLETED" or not cnf.is_file()
             or not qasm.is_file() or sha(qasm) != sha(quprs / rel)
@@ -114,7 +115,7 @@ def verify():
     if report["status"] != "NATIVE_PREFLIGHT_PASS":
         raise ValueError("MISSING_PREFLIGHT")
     case,digits = report["case"],report["digits"]
-    if sha(ROOT / (case+"-gpmc.cnf")) != CASES[case][1] or git_sha(Path(".")) != report["raWmocs_checkout"]:
+    if sha(ROOT / ("extended_"+case+"-gpmc.cnf")) != CASES[case][1] or git_sha(Path(".")) != report["raWmocs_checkout"]:
         raise ValueError("POST_SIMULATION_SOURCE_DRIFT")
     rows = {}
     report["simulated_outputs"] = rows

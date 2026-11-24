@@ -14,7 +14,7 @@ on:
         type: choice
         required: true
         default: feynman_gf2_6_mult
-        options: [feynman_gf2_6_mult, mqt_qnn_8, mqt_wstate_16, mqt_qwalk_5]
+        options: [feynman_gf2_6_mult, mqt_qnn_8, mqt_wstate_16, mqt_qwalk_5, feynman_gf2_8_mult]
       source_run_id:
         description: "Focused: existing run with verified source-screen artifact"
         type: string
@@ -332,11 +332,11 @@ jobs:
     # Keep one existing workflow, parallelize the three previously
     # source-qualified hard cases with independent timeout/artifact.
     needs: original-long-tail-source-locked-screen
-    if: inputs.suite == 'full'
+    if: ${{ !cancelled() && ((inputs.suite == 'full' && needs.original-long-tail-source-locked-screen.result == 'success') || (inputs.suite == 'focused' && inputs.case == 'feynman_gf2_8_mult' && needs.original-long-tail-source-locked-screen.result == 'skipped')) }}
     strategy:
       fail-fast: false
       matrix:
-        case: [mqt_qnn_12, feynman_gf2_8_mult, feynman_ham15_med]
+        case: ${{ fromJSON(inputs.suite == 'full' && '["mqt_qnn_12","feynman_gf2_8_mult","feynman_ham15_med"]' || '["feynman_gf2_8_mult"]') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
@@ -364,9 +364,26 @@ jobs:
         with:
           workspaces: benchmarks/mpfr_research -> target
           key: source-locked-high-cost-cohort
-      - name: Download unmodified source and CNF screening artifact
+      - name: Require an explicit source artifact in focused pilot mode
+        if: inputs.suite == 'focused'
+        env:
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo "Focused mode requires a numeric source_run_id"; exit 2; }
+      - name: Download unmodified source and CNF screening artifact (full)
+        if: inputs.suite == 'full'
         uses: actions/download-artifact@v4
         with:
+          name: original-rawmocs-gpmc-long-tail-screen
+          path: .research/long-tail
+      - name: Reuse selected original source artifact (focused)
+        if: inputs.suite == 'focused'
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.source_run_id }}
           name: original-rawmocs-gpmc-long-tail-screen
           path: .research/long-tail
       - name: Verify source locks and install native MPFR libraries
@@ -394,8 +411,10 @@ jobs:
           set -euo pipefail
           python3 -m py_compile benchmarks/mpfr_research/tools/quprs_long_tail_paired.py
           python3 benchmarks/mpfr_research/tools/quprs_long_tail_paired.py --self-test
+          pilot=()
+          if [[ "${{ inputs.suite }}" == "focused" ]]; then pilot+=(--frontier-pilot); fi
           python3 benchmarks/mpfr_research/tools/quprs_long_tail_paired.py \
-            --stage pilot --pilot-case "${{ matrix.case }}" \
+            --stage pilot --pilot-case "${{ matrix.case }}" "${pilot[@]}" \
             --quprs .upstream/quprs \
             --gpmc-source .upstream/gpmc \
             --gpmc .upstream/gpmc/build/gpmc \
@@ -420,7 +439,7 @@ jobs:
     # 7 fresh alternating head-to-head trials per precision; GPMC feature
     # toggles are separate single-trial exploratory mechanism probes.
     needs: original-long-tail-source-locked-screen
-    if: ${{ !cancelled() && ((inputs.suite == 'full' && needs.original-long-tail-source-locked-screen.result == 'success') || (inputs.suite == 'focused' && needs.original-long-tail-source-locked-screen.result == 'skipped')) }}
+    if: ${{ !cancelled() && ((inputs.suite == 'full' && needs.original-long-tail-source-locked-screen.result == 'success') || (inputs.suite == 'focused' && inputs.case != 'feynman_gf2_8_mult' && needs.original-long-tail-source-locked-screen.result == 'skipped')) }}
     strategy:
       fail-fast: false
       matrix:

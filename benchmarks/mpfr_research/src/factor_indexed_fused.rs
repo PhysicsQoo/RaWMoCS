@@ -104,9 +104,9 @@ impl Prepared {
         Self { clauses: vec![], remaining: vec![], scalar: Cell::No, plan: vec![], peak_bag: vec![] }
     }
 }
-fn prepare(p: &Problem, scope: &[usize], bits: u32, start: Instant, stats: &mut VeStats,
+fn close_source(p: &Problem, source_clauses: &[Clause], scope: &[usize], bits: u32, start: Instant,
            condition: Option<i32>) -> Result<Prepared, &'static str> {
-    if p.n > 4096 || scope.len() > 2048 || p.clauses.len() > 6000 || p.weights.len() < p.n {
+    if p.n > 4096 || scope.len() > 2048 || source_clauses.len() > 6000 || p.weights.len() < p.n {
         return Err("indexed_source");
     }
     let mut present = vec![false; p.n+1];
@@ -115,7 +115,7 @@ fn prepare(p: &Problem, scope: &[usize], bits: u32, start: Instant, stats: &mut 
         present[v] = true;
     }
     let mut cs = Vec::new();
-    for c in &p.clauses {
+    for c in source_clauses {
         if c.iter().any(|&l| l==0 || l.unsigned_abs() as usize > p.n || !present[l.unsigned_abs() as usize]) {
             return Err("indexed_clause_scope");
         }
@@ -160,13 +160,18 @@ fn prepare(p: &Problem, scope: &[usize], bits: u32, start: Instant, stats: &mut 
     }
     cs.sort_unstable(); cs.dedup();
     let remaining: Vec<_>=scope.iter().copied().filter(|&v| assigned[v]==0).collect();
+    Ok(Prepared { clauses: cs, remaining, scalar, plan:vec![], peak_bag:vec![] })
+}
+fn prepare(p: &Problem, scope: &[usize], bits: u32, start: Instant, stats: &mut VeStats,
+           condition: Option<i32>) -> Result<Prepared, &'static str> {
+    let mut closed=close_source(p,&p.clauses,scope,bits,start,condition)?;
+    if !closed.scalar.sat() {return Ok(closed);}
     let plan_start=Instant::now();
     stats.minfill_enabled=true;
-    let mut peak_bag = Vec::new();
-    let plan=order(&remaining,&cs,p.n,start,stats,&mut peak_bag)?;
+    closed.plan=order(&closed.remaining,&closed.clauses,p.n,start,stats,&mut closed.peak_bag)?;
     stats.minfill_plan_ns=plan_start.elapsed().as_nanos();
     stats.minfill_plan_width=stats.width;
-    Ok(Prepared { clauses: cs, remaining, scalar, plan, peak_bag })
+    Ok(closed)
 }
 fn execute(p: &Problem, bits: u32, start: Instant, stats: &mut VeStats,
            prepared: Prepared) -> Result<Cell, &'static str> {
@@ -431,6 +436,7 @@ mod value_reuse {
         add: HashMap<(u32,u32),u32>,
         stats: ReuseStats,
         bits: u32,
+        arith_limit: usize,
     }
     // OrdFloat supports exact hashing. Canonicalize the hash of signed zero
     // because the solver's numerical equality treats +0 and -0 as equal.
@@ -447,7 +453,7 @@ mod value_reuse {
         fn new(bits: u32) -> Self {
             Self { values:vec![C::zero(bits),C::one(bits),C::zero(bits)],
                 links:vec![0;3],index:HashMap::new(),mul:HashMap::new(),add:HashMap::new(),
-                stats:ReuseStats{peak_pool:3,..ReuseStats::default()},bits }
+                stats:ReuseStats{peak_pool:3,..ReuseStats::default()},bits,arith_limit:ARITH_CAP }
         }
         fn intern(&mut self,c:C)->Result<u32,&'static str> {
             if !c.re.is_finite() || !c.im.is_finite() {return Err("intern_nonfinite");}
@@ -485,7 +491,7 @@ mod value_reuse {
             let key=(a,b); // ordered pair: preserve this finite-precision operation
             let cached=if multiply {self.mul.get(&key)} else {self.add.get(&key)};
             if let Some(&id)=cached {self.stats.hits+=1;return Ok(id);}
-            if self.stats.mul+self.stats.add>=ARITH_CAP {return Err("intern_arithmetic");}
+            if self.stats.mul+self.stats.add>=self.arith_limit {return Err("intern_arithmetic");}
             let x=&self.values[a as usize];let y=&self.values[b as usize];
             let c=if multiply {self.stats.mul+=1;x.mul(y,self.bits)}
                 else {self.stats.add+=1;x.add(y,self.bits)};
@@ -644,6 +650,14 @@ mod value_reuse {
         deadline(start)?;
         Ok(scalar)
     }
+    pub(super) fn execute_preplanned(p:&Problem,prepared:Prepared,bits:u32,stats:&mut VeStats,arith_remaining:usize)
+        -> Result<(Cell,ReuseStats),&'static str> {
+        let mut pool=Pool::new(bits);
+        pool.arith_limit=arith_remaining.min(ARITH_CAP);
+        let id=execute_ids(p,prepared,stats,&mut pool,Instant::now(),GC_THRESHOLD)?;
+        let result=if id==NO {Cell::No} else {Cell::new(pool.values[id as usize].clone())};
+        Ok((result,pool.stats))
+    }
     pub(super) fn count_with_threshold(p:&Problem,scope:&[usize],bits:u32,threshold:usize)
         ->(Option<Outcome>,VeStats,ReuseStats) {
         let start=Instant::now();
@@ -693,6 +707,155 @@ mod value_reuse {
 }
 pub(crate) use value_reuse::count_interned;
 
+// Research-only full partition of a high-cost original residual. Every
+// cofactor is planned before any factor tables are allocated. Costs are
+// shared across the WHOLE frontier, not a new global budget per cofactor.
+// Existing per-leaf compact limits remain unchanged.
+const FRONTIER_LOOKUPS:usize=180_000_000;
+const FRONTIER_ARITH:usize=12_000_000;
+const FRONTIER_LITERAL_SLOTS:usize=1_000_000;
+const FRONTIER_WEIGHT_SLOTS:usize=131_072;
+const FRONTIER_DEPTH:usize=6;
+#[derive(Default,Debug)]
+pub(crate) struct FrontierStats {
+    pub(crate) planned:usize,
+    pub(crate) completed:usize,
+    pub(crate) pruned:usize,
+    pub(crate) estimated_work:usize,
+    pub(crate) estimated_peak:usize,
+    pub(crate) scc_merges:usize,
+    pub(crate) arithmetic:usize,
+    pub(crate) actual_work:usize,
+    pub(crate) planning_ns:u128,
+}
+struct FrontierLeaf { problem:Problem, prepared:Prepared, prefix:Cell, estimate:Estimate }
+struct FrontierPlanner<'a> {
+    source:&'a Problem, bits:u32, start:Instant, depth_limit:usize,
+    leaves:Vec<FrontierLeaf>, trace:FrontierStats, literals:usize, weights:usize,
+    width:usize,
+}
+// Reserve one full existing 8-second kernel window before starting each
+// next stage. The outer paired pilot enforces a hard 120s/3GiB process cap.
+fn frontier_deadline(start:Instant)->Result<(),&'static str> {
+    if start.elapsed().as_secs()>=102 {Err("frontier_deadline")} else {Ok(())}
+}
+impl FrontierPlanner<'_> {
+    fn visit(&mut self,closed:Prepared,prefix:Cell,depth:usize)->Result<(),&'static str> {
+        frontier_deadline(self.start)?;
+        let prefix=prefix.mul(&closed.scalar,self.bits);
+        if !prefix.sat() {
+            self.trace.pruned+=1;
+            return Ok(());
+        }
+        if depth==self.depth_limit || closed.clauses.is_empty() {
+            return self.leaf(closed,prefix);
+        }
+        // The same deterministic occurrence score used in the structural
+        // census: maximize total incidence, then balanced signed incidence,
+        // then choose smallest source ID. Never branch on a free variable.
+        let mut frequency=vec![(0_usize,0_usize);self.source.n+1];
+        for clause in &closed.clauses {
+            for &lit in clause {
+                let entry=&mut frequency[lit.unsigned_abs() as usize];
+                if lit>0 {entry.0+=1;} else {entry.1+=1;}
+            }
+        }
+        let v=closed.remaining.iter().copied().max_by_key(|&v| {
+            let (a,b)=frequency[v];(a+b,a.min(b),std::cmp::Reverse(v))
+        }).ok_or("frontier_empty_scope")?;
+        if frequency[v]==(0,0) {return Err("frontier_no_pivot");}
+        for lit in [-(v as i32),v as i32] {
+            frontier_deadline(self.start)?;
+            let next=close_source(self.source,&closed.clauses,&closed.remaining,
+                self.bits,Instant::now(),Some(lit))?;
+            self.visit(next,prefix.clone(),depth+1)?;
+        }
+        Ok(())
+    }
+    fn leaf(&mut self,closed:Prepared,prefix:Cell)->Result<(),&'static str> {
+        // Compact ONLY still-owned variables. Calling source SCC on the
+        // original sparse representative IDs would reintroduce eliminated
+        // variables and multiply their weights a second time.
+        frontier_deadline(self.start)?;
+        let mut map=vec![0_usize;self.source.n+1];
+        let mut weights=Vec::with_capacity(closed.remaining.len());
+        for (i,&v) in closed.remaining.iter().enumerate() {
+            map[v]=i+1;weights.push(self.source.weights[v-1].clone());
+        }
+        let clauses:Vec<Clause>=closed.clauses.iter().map(|c|c.iter().map(|&l| {
+            let v=map[l.unsigned_abs() as usize] as i32;
+            if l>0 {v} else {-v}
+        }).collect()).collect();
+        self.literals=self.literals.saturating_add(clauses.iter().map(Vec::len).sum::<usize>());
+        self.weights=self.weights.saturating_add(weights.len());
+        if self.literals>FRONTIER_LITERAL_SLOTS || self.weights>FRONTIER_WEIGHT_SLOTS
+            || self.leaves.len()>=1<<FRONTIER_DEPTH {return Err("frontier_plan_storage");}
+        let compact=Problem{n:weights.len(),clauses,weights};
+        let (problem,scope,scc)=crate::weighted_equivalence::reduce(&compact,self.bits);
+        self.trace.scc_merges=self.trace.scc_merges.saturating_add(scc.eliminated_vars);
+        let local=Instant::now();
+        let mut vs=VeStats::default();
+        let prepared=prepare(&problem,&scope,self.bits,local,&mut vs,None)?;
+        if !prepared.scalar.sat() {self.trace.pruned+=1;return Ok(());}
+        let e=estimate(&prepared,problem.n,local)?;
+        if e.peak>400_000 || e.work>50_000_000 {return Err("frontier_leaf_admission");}
+        self.trace.estimated_work=self.trace.estimated_work.saturating_add(e.work);
+        self.trace.estimated_peak=self.trace.estimated_peak.max(e.peak);
+        self.width=self.width.max(e.width);
+        if self.trace.estimated_work>FRONTIER_LOOKUPS {return Err("frontier_total_lookups");}
+        self.leaves.push(FrontierLeaf{problem,prepared,prefix,estimate:e});
+        self.trace.planned+=1;
+        Ok(())
+    }
+}
+fn count_frontier_depth(p:&Problem,scope:&[usize],bits:u32,depth_limit:usize)
+    ->(Option<Outcome>,VeStats,FrontierStats) {
+    let start=Instant::now();
+    let mut stats=VeStats{eligible:true,source_vars:p.n,scope_vars:scope.len(),source_clauses:p.clauses.len(),
+        source_max_clause_width:p.clauses.iter().map(Vec::len).max().unwrap_or(0),
+        minfill_enabled:true,preflight_enabled:true,..VeStats::default()};
+    let mut planner=FrontierPlanner{source:p,bits,start,depth_limit:depth_limit.min(FRONTIER_DEPTH),
+        leaves:vec![],trace:FrontierStats::default(),literals:0,weights:0,width:0};
+    let preflight=close_source(p,&p.clauses,scope,bits,Instant::now(),None)
+        .and_then(|root|planner.visit(root,Cell::One,0));
+    planner.trace.planning_ns=start.elapsed().as_nanos();
+    stats.minfill_plan_ns=planner.trace.planning_ns;
+    stats.minfill_plan_width=planner.width;stats.width=planner.width;
+    stats.preflight_products_upper=planner.trace.estimated_work;
+    stats.preflight_cells_upper=planner.trace.estimated_peak;
+    let mut trace=planner.trace;
+    let result=preflight.and_then(|()| {
+        let mut total=Cell::No;
+        for leaf in planner.leaves {
+            frontier_deadline(start)?;
+            let mut local=VeStats::default();
+            let (answer,ar)=value_reuse::execute_preplanned(&leaf.problem,leaf.prepared,bits,&mut local,
+                FRONTIER_ARITH.saturating_sub(trace.arithmetic))?;
+            trace.arithmetic=trace.arithmetic.saturating_add(ar.mul+ar.add);
+            trace.actual_work=trace.actual_work.saturating_add(local.products);
+            if local.products>leaf.estimate.work || trace.actual_work>FRONTIER_LOOKUPS
+                || trace.arithmetic>FRONTIER_ARITH {return Err("frontier_execution_budget");}
+            stats.products=trace.actual_work;
+            stats.cells=stats.cells.saturating_add(local.cells);
+            stats.factors=stats.factors.saturating_add(local.factors);
+            stats.eliminated=stats.eliminated.saturating_add(local.eliminated);
+            stats.zero_sat=stats.zero_sat.saturating_add(local.zero_sat);
+            total=total.add(&leaf.prefix.mul(&answer,bits),bits);
+            trace.completed+=1;
+        }
+        if trace.completed!=trace.planned || start.elapsed().as_secs()>=110 {return Err("frontier_incomplete");}
+        Ok(total)
+    });
+    let answer=match result {
+        Ok(x)=>Some(Outcome{sat:x.sat(),count:x.value(bits)}),
+        Err(reason)=>{stats.capped=true;stats.cap_reason=reason;None}
+    };
+    (answer,stats,trace)
+}
+pub(crate) fn count_frontier(p:&Problem,scope:&[usize],bits:u32)->(Option<Outcome>,VeStats,FrontierStats) {
+    count_frontier_depth(p,scope,bits,FRONTIER_DEPTH)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -731,6 +894,14 @@ mod tests {
                     assert_eq!(routed.sat,expected.sat);
                     assert_eq!(routed.count.re,expected.count.re);
                     assert_eq!(routed.count.im,expected.count.im);
+                    for depth in [0,2,6] {
+                        let (candidate,st,trace)=count_frontier_depth(problem,&vars,bits,depth);
+                        let candidate=candidate.unwrap_or_else(||panic!("frontier cap: {st:?}"));
+                        assert_eq!(candidate.sat,expected.sat);
+                        assert_eq!(candidate.count.re,expected.count.re);
+                        assert_eq!(candidate.count.im,expected.count.im);
+                        assert_eq!(trace.planned,trace.completed);
+                    }
                     for threshold in [3,50_000] {
                         let (interned,st,_)=value_reuse::count_with_threshold(problem,&vars,bits,threshold);
                         let interned=interned.unwrap_or_else(||panic!("interned cap: {st:?}"));
@@ -778,5 +949,7 @@ mod tests {
         assert!(answer.is_none());assert_eq!(stats.cap_reason,"indexed_width");
         let (answer,stats,_)=count_interned(&p,&(1..=19).collect::<Vec<_>>(),100);
         assert!(answer.is_none());assert_eq!(stats.cap_reason,"indexed_width");
+        let (answer,stats,trace)=count_frontier_depth(&p,&(1..=19).collect::<Vec<_>>(),100,0);
+        assert!(answer.is_none());assert_eq!(stats.cap_reason,"indexed_width");assert_eq!(trace.completed,0);
     }
 }

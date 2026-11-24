@@ -95,6 +95,13 @@ def command(args: argparse.Namespace, name: str, cnf: Path, digits: int, arm: st
             raise ValueError("RUST_NATIVE_CONTROL_DRIFT")
     return cmd
 
+def frontier_command(args: argparse.Namespace, name: str, cnf: Path, digits: int) -> list[str]:
+    cmd = command(args, name, cnf, digits, "inline_full")
+    position = cmd.index("--hashbrown-borrowed")
+    cmd[position:position] = ["--factor-variable-elimination", "--factor-ve-indexed-fused", "--factor-ve-indexed-frontier"]
+    return cmd
+
+
 def classify_native_failure(returncode: int, stderr: str) -> str:
     # CLI cap is not a solver time measurement. Never label as OOM/timeout.
     if returncode == 124:
@@ -156,12 +163,18 @@ def native(cmd: list[str], arm: str, duration: int, digits: int | None) -> dict:
                 if not match or int(match.group(8)) != digits or \
                         int(match.group(9)) != BITS[digits]:
                     raise ValueError("INVALID_OR_MISSING_MPFR_PRECISION")
-                if arm in ("indexed_fused", "indexed_conditioned", "indexed_interned"):
+                if arm in ("indexed_fused", "indexed_conditioned", "indexed_interned", "indexed_frontier"):
                     ve = re.search(r"^RESEARCH_MPFR_FACTOR_VE enabled=true completed=(true|false) eligible=(true|false) capped=(true|false) ", process.stderr, re.M)
                     if not ve:
                         raise ValueError("MISSING_INDEXED_FUSED_PATH_EVIDENCE")
                     row["factor_ve_completed"] = ve.group(1) == "true"
                     row["factor_ve_capped"] = ve.group(3) == "true"
+                if arm == "indexed_frontier":
+                    trace = re.search(r"^RESEARCH_MPFR_INDEXED_FRONTIER planned=(\d+) completed=(\d+) pruned=(\d+) estimated_work=(\d+) estimated_peak=(\d+) scc_merges=(\d+) arithmetic=(\d+) actual_work=(\d+) planning_ns=(\d+)$", process.stderr, re.M)
+                    if not trace:
+                        raise ValueError("MISSING_INDEXED_FRONTIER_PATH_EVIDENCE")
+                    for i, key in enumerate(("planned","completed","pruned","estimated_work","estimated_peak","scc_merges","arithmetic","actual_work","planning_ns"), 1):
+                        row["frontier_" + key] = int(trace.group(i))
                 if arm == "indexed_interned":
                     trace = re.search(r"^RESEARCH_MPFR_INDEXED_INTERNED mul=(\d+) add=(\d+) nontrivial=(\d+) hits=(\d+) peak_pool=(\d+) gc=(\d+) gc_scans=(\d+) peak_live=(\d+) removed=(\d+)$", process.stderr, re.M)
                     if not trace:
@@ -251,12 +264,15 @@ def main() -> None:
     ap.add_argument("--self-test", action="store_true")
     ap.add_argument("--stage", choices=("screen", "pilot"), default="screen")
     ap.add_argument("--pilot-case", type=str)
+    ap.add_argument("--frontier-pilot", action="store_true")
     for field in ("quprs", "gpmc-source", "exporter", "gpmc", "mpfr", "corpus", "report"):
         ap.add_argument("--" + field, type=Path)
     args = ap.parse_args()
     self_test()
     if args.self_test:
         return
+    if args.frontier_pilot and (args.stage != "pilot" or args.pilot_case != "feynman_gf2_8_mult"):
+        ap.error("--frontier-pilot requires the focused GF2^8 original-source pilot")
     required = ("quprs", "gpmc_source", "gpmc", "mpfr", "corpus", "report")
     if args.stage == "screen":
         required += ("exporter",)
@@ -428,6 +444,37 @@ def main() -> None:
                       "trials": [], "design": "EXPLORATORY_TWO_TRIALS_NOT_PRODUCTION_GO"}
             item["pilot"].append(cohort)
             persist(args, report)
+            if args.frontier_pilot:
+                # One genuinely long pair at each precision first, not a
+                # seven-trial campaign or a claim from a censored control.
+                cohort["design"] = "EXPLORATORY_ONE_PAIRED_120S_TRIAL_NOT_PRODUCTION_GO"
+                arms = ("gpmc", "indexed_frontier") if digits == 30 else ("indexed_frontier", "gpmc")
+                for arm in arms:
+                    cmd = frontier_command(args, case, cnf, digits) if arm == "indexed_frontier" else command(args, case, cnf, digits, arm)
+                    row = native(cmd, arm, PAIR_S, digits)
+                    row["trial"] = 0
+                    cohort["trials"].append(row)
+                    persist(args, report)
+                    print(f"LONGTAIL_FRONTIER_PILOT case={case} bits={bits} arm={arm} status={row['status']}", flush=True)
+                members = {x["arm"]: x for x in cohort["trials"]}
+                control, candidate = members["gpmc"], members["indexed_frontier"]
+                fastpath = candidate["status"] == "COMPLETED" and candidate.get("factor_ve_completed") is True and candidate.get("frontier_planned") == candidate.get("frontier_completed")
+                if control["status"] == "COMPLETED" and candidate["status"] == "COMPLETED":
+                    witness = complex_relative_witness(control, candidate, digits)
+                    cohort["numeric_witness"] = witness
+                    if control["sat"] != candidate["sat"] or not witness["pass"]:
+                        numeric_disagreement = True
+                        cohort["status"] = "FAIL_SAT_OR_SIGNED_COMPLEX_WMC"
+                    else:
+                        cohort["status"] = "EXPLORATORY_MATCHED_FRONTIER" if fastpath else "MATCHED_FALLBACK_NOT_FRONTIER"
+                elif fastpath:
+                    cohort["status"] = "FRONTIER_COMPLETE_REFERENCE_CENSORED_UNVERIFIED"
+                else:
+                    cohort["status"] = "CENSORED_OR_FALLBACK_FRONTIER_PILOT"
+                cohort["frontier_fastpath_complete"] = fastpath
+                cohort["promotion"] = "NOT_AUTHORIZED_RESEARCH_ONLY"
+                persist(args, report)
+                continue
             for trial in range(PILOT_TRIALS):
                 ordered = ARMS if trial % 2 == 0 else tuple(reversed(ARMS))
                 for arm in ordered:

@@ -20,11 +20,10 @@ from quprs_long_tail_paired import (
 from quprs_mqt_adaptive_scout import result_route
 
 CASES = {
-    # First qualification freezes the CNF hash from the pinned, tracked QASM.
-    # A subsequent cross-revision comparison must explicitly match that hash.
+    # Frozen from the first qualified original-CNF Simulation artifact.
     "grover5_focus": (
         "qiskit-2.6.1-opt0/Random_Rotation/grover-noancilla_nativegates_ibm_qiskit_opt0_5.qasm",
-        None,
+        "308d1dc6b243cc7ac188103255e21c699f1adb971e43d5dc8c40828e6a95a128",
     ),
     "grover6_large": (
         "qiskit-2.6.1-opt0/Random_Rotation/grover-noancilla_nativegates_ibm_qiskit_opt0_6.qasm",

@@ -1,7 +1,8 @@
 //! Source-native exact exponent factor compilation and affine cutset planning.
 //! This is a research planner, not a completed weighted model count.
 use super::{extract_with_arity, weight, var, idx, edge, minfill, Graph, Problem};
-use rug::Rational;
+use rug::{Integer,Rational};
+use crate::factor_indexed_fused::{affine_leaf,decode_affine_packed,TaylorStats};
 use std::collections::{BTreeMap,BTreeSet};
 use std::time::Instant;
 
@@ -129,18 +130,19 @@ fn compile(p:&Problem,raw:&str)->Result<Model,String>{
 }
 
 #[derive(Clone,Debug)]
-struct Plan { width:usize, cells:u64, lookups:u64, bag:Vec<usize> }
+struct Plan { width:usize, cells:u64, lookups:u64, bag:Vec<usize>, order:Vec<usize> }
 fn plan(model:&Model,fixed:&BTreeSet<usize>,start:Instant)->Result<Plan,String>{
     let mut g:Graph=model.free.difference(fixed).map(|&v|(v,BTreeSet::new())).collect();
     let mut scopes:Vec<BTreeSet<usize>>=model.factors.iter().map(|f|f.scope.iter().copied().filter(|v|!fixed.contains(v)).collect()).filter(|s:&BTreeSet<_>|!s.is_empty()).collect();
     for s in &scopes {
         for (i,&a) in s.iter().enumerate(){for &b in s.iter().skip(i+1){edge(&mut g,a,b);}}
     }
-    let mut result=Plan{width:0,cells:0,lookups:0,bag:Vec::new()};
+    let mut result=Plan{width:0,cells:0,lookups:0,bag:Vec::new(),order:Vec::new()};
     while !g.is_empty(){
         if start.elapsed().as_secs()>=60{return Err("affine planning deadline".into());}
         let v=*g.keys().min_by_key(|&&v|minfill(&g,v)).ok_or("empty graph")?;
         let nb=g.remove(&v).ok_or("missing pivot")?;
+        result.order.push(v);
         if nb.len()>result.width{
             result.width=nb.len();
             result.bag=nb.iter().copied().chain(std::iter::once(v)).collect();
@@ -183,6 +185,82 @@ fn choose(model:&Model,start:Instant)->Result<(Vec<usize>,Plan),String>{
     }
     Ok((ordered,best))
 }
+// Sum exponents of factors with the same support. This is multiplication
+// of monomials, with no numerical rounding or weight duplication.
+fn merged(factors:&[Factor])->Result<Vec<Factor>,String>{
+    let mut groups:BTreeMap<Vec<usize>,Vec<Option<u16>>>=BTreeMap::new();
+    for f in factors{
+        let row=groups.entry(f.scope.clone()).or_insert_with(||vec![Some(0);f.values.len()]);
+        for (a,b) in row.iter_mut().zip(&f.values){
+            *a=match (*a,*b){
+                (Some(a),Some(b))=>Some(a.checked_add(b).ok_or("affine exponent overflow")?),
+                _=>None,
+            };
+        }
+    }
+    Ok(groups.into_iter().filter(|(_,v)|v.iter().any(|x|*x!=Some(0))).map(|(scope,values)|Factor{scope,values}).collect())
+}
+type Tables=Vec<(Vec<usize>,Vec<u16>)>;
+fn conditioned(m:&Model,fixed:&[usize],mask:usize)->Result<Tables,String>{
+    let values:BTreeMap<_,_>=fixed.iter().enumerate().map(|(i,&v)|(v,mask&(1<<i)!=0)).collect();
+    let mut fs=Vec::new();
+    for f in &m.factors{
+        let scope:Vec<_>=f.scope.iter().copied().filter(|v|!values.contains_key(v)).collect();
+        fs.push(table(scope,|i,s|{
+            let old=f.scope.iter().enumerate().fold(0,|a,(j,&v)|a|(usize::from(values.get(&v).copied().unwrap_or_else(||at(s,i,v)))<<j));
+            f.values[old]
+        })?);
+    }
+    merged(&fs)?.into_iter().map(|f|Ok((f.scope,f.values.into_iter().collect::<Option<Vec<_>>>().ok_or("affine incomplete support")?))).collect()
+}
+fn contract(m:&Model,fixed:&[usize],p:&Plan,modbits:u32,phase:&Integer,start:Instant,trace:&mut TaylorStats)->Result<Integer,String>{
+    if p.width>18||fixed.len()>6{return Err("affine plan cap".into());}
+    let leaves=1usize<<fixed.len();trace.planned=leaves;
+    if p.lookups.saturating_mul(leaves as u64)>360_000_000{return Err("affine preflight lookup cap".into());}
+    let mut sum=Integer::from(0);
+    let n=m.free.iter().copied().max().unwrap_or(0);
+    for mask in 0..leaves{
+        let tables=conditioned(m,fixed,mask)?;
+        let v=affine_leaf(&tables,&p.order,n,modbits,phase,start,trace)?;
+        sum+=v;sum.keep_signed_bits_mut(modbits);
+        eprintln!("AFFINE_TAYLOR_LEAF completed={} planned={} lookups={} arithmetic={} peak_pool={} peak_live={} gc={}",trace.completed,trace.planned,trace.actual_work,trace.arithmetic,trace.peak_pool,trace.peak_live,trace.gc);
+    }
+    Ok(sum)
+}
+pub(crate) fn run_taylor(mut args:impl Iterator<Item=std::ffi::OsString>)->Result<(),String>{
+    let digits:u32=args.next().and_then(|x|x.into_string().ok()).ok_or("missing digits")?.parse().map_err(|_|"invalid digits")?;
+    let bits=match digits{30=>100,100=>333,_=>return Err("unsupported precision".into())};
+    let file=args.next().ok_or("missing source")?;
+    if args.next().is_some(){return Err("unexpected arguments".into());}
+    let t=Instant::now();let raw=std::fs::read_to_string(file).map_err(|e|e.to_string())?;let read_ns=t.elapsed().as_nanos();
+    let t=Instant::now();let p=super::super::parse_emitted(&raw,bits)?;let parse_ns=t.elapsed().as_nanos();
+    let start=Instant::now();
+    let mut m=compile(&p,&raw)?;
+    // Current research route proves a bijection with all assignments to
+    // the free variables. Non-affine residual clauses fail closed.
+    if m.factors.iter().any(|f|f.values.iter().any(Option::is_none)){return Err("affine hard support not closed".into());}
+    let before=m.factors.len();m.factors=merged(&m.factors)?;
+    let n=Integer::from(1)<<(m.free.len() as u32);
+    let k=if m.delta==0{1}else{(if bits==100{4}else{9}).min(m.degree+1)};
+    let bound=(0..k).map(|j|&n*Integer::from(m.degree).binomial(j)).max().ok_or("affine coefficient bound")?;
+    let base=bound.significant_bits()+1;
+    let modbits=base.checked_mul(k).ok_or("affine packing overflow")?;
+    let phase=(Integer::from(1)<<base)-1;
+    let (fixed,plan)=choose(&m,start)?;
+    eprintln!("AFFINE_TAYLOR_PLAN factors_before={before} factors_after={} free={} width={} leaves={} lookup_upper={} terms={k} base_bits={base}",m.factors.len(),m.free.len(),plan.width,1usize<<fixed.len(),plan.lookups.saturating_mul(1u64<<fixed.len()));
+    let mut trace=TaylorStats::default();
+    let packed=contract(&m,&fixed,&plan,modbits,&phase,start,&mut trace)?;
+    if trace.completed!=trace.planned{return Err("affine incomplete leaves".into());}
+    let answer=decode_affine_packed(packed,&n,&m.delta,(m.degree,k,base),(bits,digits),start)?;
+    let solve_ns=start.elapsed().as_nanos();let t=Instant::now();
+    println!("s SATISFIABLE");
+    println!("c r mpfr {} {}",answer.count.re.to_string_radix(10,Some(digits as usize+4)),answer.count.im.to_string_radix(10,Some(digits as usize+4)));
+    let output_ns=t.elapsed().as_nanos();
+    eprintln!("RESEARCH_MPFR_PHASE_NS read={read_ns} parse={parse_ns} solve={solve_ns} output={output_ns} nodes=0 cache_hits=0 decompositions=0 digits={digits} bits={bits}");
+    eprintln!("RESEARCH_MPFR_AFFINE_TAYLOR planned={} completed={} terms={k} base_bits={base} model_bits={} lookups={} arithmetic={} peak_pool={} peak_live={} gc={} certified=true",trace.planned,trace.completed,n.significant_bits(),trace.actual_work,trace.arithmetic,trace.peak_pool,trace.peak_live,trace.gc);
+    Ok(())
+}
+
 pub(crate) fn run(mut args:impl Iterator<Item=std::ffi::OsString>)->Result<(),String>{
     let file=args.next().ok_or("missing source")?;
     if args.next().is_some(){return Err("unexpected arguments".into());}
@@ -237,6 +315,20 @@ mod tests{
             }
             assert_eq!(actual,expected);
         }
+    }
+    #[test]
+    fn exact_ring_cutset_partition_preserves_polynomial(){
+        let raw="p cnf 4 7\nc t wmc\nc p weight 4 -1 1e-16 0\nc p weight -1 -1 1e-16 0\n1 2 -3 0\n1 -2 3 0\n-1 2 3 0\n-1 -2 -3 0\n4 -1 -2 0\n-4 1 0\n-4 2 0\n";
+        let p=super::super::super::parse_emitted(raw,100).unwrap();
+        let mut m=compile(&p,raw).unwrap();
+        m.factors=merged(&m.factors).unwrap();
+        let start=Instant::now();
+        let fixed=vec![*m.free.first().unwrap()];
+        let plan=plan(&m,&fixed.iter().copied().collect(),start).unwrap();
+        let mut trace=TaylorStats::default();
+        let got=contract(&m,&fixed,&plan,64,&Integer::from(7),start,&mut trace).unwrap();
+        assert_eq!(got,22); // P(z)=1+3z from independent exhaustive truth table
+        assert_eq!(trace.completed,2);
     }
     #[test]
     fn private_gate_weight_moves_through_affine_pivot(){

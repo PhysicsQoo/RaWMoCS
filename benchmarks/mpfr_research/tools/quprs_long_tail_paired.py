@@ -282,12 +282,15 @@ def main() -> None:
     ap.add_argument("--taylor-cohort", action="store_true")
     ap.add_argument("--ham-taylor-strict", action="store_true")
     ap.add_argument("--ham-affine-plan", action="store_true")
+    ap.add_argument("--ham-affine-taylor", action="store_true")
     for field in ("quprs", "gpmc-source", "exporter", "gpmc", "mpfr", "corpus", "report"):
         ap.add_argument("--" + field, type=Path)
     args = ap.parse_args()
     self_test()
     if args.self_test:
         return
+    if args.ham_affine_taylor and (args.stage != "pilot" or args.pilot_case != "feynman_ham15_med" or args.ham_affine_plan or args.ham_taylor_strict or args.taylor_pilot or args.frontier_pilot or args.taylor_cohort):
+        ap.error("affine Taylor requires only the source-locked Ham15 pilot")
     if args.ham_affine_plan and (args.stage != "pilot" or args.pilot_case != "feynman_ham15_med" or args.ham_taylor_strict or args.taylor_pilot or args.frontier_pilot or args.taylor_cohort):
         ap.error("affine planning requires only the source-locked Ham15 pilot")
     if args.ham_taylor_strict and (args.stage != "pilot" or args.pilot_case != "feynman_ham15_med" or args.taylor_pilot or args.frontier_pilot or args.taylor_cohort):
@@ -507,6 +510,44 @@ def main() -> None:
                       "trials": [], "design": "EXPLORATORY_TWO_TRIALS_NOT_PRODUCTION_GO"}
             item["pilot"].append(cohort)
             persist(args, report)
+            if args.ham_affine_taylor:
+                cohort.update(design="AFFINE_TAYLOR_ONE_PAIRED_120S_PROBE",
+                              promotion="NOT_AUTHORIZED_RESEARCH_ONLY",
+                              independent_reference="UNAVAILABLE_FULL_WMC",
+                              arithmetic_contract="exact source-decimal packed Taylor vs MPFR at same target accuracy")
+                if sha(cnf)!="ef06785a88976f3e8d70823207965c99eda26e2821cd3f1e40254085c5b8d0d3":
+                    raise SystemExit("HAM15_ORIGINAL_CNF_DRIFT")
+                arms=("gpmc","affine_taylor") if bits==100 else ("affine_taylor","gpmc")
+                for arm in arms:
+                    cmd=command(args,case,cnf,digits,"gpmc") if arm=="gpmc" else [str(args.mpfr.resolve()),"--factor-affine-taylor",str(digits),str(cnf.resolve())]
+                    row=native(cmd,arm,PAIR_S,digits)
+                    if arm=="affine_taylor":
+                        match=re.search(r"^RESEARCH_MPFR_AFFINE_TAYLOR (.*)$",row.get("stderr_tail",""),re.M)
+                        if match:
+                            row["affine_certificate"]=dict(x.split("=",1) for x in match.group(1).split())
+                        cert=row.get("affine_certificate",{})
+                        row["certified_route_complete"]=(row["status"]=="COMPLETED" and cert.get("certified")=="true" and cert.get("planned") not in (None,"0") and cert.get("planned")==cert.get("completed"))
+                        if row["status"]=="COMPLETED" and not row["certified_route_complete"]:
+                            numeric_disagreement=True
+                    cohort["trials"].append(row)
+                    persist(args,report)
+                    print("HAM_AFFINE_TAYLOR",bits,arm,row["status"],row.get("wall_ns"),row.get("affine_certificate"),row.get("stderr_tail","")[-700:] if arm=="affine_taylor" else "",flush=True)
+                pair={r["arm"]:r for r in cohort["trials"]}
+                gp,rs=pair["gpmc"],pair["affine_taylor"]
+                if gp["status"]=="COMPLETED" and rs["status"]=="COMPLETED":
+                    witness=complex_relative_witness(gp,rs,digits)
+                    cohort["numeric_witness"]=witness
+                    if not witness["pass"] or gp["sat"]!=rs["sat"]:
+                        numeric_disagreement=True
+                        cohort["status"]="FAIL_OR_PRECISION_INCONCLUSIVE"
+                    else:
+                        cohort["status"]="SINGLE_MATCHED_AFFINE_TAYLOR" if rs["certified_route_complete"] else "ROUTE_UNVERIFIED"
+                elif rs.get("certified_route_complete"):
+                    cohort["status"]="CERTIFIED_AFFINE_TAYLOR_GPMC_CENSORED_NO_INDEPENDENT_REFERENCE"
+                else:
+                    cohort["status"]="AFFINE_TAYLOR_ADMISSION_OR_RESOURCE_CENSORED"
+                persist(args,report)
+                continue
             if args.ham_taylor_strict:
                 # No fallback and no cap relaxation. This establishes
                 # which existing Taylor admission/certificate fails.

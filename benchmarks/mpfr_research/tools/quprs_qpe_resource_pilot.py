@@ -4,6 +4,10 @@ import argparse
 import json
 from pathlib import Path
 import re
+import statistics
+import subprocess
+import sys
+from original_fixed_interval import compare as fixed_compare
 from quprs_long_tail_paired import (
     QU_PRS_SHA,GPMC_SHA,BITS,AS_BYTES,EXPORT_S,PAIR_S,
     native,command,sha,git_sha,parse_cnf,complex_relative_witness,
@@ -23,6 +27,7 @@ def main():
     for arg in ("quprs","gpmc-source","exporter","gpmc","mpfr","corpus","report"):
         ap.add_argument("--"+arg,type=Path,required=True)
     ap.add_argument("--shard",type=int,choices=range(len(CASES)),required=True)
+    ap.add_argument("--certified-repeat",action="store_true")
     args=ap.parse_args()
     if git_sha(args.quprs)!=QU_PRS_SHA or git_sha(args.gpmc_source)!=GPMC_SHA:
         raise SystemExit("SOURCE_LOCK_DRIFT")
@@ -73,6 +78,61 @@ def main():
         persist()
         if not good:raise SystemExit("GRAPHSTATE_GUARDED_ACCURACY_FAIL")
         return
+    if args.certified_repeat:
+        # Independent oracle is excluded from both timed solver arms and
+        # subject to its own finite work, time and address-space bounds.
+        witness_cmd=["/usr/bin/timeout","-k","2s","190s","prlimit",f"--as={AS_BYTES}","--",
+            sys.executable,str(Path(__file__).with_name("original_fixed_interval.py")),str(cnf.resolve()),expected]
+        try:
+            run=subprocess.run(witness_cmd,capture_output=True,text=True,timeout=197)
+            if run.returncode!=0:raise ValueError(f"interval exit {run.returncode}: {run.stderr[-400:]}")
+            ref=json.loads(run.stdout)
+            if ref["source_sha256"]!=expected or ref["bits"]!=550:raise ValueError("WITNESS_DRIFT")
+        except (ValueError,OSError,subprocess.TimeoutExpired) as e:
+            report["status"]="INDEPENDENT_WITNESS_INCONCLUSIVE";report["witness_error"]=str(e)
+            persist();print("QPE_CERTIFIED_WITNESS_INCONCLUSIVE",case,str(e),flush=True);return
+        report["independent_witness"]=ref;report["independent_full_wmc_reference"]=True
+        persist()
+        print("QPE_CERTIFIED_WITNESS",case,ref["width"],ref["work"],ref["peak"],ref["wall_s"],flush=True)
+        # Rotation previously failed fixed precision. Do not change either
+        # arm alone, and keep guarded and fixed precision cohorts distinct.
+        specs=((30,60,200),(100,130,432)) if variant=="Random_Rotation" else ((30,30,100),(100,100,333))
+        for target,digits,bits in specs:
+            cohort={"target_digits":target,"working_digits":digits,"working_bits":bits,"trials":[]}
+            report["cohorts"].append(cohort)
+            for trial in range(7):
+                pair={}
+                arms=("gpmc","adaptive") if (trial+(target==100))%2==0 else ("adaptive","gpmc")
+                for arm in arms:
+                    if sha(cnf)!=expected:raise SystemExit("CNF_DRIFT")
+                    cmd=([str(args.gpmc.resolve()),"-mode=1",f"-prec={digits}",str(cnf.resolve())]
+                         if arm=="gpmc" else [str(args.mpfr.resolve()),"--adaptive",str(digits),str(cnf.resolve())])
+                    r=native(cmd,"gpmc" if arm=="gpmc" else "candidate",PAIR_S,digits,expected_bits=bits)
+                    r["arm"]=arm;r["trial"]=trial
+                    if r["status"]=="COMPLETED":
+                        r["independent_witness"]=fixed_compare(r,ref,target)
+                        if arm=="adaptive":
+                            r["route"]=result_route(r)
+                            m=re.search(r"ADAPTIVE_CONTRACTION width=(\d+) work=(\d+) peak=(\d+) planned_width=(\d+) planned_work=(\d+) planned_peak=(\d+)",r.get("stderr_tail",""))
+                            if m:r["contraction"]=dict(zip(("width","work","peak","planned_width","planned_work","planned_peak"),map(int,m.groups())))
+                            c=r.get("contraction",{})
+                            r["route_verified"]=(r["route"]=="definitional" and c.get("width")==c.get("planned_width")
+                                and c.get("work")==c.get("planned_work") and c.get("peak",2_000_001)<=c.get("planned_peak",0))
+                        else:r["route_verified"]=True
+                    pair[arm]=r;cohort["trials"].append(r);persist()
+                    print("QPE_CERTIFIED_PAIR",case,target,bits,trial,arm,r["status"],r.get("independent_witness",{}).get("pass"),r.get("wall_ns"),flush=True)
+                good=all(r.get("route_verified") and r.get("independent_witness",{}).get("pass") for r in pair.values())
+                if not good:
+                    cohort["status"]="CENSORED_OR_ACCURACY_INCONCLUSIVE"
+                    break
+            else:
+                g=statistics.median(r["wall_ns"] for r in cohort["trials"] if r["arm"]=="gpmc")
+                t=statistics.median(r["wall_ns"] for r in cohort["trials"] if r["arm"]=="adaptive")
+                cohort.update(status="CERTIFIED_SEVEN_MATCHED_PAIRS",gpmc_median_s=g/1e9,rust_median_s=t/1e9,gpmc_over_rust=g/t)
+            persist()
+            print("QPE_CERTIFIED_FINAL",case,target,bits,cohort["status"],cohort.get("gpmc_over_rust"),flush=True)
+        report["status"]="CERTIFIED_COMPLETE" if all(c["status"]=="CERTIFIED_SEVEN_MATCHED_PAIRS" for c in report["cohorts"]) else "CERTIFIED_INCONCLUSIVE"
+        persist();return
     report["independent_full_wmc_reference"]=False
     for digits,bits in BITS.items():
         cohort={"digits":digits,"bits":bits,"trials":[]}

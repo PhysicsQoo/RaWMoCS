@@ -2,6 +2,7 @@
 use super::{extract_with_arity, extract_with_limits, weight, var, idx, edge, minfill, Graph, Trace, C, Outcome, Problem};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
+use rug::{Assign, Float};
 
 struct Factor {
     scope: Vec<usize>,
@@ -21,6 +22,41 @@ fn multiply(a: C, b: &C, bits: u32) -> C {
     if b.re==1&&b.im==0 {return a;}
     if a.re==1&&a.im==0 {return b.clone();}
     a.mul(b,bits)
+}
+// Scratch storage is owned by one contraction, never shared between
+// precision cohorts or threads. Assign each incomplete expression to a
+// fixed-precision destination before using it: no fused rounding.
+struct MulScratch {
+    arbr: Float,
+    aibi: Float,
+    arbi: Float,
+    aibr: Float,
+}
+impl MulScratch {
+    fn new(bits: u32) -> Self {
+        Self {
+            arbr: Float::new(bits), aibi: Float::new(bits),
+            arbi: Float::new(bits), aibr: Float::new(bits),
+        }
+    }
+    fn multiply(&mut self, a: &mut C, b: &C) {
+        // Preserve the existing zero and identity shortcuts, including
+        // support semantics (the caller checks None before multiplying).
+        if (a.re==0&&a.im==0)||(b.re==0&&b.im==0) {
+            a.re.assign(0); a.im.assign(0); return;
+        }
+        if b.re==1&&b.im==0 {return;}
+        if a.re==1&&a.im==0 {
+            a.re.assign(&b.re); a.im.assign(&b.im); return;
+        }
+        self.arbr.assign(&a.re * &b.re);
+        self.aibi.assign(&a.im * &b.im);
+        self.arbi.assign(&a.re * &b.im);
+        self.aibr.assign(&a.im * &b.re);
+        // All four products have already been rounded; overwrite only now.
+        a.re.assign(&self.arbr - &self.aibi);
+        a.im.assign(&self.arbi + &self.aibr);
+    }
 }
 fn add(a: Option<C>, b: Option<C>, bits: u32) -> Option<C> {
     match (a,b) {
@@ -108,7 +144,13 @@ fn compile(p:&Problem,bits:u32,trace:&mut Trace,adaptive:bool)->Result<Compiled,
     }
     Ok((factors,graph,scalar))
 }
-fn contract(mut factors:Vec<Factor>,mut graph:Graph,mut scalar:C,bits:u32,trace:&mut Trace,deadline:Instant,order:Option<&[usize]>)->Result<Outcome,String>{
+fn contract(factors:Vec<Factor>,graph:Graph,scalar:C,bits:u32,trace:&mut Trace,deadline:Instant,order:Option<&[usize]>)->Result<Outcome,String>{
+    contract_impl(factors,graph,scalar,bits,trace,deadline,order,true)
+}
+// Retain the previous planned kernel as an exact same-order test control.
+#[allow(clippy::too_many_arguments)]
+fn contract_impl(mut factors:Vec<Factor>,mut graph:Graph,mut scalar:C,bits:u32,trace:&mut Trace,deadline:Instant,order:Option<&[usize]>,reuse_scratch:bool)->Result<Outcome,String>{
+    let mut scratch=if order.is_some()&&reuse_scratch{Some(MulScratch::new(bits))}else{None};
     let mut pivots=order.into_iter().flatten().copied();
     if let Some(order)=order{
         if order.len()!=graph.len()||order.iter().copied().collect::<BTreeSet<_>>()!=graph.keys().copied().collect(){return Err("definitional plan ownership".into());}
@@ -156,15 +198,18 @@ fn contract(mut factors:Vec<Factor>,mut graph:Graph,mut scalar:C,bits:u32,trace:
             let mut indices=vec![0usize;bucket.len()];
             for m in 0..size{
                 if m%4096==0&&Instant::now()>=deadline{return Err("definitional deadline".into());}
-                let branch=|positive:bool|->Option<C>{
+                let mut branch=|positive:bool|->Option<C>{
                     let mut product=C::one(bits);
                     for (i,f) in bucket.iter().enumerate(){
                         let x=f.values[indices[i]|if positive{pivots[i]}else{0}].as_ref()?;
-                        product=multiply(product,x,bits);
+                        if let Some(s)=scratch.as_mut(){s.multiply(&mut product,x);}
+                        else{product=multiply(product,x,bits);}
                     }
                     Some(product)
                 };
-                values.push(add(branch(false),branch(true),bits));
+                let left=branch(false);
+                let right=branch(true);
+                values.push(add(left,right,bits));
                 if m+1<size{
                     let bit=(m+1).trailing_zeros() as usize;
                     for (i,x) in indices.iter_mut().enumerate(){*x^=flips[i][bit];}
@@ -283,6 +328,68 @@ pub(super) fn count_conditioned(p:&Problem,bits:u32,trace:&mut Trace,seconds:u64
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn exact_complex(got:&C,expected:&C){
+        assert_eq!(got.re,expected.re);
+        assert_eq!(got.im,expected.im);
+        assert_eq!(got.re.is_sign_negative(),expected.re.is_sign_negative());
+        assert_eq!(got.im.is_sign_negative(),expected.im.is_sign_negative());
+        assert_eq!(got.re.prec(),expected.re.prec());
+        assert_eq!(got.im.prec(),expected.im.prec());
+    }
+    #[test]
+    fn scratch_multiply_matches_original_rounded_operations(){
+        for bits in [100,333]{
+            let mut s=MulScratch::new(bits);
+            let vals:Vec<_>=[
+                ("0","0"),("-0","0"),("1","0"),("0","1"),("-1","0"),
+                ("-0.123456789012345678901234567890123456789","0.3344556677889900112233445566778899"),
+                ("0.123456789012345678901234567890123456789","-0.3344556677889900112233445566778899"),
+                ("1e-80","-1e80"),("-1e80","1e-80"),("1.000000000000000000000000000001","-1e-40"),
+            ].iter().map(|(a,b)|C::decimal(bits,a,b).unwrap()).collect();
+            for a in &vals{for b in &vals{
+                let expected=multiply(a.clone(),b,bits);
+                let mut got=a.clone();
+                s.multiply(&mut got,b);
+                exact_complex(&got,&expected);
+            }}
+            // Reuse across long sequences, not just freshly initialized scratch.
+            for a in &vals{
+                let mut got=a.clone();let mut expected=a.clone();
+                for b in vals.iter().skip(2).cycle().take(80){
+                    expected=multiply(expected,b,bits);
+                    s.multiply(&mut got,b);
+                    exact_complex(&got,&expected);
+                }
+            }
+        }
+    }
+    #[test]
+    fn scratch_planned_contraction_matches_same_order_control(){
+        for bits in [100,333]{
+            for raw in [
+                "p cnf 5 4\nc t wmc\nc p weight 4 -0.1234567890123456789 0.334455667788990011 0\nc p weight -1 0 0 0\n4 -1 2 0\n-4 1 0\n-4 -2 0\n1 2 3 0\n",
+                "p cnf 3 2\nc t wmc\nc p weight 1 -1 0 0\nc p weight 2 0 0 0\nc p weight -2 0 0 0\n1 2 0\n1 -2 0\n",
+                "p cnf 2 4\nc t wmc\n1 2 0\n1 -2 0\n-1 2 0\n-1 -2 0\n",
+                "p cnf 3 2\nc t wmc\nc p weight 1 0.3333333333333333333333333333333 -0.2 0\nc p weight -2 1.1 -0.7 0\nc p weight 3 1e-40 1e40 0\n1 -2 0\n2 3 0\n",
+            ]{
+                let p=crate::parse_emitted(raw,bits).unwrap();
+                let (_,g,_)=compile(&p,bits,&mut Trace::default(),true).unwrap();
+                let mut order:Vec<_>=g.keys().copied().collect();
+                for reverse in [false,true]{
+                    if reverse{order.reverse();}
+                    let mut before=Trace::default();
+                    let mut after=Trace::default();
+                    let (f,g,s)=compile(&p,bits,&mut before,true).unwrap();
+                    let expected=contract_impl(f,g,s,bits,&mut before,Instant::now()+std::time::Duration::from_secs(5),Some(&order),false).unwrap();
+                    let (f,g,s)=compile(&p,bits,&mut after,true).unwrap();
+                    let got=contract_impl(f,g,s,bits,&mut after,Instant::now()+std::time::Duration::from_secs(5),Some(&order),true).unwrap();
+                    assert_eq!(got.sat,expected.sat);
+                    exact_complex(&got.count,&expected.count);
+                    assert_eq!((after.width,after.work,after.peak),(before.width,before.work,before.peak));
+                }
+            }
+        }
+    }
     #[test]
     fn conditioned_partition_preserves_signed_complex_and_support(){
         for raw in [

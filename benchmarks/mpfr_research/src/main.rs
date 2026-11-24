@@ -772,6 +772,37 @@ fn run() -> Result<(), String> {
     let first = args.next().ok_or(
         "usage: rawmocs-mpfr-research [--node-budget=250000|--node-budget=1000000|--node-budget=1000000000] [--cache-limit=25000|--cache-limit=50000|--cache-limit=100000] [--indexed-unit-prop|--indexed-unit-prop-after-8192|--indexed-unit-prop-csr|--indexed-unit-prop-csr-after-8192] [--shared-residual-key|--packed-residual-key|--packed-residual-key-fast|--packed-residual-key-hash-only|--packed-residual-key-bypass-only] [--fast-assign] [--reuse-frequency-scratch] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
     )?;
+    if first.to_str() == Some("--factor-taylor-strict") {
+        // Bounded diagnostic: report the actual Taylor admission reason.
+        // Do not silently fall back to an unrelated search kernel.
+        let digits:u32=args.next().and_then(|v|v.into_string().ok())
+            .ok_or("missing precision")?.parse().map_err(|_|"invalid precision")?;
+        let bits=match digits {30=>100,100=>333,_=>return Err("unsupported Taylor precision".into())};
+        let path=args.next().ok_or("missing source")?;
+        if args.next().is_some(){return Err("unexpected arguments".into());}
+        let t=Instant::now();
+        let raw=std::fs::read_to_string(path).map_err(|e|e.to_string())?;
+        let read_ns=t.elapsed().as_nanos();
+        let t=Instant::now();let p=parse_emitted(&raw,bits)?;let parse_ns=t.elapsed().as_nanos();
+        let t=Instant::now();
+        let (answer,stats,trace)=factor_indexed_fused::count_taylor(&p,&raw,bits,digits);
+        let solve_ns=t.elapsed().as_nanos();
+        eprintln!("RESEARCH_MPFR_TAYLOR_STRICT eligible={} capped={} reason={} width={} estimated_work={} estimated_peak={} planned={} count_completed={} completed={} certified={}",
+            stats.eligible,stats.capped,if stats.cap_reason.is_empty(){"none"}else{stats.cap_reason},
+            stats.width,stats.preflight_products_upper,stats.preflight_cells_upper,
+            trace.planned,trace.count_completed,trace.completed,trace.certified);
+        let answer=answer.ok_or_else(||format!("Taylor strict admission: {}",stats.cap_reason))?;
+        if !trace.certified || (answer.sat && (trace.planned==0||trace.planned!=trace.count_completed||trace.planned!=trace.completed)){
+            return Err("Taylor strict incomplete certificate".into());
+        }
+        let t=Instant::now();
+        println!("s {}",if answer.sat {"SATISFIABLE"} else {"UNSATISFIABLE"});
+        println!("c r mpfr {} {}",answer.count.re.to_string_radix(10,Some(digits as usize+4)),answer.count.im.to_string_radix(10,Some(digits as usize+4)));
+        std::io::stdout().flush().map_err(|e|format!("flush: {e}"))?;
+        let output_ns=t.elapsed().as_nanos();
+        eprintln!("RESEARCH_MPFR_PHASE_NS read={read_ns} parse={parse_ns} solve={solve_ns} output={output_ns} nodes=0 cache_hits=0 decompositions=0 digits={digits} bits={bits}");
+        return Ok(());
+    }
     if matches!(first.to_str(), Some("--factor-cardinality" | "--factor-definitional")) {
         return factor_cardinality::run(args, first.to_str() == Some("--factor-definitional"));
     }

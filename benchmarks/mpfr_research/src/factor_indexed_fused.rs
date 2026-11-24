@@ -994,6 +994,9 @@ mod packed_taylor {
     const NO:u32=0;
     const ONE:u32=1;
     const ZERO:u32=2;
+    const NEG:u32=1<<31;
+    fn magnitude(id:u32)->usize{(id&!NEG) as usize}
+    fn flip(id:u32)->u32{if id==NO||id==ZERO{id}else{id^NEG}}
 
     #[derive(Default,Debug)]
     pub(crate) struct TaylorStats {
@@ -1017,7 +1020,7 @@ mod packed_taylor {
     struct Ring {
         values:Vec<Integer>,links:Vec<u32>,index:HashMap<u64,u32>,
         mul:HashMap<(u32,u32),u32>,add:HashMap<(u32,u32),u32>,
-        modulus:Integer,phase:Integer,modbits:u32,limit:usize,stats:RingStats,
+        modulus:Integer,phase:Integer,modbits:u32,limit:usize,stats:RingStats,signed:bool,
     }
     impl Ring {
         fn new(modbits:u32,phase:Integer,limit:usize)->Result<Self,&'static str> {
@@ -1025,17 +1028,22 @@ mod packed_taylor {
             Ok(Self{values:vec![0.into(),1.into(),0.into()],links:vec![0;3],
                 index:HashMap::new(),mul:HashMap::new(),add:HashMap::new(),
                 modulus:Integer::from(1)<<modbits,phase,modbits,limit:limit.min(LEAF_ARITH),
-                stats:RingStats{peak_pool:3,..RingStats::default()}})
+                stats:RingStats{peak_pool:3,..RingStats::default()},signed:false})
         }
         fn intern(&mut self,mut z:Integer)->Result<u32,&'static str> {
             z.keep_signed_bits_mut(self.modbits);
             if z==0 {return Ok(ZERO);}
-            if z==1 {return Ok(ONE);}
+            let sign=if self.signed && z<0 {
+                z=-z;
+                // The half-modulus residue is its own negative.
+                if z.significant_bits()==self.modbits {0}else{NEG}
+            }else{0};
+            if z==1 {return Ok(ONE|sign);}
             let mut h=DefaultHasher::new();z.hash(&mut h);let h=h.finish();
             let head=self.index.get(&h).copied().unwrap_or(NO);
             let mut at=head;let mut probes=0;
             while at!=NO {
-                if self.values[at as usize]==z {return Ok(at);}
+                if self.values[at as usize]==z {return Ok(at|sign);}
                 probes+=1;if probes>=64 {return Err("taylor_hash_chain");}
                 at=self.links[at as usize];
             }
@@ -1046,7 +1054,7 @@ mod packed_taylor {
                 return Err("taylor_pool");
             }
             let id=self.values.len() as u32;self.values.push(z);self.links.push(head);
-            self.index.insert(h,id);self.stats.peak_pool=self.stats.peak_pool.max(self.values.len());Ok(id)
+            self.index.insert(h,id);self.stats.peak_pool=self.stats.peak_pool.max(self.values.len());Ok(id|sign)
         }
         fn weight(&mut self,c:&C)->Result<u32,&'static str> {
             let e=exponent(c)?;
@@ -1055,6 +1063,7 @@ mod packed_taylor {
             self.intern(z)
         }
         fn op(&mut self,a:u32,b:u32,product:bool)->Result<u32,&'static str> {
+            if self.signed{return self.signed_op(a,b,product);}
             if product {
                 if a==NO||b==NO {return Ok(NO);}
                 if a==ZERO||b==ZERO {return Ok(ZERO);}
@@ -1080,6 +1089,41 @@ mod packed_taylor {
             if memo.len()>=PAIR_CAP {memo.clear();}
             memo.insert(key,id);Ok(id)
         }
+        // Store magnitude once. Products share memo entries across all
+        // sign combinations; sums share under simultaneous negation.
+        // Never encode Boolean impossibility as a signed numeric zero.
+        fn signed_op(&mut self,a:u32,b:u32,product:bool)->Result<u32,&'static str>{
+            if product {
+                if a==NO||b==NO{return Ok(NO);}
+                if a==ZERO||b==ZERO{return Ok(ZERO);}
+            }else{
+                if a==NO||a==ZERO{return Ok(if a==ZERO&&b==NO{ZERO}else{b});}
+                if b==NO||b==ZERO{return Ok(a);}
+            }
+            let (mut x,mut y)=(a,b);
+            if magnitude(x)>magnitude(y){std::mem::swap(&mut x,&mut y);}
+            let (xm,ym)=(x&!NEG,y&!NEG);
+            let relative=(x^y)&NEG!=0;
+            let negative=if product{relative}else{x&NEG!=0};
+            if product&&xm==ONE{return Ok(if negative{flip(ym)}else{ym});}
+            if !product&&relative&&xm==ym{return Ok(ZERO);}
+            let key=(xm,if !product&&relative{ym|NEG}else{ym});
+            let memo=if product{&self.mul}else{&self.add};
+            let id=if let Some(&id)=memo.get(&key){id}else{
+                if self.stats.calls>=self.limit{return Err("taylor_arithmetic");}
+                self.stats.calls+=1;
+                let u=&self.values[xm as usize];let v=&self.values[ym as usize];
+                let z=if product{Integer::from(u*v)}else if relative{Integer::from(u-v)}else{Integer::from(u+v)};
+                let id=self.intern(z)?;
+                let memo=if product{&mut self.mul}else{&mut self.add};
+                if memo.len()>=PAIR_CAP{memo.clear();}memo.insert(key,id);id
+            };
+            Ok(if negative{flip(id)}else{id})
+        }
+        fn signed_value(&self,id:u32)->Integer{
+            let z=self.values[magnitude(id)].clone();
+            if id&NEG!=0{-z}else{z}
+        }
         // Charge an upper bound on binary exponentiation operations. The
         // temporary cache is local to a bucket and invalidated after GC.
         fn affine_power(&mut self,e:u32,cache:&mut HashMap<u32,u32>)->Result<u32,&'static str>{
@@ -1097,13 +1141,13 @@ mod packed_taylor {
         fn reclaim(&mut self,buckets:&mut [Vec<IdFactor>],scalar:&mut u32,
             current:&mut [IdFactor],output:&mut [u32],start:Instant)->Result<(),&'static str> {
             self.clear_pairs();
-            let mut mark=vec![false;self.values.len()];mark[..3].fill(true);mark[*scalar as usize]=true;
+            let mut mark=vec![false;self.values.len()];mark[..3].fill(true);mark[magnitude(*scalar)]=true;
             let scan=self.values.len().saturating_add(output.len()).saturating_add(
                 buckets.iter().flatten().chain(current.iter()).map(|f|f.ids.len()).sum::<usize>());
             self.stats.gc_scans=self.stats.gc_scans.saturating_add(scan);
             if self.stats.gc_scans>GC_SCAN_CAP {return Err("taylor_gc_work");}
-            for f in buckets.iter().flatten().chain(current.iter()) {for &id in &f.ids {mark[id as usize]=true;}}
-            for &id in output.iter(){mark[id as usize]=true;}
+            for f in buckets.iter().flatten().chain(current.iter()) {for &id in &f.ids {mark[magnitude(id)]=true;}}
+            for &id in output.iter(){mark[magnitude(id)]=true;}
             let old=std::mem::take(&mut self.values);
             self.links.clear();self.index.clear();
             let mut map=vec![NO;old.len()];
@@ -1112,11 +1156,12 @@ mod packed_taylor {
                 if i<3 {self.values.push(z);self.links.push(NO);map[i]=i as u32;}
                 else if mark[i] {map[i]=self.intern(z)?;}
             }
-            *scalar=map[*scalar as usize];
+            let remap=|id:u32|{let new=map[magnitude(id)];if id&NEG!=0{flip(new)}else{new}};
+            *scalar=remap(*scalar);
             for f in buckets.iter_mut().flatten().chain(current.iter_mut()) {
-                for id in &mut f.ids {*id=map[*id as usize];}
+                for id in &mut f.ids {*id=remap(*id);}
             }
-            for id in output {*id=map[*id as usize];}
+            for id in output {*id=remap(*id);}
             self.stats.gc+=1;Ok(())
         }
     }
@@ -1283,6 +1328,7 @@ mod packed_taylor {
         frontier_deadline(start)?;
         let local_start=Instant::now();
         let mut ring=Ring::new(modbits,phase.clone(),TOTAL_ARITH.saturating_sub(trace.arithmetic))?;
+        ring.signed=true;
         let mut rank=vec![usize::MAX;n+1];
         for (i,&v) in plan.iter().enumerate(){
             if v==0||v>n||rank[v]!=usize::MAX{return Err("affine_rank");}
@@ -1308,7 +1354,12 @@ mod packed_taylor {
             put(IdFactor{vars:scope.clone(),ids,exponents:Some(values.clone())},&mut buckets,&rank,&mut scalar,&mut live,&mut ring)?;
         }
         let mut stats=VeStats{cells:live,..VeStats::default()};
-        let id=execute_buckets((plan,&rank),(buckets,scalar,live),&mut stats,&mut ring,local_start,(18,true))?;
+        let id=match execute_buckets((plan,&rank),(buckets,scalar,live),&mut stats,&mut ring,local_start,(18,true)){
+            Ok(id)=>id,Err(reason)=>{
+                eprintln!("AFFINE_RING_REJECT reason={reason} completed={} leaf_calls={} leaf_limit={} leaf_lookups={} leaf_eliminated={} peak_pool={} peak_live={} gc={} elapsed_ms={}",trace.completed,ring.stats.calls,ring.limit,stats.products,stats.eliminated,ring.stats.peak_pool,ring.stats.peak_live,ring.stats.gc,local_start.elapsed().as_millis());
+                return Err(reason);
+            }
+        };
         if id==NO{return Err("affine_complete_support_invariant");}
         trace.actual_work=trace.actual_work.saturating_add(stats.products);
         trace.arithmetic=trace.arithmetic.saturating_add(ring.stats.calls);
@@ -1318,7 +1369,7 @@ mod packed_taylor {
         if trace.actual_work>TOTAL_WORK||trace.arithmetic>TOTAL_ARITH{return Err("affine_total_budget");}
         frontier_deadline(start)?;
         trace.completed+=1;
-        Ok(ring.values[id as usize].clone())
+        Ok(ring.signed_value(id).keep_signed_bits(modbits))
     }
 
     fn decimal(text:&str)->Result<Rational,&'static str> {
@@ -1487,6 +1538,36 @@ mod packed_taylor {
     #[cfg(test)]
     mod tests {
         use super::*;
+        #[test]
+        fn signed_ring_modular_oracle_and_gc(){
+            let mut ring=Ring::new(8,Integer::from(-1),100_000).unwrap();
+            ring.signed=true;
+            // Exhaustive signed 8-bit arithmetic, including half modulus.
+            let ids:Vec<_>=(-128..128).map(|v|ring.intern(Integer::from(v)).unwrap()).collect();
+            for (i,&a) in ids.iter().enumerate(){
+                for (j,&b) in ids.iter().enumerate(){
+                    for product in [false,true]{
+                        let x=i as i32-128;let y=j as i32-128;
+                        let expected=Integer::from(if product{x*y}else{x+y}).keep_signed_bits(8);
+                        let result=ring.signed_op(a,b,product).unwrap();
+                        assert_eq!(ring.signed_value(result).keep_signed_bits(8),expected);
+                    }
+                }
+            }
+            assert!(ring.values.len()<=130);
+            let mut scalar=ring.intern(Integer::from(-37)).unwrap();
+            let mut current=vec![IdFactor{vars:vec![1],ids:vec![ring.intern(Integer::from(37)).unwrap(),scalar],exponents:None}];
+            let mut out=vec![ring.intern(Integer::from(-128)).unwrap(),ZERO,NO];
+            ring.reclaim(&mut [],&mut scalar,&mut current,&mut out,Instant::now()).unwrap();
+            assert_eq!(ring.signed_value(scalar),-37);
+            assert_eq!(ring.signed_value(current[0].ids[0]),37);
+            assert_eq!(ring.signed_value(current[0].ids[1]),-37);
+            assert_eq!(ring.signed_value(out[0]).keep_signed_bits(8),-128);
+            assert_eq!(out[1..],[ZERO,NO]);
+            assert_eq!(ring.op(ZERO,NO,false).unwrap(),ZERO);
+            assert_eq!(ring.op(NO,ZERO,false).unwrap(),ZERO);
+            assert_eq!(ring.op(ZERO,NO,true).unwrap(),NO);
+        }
         #[test]
         fn affine_common_branch_factorization_exact(){
             let tables=vec![

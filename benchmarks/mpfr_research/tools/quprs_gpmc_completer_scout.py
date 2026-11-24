@@ -185,20 +185,21 @@ def locked_pairs(args,report,persist):
             print("LOCKED_LONG_FINAL",case,target,cohort["status"],cohort.get("gpmc_over_rust"),flush=True)
     report["status"]="LOCKED_LONG_EXPLORATORY_COMPLETE";persist()
 
-# Four successful long controls have an independent original-CNF plan
+# Five long controls have an independently resource-qualified original-CNF plan
 # within the reference oracle's existing width/work/live caps.
 CERTIFIED_LONG_SHA={
     "8c7c930ee58721bfecd42e368ba2603fb8072bd99aeb94a9636ba3a2e5da6a1e",
     "ead9ede46abf2f13920e32b0795d9ae80789377d2bef94565ce188abf0a2a6b2",
     "08baa5d3fa04df6ec9f69c16593a553f49e18e64f78640973bd98d406fc7b290",
     "600ce6716a69e31e17ffbc571cba581fc58a5b5ed3b7d60227ad41d857374efe",
+    "a9757cd5bd730b6f769d2970e3a16ac66fee7157b55f81208c0a7c2cece0023b",
 }
 def certified_locked_pairs(args,report,persist):
     import statistics
     import sys
     from original_fixed_interval import compare
     from quprs_mqt_adaptive_scout import result_route
-    report["reference_limits"]={"wall_s":190,"AS_bytes":AS_BYTES,"fixed_bits":550}
+    report["reference_limits"]={"wall_s":190,"AS_bytes":AS_BYTES,"fixed_bits":550,"width":19,"work":40_000_000,"live_cells":2_000_000}
     for item in report["cases"]:
         if item["source_status"]!="SOURCE_EXACT":
             item["status"]="SOURCE_INCONCLUSIVE";persist();continue
@@ -248,7 +249,11 @@ def certified_locked_pairs(args,report,persist):
                 else:
                     g=statistics.median(r["wall_ns"] for r in cohort["trials"] if r["arm"]=="gpmc")
                     t=statistics.median(r["wall_ns"] for r in cohort["trials"] if r["arm"]=="adaptive")
-                    cohort.update(status="CERTIFIED_SEVEN_MATCHED_PAIRS",gpmc_median_s=g/1e9,rust_median_s=t/1e9,gpmc_over_rust=g/t)
+                    def p90(arm):
+                        samples=sorted(r["wall_ns"] for r in cohort["trials"] if r["arm"]==arm)
+                        assert len(samples)==7
+                        return (samples[5]+0.4*(samples[6]-samples[5]))/1e9
+                    cohort.update(status="CERTIFIED_SEVEN_MATCHED_PAIRS",gpmc_median_s=g/1e9,rust_median_s=t/1e9,gpmc_over_rust=g/t,gpmc_p90_s=p90("gpmc"),rust_p90_s=p90("adaptive"))
                 persist()
                 print("MQT_CERTIFIED_FINAL",case,target,working_bits,cohort["status"],cohort.get("gpmc_over_rust"),flush=True)
                 if cohort["status"]!="ACCURACY_INCONCLUSIVE":break
@@ -299,7 +304,7 @@ def main():
         if len(manifest)!=2:raise ValueError("MISSING_RESIDUAL_FOLLOWUP")
     if args.certified_long:
         manifest=[r for r in manifest if r["expected_cnf_sha256"] in CERTIFIED_LONG_SHA]
-        if len(manifest)!=4:raise ValueError("MISSING_CERTIFIED_LONG")
+        if len(manifest)!=len(CERTIFIED_LONG_SHA):raise ValueError("MISSING_CERTIFIED_LONG")
     selected=manifest[args.shard::shards]
     report={"study":"Original GPMC-completer long-case discovery",
             "source_revisions":{"quprs":QU_PRS_SHA,"gpmc":GPMC_SHA},

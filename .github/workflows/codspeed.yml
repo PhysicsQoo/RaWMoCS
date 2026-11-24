@@ -93,6 +93,7 @@ jobs:
       - name: Confirm instrumented build did not rewrite the lockfile
         run: git diff --exit-code -- benchmarks/rust_core/Cargo.lock
       - name: Upload all 62 legacy and six new paired CodSpeed identities in ONE workflow
+        timeout-minutes: 5
         uses: CodSpeedHQ/action@v5
         env:
           GPMC_QU_PRS_CNF_DIR: ${{ runner.temp }}/quprs-cnf

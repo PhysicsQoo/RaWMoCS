@@ -54,7 +54,10 @@ fn extract(p: &Problem, source_cap: usize) -> Result<Extraction, String> {
 }
 
 fn extract_with_arity(p: &Problem, source_cap: usize, max_arity: usize) -> Result<Extraction, String> {
-    if p.n > source_cap || p.clauses.len()>10_000 { return Err("cardinality source cap".into()); }
+    extract_with_limits(p,source_cap,10_000,max_arity)
+}
+fn extract_with_limits(p:&Problem,source_cap:usize,clause_cap:usize,max_arity:usize)->Result<Extraction,String>{
+    if p.n > source_cap || p.clauses.len()>clause_cap { return Err("cardinality source cap".into()); }
     let clauses: BTreeSet<Set> = p.clauses.iter().map(|c| c.iter().copied().collect())
         .filter(clean).collect();
     let mut occ = vec![BTreeSet::new(); p.n+1];

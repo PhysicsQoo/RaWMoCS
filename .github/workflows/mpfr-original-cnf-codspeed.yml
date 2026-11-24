@@ -2,6 +2,17 @@ name: Original QuPRS Weighted CNF MPFR CodSpeed flamegraphs
 
 on:
   workflow_dispatch:
+    inputs:
+      study:
+        type: choice
+        options: [legacy, grover6_large, wstate16]
+        default: legacy
+      digits:
+        type: choice
+        options: ['30', '100']
+        default: '30'
+  pull_request:
+    types: [labeled]
 
 permissions:
   contents: read
@@ -15,9 +26,14 @@ jobs:
     if: >-
       vars.RAWMOCS_CODSPEED_ENABLED == 'true' &&
       (github.event_name != 'pull_request' ||
-       github.event.pull_request.head.repo.full_name == github.repository)
+       (github.event.pull_request.head.repo.full_name == github.repository &&
+        github.head_ref == 'research/mpfr-exact-residual-arena-reuse-20261118' &&
+        github.event.label.name == 'run-long-codspeed'))
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 65
+    env:
+      STUDY: ${{ github.event_name == 'pull_request' && 'grover6_large' || inputs.study || 'legacy' }}
+      DIGITS: ${{ inputs.digits || '30' }}
     permissions:
       contents: read
       id-token: write
@@ -54,6 +70,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends cmake ninja-build libgmp-dev libmpfr-dev zlib1g-dev pkg-config time
       - name: Build pinned original QuPRS CNF exporter
+        if: env.STUDY == 'legacy'
         shell: bash
         run: |
           set -euo pipefail
@@ -63,6 +80,7 @@ jobs:
             --manifest-path .upstream/quprs/rust/Cargo.toml \
             -p quprs --example quprs_long_feynman_reference
       - name: Freeze three original Weighted CNF inputs outside CodSpeed profiling
+        if: env.STUDY == 'legacy'
         shell: bash
         run: |
           set -euo pipefail
@@ -80,6 +98,13 @@ jobs:
             f8c76d883923363a7fcb5e32d6c6d8914f8443af3582fbe3d2e1d9c0b99c35b7 ".research/codspeed-original-cnf/feynman_mod_mult_55-gpmc.cnf" \
             f1fb459a058ba3dc17d2bd538a7e8b34e451383ae3384cb58a624bc8194499c3 ".research/codspeed-original-cnf/feynman_barenco_tof_5-gpmc.cnf" \
             | sha256sum -c -
+      - name: Build pinned long source bridge
+        if: env.STUDY != 'legacy'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp benchmarks/rust_core/tools/quprs_long_tail_source_bridge.rs .upstream/quprs/rust/quprs/examples/quprs_long_tail_source_bridge.rs
+          cargo build --locked --release --no-default-features --manifest-path .upstream/quprs/rust/Cargo.toml -p quprs --example quprs_long_tail_source_bridge
       - name: Build unchanged original GPMC C++ executable
         shell: bash
         run: |
@@ -93,13 +118,31 @@ jobs:
           cargo test --release --manifest-path benchmarks/mpfr_research/Cargo.toml
           cargo build --release --manifest-path benchmarks/mpfr_research/Cargo.toml
           git diff --exit-code -- benchmarks/mpfr_research/Cargo.lock
+      - name: Qualify original long CNF and generate focused two-arm config
+        if: env.STUDY != 'legacy'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile benchmarks/mpfr_research/tools/quprs_long_codspeed.py
+          python3 benchmarks/mpfr_research/tools/quprs_long_codspeed.py prepare --case "$STUDY" --digits "$DIGITS"
       - name: CodSpeed native process simulation and flamegraph capture
+        if: env.STUDY == 'legacy'
         uses: CodSpeedHQ/action@v5
         with:
           mode: simulation
           # The Action invokes CodSpeed itself; the config discovers all exec targets.
           # Do not nest `codspeed run` inside the CodSpeed Action.
           config: codspeed.yml
+      - name: CodSpeed focused long original CNF Simulation
+        if: env.STUDY != 'legacy'
+        uses: CodSpeedHQ/action@v5
+        with:
+          mode: simulation
+          config: codspeed-long.generated.yml
+      - name: Verify actual simulated output and solver route
+        if: env.STUDY != 'legacy'
+        shell: bash
+        run: python3 benchmarks/mpfr_research/tools/quprs_long_codspeed.py verify
       - name: Archive exact Weighted CNF source checksums
         if: always()
         uses: actions/upload-artifact@v4
@@ -109,5 +152,7 @@ jobs:
             .research/codspeed-original-cnf/*.cnf
             .research/codspeed-original-cnf/*.export.log
             codspeed.yml
+            codspeed-long.generated.yml
+            .research/codspeed-long/
           retention-days: 30
           if-no-files-found: warn

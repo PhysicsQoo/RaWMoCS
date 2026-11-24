@@ -452,11 +452,11 @@ jobs:
     # 7 fresh alternating head-to-head trials per precision; GPMC feature
     # toggles are separate single-trial exploratory mechanism probes.
     needs: original-long-tail-source-locked-screen
-    if: ${{ !cancelled() && ((inputs.suite == 'full' && needs.original-long-tail-source-locked-screen.result == 'success') || (inputs.suite == 'focused' && inputs.case != 'feynman_gf2_8_mult' && inputs.case != 'mqt_qnn_12' && needs.original-long-tail-source-locked-screen.result == 'skipped')) }}
+    if: ${{ !cancelled() && ((inputs.suite == 'full' && needs.original-long-tail-source-locked-screen.result == 'success') || ((((github.event_name == 'pull_request' && github.event.label.name == 'run-wstate-definitional' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/mpfr-exact-residual-arena-reuse-20261118')) || (inputs.suite == 'focused' && inputs.case != 'feynman_gf2_8_mult' && inputs.case != 'mqt_qnn_12')) && needs.original-long-tail-source-locked-screen.result == 'skipped')) }}
     strategy:
       fail-fast: false
       matrix:
-        case: ${{ fromJSON(inputs.suite == 'full' && '["feynman_gf2_6_mult","mqt_qnn_8","mqt_wstate_16","mqt_qwalk_5"]' || format('["{0}"]', inputs.case)) }}
+        case: ${{ fromJSON(inputs.suite == 'full' && '["feynman_gf2_6_mult","mqt_qnn_8","mqt_wstate_16","mqt_qwalk_5"]' || (github.event.label.name == 'run-wstate-definitional' && '["mqt_wstate_16"]' || format('["{0}"]', inputs.case))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -499,11 +499,11 @@ jobs:
           name: original-rawmocs-gpmc-long-tail-screen
           path: .research/long-tail
       - name: Reuse source-locked artifact from selected run (focused)
-        if: inputs.suite == 'focused'
+        if: inputs.suite == 'focused' || github.event_name == 'pull_request'
         uses: actions/download-artifact@v4
         with:
           github-token: ${{ github.token }}
-          run-id: ${{ inputs.source_run_id }}
+          run-id: ${{ inputs.source_run_id || '45309819511' }}
           name: original-rawmocs-gpmc-long-tail-screen
           path: .research/long-tail
       - name: Verify original upstream source locks and install MPFR
@@ -525,6 +525,9 @@ jobs:
         run: |
           set -euo pipefail
           cargo test --release --manifest-path benchmarks/mpfr_research/Cargo.toml factor_indexed_fused::tests
+          if [[ "${{ github.event.label.name }}" == "run-wstate-definitional" ]]; then
+            cargo test --release --manifest-path benchmarks/mpfr_research/Cargo.toml factor_cardinality:: 
+          fi
           cargo build --release --manifest-path benchmarks/mpfr_research/Cargo.toml
       - name: Same-source seven-trial 100/333-bit GPMC/Rust and GPMC mechanism toggles
         shell: bash
@@ -535,6 +538,7 @@ jobs:
           arms=(--indexed-fused)
           if [[ "${{ matrix.case }}" == "feynman_gf2_6_mult" ]]; then arms+=(--indexed-conditioned); fi
           if [[ "${{ inputs.suite }}" == "focused" && "${{ matrix.case }}" == "mqt_wstate_16" ]]; then arms=(--indexed-interned-only); fi
+          if [[ "${{ github.event.label.name }}" == "run-wstate-definitional" ]]; then arms=(--definitional-only); fi
           python3 benchmarks/mpfr_research/tools/quprs_long_tail_mechanism.py \
             "${arms[@]}" \
             --case "${{ matrix.case }}" \

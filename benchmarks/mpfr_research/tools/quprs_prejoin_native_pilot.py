@@ -13,25 +13,30 @@ def main():
     ap=argparse.ArgumentParser()
     for name in ("cnf","reference","gpmc","mpfr","report"):
         ap.add_argument("--"+name,type=Path,required=True)
-    ap.add_argument("--repeat-target",type=int,choices=[30,100])
+    repeats=ap.add_mutually_exclusive_group()
+    repeats.add_argument("--repeat-target",type=int,choices=[30,100])
+    repeats.add_argument("--repeat-fixed-target",type=int,choices=[30,100],
+                         help="Repeat an already qualified original 100/333-bit cohort without precision drift")
     a=ap.parse_args()
     ref=json.loads(a.reference.read_text())
     expected=ref["source_sha256"]
     if (sha(a.cnf)!=expected or ref["status"]!="INDEPENDENT_INTERVAL_COMPLETE" or ref["bits"]!=550
         or ref["width"]>19 or ref["work"]>40_000_000 or ref["peak"]>2_000_000):
         raise ValueError("REFERENCE_DRIFT")
-    repeat=a.repeat_target is not None
+    fixed=a.repeat_fixed_target is not None
+    repeat=fixed or a.repeat_target is not None
     count=7 if repeat else 1
-    targets=([a.repeat_target] if repeat else [30,100])
+    targets=([a.repeat_fixed_target if fixed else a.repeat_target] if repeat else [30,100])
     report={"status":"IN_PROGRESS","source_sha256":expected,"reference_sha256":sha(a.reference),
             "gpmc_binary_sha256":sha(a.gpmc),"rust_binary_sha256":sha(a.mpfr),
-            "repeat_count":count,"cohorts":[]}
+            "repeat_count":count,"repeat_precision_policy":"fixed" if fixed else "guarded" if repeat else "pilot","cohorts":[]}
     def persist():
         a.report.write_text(json.dumps(report,indent=2)+"\n")
     persist()
     for target in targets:
         guarded=(60,200) if target==30 else (130,432)
-        precisions=([guarded] if repeat else [(target,100 if target==30 else 333),guarded])
+        original=(target,100 if target==30 else 333)
+        precisions=([original] if fixed else [guarded] if repeat else [original,guarded])
         for digits,bits in precisions:
             cohort={"target_digits":target,"working_digits":digits,"bits":bits,"trials":[]}
             report["cohorts"].append(cohort)
@@ -83,6 +88,7 @@ def main():
                     gpmc_p90_s=p90(g)/1e9,rust_p90_s=p90(r)/1e9,
                     gpmc_over_rust=statistics.median(g)/statistics.median(r),
                     paired_ratio_median=statistics.median(a/b for a,b in zip(g,r)),
+                    paired_rust_wins=sum(b<a for a,b in zip(g,r)),
                     median_rss_kib={arm:statistics.median(values(arm,"peak_rss_kib")) for arm in ("gpmc","prejoin")},
                     plan_signature=signatures[0])
             persist()

@@ -39,6 +39,11 @@ pub(super) fn count(p: &Problem, bits: u32, trace: &mut Trace) -> Result<Outcome
 }
 pub(super) fn count_bounded(p:&Problem,bits:u32,trace:&mut Trace,seconds:u64)->Result<Outcome,String>{
     let deadline=Instant::now()+std::time::Duration::from_secs(seconds);
+    let (factors,graph,scalar)=compile(p,bits,trace)?;
+    contract(factors,graph,scalar,bits,trace,deadline,None)
+}
+type Compiled=(Vec<Factor>,Graph,C);
+fn compile(p:&Problem,bits:u32,trace:&mut Trace)->Result<Compiled,String>{
     let (gates,rep,units,residual)=extract_with_arity(p,2048,4)?;
     let free:BTreeSet<_>=rep.iter().copied().filter(|&l|l!=0&&!units.contains_key(&var(l))).map(var).collect();
     trace.gates=gates.len();
@@ -81,9 +86,13 @@ pub(super) fn count_bounded(p:&Problem,bits:u32,trace:&mut Trace,seconds:u64)->R
     for (v,[a,b]) in unary {
         factors.push(Factor{scope:vec![v],values:vec![Some(a),Some(b)]});
     }
+    Ok((factors,graph,scalar))
+}
+fn contract(mut factors:Vec<Factor>,mut graph:Graph,mut scalar:C,bits:u32,trace:&mut Trace,deadline:Instant,order:Option<&[usize]>)->Result<Outcome,String>{
+    let mut pivots=order.into_iter().flatten().copied();
     while !graph.is_empty() {
         if Instant::now()>=deadline {return Err("definitional deadline".into());}
-        let v=*graph.keys().min_by_key(|&&v|minfill(&graph,v)).ok_or("empty graph")?;
+        let v=if order.is_some(){pivots.next().ok_or("conditioned plan incomplete")?}else{*graph.keys().min_by_key(|&&v|minfill(&graph,v)).ok_or("empty graph")?};
         let nb=graph.remove(&v).ok_or("missing pivot")?;
         trace.width=trace.width.max(nb.len());
         if nb.len()>18 {return Err("definitional width cap".into());}
@@ -135,9 +144,104 @@ pub(super) fn count_bounded(p:&Problem,bits:u32,trace:&mut Trace,seconds:u64)->R
     Ok(Outcome{sat:true,count:scalar})
 }
 
+// Width-18, 60M aggregate lookups and 2M live cells remain mandatory.
+#[derive(Debug)]
+struct SplitPlan{pivot:usize,order:Vec<usize>,work:u64,peak:u64}
+fn split_plan(factors:&[Factor],graph:&Graph,deadline:Instant)->Result<SplitPlan,String>{
+    let mut candidates:Vec<_>=graph.keys().copied().collect();
+    candidates.sort_by_key(|v|(std::cmp::Reverse(factors.iter().filter(|f|f.scope.contains(v)).count()),*v));
+    let mut best:Option<SplitPlan>=None;
+    for pivot in candidates.into_iter().take(16){
+        for (penalty,reverse) in [(0,false),(0,true),(2,false),(2,true)]{
+            if Instant::now()>=deadline{return best.ok_or("conditioned planning deadline".into());}
+            let mut g=graph.clone();let old=g.remove(&pivot).ok_or("missing split pivot")?;
+            for u in old{g.get_mut(&u).ok_or("split neighbor")?.remove(&pivot);}
+            let mut scopes:Vec<BTreeSet<usize>>=factors.iter().map(|f|f.scope.iter().copied().filter(|&v|v!=pivot).collect()).filter(|s:&BTreeSet<_>|!s.is_empty()).collect();
+            let mut live=scopes.iter().map(|s|1u64<<s.len()).sum::<u64>();
+            let mut order=Vec::new();let mut work=0u64;let mut peak=live;
+            while !g.is_empty(){
+                let v=*g.keys().min_by_key(|&&v|{
+                    let (fill,d,_)=minfill(&g,v);
+                    (fill+penalty*d,d,if reverse{usize::MAX-v}else{v})
+                }).ok_or("split empty graph")?;
+                let nb=g.remove(&v).ok_or("split missing pivot")?;
+                if nb.len()>18{break;}
+                let size=1u64<<nb.len();let mut removed=0;let mut incident=0;
+                scopes.retain(|s|{if s.contains(&v){removed+=1u64<<s.len();incident+=1;false}else{true}});
+                work=work.saturating_add(4*size*incident);
+                peak=peak.max(live.saturating_add(size));
+                if work>60_000_000||peak>2_000_000{break;}
+                live=live.saturating_sub(removed);
+                if !nb.is_empty(){live+=size;scopes.push(nb.clone());}
+                order.push(v);
+                for &u in &nb{
+                    let s=g.get_mut(&u).ok_or("split neighbor")?;
+                    s.remove(&v);s.extend(nb.iter().filter(|&&x|x!=u).copied());
+                }
+            }
+            if order.len()+1!=graph.len(){continue;}
+            if best.as_ref().is_none_or(|p|(work,peak,pivot)<(p.work,p.peak,p.pivot)){
+                best=Some(SplitPlan{pivot,order,work,peak});
+            }
+        }
+    }
+    best.ok_or("no conditioned plan within original caps".into())
+}
+fn condition(f:&Factor,v:usize,value:bool)->Factor{
+    if let Ok(axis)=f.scope.binary_search(&v){
+        let mut scope=f.scope.clone();scope.remove(axis);
+        let low=(1usize<<axis)-1;
+        let values=(0..1usize<<scope.len()).map(|m|{
+            let old=(m&low)|((m&!low)<<1)|(usize::from(value)<<axis);
+            f.values[old].clone()
+        }).collect();
+        Factor{scope,values}
+    }else{Factor{scope:f.scope.clone(),values:f.values.clone()}}
+}
+fn split_contract(factors:&[Factor],graph:&Graph,scalar:&C,bits:u32,trace:&mut Trace,deadline:Instant,plan:&SplitPlan)->Result<Outcome,String>{
+    let mut sum=None;
+    for value in [false,true]{
+        let mut graph=graph.clone();
+        let nb=graph.remove(&plan.pivot).ok_or("missing conditioned pivot")?;
+        for u in nb{graph.get_mut(&u).ok_or("missing conditioned neighbor")?.remove(&plan.pivot);}
+        let branch=factors.iter().map(|f|condition(f,plan.pivot,value)).collect();
+        let answer=contract(branch,graph,scalar.clone(),bits,trace,deadline,Some(&plan.order))?;
+        if answer.sat{sum=add(sum,Some(answer.count),bits);}
+    }
+    Ok(sum.map_or_else(||Outcome::unsat(bits),|count|Outcome{sat:true,count}))
+}
+pub(super) fn count_conditioned(p:&Problem,bits:u32,trace:&mut Trace,seconds:u64)->Result<Outcome,String>{
+    let deadline=Instant::now()+std::time::Duration::from_secs(seconds);
+    let (factors,graph,scalar)=compile(p,bits,trace)?;
+    let plan=split_plan(&factors,&graph,deadline.min(Instant::now()+std::time::Duration::from_secs(2)))?;
+    eprintln!("DEFINITIONAL_SPLIT_PLAN pivot={} leaves=2 work_upper={} peak_upper={}",plan.pivot,plan.work,plan.peak);
+    let answer=split_contract(&factors,&graph,&scalar,bits,trace,deadline,&plan)?;
+    eprintln!("DEFINITIONAL_SPLIT_COMPLETE leaves=2 work={} peak={} width={}",trace.work,trace.peak,trace.width);
+    Ok(answer)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn conditioned_partition_preserves_signed_complex_and_support(){
+        for raw in [
+            "p cnf 4 4\nc t wmc\nc p weight 4 -2 3 0\nc p weight -1 0 0 0\n4 -1 2 0\n-4 1 0\n-4 -2 0\n1 2 3 0\n",
+            "p cnf 2 2\nc t wmc\nc p weight 2 0 0 0\nc p weight -2 0 0 0\n1 2 0\n1 -2 0\n",
+            "p cnf 2 4\nc t wmc\n1 2 0\n1 -2 0\n-1 2 0\n-1 -2 0\n",
+        ]{
+            let p=super::super::super::parse_emitted(raw,100).unwrap();
+            let expected=count(&p,100,&mut Trace::default());
+            if let Ok(expected)=expected{
+                let got=count_conditioned(&p,100,&mut Trace::default(),5).unwrap();
+                assert_eq!(got.sat,expected.sat);
+                assert_eq!(got.count.re,expected.count.re);
+                assert_eq!(got.count.im,expected.count.im);
+            }else{
+                assert!(count_conditioned(&p,100,&mut Trace::default(),5).is_err());
+            }
+        }
+    }
     #[test]
     fn signed_gate_residual_and_zero_oracle() {
         for bits in [100,333] {

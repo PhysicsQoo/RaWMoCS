@@ -1244,7 +1244,7 @@ mod packed_taylor {
         if c.re!=expected{return Err("taylor_carrier");}
         Ok(e as u32)
     }
-    fn carrier(p:&Problem,raw:&str)->Result<(Problem,Rational,u32),&'static str>{
+    pub(crate) fn carrier(p:&Problem,raw:&str)->Result<(Problem,Rational,u32),&'static str>{
         let mut exps=vec![[false;2];p.n];let mut phase:Option<Rational>=None;
         // parse_emitted already validated format, duplicate records and
         // clause boundaries. Only exact decimal weights are recognized.
@@ -1480,4 +1480,4 @@ mod packed_taylor {
         }
     }
 }
-pub(crate) use packed_taylor::count_taylor;
+pub(crate) use packed_taylor::{count_taylor, carrier as exact_phase_carrier};

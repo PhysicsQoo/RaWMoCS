@@ -241,9 +241,13 @@ jobs:
   original-long-tail-source-locked-screen:
     # One existing workflow, no new workflows/environment/branch. This costly
     # study is limited to the research PR or explicit manual dispatch.
-    if: inputs.suite == 'full'
+    if: inputs.suite == 'full' || (github.event_name == 'pull_request' && github.event.label.name == 'run-gpmc-completer-scout' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/mpfr-exact-residual-arena-reuse-20261118')
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(github.event.label.name == 'run-gpmc-completer-scout' && '[0,1,2]' || '[0]') }}
     steps:
       - name: Checkout RaWMoCS research-only exporter and runner
         uses: actions/checkout@v4
@@ -301,6 +305,7 @@ jobs:
           cargo test --release --manifest-path benchmarks/mpfr_research/Cargo.toml
           cargo build --release --manifest-path benchmarks/mpfr_research/Cargo.toml
       - name: Original source 16-case GPMC/Rust 30s screens
+        if: inputs.suite == 'full'
         shell: bash
         run: |
           set -euo pipefail
@@ -318,6 +323,7 @@ jobs:
             --report .research/long-tail/long-tail-source-locked-evidence.json \
             | tee .research/long-tail/long-tail-scout.log
       - name: Original source Weighted-safe SCC structural preflight and audit
+        if: inputs.suite == 'full'
         shell: bash
         run: |
           set -euo pipefail
@@ -327,11 +333,27 @@ jobs:
             --screen-report .research/long-tail/long-tail-source-locked-evidence.json \
             --corpus .research/long-tail \
             --report .research/long-tail/scc-source-locked-audit.json
+      - name: GPMC-completer-first original-source long-case discovery and paired probe
+        if: github.event.label.name == 'run-gpmc-completer-scout'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .research/long-tail
+          python3 -m py_compile benchmarks/mpfr_research/tools/quprs_gpmc_completer_scout.py
+          python3 benchmarks/mpfr_research/tools/quprs_gpmc_completer_scout.py \
+            --quprs .upstream/quprs \
+            --gpmc-source .upstream/gpmc \
+            --exporter .upstream/quprs/rust/target/release/examples/quprs_long_tail_source_bridge \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --corpus .research/long-tail \
+            --report .research/long-tail/completer-scout.json \
+            --shard ${{ matrix.shard }} | tee .research/long-tail/completer-scout.log
       - name: Archive hash-locked 16-source screens before long pilots
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: original-rawmocs-gpmc-long-tail-screen
+          name: ${{ github.event.label.name == 'run-gpmc-completer-scout' && format('original-gpmc-completer-scout-{0}', matrix.shard) || 'original-rawmocs-gpmc-long-tail-screen' }}
           path: .research/long-tail/
           retention-days: 30
           if-no-files-found: warn

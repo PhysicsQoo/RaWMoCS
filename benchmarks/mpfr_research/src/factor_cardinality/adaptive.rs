@@ -44,6 +44,19 @@ fn profile(p:&Problem,raw:&str)->Result<Profile,String>{
     }
     if scopes.iter().flatten().any(|v|!free.contains(v)){return Err("profile scope ownership".into());}
     let mut best:Option<Plan>=None;
+    // Large sparse graphs can exhaust min-fill's score budget long before
+    // reaching a useful elimination frontier. A cheap minimum-degree
+    // plan is a resource-checked candidate, not a relaxation of caps.
+    if free.len()>=512{
+        let plan=plan_scopes(&free,&scopes,start,DEGREE_ONLY,true)?;
+        let admitted=plan.complete;
+        best=Some(plan);
+        if admitted{
+            let b=best.take().expect("degree plan");
+            out.width=b.width;out.work=b.work;out.peak=b.peak;out.complete=b.complete;out.order=b.order;
+            return Ok(out);
+        }
+    }
     // Keep the original order for cheap admitted instances. For costly
     // instances use a small deterministic resource portfolio; not a family ID.
     for (penalty,reverse) in [(0,false),(1,true),(2,true),(0,true),(4,true),(2,false)]{
@@ -62,9 +75,14 @@ fn profile(p:&Problem,raw:&str)->Result<Profile,String>{
 #[derive(Default)]
 struct Plan{width:usize,work:u64,peak:u64,complete:bool,order:Vec<usize>}
 type Score=(usize,usize,usize,usize);
+const DEGREE_ONLY:usize=usize::MAX;
 fn score(g:&Graph,v:usize,penalty:usize,reverse:bool)->Score{
-    let (fill,degree,_)=minfill(g,v);
-    (fill.saturating_add(penalty.saturating_mul(degree)),degree,if reverse{usize::MAX-v}else{v},v)
+    let degree=g[&v].len();
+    let cost=if penalty==DEGREE_ONLY{degree}else{
+        let (fill,_,_)=minfill(g,v);
+        fill.saturating_add(penalty.saturating_mul(degree))
+    };
+    (cost,degree,if reverse{usize::MAX-v}else{v},v)
 }
 fn plan_scopes(free:&BTreeSet<usize>,original:&[BTreeSet<usize>],start:Instant,penalty:usize,reverse:bool)->Result<Plan,String>{
     let mut scopes:Vec<Option<BTreeSet<usize>>>=original.iter().cloned().map(Some).collect();
@@ -117,8 +135,10 @@ fn plan_scopes(free:&BTreeSet<usize>,original:&[BTreeSet<usize>],start:Instant,p
         // neighbor-induced graph sees a new fill edge can change score.
         // The latter are covered by the old neighbors of every nb member.
         let mut affected=nb.clone();
-        for &u in &nb{
-            affected.extend(graph.get(&u).ok_or("profile neighbor")?.iter().copied());
+        if penalty!=DEGREE_ONLY{
+            for &u in &nb{
+                affected.extend(graph.get(&u).ok_or("profile neighbor")?.iter().copied());
+            }
         }
         affected.remove(&v);
         for &u in &nb{
@@ -270,7 +290,7 @@ mod tests{
                     if x>>61<3{scopes.push(BTreeSet::from([a,b]));}
                 }
             }
-            for (penalty,reverse) in [(0,false),(1,true),(4,true)]{
+            for (penalty,reverse) in [(0,false),(1,true),(4,true),(DEGREE_ONLY,false),(DEGREE_ONLY,true)]{
                 let actual=plan_scopes(&vars,&scopes,Instant::now(),penalty,reverse).unwrap();
                 assert!(actual.complete);
                 let mut g:Graph=vars.iter().map(|&v|(v,BTreeSet::new())).collect();

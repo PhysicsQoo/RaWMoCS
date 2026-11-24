@@ -293,14 +293,12 @@ jobs:
             --manifest-path .upstream/quprs/rust/Cargo.toml \
             -p quprs --example quprs_long_tail_source_bridge
       - name: Compile unmodified pinned C++ GPMC
-        if: github.event.label.name != 'run-qpe-independent-prejoin'
         shell: bash
         run: |
           set -euo pipefail
           cmake -S .upstream/gpmc -B .upstream/gpmc/build -G Ninja -DCMAKE_BUILD_TYPE=Release
           cmake --build .upstream/gpmc/build --target gpmc-bin --parallel 2
       - name: Qualify research MPFR signed-Complex accuracy and compile native Rust
-        if: github.event.label.name != 'run-qpe-independent-prejoin'
         shell: bash
         run: |
           set -euo pipefail
@@ -415,6 +413,13 @@ jobs:
             > .research/long-tail/prejoin-reference.json 2> .research/long-tail/prejoin.stderr.log
           cat .research/long-tail/prejoin-reference.json
           python3 -c 'import json; r=json.load(open(".research/long-tail/prejoin-reference.json")); assert r["status"]=="INDEPENDENT_INTERVAL_COMPLETE" and r["bits"]==550 and r["width"]<=19 and r["work"]<=40000000 and r["peak"]<=2000000'
+          python3 -m py_compile benchmarks/mpfr_research/tools/quprs_prejoin_native_pilot.py
+          python3 benchmarks/mpfr_research/tools/quprs_prejoin_native_pilot.py \
+            --cnf ".research/long-tail/$case-gpmc.cnf" \
+            --reference .research/long-tail/prejoin-reference.json \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --report .research/long-tail/prejoin-native-pilot.json
       - name: Independent original-CNF QPE interval and seven matched pairs
         if: github.event.label.name == 'run-qpe-certified-repeat'
         shell: bash

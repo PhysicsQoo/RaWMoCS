@@ -175,7 +175,7 @@ fn plan(fs:&[Factor<R>],nodes:&Scope,policy:(Option<usize>,bool),retained:usize,
         deadline(d)?;
         let (&v,nb)=graph.iter().min_by_key(|(v,nb)|{
             let degree=nb.len();
-            let fill=if policy.0.is_some(){nb.iter().enumerate().map(|(i,a)|nb.iter().skip(i+1).filter(|b|!graph[a].contains(b)).count()).sum::<usize>()}else{0};
+            let fill=if policy.0.is_some(){nb.iter().enumerate().map(|(i,a)|nb.iter().skip(i+1).filter(|b|!graph[a].contains(*b)).count()).sum::<usize>()}else{0};
             (policy.0.map_or(degree,|p|fill+p*degree),degree,if policy.1{usize::MAX-**v}else{**v})
         }).ok_or("plan pivot")?;
         let nb=nb.clone();
@@ -188,7 +188,7 @@ fn plan(fs:&[Factor<R>],nodes:&Scope,policy:(Option<usize>,bool),retained:usize,
             let mut best=None;
             for i in 0..bucket.len(){for j in i+1..bucket.len(){
                 let n=bucket[i].1.union(&bucket[j].1).count();
-                if n+1<=nb.len()&&best.is_none_or(|k|(n,i,j)<k){best=Some((n,i,j));}
+                if n<nb.len()&&best.is_none_or(|k|(n,i,j)<k){best=Some((n,i,j));}
             }}
             let Some((n,i,j))=best else{break;};
             let size=1usize<<n;

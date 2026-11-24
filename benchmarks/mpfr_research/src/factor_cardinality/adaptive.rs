@@ -1,9 +1,9 @@
 //! Research-only automatic routing from original weighted CNF structure.
 //! No circuit name or benchmark-family label enters the decision.
-use super::{extract_with_arity, recognize_cliques, phase_keys, count_bounded, definitional,
+use super::{extract_with_limits, recognize_cliques, phase_keys, count_bounded, definitional,
     idx,var,edge,minfill,Graph,Trace,Problem,Outcome};
 use crate::{parse_emitted,trail_engine::TrailEngine,weighted_equivalence};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap,BTreeSet};
 use std::time::{Duration,Instant};
 
 #[derive(Debug,Default)]
@@ -21,7 +21,7 @@ impl Route {
 }
 fn profile(p:&Problem,raw:&str)->Result<Profile,String>{
     let start=Instant::now();
-    let (gates,rep,units,residual)=extract_with_arity(p,2048,4)?;
+    let (gates,rep,units,residual)=extract_with_limits(p,4096,16_000,4)?;
     let free:BTreeSet<_>=rep.iter().copied().filter(|&l|l!=0&&!units.contains_key(&var(l))).map(var).collect();
     let mut out=Profile{gates:gates.len(),free:free.len(),residual:residual.len(),
         phase_eligible:crate::factor_indexed_fused::exact_phase_carrier(p,raw).is_ok(),..Profile::default()};
@@ -39,7 +39,7 @@ fn profile(p:&Problem,raw:&str)->Result<Profile,String>{
         scopes.push(b.into_iter().map(var).filter(|v|!units.contains_key(v)).collect());
     }
     for c in residual{
-        if c.len()>8{return Ok(out);}
+        if c.len()>12{return Ok(out);}
         scopes.push(c.into_iter().map(var).collect());
     }
     if scopes.iter().flatten().any(|v|!free.contains(v)){return Err("profile scope ownership".into());}
@@ -61,35 +61,79 @@ fn profile(p:&Problem,raw:&str)->Result<Profile,String>{
 }
 #[derive(Default)]
 struct Plan{width:usize,work:u64,peak:u64,complete:bool,order:Vec<usize>}
+type Score=(usize,usize,usize,usize);
+fn score(g:&Graph,v:usize,penalty:usize,reverse:bool)->Score{
+    let (fill,degree,_)=minfill(g,v);
+    (fill.saturating_add(penalty.saturating_mul(degree)),degree,if reverse{usize::MAX-v}else{v},v)
+}
 fn plan_scopes(free:&BTreeSet<usize>,original:&[BTreeSet<usize>],start:Instant,penalty:usize,reverse:bool)->Result<Plan,String>{
-    let mut scopes=original.to_vec();
+    let mut scopes:Vec<Option<BTreeSet<usize>>>=original.iter().cloned().map(Some).collect();
     let mut graph:Graph=free.iter().map(|&v|(v,BTreeSet::new())).collect();
-    for s in &scopes{for (i,&a) in s.iter().enumerate(){for &b in s.iter().skip(i+1){edge(&mut graph,a,b);}}}
-    let mut live=scopes.iter().map(|s|1u64<<s.len()).sum::<u64>();
+    let mut incident:BTreeMap<usize,BTreeSet<usize>>=free.iter().map(|&v|(v,BTreeSet::new())).collect();
+    for (id,s) in original.iter().enumerate(){
+        for (i,&a) in s.iter().enumerate(){
+            incident.get_mut(&a).ok_or("profile factor owner")?.insert(id);
+            for &b in s.iter().skip(i+1){edge(&mut graph,a,b);}
+        }
+    }
+    let mut live=original.iter().map(|s|1u64<<s.len()).sum::<u64>();
     let mut out=Plan{peak:live,..Plan::default()};
-    while !graph.is_empty(){
+    if live>2_000_000{return Ok(out);}
+    let mut scores=BTreeMap::new();
+    let mut queue=BTreeSet::new();
+    for &v in graph.keys(){
         if start.elapsed()>=Duration::from_secs(2){return Ok(out);}
-        let v=*graph.keys().min_by_key(|&&v|{
-            let (fill,degree,_)=minfill(&graph,v);
-            (fill.saturating_add(penalty.saturating_mul(degree)),degree,if reverse{usize::MAX-v}else{v})
-        }).ok_or("profile graph")?;
+        let key=score(&graph,v,penalty,reverse);
+        scores.insert(v,key);queue.insert(key);
+    }
+    while let Some(key)=queue.pop_first(){
+        if start.elapsed()>=Duration::from_secs(2){return Ok(out);}
+        let v=key.3;
+        scores.remove(&v);
         let nb=graph.remove(&v).ok_or("profile pivot")?;
         out.width=out.width.max(nb.len());
-        // Width 20 is permitted ONLY with a completed work/live preflight.
         if nb.len()>20{return Ok(out);}
-        let size=1u64<<nb.len();let mut removed=0;let mut incident=0;
-        scopes.retain(|s|{if s.contains(&v){removed+=1u64<<s.len();incident+=1;false}else{true}});
-        out.work=out.work.saturating_add(2*size*incident);
+        let size=1u64<<nb.len();
+        let ids=incident.remove(&v).ok_or("profile bucket owner")?;
+        let mut removed=0;
+        for &id in &ids{
+            let scope=scopes[id].take().ok_or("profile stale factor")?;
+            removed+=1u64<<scope.len();
+            for u in scope{
+                if u!=v&&!incident.get_mut(&u).ok_or("profile incident owner")?.remove(&id){
+                    return Err("profile missing incidence".into());
+                }
+            }
+        }
+        out.work=out.work.saturating_add(2*size*ids.len() as u64);
         out.peak=out.peak.max(live.saturating_add(size));
-        live=live.saturating_sub(removed);
-        live+=size;scopes.push(nb.clone()); // scalar factors count too
+        live=live.checked_sub(removed).ok_or("profile live underflow")?;
+        live+=size;
         if out.work>60_000_000||out.peak>2_000_000{return Ok(out);}
+        let id=scopes.len();
+        for &u in &nb{incident.get_mut(&u).ok_or("profile output owner")?.insert(id);}
+        scopes.push(Some(nb.clone()));
+        // Only neighbors of the removed vertex or vertices whose
+        // neighbor-induced graph sees a new fill edge can change score.
+        // The latter are covered by the old neighbors of every nb member.
+        let mut affected=nb.clone();
+        for &u in &nb{
+            affected.extend(graph.get(&u).ok_or("profile neighbor")?.iter().copied());
+        }
+        affected.remove(&v);
         for &u in &nb{
             let s=graph.get_mut(&u).ok_or("profile neighbor")?;
             s.remove(&v);s.extend(nb.iter().filter(|&&x|x!=u).copied());
         }
+        for u in affected{
+            let old=scores.get_mut(&u).ok_or("profile score owner")?;
+            if !queue.remove(old){return Err("profile stale score".into());}
+            *old=score(&graph,u,penalty,reverse);
+            queue.insert(*old);
+        }
         out.order.push(v);
     }
+    if !graph.is_empty()||!incident.is_empty(){return Err("profile incomplete queue".into());}
     out.complete=true;
     Ok(out)
 }
@@ -213,6 +257,39 @@ mod tests{
         assert_eq!(p.width,19);
         assert_eq!(choose(&Profile{width:19,complete:false,..Profile::default()}),Route::Trail);
         assert_eq!(choose(&Profile{width:19,complete:true,work:30_000_000,peak:800_000,..Profile::default()}),Route::Definitional);
+    }
+    #[test]
+    fn incremental_profile_matches_full_scan(){
+        let vars:BTreeSet<_>=(1..=12).collect();
+        for seed in 1..=24u64{
+            let mut x=seed;
+            let mut scopes:Vec<BTreeSet<usize>>=vars.iter().map(|&v|BTreeSet::from([v])).collect();
+            for a in 1..=12{
+                for b in a+1..=12{
+                    x=x.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    if x>>61<3{scopes.push(BTreeSet::from([a,b]));}
+                }
+            }
+            for (penalty,reverse) in [(0,false),(1,true),(4,true)]{
+                let actual=plan_scopes(&vars,&scopes,Instant::now(),penalty,reverse).unwrap();
+                assert!(actual.complete);
+                let mut g:Graph=vars.iter().map(|&v|(v,BTreeSet::new())).collect();
+                for s in &scopes{for (i,&a) in s.iter().enumerate(){for &b in s.iter().skip(i+1){edge(&mut g,a,b);}}}
+                let mut fs=scopes.clone();let mut live=fs.iter().map(|s|1u64<<s.len()).sum::<u64>();
+                let (mut work,mut peak,mut width)=(0,live,0);
+                let mut order=Vec::new();
+                while !g.is_empty(){
+                    let v=*g.keys().min_by_key(|&&v|score(&g,v,penalty,reverse)).unwrap();
+                    let nb=g.remove(&v).unwrap();let size=1u64<<nb.len();
+                    let mut removed=0;let mut n=0;
+                    fs.retain(|s|{if s.contains(&v){removed+=1u64<<s.len();n+=1;false}else{true}});
+                    width=width.max(nb.len());work+=2*size*n;peak=peak.max(live+size);
+                    live=live+size-removed;fs.push(nb.clone());order.push(v);
+                    for &u in &nb{let s=g.get_mut(&u).unwrap();s.remove(&v);s.extend(nb.iter().filter(|&&x|x!=u).copied());}
+                }
+                assert_eq!((actual.order,actual.work,actual.peak,actual.width),(order,work,peak,width));
+            }
+        }
     }
     #[test]
     fn width20_admission_preserves_resource_caps(){

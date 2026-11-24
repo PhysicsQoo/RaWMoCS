@@ -104,7 +104,7 @@ fn contract(mut factors:Vec<Factor>,mut graph:Graph,mut scalar:C,bits:u32,trace:
         let v=if order.is_some(){pivots.next().ok_or("conditioned plan incomplete")?}else{*graph.keys().min_by_key(|&&v|minfill(&graph,v)).ok_or("empty graph")?};
         let nb=graph.remove(&v).ok_or("missing pivot")?;
         trace.width=trace.width.max(nb.len());
-        if nb.len()>if order.is_some(){19}else{18} {return Err("definitional width cap".into());}
+        if nb.len()>if order.is_some(){20}else{18} {return Err("definitional width cap".into());}
         let (mut bucket,rest):(Vec<_>,Vec<_>)=factors.into_iter().partition(|f|f.scope.contains(&v));
         factors=rest;
         bucket.sort_by_key(|f|f.scope.len());
@@ -189,7 +189,8 @@ fn contract(mut factors:Vec<Factor>,mut graph:Graph,mut scalar:C,bits:u32,trace:
     Ok(Outcome{sat:true,count:scalar})
 }
 
-// Width-18, 60M aggregate lookups and 2M live cells remain mandatory.
+// Planned conditioned leaves may reach width 20 only under the
+// unchanged 60M aggregate lookup and 2M live-cell limits.
 #[derive(Debug)]
 struct SplitPlan{pivot:usize,order:Vec<usize>,work:u64,peak:u64}
 fn split_plan(factors:&[Factor],graph:&Graph,deadline:Instant)->Result<SplitPlan,String>{
@@ -197,7 +198,7 @@ fn split_plan(factors:&[Factor],graph:&Graph,deadline:Instant)->Result<SplitPlan
     candidates.sort_by_key(|v|(std::cmp::Reverse(factors.iter().filter(|f|f.scope.contains(v)).count()),*v));
     let mut best:Option<SplitPlan>=None;
     for pivot in candidates.into_iter().take(16){
-        for (penalty,reverse) in [(0,false),(0,true),(2,false),(2,true)]{
+        for (penalty,reverse) in [(0,false),(0,true),(2,false),(2,true),(4,true)]{
             if Instant::now()>=deadline{return best.ok_or("conditioned planning deadline".into());}
             let mut g=graph.clone();let old=g.remove(&pivot).ok_or("missing split pivot")?;
             for u in old{g.get_mut(&u).ok_or("split neighbor")?.remove(&pivot);}
@@ -210,7 +211,7 @@ fn split_plan(factors:&[Factor],graph:&Graph,deadline:Instant)->Result<SplitPlan
                     (fill+penalty*d,d,if reverse{usize::MAX-v}else{v})
                 }).ok_or("split empty graph")?;
                 let nb=g.remove(&v).ok_or("split missing pivot")?;
-                if nb.len()>18{break;}
+                if nb.len()>20{break;}
                 let size=1u64<<nb.len();let mut removed=0;let mut incident=0;
                 scopes.retain(|s|{if s.contains(&v){removed+=1u64<<s.len();incident+=1;false}else{true}});
                 work=work.saturating_add(4*size*incident);

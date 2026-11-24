@@ -63,6 +63,69 @@ def candidates(root):
     if len({r["case"] for r in out})!=len(out):raise ValueError("DUPLICATE_SOURCE_ID")
     return out[:MAX_CASES]
 
+HOLDOUT_MAX=16
+HOLDOUT_SHARDS=4
+# Existing measurements identify a transition near QPE20 and QNN/Wstate
+# moderate sizes. Sample both perturbed variants and other families.
+# Neither solver's outcome on a new case enters this selection.
+HOLDOUT_TARGETS=(("qpeinexact",20),("qpeexact",22),("wstate",16),
+                 ("qnn",8),("grover-noancilla",6),("qwalk-noancilla",5),
+                 ("qaoa",11),("vqe",16),("qft",24),("graphstate",24),
+                 ("bv",24),("ghz",24))
+
+def select_mqt_holdouts(paths,excluded):
+    from quprs_mqt_adaptive_scout import item
+    groups=[]
+    for family,target in HOLDOUT_TARGETS:
+        pattern=re.compile(re.escape(family)+r"_nativegates_ibm_qiskit_opt0_(\\d+)\\.qasm$")
+        rows=[]
+        for rel in paths:
+            if rel in excluded or not rel.startswith("benchmarks/MQTBench/"):
+                continue
+            m=pattern.fullmatch(Path(rel).name)
+            if not m or not 4<=int(m[1])<=32:
+                continue
+            # Only original weighted-equivalence perturbation variants.
+            if Path(rel).parent.name not in ("Random_Pauli","Random_Rotation"):
+                continue
+            row=item(rel,"new_long_control_holdout")
+            rows.append(row)
+        rows.sort(key=lambda r:(abs(r["size"]-target),
+                                r["variant"].endswith("Random_Pauli"),
+                                r["size"],r["path"]))
+        groups.append(rows)
+    out=[]
+    for j in range(2):
+        for group in groups:
+            if len(group)>j:
+                out.append(group[j])
+    out=out[:HOLDOUT_MAX]
+    if len({r["path"] for r in out})!=len(out) or len({r["case"] for r in out})!=len(out):
+        raise ValueError("DUPLICATE_HOLDOUT")
+    return out
+
+def mqt_holdouts(root):
+    from quprs_mqt_adaptive_scout import candidates as previous_mqt
+    paths=subprocess.check_output(["git","-C",str(root),"ls-tree","-r","--name-only",QU_PRS_SHA,
+        "--","benchmarks/MQTBench"],text=True).splitlines()
+    excluded={r["path"] for r in candidates(root)+previous_mqt(root)}
+    return select_mqt_holdouts(paths,excluded)
+
+def holdout_self_test():
+    pauli="benchmarks/MQTBench/Random_Pauli/qpeexact_nativegates_ibm_qiskit_opt0_22.qasm"
+    rotation=pauli.replace("Random_Pauli","Random_Rotation")
+    wstate="benchmarks/MQTBench/Random_Rotation/wstate_nativegates_ibm_qiskit_opt0_16.qasm"
+    canonical="benchmarks/MQTBench/qpeexact_nativegates_ibm_qiskit_opt0_22.qasm"
+    paths=[pauli,rotation,wstate,canonical]
+    a=select_mqt_holdouts(paths,{pauli})
+    b=select_mqt_holdouts(list(reversed(paths)),{pauli})
+    assert a==b
+    assert {r["path"] for r in a}=={rotation,wstate}
+    assert not qualified([{"status":"CENSORED_TIME","wall_ns":120*10**9},
+                          {"status":"COMPLETED","wall_ns":20*10**9}])
+    assert qualified([{"status":"COMPLETED","wall_ns":20*10**9},
+                      {"status":"COMPLETED","wall_ns":30*10**9}])
+
 def qualified(rows):
     return (len(rows)==2 and all(r["status"]=="COMPLETED" and r["wall_ns"]>=MIN_SECONDS*10**9 for r in rows))
 
@@ -82,18 +145,22 @@ def main():
     ap=argparse.ArgumentParser()
     for arg in ("quprs","gpmc-source","exporter","gpmc","mpfr","corpus","report"):
         ap.add_argument("--"+arg,type=Path,required=True)
-    ap.add_argument("--shard",type=int,choices=range(SHARDS),required=True)
+    ap.add_argument("--shard",type=int,choices=range(HOLDOUT_SHARDS),required=True)
+    ap.add_argument("--mqt-holdout",action="store_true")
     args=ap.parse_args()
+    holdout_self_test()
+    shards=HOLDOUT_SHARDS if args.mqt_holdout else SHARDS
+    if args.shard>=shards:ap.error("shard outside selected cohort")
     if git_sha(args.quprs)!=QU_PRS_SHA or git_sha(args.gpmc_source)!=GPMC_SHA:
         raise SystemExit("SOURCE_LOCK_DRIFT")
     args.corpus.mkdir(parents=True,exist_ok=True)
-    manifest=candidates(args.quprs)
-    selected=manifest[args.shard::SHARDS]
+    manifest=mqt_holdouts(args.quprs) if args.mqt_holdout else candidates(args.quprs)
+    selected=manifest[args.shard::shards]
     report={"study":"Original GPMC-completer long-case discovery",
             "source_revisions":{"quprs":QU_PRS_SHA,"gpmc":GPMC_SHA},
             "selection":"both 100/333-bit GPMC screens completed >=10s; rank by min GPMC wall; no Rust-dependent selection",
-            "limits":{"wall_s":PAIR_S,"AS_bytes":AS_BYTES,"max_candidates":MAX_CASES},
-            "shard":args.shard,"manifest":manifest,"cases":[],"pilot":None,
+            "limits":{"wall_s":PAIR_S,"AS_bytes":AS_BYTES,"max_candidates":HOLDOUT_MAX if args.mqt_holdout else MAX_CASES},
+            "shard":args.shard,"mqt_holdout":args.mqt_holdout,"manifest":manifest,"cases":[],"pilot":None,
             "status":"IN_PROGRESS","independent_full_wmc_reference":False}
     def persist():
         args.report.write_text(json.dumps(report,indent=2)+"\n")
@@ -141,7 +208,11 @@ def main():
         pilot={"case":case,"cohorts":[],"status":"EXPLORATORY_ONE_PAIR_PER_PRECISION"}
         report["pilot"]=pilot
         for digits,bits in BITS.items():
-            rust,route=rust_command(args,item,cnf,digits)
+            if args.mqt_holdout:
+                route="--adaptive"
+                rust=[str(args.mpfr.resolve()),route,str(digits),str(cnf.resolve())]
+            else:
+                rust,route=rust_command(args,item,cnf,digits)
             cohort={"digits":digits,"bits":bits,"route":route,"trials":[]}
             pilot["cohorts"].append(cohort)
             arms=("gpmc","rust") if bits==100 else ("rust","gpmc")
@@ -161,6 +232,10 @@ def main():
                               "--factor-definitional":"RESEARCH_MPFR_DEFINITIONAL ",
                               "--factor-taylor-strict":"RESEARCH_MPFR_TAYLOR_STRICT "}.get(route)
                 route_ok=route_marker is None or route_marker in b.get("stderr_tail","")
+                if route=="--adaptive":
+                    from quprs_mqt_adaptive_scout import result_route
+                    cohort["selected_route"]=result_route(b)
+                    route_ok=cohort["selected_route"] is not None
                 if route=="--factor-taylor-strict":
                     route_ok=route_ok and "certified=true" in b.get("stderr_tail","")
                 if witness["pass"] and a["sat"]==b["sat"] and route_ok:

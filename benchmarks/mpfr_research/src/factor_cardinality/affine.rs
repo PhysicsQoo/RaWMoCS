@@ -216,11 +216,32 @@ fn conditioned(m:&Model,fixed:&[usize],mask:usize)->Result<Tables,String>{
 fn contract(m:&Model,fixed:&[usize],p:&Plan,modbits:u32,phase:&Integer,start:Instant,trace:&mut TaylorStats)->Result<Integer,String>{
     if p.width>18||fixed.len()>6{return Err("affine plan cap".into());}
     let leaves=1usize<<fixed.len();trace.planned=leaves;
-    if p.lookups.saturating_mul(leaves as u64)>360_000_000{return Err("affine preflight lookup cap".into());}
-    let mut sum=Integer::from(0);
-    let n=m.free.iter().copied().max().unwrap_or(0);
+    // Condition before charging the upper bound: fixed inputs can turn
+    // an exponent table into unity, and identical supports can merge.
+    // Keep the original aggregate work budget, not the graph-only proxy.
+    let mut prepared=Vec::with_capacity(leaves);let mut upper=0u64;
     for mask in 0..leaves{
         let tables=conditioned(m,fixed,mask)?;
+        let mut scopes:Vec<BTreeSet<usize>>=tables.iter().filter(|(s,_)|!s.is_empty()).map(|(s,_)|s.iter().copied().collect()).collect();
+        for &v in &p.order{
+            let mut union=BTreeSet::new();let mut count=0u64;
+            scopes.retain(|s|{
+                if s.contains(&v){union.extend(s.iter().copied());count+=1;false}else{true}
+            });
+            if count==0{continue;}
+            union.remove(&v);
+            if union.len()>18{return Err("affine conditioned width cap".into());}
+            upper=upper.saturating_add((1u64<<(union.len()+1)).saturating_mul(count));
+            if !union.is_empty(){scopes.push(union);}
+        }
+        if !scopes.is_empty(){return Err("affine conditioned scope incomplete".into());}
+        if upper>360_000_000{return Err("affine preflight lookup cap".into());}
+        prepared.push(tables);
+    }
+    eprintln!("AFFINE_TAYLOR_PREFLIGHT conditioned_lookup_upper={upper} leaves={leaves}");
+    let mut sum=Integer::from(0);
+    let n=m.free.iter().copied().max().unwrap_or(0);
+    for tables in prepared{
         let v=affine_leaf(&tables,&p.order,n,modbits,phase,start,trace)?;
         sum+=v;sum.keep_signed_bits_mut(modbits);
         eprintln!("AFFINE_TAYLOR_LEAF completed={} planned={} lookups={} arithmetic={} peak_pool={} peak_live={} gc={}",trace.completed,trace.planned,trace.actual_work,trace.arithmetic,trace.peak_pool,trace.peak_live,trace.gc);

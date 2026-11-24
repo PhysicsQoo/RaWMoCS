@@ -452,11 +452,11 @@ jobs:
     # 7 fresh alternating head-to-head trials per precision; GPMC feature
     # toggles are separate single-trial exploratory mechanism probes.
     needs: original-long-tail-source-locked-screen
-    if: ${{ !cancelled() && ((inputs.suite == 'full' && needs.original-long-tail-source-locked-screen.result == 'success') || ((((github.event_name == 'pull_request' && (github.event.label.name == 'run-wstate-definitional' || github.event.label.name == 'run-qwalk-definitional') && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/mpfr-exact-residual-arena-reuse-20261118')) || (inputs.suite == 'focused' && inputs.case != 'feynman_gf2_8_mult' && inputs.case != 'mqt_qnn_12')) && needs.original-long-tail-source-locked-screen.result == 'skipped')) }}
+    if: ${{ !cancelled() && ((inputs.suite == 'full' && needs.original-long-tail-source-locked-screen.result == 'success') || ((((github.event_name == 'pull_request' && (github.event.label.name == 'run-wstate-definitional' || (github.event.label.name == 'run-qwalk-definitional' || github.event.label.name == 'run-qwalk-guarded')) && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/mpfr-exact-residual-arena-reuse-20261118')) || (inputs.suite == 'focused' && inputs.case != 'feynman_gf2_8_mult' && inputs.case != 'mqt_qnn_12')) && needs.original-long-tail-source-locked-screen.result == 'skipped')) }}
     strategy:
       fail-fast: false
       matrix:
-        case: ${{ fromJSON(inputs.suite == 'full' && '["feynman_gf2_6_mult","mqt_qnn_8","mqt_wstate_16","mqt_qwalk_5"]' || (github.event.label.name == 'run-wstate-definitional' && '["mqt_wstate_16"]' || github.event.label.name == 'run-qwalk-definitional' && '["mqt_qwalk_5"]' || format('["{0}"]', inputs.case))) }}
+        case: ${{ fromJSON(inputs.suite == 'full' && '["feynman_gf2_6_mult","mqt_qnn_8","mqt_wstate_16","mqt_qwalk_5"]' || (github.event.label.name == 'run-wstate-definitional' && '["mqt_wstate_16"]' || (github.event.label.name == 'run-qwalk-definitional' || github.event.label.name == 'run-qwalk-guarded') && '["mqt_qwalk_5"]' || format('["{0}"]', inputs.case))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -525,7 +525,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo test --release --manifest-path benchmarks/mpfr_research/Cargo.toml factor_indexed_fused::tests
-          if [[ "${{ github.event.label.name }}" == "run-wstate-definitional" || "${{ github.event.label.name }}" == "run-qwalk-definitional" ]]; then
+          if [[ "${{ github.event.label.name }}" == "run-wstate-definitional" || "${{ github.event.label.name }}" == "run-qwalk-definitional" || "${{ github.event.label.name }}" == "run-qwalk-guarded" ]]; then
             cargo test --release --manifest-path benchmarks/mpfr_research/Cargo.toml factor_cardinality:: 
           fi
           cargo build --release --manifest-path benchmarks/mpfr_research/Cargo.toml
@@ -538,7 +538,14 @@ jobs:
           arms=(--indexed-fused)
           if [[ "${{ matrix.case }}" == "feynman_gf2_6_mult" ]]; then arms+=(--indexed-conditioned); fi
           if [[ "${{ inputs.suite }}" == "focused" && "${{ matrix.case }}" == "mqt_wstate_16" ]]; then arms=(--indexed-interned-only); fi
-          if [[ "${{ github.event.label.name }}" == "run-wstate-definitional" || "${{ github.event.label.name }}" == "run-qwalk-definitional" ]]; then arms=(--definitional-only); fi
+          if [[ "${{ github.event.label.name }}" == "run-wstate-definitional" || "${{ github.event.label.name }}" == "run-qwalk-definitional" || "${{ github.event.label.name }}" == "run-qwalk-guarded" ]]; then arms=(--definitional-only); fi
+          if [[ "${{ github.event.label.name }}" == "run-qwalk-guarded" ]]; then
+            python3 -m venv .research/qwalk-venv
+            source .research/qwalk-venv/bin/activate
+            python3 -m pip install numpy==2.2.6 mpmath==1.3.0
+            export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+            arms=(--definitional-only --qwalk-guarded)
+          fi
           python3 benchmarks/mpfr_research/tools/quprs_long_tail_mechanism.py \
             "${arms[@]}" \
             --case "${{ matrix.case }}" \

@@ -126,6 +126,65 @@ def holdout_self_test():
     assert qualified([{"status":"COMPLETED","wall_ns":20*10**9},
                       {"status":"COMPLETED","wall_ns":30*10**9}])
 
+# Frozen original paths and CNF hashes from the preceding control-only
+# holdout screen. All eight eligible controls are included, not only the
+# fastest Rust cases or the top member of each shard.
+LOCKED_LONG=(
+    ("Random_Rotation/qpeexact_nativegates_ibm_qiskit_opt0_22.qasm","801a90e918492afb845162bcefef4ab604cb14421f8a9704f636a982aa5da4d6"),
+    ("Random_Rotation/qpeexact_nativegates_ibm_qiskit_opt0_21.qasm","ff9bb2ceca9cd9ee7a61026a6c01498a7f8175df6512df80dc8fed2db848dfb4"),
+    ("qiskit-2.6.1-opt0/Random_Rotation/wstate_nativegates_ibm_qiskit_opt0_16.qasm","600ce6716a69e31e17ffbc571cba581fc58a5b5ed3b7d60227ad41d857374efe"),
+    ("Random_Rotation/qft_nativegates_ibm_qiskit_opt0_24.qasm","7c47b2dc52f5331eb2fb5bd3123593c4a095abf229862f5607d4fc6855fecc51"),
+    ("Random_Rotation/grover-noancilla_nativegates_ibm_qiskit_opt0_6.qasm","08baa5d3fa04df6ec9f69c16593a553f49e18e64f78640973bd98d406fc7b290"),
+    ("qiskit-2.6.1-opt0/Random_Rotation/grover-noancilla_nativegates_ibm_qiskit_opt0_6.qasm","a9757cd5bd730b6f769d2970e3a16ac66fee7157b55f81208c0a7c2cece0023b"),
+    ("Random_Rotation/qpeinexact_nativegates_ibm_qiskit_opt0_20.qasm","8c7c930ee58721bfecd42e368ba2603fb8072bd99aeb94a9636ba3a2e5da6a1e"),
+    ("qiskit-2.6.1-opt0/Random_Rotation/qpeinexact_nativegates_ibm_qiskit_opt0_20.qasm","ead9ede46abf2f13920e32b0795d9ae80789377d2bef94565ce188abf0a2a6b2"),
+)
+def locked_long(root):
+    from quprs_mqt_adaptive_scout import item
+    out=[]
+    for rel,expected in LOCKED_LONG:
+        rel="benchmarks/MQTBench/"+rel
+        if not (root/rel).is_file():raise ValueError("MISSING_LOCKED_LONG_SOURCE")
+        out.append({**item(rel,"qualified_long_control"),"expected_cnf_sha256":expected})
+    if len({r["case"] for r in out})!=len(out):raise ValueError("DUPLICATE_LOCKED_LONG")
+    return out
+
+def locked_pairs(args,report,persist):
+    from quprs_mqt_adaptive_scout import result_route
+    for item in report["cases"]:
+        if item["source_status"]!="SOURCE_EXACT":continue
+        case=item["case"];cnf=args.corpus/f"{case}-gpmc.cnf"
+        if sha(cnf)!=item["expected_cnf_sha256"]:raise SystemExit("LOCKED_CNF_DRIFT")
+        item["pairs"]=[]
+        for target,bits in BITS.items():
+            # Fixed-working-precision study first. Guarded retries, if
+            # required, are a separate cohort with identical working bits
+            # for both arms, not a relaxed target tolerance.
+            for digits,working_bits in [(target,bits),(target+30,{30:200,100:432}[target])]:
+                cohort={"target_digits":target,"working_digits":digits,"working_bits":working_bits,"trials":[]}
+                item["pairs"].append(cohort)
+                arms=("gpmc","adaptive") if bits==100 else ("adaptive","gpmc")
+                for arm in arms:
+                    if sha(cnf)!=item["expected_cnf_sha256"]:raise SystemExit("LOCKED_CNF_DRIFT")
+                    cmd=[str(args.gpmc.resolve()),"-mode=1",f"-prec={digits}",str(cnf.resolve())] if arm=="gpmc" else [str(args.mpfr.resolve()),"--adaptive",str(digits),str(cnf.resolve())]
+                    r=native(cmd,"gpmc" if arm=="gpmc" else "candidate",PAIR_S,digits,expected_bits=working_bits)
+                    r["arm"]=arm
+                    if arm=="adaptive":r["route"]=result_route(r)
+                    cohort["trials"].append(r);persist()
+                    print("LOCKED_LONG_PAIR",case,target,working_bits,arm,r["status"],r.get("wall_ns"),r.get("route"),flush=True)
+                a,b=(next(r for r in cohort["trials"] if r["arm"]==arm) for arm in ("gpmc","adaptive"))
+                if a["status"]!=b["status"] or a["status"]!="COMPLETED":
+                    cohort["status"]="CENSORED_PAIR";persist();break
+                w=complex_relative_witness(a,b,target)
+                cohort["witness"]=w
+                if w["pass"] and a["sat"]==b["sat"] and b.get("route"):
+                    cohort["status"]="SINGLE_MATCHED_PAIR";cohort["gpmc_over_rust"]=a["wall_ns"]/b["wall_ns"]
+                    persist();break
+                cohort["status"]="NUMERIC_OR_ROUTE_INCONCLUSIVE";persist()
+                if not b.get("route"):break
+            print("LOCKED_LONG_FINAL",case,target,cohort["status"],cohort.get("gpmc_over_rust"),flush=True)
+    report["status"]="LOCKED_LONG_EXPLORATORY_COMPLETE";persist()
+
 def qualified(rows):
     return (len(rows)==2 and all(r["status"]=="COMPLETED" and r["wall_ns"]>=MIN_SECONDS*10**9 for r in rows))
 
@@ -147,20 +206,22 @@ def main():
         ap.add_argument("--"+arg,type=Path,required=True)
     ap.add_argument("--shard",type=int,choices=range(HOLDOUT_SHARDS),required=True)
     ap.add_argument("--mqt-holdout",action="store_true")
+    ap.add_argument("--locked-long",action="store_true")
     args=ap.parse_args()
+    if args.locked_long and args.mqt_holdout:ap.error("select one study")
     holdout_self_test()
-    shards=HOLDOUT_SHARDS if args.mqt_holdout else SHARDS
+    shards=HOLDOUT_SHARDS if args.mqt_holdout or args.locked_long else SHARDS
     if args.shard>=shards:ap.error("shard outside selected cohort")
     if git_sha(args.quprs)!=QU_PRS_SHA or git_sha(args.gpmc_source)!=GPMC_SHA:
         raise SystemExit("SOURCE_LOCK_DRIFT")
     args.corpus.mkdir(parents=True,exist_ok=True)
-    manifest=mqt_holdouts(args.quprs) if args.mqt_holdout else candidates(args.quprs)
+    manifest=locked_long(args.quprs) if args.locked_long else mqt_holdouts(args.quprs) if args.mqt_holdout else candidates(args.quprs)
     selected=manifest[args.shard::shards]
     report={"study":"Original GPMC-completer long-case discovery",
             "source_revisions":{"quprs":QU_PRS_SHA,"gpmc":GPMC_SHA},
             "selection":"both 100/333-bit GPMC screens completed >=10s; rank by min GPMC wall; no Rust-dependent selection",
             "limits":{"wall_s":PAIR_S,"AS_bytes":AS_BYTES,"max_candidates":HOLDOUT_MAX if args.mqt_holdout else MAX_CASES},
-            "shard":args.shard,"mqt_holdout":args.mqt_holdout,"manifest":manifest,"cases":[],"pilot":None,
+            "shard":args.shard,"mqt_holdout":args.mqt_holdout,"locked_long":args.locked_long,"manifest":manifest,"cases":[],"pilot":None,
             "status":"IN_PROGRESS","independent_full_wmc_reference":False}
     def persist():
         args.report.write_text(json.dumps(report,indent=2)+"\n")
@@ -186,6 +247,9 @@ def main():
             except (ValueError,OSError) as e:
                 row.update(source_status="CENSORED_INVALID_CNF",error=str(e)[:300])
         persist()
+        if args.locked_long:
+            if row["source_status"]=="SOURCE_EXACT" and row["cnf_sha256"]!=item["expected_cnf_sha256"]:raise SystemExit("LOCKED_CNF_DRIFT")
+            continue
         if row["source_status"]=="SOURCE_EXACT":
             for digits,bits in BITS.items():
                 result=native(command(args,case,cnf,digits,"gpmc"),"gpmc",PAIR_S,digits)
@@ -196,6 +260,8 @@ def main():
                     break
         row["qualified"]=qualified(row["screen"])
         persist()
+    if args.locked_long:
+        locked_pairs(args,report,persist);return
     eligible=sorted((r for r in report["cases"] if r["qualified"]),
                     key=lambda r:(-min(x["wall_ns"] for x in r["screen"]),r["case"]))
     report["qualified_cases"]=[r["case"] for r in eligible]

@@ -1,5 +1,5 @@
 //! Research-only fused bucket contraction with exact Boolean support.
-use super::{extract, weight, var, idx, edge, minfill, Graph, Trace, C, Outcome, Problem};
+use super::{extract_with_arity, weight, var, idx, edge, minfill, Graph, Trace, C, Outcome, Problem};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
@@ -36,7 +36,7 @@ fn insert(factors: &mut Vec<Factor>, graph: &mut Graph, factor: Factor) {
 }
 pub(super) fn count(p: &Problem, bits: u32, trace: &mut Trace) -> Result<Outcome,String> {
     let start=Instant::now();
-    let (gates,rep,units,residual)=extract(p,2048)?;
+    let (gates,rep,units,residual)=extract_with_arity(p,2048,4)?;
     let free:BTreeSet<_>=rep.iter().copied().filter(|&l|l!=0&&!units.contains_key(&var(l))).map(var).collect();
     trace.gates=gates.len();
     trace.free=free.len();
@@ -57,7 +57,7 @@ pub(super) fn count(p: &Problem, bits: u32, trace: &mut Trace) -> Result<Outcome
     let mut graph:Graph=free.iter().map(|&v|(v,BTreeSet::new())).collect();
     let mut factors=Vec::new();
     for (o,a) in gates {
-        let b=[rep[idx(a[0])],rep[idx(a[1])]];
+        let b:Vec<_>=a.iter().map(|&l|rep[idx(l)]).collect();
         if b.contains(&0) {return Err("unowned gate argument".into());}
         let scope:Vec<_>=b.iter().copied().map(var).filter(|v|!units.contains_key(v)).collect::<BTreeSet<_>>().into_iter().collect();
         let vals=(0..(1usize<<scope.len())).map(|mask| {
@@ -160,6 +160,51 @@ mod tests {
                 assert_eq!(got.count.im,expected.count.im);
             }
         }
+    }
+    #[test]
+    fn multivariate_signed_definitions_oracle() {
+        // Two independent signed AND outputs of arity 3 and 4,
+        // plus a complemented equivalence and a unit that fixes a gate input.
+        // A free variable retains both weights even if absent from all clauses.
+        for bits in [100,333] {
+            let raw="p cnf 9 12\nc t wmc\nc p weight 5 -2 3 0\nc p weight -5 1 -1 0\nc p weight 6 3 2 0\nc p weight -6 -1 2 0\nc p weight 7 0 0 0\nc p weight -7 2 -3 0\nc p weight 9 1 2 0\nc p weight -9 -3 1 0\n5 -1 2 -3 0\n-5 1 0\n-5 -2 0\n-5 3 0\n-6 1 -2 3 -4 0\n6 -1 0\n6 2 0\n6 -3 0\n6 4 0\n2 7 0\n-2 -7 0\n4 0\n";
+            let p=super::super::super::parse_emitted(raw,bits).unwrap();
+            let mut trace=Trace::default();
+            let got=count(&p,bits,&mut trace).unwrap();
+            assert_eq!(trace.gates,2);
+            let mut expected=Outcome::unsat(bits);
+            for mask in 0..(1usize<<p.n) {
+                let yes=|l:i32|((mask>>(var(l)-1))&1!=0)==(l>0);
+                if p.clauses.iter().all(|c|c.iter().copied().any(yes)) {
+                    expected.sat=true;
+                    let mut x=C::one(bits);
+                    for v in 1..=p.n {
+                        let l=v as i32;
+                        x=x.mul(weight(&p,if yes(l){l}else{-l}),bits);
+                    }
+                    expected.count=expected.count.add(&x,bits);
+                }
+            }
+            assert!(got.sat);
+            assert_eq!(got.sat,expected.sat);
+            assert_eq!(got.count.re,expected.count.re);
+            assert_eq!(got.count.im,expected.count.im);
+        }
+    }
+    #[test]
+    fn incomplete_definition_is_not_extracted() {
+        let raw="p cnf 4 3\nc t wmc\n4 -1 -2 -3 0\n-4 1 0\n-4 2 0\n";
+        let p=super::super::super::parse_emitted(raw,100).unwrap();
+        let mut trace=Trace::default();
+        let got=count(&p,100,&mut trace).unwrap();
+        assert_eq!(trace.gates,0);
+        let expected=(0..16).filter(|&mask| {
+            let yes=|l:i32|((mask>>(var(l)-1))&1!=0)==(l>0);
+            p.clauses.iter().all(|c|c.iter().copied().any(yes))
+        }).count();
+        assert!(got.sat);
+        assert_eq!(got.count.re,expected as u32);
+        assert_eq!(got.count.im,0);
     }
     #[test]
     fn impossible_not_numeric_zero() {

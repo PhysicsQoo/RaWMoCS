@@ -642,7 +642,7 @@ mod value_reuse {
                     }
                 }
                 live-=factors.iter().map(|f|f.ids.len()).sum::<usize>();drop(factors);
-                put(IdFactor{vars:rest,ids},&mut buckets,&rank,&mut scalar,&mut live,pool)?;
+                put(IdFactor{vars:rest,ids},&mut buckets,rank,&mut scalar,&mut live,pool)?;
             }
             stats.eliminated+=1;
             if pool.values.len()>=next_gc {
@@ -1148,13 +1148,14 @@ mod packed_taylor {
             put(IdFactor{vars,ids},&mut buckets,&rank,&mut scalar,&mut live,pool)?;
         }
         stats.factors=remaining.len()+clauses.len();stats.cells=live;
-        execute_buckets(plan,(buckets,scalar,live),stats,pool,start,(WIDTH,false))
+        execute_buckets((plan,&rank),(buckets,scalar,live),stats,pool,start,(WIDTH,false))
     }
     // The original indexed route retains its original bounds and support
     // scan. Affine closure independently proves complete Boolean support.
-    fn execute_buckets(plan:&[usize],state:(Vec<Vec<IdFactor>>,u32,usize),
+    fn execute_buckets(order:(&[usize],&[usize]),state:(Vec<Vec<IdFactor>>,u32,usize),
         stats:&mut VeStats,pool:&mut Ring,start:Instant,mode:(usize,bool))->Result<u32,&'static str>{
         let (mut buckets,mut scalar,mut live)=state;
+        let (plan,rank)=order;
         let (max_width,full_support)=mode;
         let mut next_gc=340_000;
         for (k,&v) in plan.iter().enumerate() {
@@ -1258,7 +1259,7 @@ mod packed_taylor {
             put(IdFactor{vars:scope.clone(),ids},&mut buckets,&rank,&mut scalar,&mut live,&mut ring)?;
         }
         let mut stats=VeStats{cells:live,..VeStats::default()};
-        let id=execute_buckets(plan,(buckets,scalar,live),&mut stats,&mut ring,local_start,(18,true))?;
+        let id=execute_buckets((plan,&rank),(buckets,scalar,live),&mut stats,&mut ring,local_start,(18,true))?;
         if id==NO{return Err("affine_complete_support_invariant");}
         trace.actual_work=trace.actual_work.saturating_add(stats.products);
         trace.arithmetic=trace.arithmetic.saturating_add(ring.stats.calls);

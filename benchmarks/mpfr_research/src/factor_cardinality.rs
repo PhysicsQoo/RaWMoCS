@@ -9,7 +9,7 @@ type Poly = BTreeMap<Pair, Vec<C>>;
 type Graph = BTreeMap<usize, BTreeSet<usize>>;
 type PhaseKey = (String, String);
 type PhaseEdges = BTreeMap<PhaseKey, Vec<(usize, usize, usize)>>;
-type Gate = (i32, [i32; 2]);
+type Gate = (i32, Vec<i32>);
 type Extraction = (Vec<Gate>, Vec<i32>, BTreeMap<usize, bool>, BTreeSet<Set>);
 
 mod definitional;
@@ -46,6 +46,10 @@ fn reach(g: &[Vec<usize>], root: usize) -> Vec<bool> {
     seen
 }
 fn extract(p: &Problem, source_cap: usize) -> Result<Extraction, String> {
+    extract_with_arity(p, source_cap, 2)
+}
+
+fn extract_with_arity(p: &Problem, source_cap: usize, max_arity: usize) -> Result<Extraction, String> {
     if p.n > source_cap || p.clauses.len()>10_000 { return Err("cardinality source cap".into()); }
     let clauses: BTreeSet<Set> = p.clauses.iter().map(|c| c.iter().copied().collect())
         .filter(clean).collect();
@@ -57,13 +61,16 @@ fn extract(p: &Problem, source_cap: usize) -> Result<Extraction, String> {
     let mut removed = BTreeSet::new();
     let mut outputs = BTreeSet::new();
     for c in &clauses {
-        if c.len()!=3 {continue;}
+        if !(3..=max_arity+1).contains(&c.len()) {continue;}
         for &o in c {
             let a:Vec<_>=c.iter().filter(|&&l|l!=o).map(|&l|-l).collect();
-            let defs=BTreeSet::from([c.clone(),Set::from([-o,a[0]]),Set::from([-o,a[1]])]);
+            let mut defs=BTreeSet::from([c.clone()]);
+            defs.extend(a.iter().map(|&l|Set::from([-o,l])));
+            // Exactly one complete signed definition, with no extra
+            // occurrences of its output variable. Never infer from weights.
             if occ[var(o)] == defs {
                 if !outputs.insert(var(o)) {return Err("ambiguous private definition".into());}
-                gates.push((o,[a[0],a[1]]));
+                gates.push((o,a));
                 removed.extend(defs);
             }
         }

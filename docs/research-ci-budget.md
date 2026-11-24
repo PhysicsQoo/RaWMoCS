@@ -8,13 +8,26 @@ Use the existing Rust science workflow (production tests, independent A0, portab
 
 For the observed 60-workflow fan-out, this change removes 57 automatic PR triggers. The expected routine count for that same change set is three, subject to GitHub path matching and future changes in other workflows. This is a trigger-count estimate, not a measured billing saving.
 
+## Simulation-first, bounded research
+
+Use CodSpeed Simulation as the primary algorithm-development metric and Flamegraph for hotspot attribution; use native wall time and independent numerical witnesses for final long-case solver acceptance. Do not treat simulated CPU time as real elapsed time.
+
+| Mode | Measurement step wall-clock cap | Admission |
+| --- | --- | --- |
+| Routine Rust regression | 5 minutes | Existing microbenchmarks only |
+| Focused paired executable Simulation | 10 minutes | One original short/medium case, both native arms complete within 5 seconds at equal working precision, independent reference within 45 seconds |
+| Explicit milestone Simulation | 20 minutes | Manually selected long/legacy study, never routine PR synchronization |
+| Long native comparison | Existing 120 seconds per process | GPMC-completing long-tail sources; seven rotated pairs, p50/p90, RSS, independent numeric witness |
+
+The existing original-CNF workflow uses the focused Grover 5 source by default, including the existing research PR label entry point. The pinned original QASM blob and generated CNF hash are archived; the first qualification freezes that CNF hash rather than claiming a historical hash match. Future cross-revision comparisons require the same hash. Long Grover 6 and W-state 16 are explicit manual milestone selections only. The complete job ceiling is 25 minutes for focused and 35 minutes for milestone (includes builds/preflight). CodSpeed max-time is a benchmark configuration, not a substitute for the hard Actions measurement-step deadline. If either arm is censored, the output/route gate fails, or the action times out, mark the comparison inconclusive; do not publish a speed ratio. Prefer bounded stage profiling for longer cases; these profiles are not end-to-end solver ratios. Existing solver resource limits and native evidence are unchanged.
+
 ## Native research
 
 The existing original larger Feynman QuPRS CNF source scout is manual only.
 
 - **Focused (default):** select exactly one case and give the numeric ID of a previous run containing the original source-screen artifact. The mechanism runner verifies source revisions, QASM and CNF hashes and original screen evidence. No source regeneration, broad pilot or unrelated case is run. The single job has a 40-minute ceiling. Missing or expired artifacts fail closed; refresh explicitly rather than silently launching a full campaign.
 - **Full:** explicitly choose a full campaign when the source lock changes, a new cohort is needed, or at a research milestone. At most nine jobs: one bounded original Feynman job (30 min), one screen (25 min), three long pilots (35 min each), four mechanism jobs (40 min each). Maximum sum of configured job limits: 320 runner-minutes, excluding platform overhead. Do not use this profile for routine commits.
-- **Profiling:** original MPFR CodSpeed flamegraphs are manually dispatched only when a concrete hotspot needs attribution.
+- **Profiling:** use the bounded existing original MPFR CodSpeed workflow described above; long milestones require explicit manual selection.
 
 Both native comparison modes retain the existing original weighted CNFs, unchanged GPMC, matched 100/333-bit MPFR precision, fresh processes, seven rotated trials, 30-second/3-GiB per-process mechanism limits, raw outputs and numeric witness. The 120-second pilot is reserved for genuine long-tail studies. Do not count fallback or censored time as a completed fast path. Keep numerical discrepancies visible. A skipped or manually unrun study is not a pass.
 

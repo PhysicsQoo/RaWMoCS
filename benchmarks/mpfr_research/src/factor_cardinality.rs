@@ -10,6 +10,7 @@ type Graph = BTreeMap<usize, BTreeSet<usize>>;
 type PhaseKey = (String, String);
 type PhaseEdges = BTreeMap<PhaseKey, Vec<(usize, usize, usize)>>;
 type Gate = (i32, [i32; 2]);
+type Extraction = (Vec<Gate>, Vec<i32>, BTreeMap<usize, bool>);
 
 const MAX_CELLS: usize = 500_000;
 const MAX_WORK: usize = 40_000_000;
@@ -26,10 +27,6 @@ struct Trace {
 
 fn var(l: i32) -> usize { l.unsigned_abs() as usize }
 fn idx(l: i32) -> usize { 2 * (var(l)-1) + usize::from(l < 0) }
-fn lit(i: usize) -> i32 {
-    let v = (i/2+1) as i32;
-    if i%2 == 0 { v } else { -v }
-}
 fn weight(p: &Problem, l: i32) -> &C {
     let w = &p.weights[var(l)-1];
     if l > 0 { &w.positive } else { &w.negative }
@@ -46,7 +43,7 @@ fn reach(g: &[Vec<usize>], root: usize) -> Vec<bool> {
     }
     seen
 }
-fn extract(p: &Problem) -> Result<(Vec<Gate>, Vec<i32>, BTreeMap<usize,bool>), String> {
+fn extract(p: &Problem) -> Result<Extraction, String> {
     if p.n > 1024 || p.clauses.len()>10_000 { return Err("cardinality source cap".into()); }
     let clauses: BTreeSet<Set> = p.clauses.iter().map(|c| c.iter().copied().collect())
         .filter(clean).collect();
@@ -91,7 +88,7 @@ fn extract(p: &Problem) -> Result<(Vec<Gate>, Vec<i32>, BTreeMap<usize,bool>), S
         for i in 0..rep.len() {
             if f[i]&&b[i] {
                 if rep[i]!=0||rep[i^1]!=0 {return Err("SCC ownership".into());}
-                rep[i]=v as i32;rep[i^1]=-(v as i32);
+                rep[i]=v as i32;rep[i^1] = -(v as i32);
             }
         }
     }
@@ -188,7 +185,7 @@ fn edge(g:&mut Graph,a:usize,b:usize) {
 }
 fn minfill(g:&Graph,v:usize)->(usize,usize,usize) {
     let n=&g[&v];
-    let missing=n.iter().enumerate().map(|(i,a)|n.iter().skip(i+1).filter(|b|!g[a].contains(b)).count()).sum();
+    let missing=n.iter().enumerate().map(|(i,a)|n.iter().skip(i+1).filter(|b|!g[a].contains(*b)).count()).sum();
     (missing,n.len(),v)
 }
 
@@ -306,7 +303,8 @@ fn count(p:&Problem,raw:&str,bits:u32,trace:&mut Trace)->Result<Outcome,String> 
     }
     let mut total=C::zero(bits);
     for ((i,j),values) in f.poly {
-        let a=i*i.saturating_sub(1)/2;let b=j*j.saturating_sub(1)/2;
+        let a=i*i.saturating_sub(1)/2;
+        let b=j*j.saturating_sub(1)/2;
         let term=values[0].mul(&powers[0][a],bits).mul(&powers[1][b],bits);
         total=total.add(&term,bits);
     }

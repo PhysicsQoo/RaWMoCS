@@ -130,17 +130,27 @@ fn compile(p:&Problem,raw:&str)->Result<Model,String>{
 }
 
 #[derive(Clone,Debug)]
-struct Plan { width:usize, cells:u64, lookups:u64, bag:Vec<usize>, order:Vec<usize> }
+struct Plan { width:usize, cells:u64, lookups:u64, peak:u64, bag:Vec<usize>, order:Vec<usize> }
+const TOTAL_LOOKUPS:u64=360_000_000;
+const LIVE_CELLS:u64=400_000;
 fn plan(model:&Model,fixed:&BTreeSet<usize>,start:Instant)->Result<Plan,String>{
+    plan_weighted(model,fixed,start,0)
+}
+fn plan_weighted(model:&Model,fixed:&BTreeSet<usize>,start:Instant,penalty:usize)->Result<Plan,String>{
     let mut g:Graph=model.free.difference(fixed).map(|&v|(v,BTreeSet::new())).collect();
     let mut scopes:Vec<BTreeSet<usize>>=model.factors.iter().map(|f|f.scope.iter().copied().filter(|v|!fixed.contains(v)).collect()).filter(|s:&BTreeSet<_>|!s.is_empty()).collect();
     for s in &scopes {
         for (i,&a) in s.iter().enumerate(){for &b in s.iter().skip(i+1){edge(&mut g,a,b);}}
     }
-    let mut result=Plan{width:0,cells:0,lookups:0,bag:Vec::new(),order:Vec::new()};
+    let mut result=Plan{width:0,cells:0,lookups:0,peak:0,bag:Vec::new(),order:Vec::new()};
+    let mut live=scopes.iter().map(|s|1u64.checked_shl(s.len() as u32).unwrap_or(u64::MAX)).fold(0u64,u64::saturating_add);
+    result.peak=live;
     while !g.is_empty(){
         if start.elapsed().as_secs()>=60{return Err("affine planning deadline".into());}
-        let v=*g.keys().min_by_key(|&&v|minfill(&g,v)).ok_or("empty graph")?;
+        let v=*g.keys().min_by_key(|&&v|{
+            let (fill,degree,tie)=minfill(&g,v);
+            (fill.saturating_add(penalty.saturating_mul(degree)),degree,tie)
+        }).ok_or("empty graph")?;
         let nb=g.remove(&v).ok_or("missing pivot")?;
         result.order.push(v);
         if nb.len()>result.width{
@@ -150,10 +160,17 @@ fn plan(model:&Model,fixed:&BTreeSet<usize>,start:Instant)->Result<Plan,String>{
         let size=1u64.checked_shl((nb.len()+1) as u32).ok_or("plan width overflow")?;
         result.cells=result.cells.saturating_add(size);
         let before=scopes.len();
-        scopes.retain(|s|!s.contains(&v));
+        let mut removed=0u64;
+        scopes.retain(|s|{
+            if s.contains(&v){removed=removed.saturating_add(1u64.checked_shl(s.len() as u32).unwrap_or(u64::MAX));false}else{true}
+        });
         let incident=before-scopes.len();
         result.lookups=result.lookups.saturating_add(size.saturating_mul(incident.max(1) as u64));
-        if !nb.is_empty(){scopes.push(nb.clone());}
+        if incident>0{
+            result.peak=result.peak.max(live.saturating_add(size/2));
+            live=live.saturating_sub(removed);
+            if !nb.is_empty(){scopes.push(nb.clone());live=live.saturating_add(size/2);}
+        }
         for &u in &nb{
             let s=g.get_mut(&u).ok_or("missing neighbor")?;
             s.remove(&v);s.extend(nb.iter().filter(|&&x|x!=u).copied());
@@ -184,6 +201,35 @@ fn choose(model:&Model,start:Instant)->Result<(Vec<usize>,Plan),String>{
         println!("AFFINE_PLAN depth={} leaves={} width={} cells={} lookups={} pivot={}",depth,leaves,best.width,best.cells.saturating_mul(leaves),best.lookups.saturating_mul(leaves),v);
     }
     Ok((ordered,best))
+}
+// The original width-only plan is the seed, not a resource admission.
+// Search one additional cutset variable from its maximal bag and a small
+// deterministic degree-penalty portfolio. No circuit-specific IDs.
+fn resource_choose(m:&Model,start:Instant)->Result<(Vec<usize>,Plan),String>{
+    let (fixed,base)=choose(m,start)?;
+    let key=|p:&Plan,depth:usize|{
+        let work=p.lookups.saturating_mul(1u64<<depth);
+        (p.width.saturating_sub(18),p.peak.saturating_sub(LIVE_CELLS),work.saturating_sub(TOTAL_LOOKUPS),work,p.peak)
+    };
+    if key(&base,fixed.len()).0==0&&base.peak<=LIVE_CELLS&&base.lookups.saturating_mul(1u64<<fixed.len())<=TOTAL_LOOKUPS{
+        return Ok((fixed,base));
+    }
+    let mut best=(fixed.clone(),base.clone());
+    if fixed.len()<6 {
+        let mut candidates=base.bag.clone();candidates.sort_unstable();candidates.dedup();
+        for v in candidates.into_iter().take(24){
+            if fixed.contains(&v){continue;}
+            let mut next=fixed.clone();next.push(v);
+            let set=next.iter().copied().collect();
+            for penalty in [0,1,3]{
+                let p=plan_weighted(m,&set,start,penalty)?;
+                if key(&p,next.len())<key(&best.1,best.0.len()){best=(next.clone(),p);}
+            }
+        }
+    }
+    eprintln!("AFFINE_RESOURCE_PLAN width={} peak_upper={} lookup_upper={} leaves={} cutset={:?}",
+        best.1.width,best.1.peak,best.1.lookups.saturating_mul(1u64<<best.0.len()),1usize<<best.0.len(),best.0);
+    Ok(best)
 }
 // Sum exponents of factors with the same support. This is multiplication
 // of monomials, with no numerical rounding or weight duplication.
@@ -219,26 +265,32 @@ fn contract(m:&Model,fixed:&[usize],p:&Plan,modbits:u32,phase:&Integer,start:Ins
     // Condition before charging the upper bound: fixed inputs can turn
     // an exponent table into unity, and identical supports can merge.
     // Keep the original aggregate work budget, not the graph-only proxy.
-    let mut prepared=Vec::with_capacity(leaves);let mut upper=0u64;
+    let mut prepared=Vec::with_capacity(leaves);let mut upper=0u64;let mut peak=0u64;
     for mask in 0..leaves{
         let tables=conditioned(m,fixed,mask)?;
         let mut scopes:Vec<BTreeSet<usize>>=tables.iter().filter(|(s,_)|!s.is_empty()).map(|(s,_)|s.iter().copied().collect()).collect();
+        let mut live=scopes.iter().map(|s|1u64<<s.len()).sum::<u64>();
+        peak=peak.max(live);
         for &v in &p.order{
-            let mut union=BTreeSet::new();let mut count=0u64;
+            let mut union=BTreeSet::new();let mut count=0u64;let mut removed=0u64;
             scopes.retain(|s|{
-                if s.contains(&v){union.extend(s.iter().copied());count+=1;false}else{true}
+                if s.contains(&v){union.extend(s.iter().copied());count+=1;removed+=1u64<<s.len();false}else{true}
             });
             if count==0{continue;}
             union.remove(&v);
             if union.len()>18{return Err("affine conditioned width cap".into());}
-            upper=upper.saturating_add((1u64<<(union.len()+1)).saturating_mul(count));
-            if !union.is_empty(){scopes.push(union);}
+            let size=1u64<<union.len();
+            upper=upper.saturating_add(2*size*count);
+            peak=peak.max(live.saturating_add(size));
+            if peak>LIVE_CELLS{return Err("affine preflight live cap".into());}
+            live=live.saturating_sub(removed);
+            if !union.is_empty(){scopes.push(union);live+=size;}
         }
         if !scopes.is_empty(){return Err("affine conditioned scope incomplete".into());}
-        if upper>360_000_000{return Err("affine preflight lookup cap".into());}
+        if upper>TOTAL_LOOKUPS{return Err("affine preflight lookup cap".into());}
         prepared.push(tables);
     }
-    eprintln!("AFFINE_TAYLOR_PREFLIGHT conditioned_lookup_upper={upper} leaves={leaves}");
+    eprintln!("AFFINE_TAYLOR_PREFLIGHT conditioned_lookup_upper={upper} peak_live_upper={peak} leaves={leaves}");
     let mut sum=Integer::from(0);
     let n=m.free.iter().copied().max().unwrap_or(0);
     for tables in prepared{
@@ -267,7 +319,7 @@ pub(crate) fn run_taylor(mut args:impl Iterator<Item=std::ffi::OsString>)->Resul
     let base=bound.significant_bits()+1;
     let modbits=base.checked_mul(k).ok_or("affine packing overflow")?;
     let phase=(Integer::from(1)<<base)-1;
-    let (fixed,plan)=choose(&m,start)?;
+    let (fixed,plan)=resource_choose(&m,start)?;
     eprintln!("AFFINE_TAYLOR_PLAN factors_before={before} factors_after={} free={} width={} leaves={} lookup_upper={} terms={k} base_bits={base}",m.factors.len(),m.free.len(),plan.width,1usize<<fixed.len(),plan.lookups.saturating_mul(1u64<<fixed.len()));
     let mut trace=TaylorStats::default();
     let packed=contract(&m,&fixed,&plan,modbits,&phase,start,&mut trace)?;

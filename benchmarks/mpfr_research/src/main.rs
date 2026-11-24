@@ -23,6 +23,7 @@ mod separator_pivot;
 mod primal_centroid;
 mod factor_variable_elimination;
 mod factor_indexed_fused;
+mod factor_cardinality;
 mod factor_forest_dp;
 mod factor_add_elimination;
 mod factor_boolean_bdd;
@@ -771,6 +772,9 @@ fn run() -> Result<(), String> {
     let first = args.next().ok_or(
         "usage: rawmocs-mpfr-research [--node-budget=250000|--node-budget=1000000|--node-budget=1000000000] [--cache-limit=25000|--cache-limit=50000|--cache-limit=100000] [--indexed-unit-prop|--indexed-unit-prop-after-8192|--indexed-unit-prop-csr|--indexed-unit-prop-csr-after-8192] [--shared-residual-key|--packed-residual-key|--packed-residual-key-fast|--packed-residual-key-hash-only|--packed-residual-key-bypass-only] [--fast-assign] [--reuse-frequency-scratch] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
     )?;
+    if first.to_str() == Some("--factor-cardinality") {
+        return factor_cardinality::run(args);
+    }
     // Explicit finite research-only node limits, untouched default.
     // The 1B allowance is an opt-in long-tail CI control with independent
     // full-process timeout and virtual-address caps. Never default-on.

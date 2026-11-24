@@ -12,10 +12,10 @@ struct Profile {
     cliques:Vec<usize>,phase_eligible:bool,complete:bool,
 }
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-enum Route { Cardinality, Definitional, Trail }
+enum Route { Cardinality, Definitional, Conditioned, Trail }
 impl Route {
     fn name(self)->&'static str{
-        match self{Self::Cardinality=>"cardinality",Self::Definitional=>"definitional",Self::Trail=>"trail"}
+        match self{Self::Cardinality=>"cardinality",Self::Definitional=>"definitional",Self::Conditioned=>"conditioned",Self::Trail=>"trail"}
     }
 }
 fn profile(p:&Problem,raw:&str)->Result<Profile,String>{
@@ -74,11 +74,12 @@ fn choose(p:&Profile)->Route{
     if p.complete&&p.width<=18&&p.work<=60_000_000&&p.peak<=2_000_000{
         return Route::Definitional;
     }
+    if p.gates>0&&p.residual==0&&p.width==19{return Route::Conditioned;}
     Route::Trail
 }
 fn generic(p:&Problem,bits:u32,hybrid:bool)->Result<(Outcome,u64,u64,u64),String>{
     let (reduced,scope,_)=weighted_equivalence::reduce(p,bits);
-    let mut trail=TrailEngine::new(&reduced,bits,10_000,1_000_000_000);
+    let mut trail=TrailEngine::new(&reduced,bits,50_000,1_000_000_000);
     trail.use_inline_weight_relabel=true;
     // Compare generic hybrid components against the same existing
     // search settings, rather than selecting by MQT family.
@@ -102,6 +103,7 @@ fn solve(p:&Problem,raw:&str,bits:u32,hybrid:bool)->Result<(Outcome,Route,u64,u6
         let result=match route{
             Route::Cardinality=>count_bounded(p,raw,bits,&mut trace,15),
             Route::Definitional=>definitional::count_bounded(p,bits,&mut trace,15),
+            Route::Conditioned=>definitional::count_conditioned(p,bits,&mut trace,45),
             Route::Trail=>unreachable!(),
         };
         match result{
@@ -176,5 +178,7 @@ mod tests{
         assert_eq!(choose(&p),Route::Definitional);
         let p=Profile{cliques:vec![8,8],..Profile::default()};
         assert_eq!(choose(&p),Route::Cardinality);
+        let p=Profile{gates:100,width:19,..Profile::default()};
+        assert_eq!(choose(&p),Route::Conditioned);
     }
 }

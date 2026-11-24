@@ -38,6 +38,12 @@ pub(super) fn count(p: &Problem, bits: u32, trace: &mut Trace) -> Result<Outcome
     count_bounded(p,bits,trace,105)
 }
 pub(super) fn count_bounded(p:&Problem,bits:u32,trace:&mut Trace,seconds:u64)->Result<Outcome,String>{
+    count_impl(p,bits,trace,seconds,None)
+}
+pub(super) fn count_planned(p:&Problem,bits:u32,trace:&mut Trace,seconds:u64,order:&[usize])->Result<Outcome,String>{
+    count_impl(p,bits,trace,seconds,Some(order))
+}
+fn count_impl(p:&Problem,bits:u32,trace:&mut Trace,seconds:u64,order:Option<&[usize]>)->Result<Outcome,String>{
     let deadline=Instant::now()+std::time::Duration::from_secs(seconds);
     let (factors,graph,scalar)=compile(p,bits,trace)?;
     contract(factors,graph,scalar,bits,trace,deadline,None)
@@ -90,12 +96,16 @@ fn compile(p:&Problem,bits:u32,trace:&mut Trace)->Result<Compiled,String>{
 }
 fn contract(mut factors:Vec<Factor>,mut graph:Graph,mut scalar:C,bits:u32,trace:&mut Trace,deadline:Instant,order:Option<&[usize]>)->Result<Outcome,String>{
     let mut pivots=order.into_iter().flatten().copied();
+    if let Some(order)=order{
+        if order.len()!=free.len()||order.iter().copied().collect::<BTreeSet<_>>()!=free{return Err("definitional plan ownership".into());}
+    }
+    let mut position=0;
     while !graph.is_empty() {
         if Instant::now()>=deadline {return Err("definitional deadline".into());}
         let v=if order.is_some(){pivots.next().ok_or("conditioned plan incomplete")?}else{*graph.keys().min_by_key(|&&v|minfill(&graph,v)).ok_or("empty graph")?};
         let nb=graph.remove(&v).ok_or("missing pivot")?;
         trace.width=trace.width.max(nb.len());
-        if nb.len()>18 {return Err("definitional width cap".into());}
+        if nb.len()>if order.is_some(){19}else{18} {return Err("definitional width cap".into());}
         let (mut bucket,rest):(Vec<_>,Vec<_>)=factors.into_iter().partition(|f|f.scope.contains(&v));
         factors=rest;
         bucket.sort_by_key(|f|f.scope.len());
@@ -113,6 +123,41 @@ fn contract(mut factors:Vec<Factor>,mut graph:Graph,mut scalar:C,bits:u32,trace:
         if live>2_000_000 {return Err("definitional live cell cap".into());}
         trace.peak=trace.peak.max(live);
         let mut values=Vec::with_capacity(size);
+        if order.is_some(){
+            // Binary assignment increments update local indices by XOR of
+            // prefix masks; no per-assignment bit projection. Every branch
+            // still checks Boolean support independently of numerical zero.
+            let mut pivots=Vec::with_capacity(bucket.len());
+            let mut flips=Vec::with_capacity(bucket.len());
+            for f in &bucket{
+                let mut by_bit=vec![0usize;scope.len()];
+                let mut pivot_bit=0;
+                for (i,&x) in f.scope.iter().enumerate(){
+                    if x==v{pivot_bit=1<<i;}else{
+                        by_bit[scope.binary_search(&x).map_err(|_|"definitional scope projection")?]=1<<i;
+                    }
+                }
+                let mut prefix=0;for x in &mut by_bit{prefix^=*x;*x=prefix;}
+                pivots.push(pivot_bit);flips.push(by_bit);
+            }
+            let mut indices=vec![0usize;bucket.len()];
+            for m in 0..size{
+                if m%4096==0&&Instant::now()>=deadline{return Err("definitional deadline".into());}
+                let branch=|positive:bool|->Option<C>{
+                    let mut product=C::one(bits);
+                    for (i,f) in bucket.iter().enumerate(){
+                        let x=f.values[indices[i]|if positive{pivots[i]}else{0}].as_ref()?;
+                        product=multiply(product,x,bits);
+                    }
+                    Some(product)
+                };
+                values.push(add(branch(false),branch(true),bits));
+                if m+1<size{
+                    let bit=(m+1).trailing_zeros() as usize;
+                    for (i,x) in indices.iter_mut().enumerate(){*x^=flips[i][bit];}
+                }
+            }
+        }else{
         for m in 0..size {
             if m%4096==0&&Instant::now()>=deadline {return Err("definitional deadline".into());}
             let base=(m&low)|((m&!low)<<1);
@@ -126,6 +171,7 @@ fn contract(mut factors:Vec<Factor>,mut graph:Graph,mut scalar:C,bits:u32,trace:
                 Some(product)
             };
             values.push(add(branch(base),branch(base|(1<<pivot)),bits));
+        }
         }
         factors.push(Factor{scope,values});
         for &u in &nb {
@@ -240,6 +286,21 @@ mod tests {
             }else{
                 assert!(count_conditioned(&p,100,&mut Trace::default(),5).is_err());
             }
+        }
+    }
+    #[test]
+    fn planned_projection_matches_original_and_rejects_duplicate_pivots(){
+        let raw="p cnf 5 4\nc t wmc\nc p weight 4 -2 3 0\nc p weight -1 0 0 0\n4 -1 2 0\n-4 1 0\n-4 -2 0\n1 2 3 0\n";
+        for bits in [100,333]{
+            let p=crate::parse_emitted(raw,bits).unwrap();
+            let expected=count(&p,bits,&mut Trace::default()).unwrap();
+            for order in [[1,2,3,5],[5,3,1,2],[2,5,1,3]]{
+                let got=count_planned(&p,bits,&mut Trace::default(),15,&order).unwrap();
+                assert_eq!(got.sat,expected.sat);
+                assert_eq!(got.count.re,expected.count.re);
+                assert_eq!(got.count.im,expected.count.im);
+            }
+            assert!(count_planned(&p,bits,&mut Trace::default(),15,&[1,1,3,5]).is_err());
         }
     }
     #[test]

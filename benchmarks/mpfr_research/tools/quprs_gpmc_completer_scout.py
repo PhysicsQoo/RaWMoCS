@@ -194,12 +194,39 @@ CERTIFIED_LONG_SHA={
     "600ce6716a69e31e17ffbc571cba581fc58a5b5ed3b7d60227ad41d857374efe",
     "a9757cd5bd730b6f769d2970e3a16ac66fee7157b55f81208c0a7c2cece0023b",
 }
+# Frozen scratch-only predecessor of branch-accumulator candidate.
+NATIVE_AB_BASELINE_SHA = "ee4bd72142c6939a0ea094c8776108bd524810c7"
+def contraction_signature(row):
+    matches=re.findall(r"^ADAPTIVE_CONTRACTION width=(\d+) work=(\d+) peak=(\d+) planned_width=(\d+) planned_work=(\d+) planned_peak=(\d+)$",row.get("stderr_tail",""),re.M)
+    if len(matches)!=1 or matches[0][:3]!=matches[0][3:]:
+        return None
+    return list(map(int,matches[0]))
+
+def native_ab_order(trial,target):
+    arms=("gpmc","baseline","adaptive")
+    offset=(trial+(target==100))%len(arms)
+    return arms[offset:]+arms[:offset]
+
 def certified_locked_pairs(args,report,persist):
     import statistics
     import sys
     from original_fixed_interval import compare
     from quprs_mqt_adaptive_scout import result_route
     report["reference_limits"]={"wall_s":190,"AS_bytes":AS_BYTES,"fixed_bits":550,"width":19,"work":40_000_000,"live_cells":2_000_000}
+    baseline=args.native_ab_baseline
+    if baseline is not None:
+        # Binary path and checkout provenance are pinned, not inferred
+        # from previously collected cross-run WallTime ratios.
+        root=baseline.resolve().parents[4]
+        if git_sha(root)!=NATIVE_AB_BASELINE_SHA:
+            raise SystemExit("NATIVE_AB_BASELINE_REVISION_DRIFT")
+        if sha(root/"benchmarks/mpfr_research/Cargo.lock")!=sha(Path("benchmarks/mpfr_research/Cargo.lock")):
+            raise SystemExit("NATIVE_AB_LOCKFILE_DRIFT")
+        report["native_ab"]={"baseline_commit":NATIVE_AB_BASELINE_SHA,"candidate_commit":git_sha(Path(".")),
+            "baseline_binary_sha256":sha(baseline),"candidate_binary_sha256":sha(args.mpfr),
+            "gpmc_binary_sha256":sha(args.gpmc),"cargo_lock_sha256":sha(Path("benchmarks/mpfr_research/Cargo.lock")),
+            "arms":["gpmc","baseline","adaptive"],"trials":7,"rotation":"three-arm cyclic; offset by precision"}
+        persist()
     for item in report["cases"]:
         if item["source_status"]!="SOURCE_EXACT":
             item["status"]="SOURCE_INCONCLUSIVE";persist();continue
@@ -227,17 +254,20 @@ def certified_locked_pairs(args,report,persist):
                 cohort={"target_digits":target,"working_digits":digits,"working_bits":working_bits,"trials":[]}
                 item["pairs"].append(cohort)
                 for trial in range(7):
-                    arms=("gpmc","adaptive") if (trial+(target==100))%2==0 else ("adaptive","gpmc")
+                    arms=(native_ab_order(trial,target) if baseline is not None else
+                          (("gpmc","adaptive") if (trial+(target==100))%2==0 else ("adaptive","gpmc")))
                     pair=[]
                     for arm in arms:
                         if sha(cnf)!=expected:raise SystemExit("LOCKED_CNF_DRIFT")
                         cmd=([str(args.gpmc.resolve()),"-mode=1",f"-prec={digits}",str(cnf.resolve())]
-                             if arm=="gpmc" else [str(args.mpfr.resolve()),"--adaptive",str(digits),str(cnf.resolve())])
+                             if arm=="gpmc" else [str((baseline if arm=="baseline" else args.mpfr).resolve()),"--adaptive",str(digits),str(cnf.resolve())])
                         r=native(cmd,"gpmc" if arm=="gpmc" else "candidate",PAIR_S,digits,expected_bits=working_bits)
                         r.update(arm=arm,trial=trial)
                         if r["status"]=="COMPLETED":
                             r["independent_witness"]=compare(r,ref,target)
                             r["route_verified"]=arm=="gpmc" or result_route(r)=="definitional"
+                            if baseline is not None and arm!="gpmc":
+                                r["contraction_signature"]=contraction_signature(r)
                         pair.append(r);cohort["trials"].append(r);persist()
                         print("MQT_CERTIFIED_PAIR",case,target,working_bits,trial,arm,r["status"],r.get("independent_witness",{}).get("pass"),r.get("wall_ns"),flush=True)
                     if any(r["status"]!="COMPLETED" for r in pair):
@@ -246,6 +276,15 @@ def certified_locked_pairs(args,report,persist):
                         cohort["status"]="ROUTE_INCONCLUSIVE";break
                     if not all(r["independent_witness"]["pass"] for r in pair):
                         cohort["status"]="ACCURACY_INCONCLUSIVE";break
+                    if baseline is not None:
+                        by_arm={r["arm"]:r for r in pair}
+                        old,new=by_arm["baseline"],by_arm["adaptive"]
+                        if (old.get("contraction_signature") is None or
+                            old["contraction_signature"]!=new.get("contraction_signature") or
+                            any(old[k]!=new[k] for k in ("sat","real","imag"))):
+                            cohort["status"]="NATIVE_AB_ROUTE_OR_OUTPUT_DRIFT";break
+                        if not all(r.get("peak_rss_kib",0)>0 for r in pair):
+                            cohort["status"]="NATIVE_AB_RSS_MISSING";break
                 else:
                     g=statistics.median(r["wall_ns"] for r in cohort["trials"] if r["arm"]=="gpmc")
                     t=statistics.median(r["wall_ns"] for r in cohort["trials"] if r["arm"]=="adaptive")
@@ -254,6 +293,20 @@ def certified_locked_pairs(args,report,persist):
                         assert len(samples)==7
                         return (samples[5]+0.4*(samples[6]-samples[5]))/1e9
                     cohort.update(status="CERTIFIED_SEVEN_MATCHED_PAIRS",gpmc_median_s=g/1e9,rust_median_s=t/1e9,gpmc_over_rust=g/t,gpmc_p90_s=p90("gpmc"),rust_p90_s=p90("adaptive"))
+                    if baseline is not None:
+                        old=statistics.median(r["wall_ns"] for r in cohort["trials"] if r["arm"]=="baseline")
+                        paired=[]
+                        for trial in range(7):
+                            rows={r["arm"]:r for r in cohort["trials"] if r["trial"]==trial}
+                            paired.append(rows["baseline"]["wall_ns"]/rows["adaptive"]["wall_ns"])
+                        cohort.update(native_ab_status="CERTIFIED_SEVEN_MATCHED_TRIPLES",
+                            baseline_median_s=old/1e9,baseline_p90_s=p90("baseline"),
+                            baseline_over_candidate=old/t,paired_baseline_over_candidate_median=statistics.median(paired),
+                            gpmc_over_baseline=g/old,paired_baseline_over_candidate=paired,
+                            median_rss_kib={a:statistics.median(r["peak_rss_kib"] for r in cohort["trials"] if r["arm"]==a)
+                                            for a in ("gpmc","baseline","adaptive")})
+                        print("MQT_NATIVE_AB_FINAL",case,target,working_bits,old/1e9,t/1e9,old/t,
+                              statistics.median(paired),cohort["median_rss_kib"],flush=True)
                 persist()
                 print("MQT_CERTIFIED_FINAL",case,target,working_bits,cohort["status"],cohort.get("gpmc_over_rust"),flush=True)
                 if cohort["status"]!="ACCURACY_INCONCLUSIVE":break
@@ -287,9 +340,18 @@ def main():
     ap.add_argument("--locked-long",action="store_true")
     ap.add_argument("--residual-followup",action="store_true")
     ap.add_argument("--certified-long",action="store_true")
+    ap.add_argument("--native-ab-baseline",type=Path,
+                    help="Pinned scratch-only research executable; compare on the same runner")
     args=ap.parse_args()
     if (args.residual_followup or args.certified_long) and not args.locked_long:ap.error("followup requires locked sources")
     if args.residual_followup and args.certified_long:ap.error("select one followup")
+    if args.native_ab_baseline is not None and not args.certified_long:ap.error("native A/B requires certified long")
+    if args.native_ab_baseline is not None:
+        if not args.native_ab_baseline.is_file():ap.error("missing baseline executable")
+        for target in BITS:
+            orders=[native_ab_order(t,target) for t in range(7)]
+            assert all(set(o)=={"gpmc","baseline","adaptive"} for o in orders)
+            assert all(2<=sum(o[i]==arm for o in orders)<=3 for i in range(3) for arm in orders[0])
     if args.locked_long and args.mqt_holdout:ap.error("select one study")
     holdout_self_test()
     shards=2 if args.residual_followup else HOLDOUT_SHARDS if args.mqt_holdout or args.locked_long else SHARDS
@@ -350,7 +412,10 @@ def main():
         row["qualified"]=qualified(row["screen"])
         persist()
     if args.certified_long:
-        certified_locked_pairs(args,report,persist);return
+        certified_locked_pairs(args,report,persist)
+        if args.native_ab_baseline is not None and report["status"]!="CERTIFIED_COMPLETE":
+            raise SystemExit("NATIVE_AB_INCONCLUSIVE")
+        return
     if args.locked_long:
         locked_pairs(args,report,persist);return
     eligible=sorted((r for r in report["cases"] if r["qualified"]),

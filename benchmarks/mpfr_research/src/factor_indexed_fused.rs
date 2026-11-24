@@ -1378,25 +1378,32 @@ mod packed_taylor {
         let modbits=base.checked_mul(k).ok_or("taylor_packing_width")?;
         trace.terms=k;trace.base_bits=base;
         let phase=(Integer::from(1)<<base)-1;
-        let (sat2,mut packed)=pass(&planner.leaves,modbits,&phase,start,trace,stats,false)?;
+        let (sat2,packed)=pass(&planner.leaves,modbits,&phase,start,trace,stats,false)?;
         if sat2!=sat||trace.completed!=trace.planned||trace.count_completed!=trace.planned{
             return Err("taylor_incomplete");
         }
+        let result=decode_affine_packed(packed,&n,&delta,(d,k,base),(bits,digits),start)?;
+        trace.certified=true;Ok(result)
+    }
+    // Common exact balanced-digit and emitted-decimal certificate.
+    pub(crate) fn decode_affine_packed(mut packed:Integer,n:&Integer,delta:&Rational,
+        packing:(u32,u32,u32),precision:(u32,u32),start:Instant)->Result<Outcome,&'static str>{
+        let (d,k,base)=packing;let (bits,digits)=precision;
         let mut re=Rational::from(0);let mut im=Rational::from(0);let mut power=Rational::from(1);
         for j in 0..k {
             let c=packed.clone().keep_signed_bits(base);
-            if c.clone().abs()>&n*binomial(d,j){return Err("taylor_coefficient_bound");}
+            if c.clone().abs()>n*binomial(d,j){return Err("taylor_coefficient_bound");}
             packed-=&c;packed>>=base;
             let mut term=power.clone()*Rational::from(c);
             if (j>>1)&1==1 {term = -term;}
             if j&1==0 {re+=term;}else{im+=term;}
-            power*=&delta;
+            power*=delta;
         }
-        let tail=if k>d||delta==0 {Rational::from(0)}else{
+        let tail=if k>d||*delta==0 {Rational::from(0)}else{
             let a=delta.clone().abs();
             let ratio=Rational::from((d,k+1))*a.clone();
             if ratio>=1{return Err("taylor_tail_ratio");}
-            Rational::from(&n*binomial(d,k))*a.pow(k)/(Rational::from(1)-ratio)
+            Rational::from(n*binomial(d,k))*a.pow(k)/(Rational::from(1)-ratio)
         };
         let r=Float::with_val(bits,&re);let i=Float::with_val(bits,&im);
         // Certify exactly the same decimal strings emitted by main.rs,
@@ -1409,7 +1416,7 @@ mod packed_taylor {
         let guard=Rational::from((Integer::from(1),Integer::from(2)*Integer::from(10).pow(digits-6)));
         if error>scale*guard{return Err("taylor_error_certificate");}
         if start.elapsed().as_secs()>=110{return Err("taylor_deadline");}
-        trace.certified=true;Ok(Outcome{sat,count:C{re:r,im:i}})
+        Ok(Outcome{sat:true,count:C{re:r,im:i}})
     }
     pub(crate) fn count_taylor(p:&Problem,raw:&str,bits:u32,digits:u32)->(Option<Outcome>,VeStats,TaylorStats){
         let start=Instant::now();
@@ -1534,4 +1541,4 @@ mod packed_taylor {
         }
     }
 }
-pub(crate) use packed_taylor::{count_taylor, carrier as exact_phase_carrier, affine_leaf, TaylorStats};
+pub(crate) use packed_taylor::{count_taylor, carrier as exact_phase_carrier, affine_leaf, TaylorStats, decode_affine_packed};

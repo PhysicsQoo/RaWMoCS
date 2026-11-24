@@ -194,3 +194,113 @@ Each is still original-CNF, source- and precision-matched, and
 timeout-limited. A toggle can change downstream solver states:
 it is **hypothesis triage, not isolated causal proof**.
 No new workflow, environment or production solver changes.
+
+## 2026-11-24: replicated GPMC tree-decomposition mechanism and SCC hypothesis
+
+The matched original-CNF GPMC/Rust 7-trial native run
+[#45283520291](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/45283520291)
+passed all 60 workflows; GPMC finished 7/7 trials on the three source
+families at both numeric precisions, whereas Rust exceeded 30s in **all**
+seven attempts per case/precision. Thus Rust has no measured completion
+p50/p90; only a lower bound on the ratio to completed GPMC p50 is valid.
+
+| Source/precision | GPMC p50 (s) | Rust status | Strict Rust/GPMC p50 lower bound |
+| --- | ---: | --- | ---: |
+| GF(2)6 Mult, 100-bit | 4.2624 | 7/7 30s timeouts | >7.04x |
+| GF(2)6 Mult, 333-bit | 4.5510 | 7/7 30s timeouts | >6.59x |
+| QNN8, 100-bit | 1.3535 | 7/7 30s timeouts | >22.16x |
+| QNN8, 333-bit | 1.4988 | 7/7 30s timeouts | >20.02x |
+| W-state16, 100-bit | 5.2566 | 7/7 30s timeouts | >5.71x |
+| W-state16, 333-bit | 5.7961 | 7/7 30s timeouts | >5.18x |
+
+Single exploratory original GPMC toggles (100-bit) with the same SAT
+and signed Complex WMC as the corresponding default run:
+
+| Original CNF | Default (s) | -no-td (s) | -no-pp_ee -no-pp_ve -no-pp_cs (s) | -no-bj (s) |
+| --- | ---: | ---: | ---: | ---: |
+| GF(2)6 Mult | 4.262 | 9.614 | 0.963 | 4.345 |
+| QNN8 | 1.354 | 6.822 | 1.563 | 1.353 |
+| W-state16 | 5.257 | 14.897 | 5.751 | 5.235 |
+
+The 333-bit toggles show the same qualitative pattern. **These toggles
+are single trials, not an isolated causal proof**: each changes downstream
+search states and its effects may interact with other mechanisms. Disable
+preprocessing only as an exploratory control, not as a blanket default.
+
+### Exact signed-literal SCC reduction, conditional on full weight transfer
+
+For a binary clause \`(a OR b)\`, add implication arcs \`¬a → b\` and
+\`¬b → a\`; for unit \`a\`, add \`¬a → a\`. A strongly connected
+component of literals proves equality of truth values for members.
+If \`v\` and \`¬v\` share an SCC, the binary/unit implication subsystem
+is inconsistent. Otherwise construct a polarity-preserving mapping
+\`m(-v) = -m(v)\`. Transfer **both** original variable weights
+to their representative before substituting clauses:
+
+\[
+w'_r(1)=\prod_{v:\lvert m(v)\rvert=r}
+      w_v(\mathbb{1}_{m(v)>0}),\qquad
+w'_r(0)=\prod_{v:\lvert m(v)\rvert=r}
+      w_v(\mathbb{1}_{m(v)<0}).
+\]
+
+Here each \`w_v(1)\` and \`w_v(0)\` is the original *signed Complex*
+literal weight; no intermediate floating-point approximation or
+\`WMC != 0\` SAT shortcut is permitted. The full formula WMC remains
+equal because assignments satisfying the implied equalities are in
+bijection with assignments to representatives and the product
+includes each original literal factor exactly once. Preserve a separate
+Boolean SAT channel, especially where signed Complex factors cancel
+to zero or include zero weights.
+
+The **research-only, standard-library** script
+\`benchmarks/mpfr_research/tools/quprs_long_tail_scc_poc.py\` checks this
+transformation against a small *exhaustive* Boolean SAT + signed Complex
+WMC oracle, including zero and cancelling weights. It then verifies
+the SHA-locked actual QuPRS-produced CNF and reports a hypothetical
+SCC-based structural substitution; the production solver is unchanged.
+
+| Original source | Candidate variables eliminated | Clauses before → after | Greedy min-degree induced width before → after |
+| --- | ---: | ---: | ---: |
+| GF(2)6 Mult | 6 | 512 → 476 | 18 → 18 |
+| QNN8 | 104 | 749 → 541 | 15 → 15 |
+| W-state16 | 209 | 2341 → 1923 | 20 → 20 |
+| Qwalk5 | 368 | 2582 → 1846 | 13 → 13 |
+| Adder8 | 24 | 1880 → 1816 | 14 → 14 |
+
+Greedy *min-degree induced width* is **not optimal treewidth**, and
+lower variable/clause counts are **not proven native solver speedups**.
+Source-only network graph inspection additionally found that many
+articulation points in QNN8 and W-state16 disappear after SCC merging:
+those were mostly shallow equivalence chains, not independent
+low-width decomposition opportunities. The surviving weighted core
+still needs genuinely separator-aware exact counting.
+
+### Next algorithmic proof obligation
+
+Favor source-CNF native **Project-Join Tree / separator-aware exact
+weighted counting**, after validating the sign-preserving SCC factor
+ownership. For a separator \`S\` and pairwise disjoint interiors \`X_i\`:
+
+\[
+\operatorname{WMC}(F)=
+\sum_{s\in\{0,1\}^{S}}
+\left(\prod_{v\in S}w_v(s_v)\right)
+\prod_i
+\left[
+\sum_{x_i\in\{0,1\}^{X_i}}
+\mathbf1[F_i(s,x_i)]
+\prod_{v\in X_i}w_v(x_{i,v})
+\right].
+\]
+
+Each weight is owned by exactly one separator or interior node, and
+SAT status must follow a **separate Boolean OR/AND recurrence**;
+complex cancellation must not turn a satisfiable instance into UNSAT.
+Require an exhaustive tiny-oracle proof, real original SHA-locked
+CNF correctness at 100/333 bits, and a *measured* 7-trial long-case
+WallTime/RSS benefit before promoting any Rust fast path. Avoid
+unbounded dense factor tables, and retain capped, explicit fallback
+to the unchanged exact solver.
+
+No changes to QuPRS/GPMC source or production RaWMoCS defaults.

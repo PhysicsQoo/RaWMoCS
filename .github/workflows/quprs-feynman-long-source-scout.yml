@@ -6,6 +6,7 @@ on:
       - ".github/workflows/quprs-feynman-long-source-scout.yml"
       - "benchmarks/rust_core/tools/quprs_long_feynman_reference.rs"
       - "benchmarks/mpfr_research/tools/quprs_long_tail_mechanism.py"
+      - "benchmarks/mpfr_research/tools/quprs_long_tail_scc_poc.py"
       - "benchmarks/rust_core/tools/quprs_long_tail_source_bridge.rs"
       - "benchmarks/mpfr_research/tools/quprs_long_tail_paired.py"
       - "docs/original-long-tail-weighted-cnf-benchmark.md"
@@ -310,6 +311,16 @@ jobs:
             --corpus .research/long-tail \
             --report .research/long-tail/long-tail-source-locked-evidence.json \
             | tee .research/long-tail/long-tail-scout.log
+      - name: Original source Weighted-safe SCC structural preflight and audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile benchmarks/mpfr_research/tools/quprs_long_tail_scc_poc.py
+          python3 benchmarks/mpfr_research/tools/quprs_long_tail_scc_poc.py --self-test
+          python3 benchmarks/mpfr_research/tools/quprs_long_tail_scc_poc.py \
+            --screen-report .research/long-tail/long-tail-source-locked-evidence.json \
+            --corpus .research/long-tail \
+            --report .research/long-tail/scc-source-locked-audit.json
       - name: Archive hash-locked 16-source screens before long pilots
         if: always()
         uses: actions/upload-artifact@v4

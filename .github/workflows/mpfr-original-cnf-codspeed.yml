@@ -5,8 +5,9 @@ on:
     inputs:
       study:
         type: choice
-        options: [legacy, grover6_large, wstate16]
-        default: legacy
+        description: 'Focused by default; long/legacy selections are explicit milestone studies'
+        options: [grover5_focus, legacy, grover6_large, wstate16]
+        default: grover5_focus
       digits:
         type: choice
         options: ['30', '100']
@@ -30,9 +31,10 @@ jobs:
         github.head_ref == 'research/mpfr-exact-residual-arena-reuse-20261118' &&
         github.event.label.name == 'run-long-codspeed'))
     runs-on: ubuntu-24.04
-    timeout-minutes: 65
+    # Build/reference overhead is separate from the bounded Simulation step.
+    timeout-minutes: ${{ (github.event_name == 'pull_request' || inputs.study == 'grover5_focus') && 25 || 35 }}
     env:
-      STUDY: ${{ github.event_name == 'pull_request' && 'grover6_large' || inputs.study || 'legacy' }}
+      STUDY: ${{ github.event_name == 'pull_request' && 'grover5_focus' || inputs.study || 'grover5_focus' }}
       DIGITS: ${{ inputs.digits || '30' }}
     permissions:
       contents: read
@@ -124,17 +126,21 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m py_compile benchmarks/mpfr_research/tools/quprs_long_codspeed.py
-          python3 benchmarks/mpfr_research/tools/quprs_long_codspeed.py prepare --case "$STUDY" --digits "$DIGITS"
+          flags=()
+          if [[ "$STUDY" != grover5_focus ]]; then flags+=(--milestone); fi
+          python3 benchmarks/mpfr_research/tools/quprs_long_codspeed.py prepare --case "$STUDY" --digits "$DIGITS" "${flags[@]}"
       - name: CodSpeed native process simulation and flamegraph capture
         if: env.STUDY == 'legacy'
+        timeout-minutes: 20
         uses: CodSpeedHQ/action@v5
         with:
           mode: simulation
           # The Action invokes CodSpeed itself; the config discovers all exec targets.
           # Do not nest `codspeed run` inside the CodSpeed Action.
           config: codspeed.yml
-      - name: CodSpeed focused long original CNF Simulation
+      - name: CodSpeed focused original CNF Simulation
         if: env.STUDY != 'legacy'
+        timeout-minutes: ${{ env.STUDY == 'grover5_focus' && 10 || 20 }}
         uses: CodSpeedHQ/action@v5
         with:
           mode: simulation

@@ -37,10 +37,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let source_root = args.next().ok_or("missing pinned QuPRS checkout path")?;
     let output_root = args.next().ok_or("missing output folder")?;
+    let extension = args.next();
     if args.next().is_some() { return Err("extra export arguments".into()); }
-    let (_, source_relpath) = SOURCES.iter()
-        .find(|(id, _)| *id == case)
-        .ok_or("unlisted original benchmark source")?;
+    let source_relpath = if let Some(ref rel) = extension {
+        // The separate GPMC-completer scout admits only original tracked
+        // QASM paths in these two source directories. No rewritten circuit.
+        if !case.starts_with("extended_") || !case.bytes().all(|b|b.is_ascii_lowercase()||b.is_ascii_digit()||b==b'_')
+            || !(rel.starts_with("benchmarks/Feynman/")||rel.starts_with("benchmarks/MQTBench/"))
+            || !rel.ends_with(".qasm") || Path::new(rel).components().any(|c|!matches!(c,std::path::Component::Normal(_))) {
+            return Err("invalid extended original source path".into());
+        }
+        rel.as_str()
+    } else {
+        SOURCES.iter().find(|(id, _)| *id == case)
+            .map(|(_,path)|*path).ok_or("unlisted original benchmark source")?
+    };
     let input = fs::read_to_string(Path::new(&source_root).join(source_relpath))?;
     let (operations, qubits) = qasm::parse_qasm_str(&input)?;
     if qubits == 0 || qubits > 24 {

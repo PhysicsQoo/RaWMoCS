@@ -46,7 +46,7 @@ fn profile(p:&Problem,raw:&str)->Result<Profile,String>{
     let mut best:Option<Plan>=None;
     // Keep the original order for cheap admitted instances. For costly
     // instances use a small deterministic resource portfolio; not a family ID.
-    for (penalty,reverse) in [(0,false),(1,true),(2,true),(0,true)]{
+    for (penalty,reverse) in [(0,false),(1,true),(2,true),(0,true),(4,true),(2,false)]{
         let plan=plan_scopes(&free,&scopes,start,penalty,reverse)?;
         if best.as_ref().is_none_or(|b|(!plan.complete,plan.work,plan.peak,plan.width)<(!b.complete,b.work,b.peak,b.width)){
             best=Some(plan);
@@ -75,8 +75,8 @@ fn plan_scopes(free:&BTreeSet<usize>,original:&[BTreeSet<usize>],start:Instant,p
         }).ok_or("profile graph")?;
         let nb=graph.remove(&v).ok_or("profile pivot")?;
         out.width=out.width.max(nb.len());
-        // Width 19 is permitted ONLY with a completed work/live preflight.
-        if nb.len()>19{return Ok(out);}
+        // Width 20 is permitted ONLY with a completed work/live preflight.
+        if nb.len()>20{return Ok(out);}
         let size=1u64<<nb.len();let mut removed=0;let mut incident=0;
         scopes.retain(|s|{if s.contains(&v){removed+=1u64<<s.len();incident+=1;false}else{true}});
         out.work=out.work.saturating_add(2*size*incident);
@@ -98,10 +98,10 @@ fn choose(p:&Profile)->Route{
     // Exact uniform cliques have their own internal limits. A failed
     // admission or time cap never changes the generic source semantics.
     if p.cliques.len()==2{return Route::Cardinality;}
-    if p.complete&&p.width<=19&&p.work<=60_000_000&&p.peak<=2_000_000{
+    if p.complete&&p.width<=20&&p.work<=60_000_000&&p.peak<=2_000_000{
         return Route::Definitional;
     }
-    if p.gates>0&&p.residual==0&&p.width==19{return Route::Conditioned;}
+    if p.gates>0&&p.residual==0&&(19..=21).contains(&p.width){return Route::Conditioned;}
     Route::Trail
 }
 fn generic(p:&Problem,bits:u32,hybrid:bool)->Result<(Outcome,u64,u64,u64),String>{
@@ -129,7 +129,7 @@ fn solve(p:&Problem,raw:&str,bits:u32,hybrid:bool)->Result<(Outcome,Route,u64,u6
         let attempt=Instant::now();
         let result=match route{
             Route::Cardinality=>count_bounded(p,raw,bits,&mut trace,15),
-            Route::Definitional=>definitional::count_planned(p,bits,&mut trace,if profile.width==19{30}else{15},&profile.order),
+            Route::Definitional=>definitional::count_planned(p,bits,&mut trace,if profile.width>=19{30}else{15},&profile.order),
             Route::Conditioned=>definitional::count_conditioned(p,bits,&mut trace,45),
             Route::Trail=>unreachable!(),
         };
@@ -213,6 +213,16 @@ mod tests{
         assert_eq!(p.width,19);
         assert_eq!(choose(&Profile{width:19,complete:false,..Profile::default()}),Route::Trail);
         assert_eq!(choose(&Profile{width:19,complete:true,work:30_000_000,peak:800_000,..Profile::default()}),Route::Definitional);
+    }
+    #[test]
+    fn width20_admission_preserves_resource_caps(){
+        let admitted=Profile{width:20,complete:true,work:50_100_000,peak:1_610_000,..Profile::default()};
+        assert_eq!(choose(&admitted),Route::Definitional);
+        assert_eq!(choose(&Profile{work:60_000_001,..admitted}),Route::Trail);
+        let admitted=Profile{width:20,complete:true,work:50_100_000,peak:2_000_001,..Profile::default()};
+        assert_eq!(choose(&admitted),Route::Trail);
+        let p=Profile{width:21,gates:300,residual:0,..Profile::default()};
+        assert_eq!(choose(&p),Route::Conditioned);
     }
     #[test]
     fn policy_uses_structure_and_caps_only(){

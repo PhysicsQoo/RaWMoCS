@@ -279,14 +279,18 @@ def main() -> None:
     ap.add_argument("--pilot-case", type=str)
     ap.add_argument("--frontier-pilot", action="store_true")
     ap.add_argument("--taylor-pilot", action="store_true")
+    ap.add_argument("--taylor-cohort", action="store_true")
     for field in ("quprs", "gpmc-source", "exporter", "gpmc", "mpfr", "corpus", "report"):
         ap.add_argument("--" + field, type=Path)
     args = ap.parse_args()
     self_test()
     if args.self_test:
         return
-    if (args.frontier_pilot or args.taylor_pilot) and (args.stage != "pilot" or args.pilot_case != "feynman_gf2_8_mult"):
-        ap.error("frontier/Taylor modes require the focused GF2^8 original-source pilot")
+    if args.taylor_cohort and (not args.taylor_pilot or args.stage != "pilot"):
+        ap.error("Taylor cohort requires explicit Taylor pilot")
+    permitted = ("feynman_gf2_6_mult", "feynman_gf2_8_mult") if args.taylor_cohort else ("feynman_gf2_8_mult",)
+    if (args.frontier_pilot or args.taylor_pilot) and (args.stage != "pilot" or args.pilot_case not in permitted):
+        ap.error("frontier/Taylor modes require the focused original-source GF2 pilot")
     if args.frontier_pilot and args.taylor_pilot:
         ap.error("select one focused kernel, not both")
     required = ("quprs", "gpmc_source", "gpmc", "mpfr", "corpus", "report")
@@ -323,7 +327,8 @@ def main() -> None:
         if len(records) != EXPORTED_CASES or {r["case"] for r in records} != set(indexed):
             raise SystemExit("MISSING_SOURCE_CASES")
         selected_ids = report.get("selected", [])
-        if args.pilot_case not in selected_ids or len(selected_ids) != MAX_PAIRED_LONG_CASES:
+        heldout = args.taylor_cohort and args.pilot_case == "feynman_gf2_6_mult"
+        if (args.pilot_case not in selected_ids and not heldout) or len(selected_ids) != MAX_PAIRED_LONG_CASES:
             raise SystemExit("PILOT_CASE_NOT_SOURCE_QUALIFIED")
         for record in records:
             name = record["case"]
@@ -342,6 +347,10 @@ def main() -> None:
                         or not record.get("cnf_clauses")):
                     raise SystemExit(f"ORIGINAL_WEIGHTED_CNF_SHA_MISMATCH {name}")
         selected = [r for r in records if r["case"] == args.pilot_case]
+        if len(selected) != 1 or selected[0]["source_status"] != "SOURCE_EXACT":
+            raise SystemExit("PILOT_SOURCE_NOT_EXACT")
+        if heldout and not selected[0].get("long_candidate"):
+            raise SystemExit("HELDOUT_NOT_PREVIOUSLY_MEASURED_LONG")
         args.report = args.corpus / f"long-tail-pilot-{args.pilot_case}.json"
         report["pilot_case"] = args.pilot_case
         report["status"] = "PILOT_IN_PROGRESS"
@@ -460,6 +469,72 @@ def main() -> None:
                       "trials": [], "design": "EXPLORATORY_TWO_TRIALS_NOT_PRODUCTION_GO"}
             item["pilot"].append(cohort)
             persist(args, report)
+            if args.taylor_cohort:
+                # Predeclared case-specific repeat counts: the genuinely
+                # long GF2^8 control is costly; GF2^6 is a held-out source
+                # for generalization, not an independent numerical proof.
+                count = 3 if case == "feynman_gf2_8_mult" else 7
+                source_sha = sha(cnf)
+                independent_available = case == "feynman_gf2_8_mult"
+                if independent_available:
+                    gf2_taylor_witness.verify_source(cnf)
+                candidate_arm = "indexed_taylor"
+                cohort.update(
+                    design="REPEATED_ALTERNATING_PAIRED_120S_TRIALS_RESEARCH_ONLY",
+                    arithmetic_contract="exact source-decimal integer ring with certified target output precision; GPMC MPFR internal arithmetic differs",
+                    independent_reference=("EXACT_GMP_TAYLOR_COEFFICIENTS_RATIONAL_ENCLOSURE" if independent_available else "UNAVAILABLE_HELDOUT_GPMC_AGREEMENT_ONLY"),
+                    expected_pairs=count, candidate_arm=candidate_arm,
+                    promotion="NOT_AUTHORIZED_RESEARCH_ONLY", pair_witnesses=[])
+                for trial in range(count):
+                    arms=("gpmc",candidate_arm) if (trial+(bits==333))%2==0 else (candidate_arm,"gpmc")
+                    for arm in arms:
+                        cmd=frontier_command(args,case,cnf,digits,taylor=True) if arm==candidate_arm else command(args,case,cnf,digits,arm)
+                        row=native(cmd,arm,PAIR_S,digits)
+                        row["trial"]=trial
+                        if arm==candidate_arm:
+                            row["certified_route_complete"]=(
+                                row["status"]=="COMPLETED"
+                                and row.get("factor_ve_completed") is True
+                                and row.get("factor_ve_capped") is False
+                                and row.get("taylor_certified") is True
+                                and row.get("taylor_planned",0)>0
+                                and row.get("taylor_planned")==row.get("taylor_count_completed")==row.get("taylor_completed"))
+                        if independent_available and row["status"]=="COMPLETED":
+                            row["independent_numeric_witness"]=gf2_taylor_witness.compare(row,digits,source_sha)
+                            if not row["independent_numeric_witness"]["pass"]:
+                                numeric_disagreement=True
+                        cohort["trials"].append(row)
+                        persist(args,report)
+                        print("TAYLOR_COHORT",case,bits,trial,arm,row["status"],row.get("wall_ns"),row.get("certified_route_complete"),flush=True)
+                    pair={x["arm"]:x for x in cohort["trials"] if x["trial"]==trial}
+                    if all(x["status"]=="COMPLETED" for x in pair.values()):
+                        witness=complex_relative_witness(pair["gpmc"],pair[candidate_arm],digits)
+                        witness["sat_match"]=pair["gpmc"]["sat"]==pair[candidate_arm]["sat"]
+                        witness["trial"]=trial
+                        cohort["pair_witnesses"].append(witness)
+                        if not witness["pass"] or not witness["sat_match"]:
+                            numeric_disagreement=True
+                    persist(args,report)
+                rows=cohort["trials"]
+                control=[r for r in rows if r["arm"]=="gpmc"]
+                candidate=[r for r in rows if r["arm"]==candidate_arm]
+                cohort["completion_counts"]={arm:sum(r["status"]=="COMPLETED" for r in rows if r["arm"]==arm) for arm in ("gpmc",candidate_arm)}
+                cohort["certified_route_count"]=sum(r["certified_route_complete"] for r in candidate)
+                all_pairs=(len(cohort["pair_witnesses"])==count and all(r["pass"] and r["sat_match"] for r in cohort["pair_witnesses"]))
+                independent_ok=(not independent_available or all(r.get("independent_numeric_witness",{}).get("pass") for r in rows))
+                if all_pairs and independent_ok and cohort["certified_route_count"]==count:
+                    g=[r["wall_ns"] for r in control]
+                    t=[r["wall_ns"] for r in candidate]
+                    cohort.update(status=("REPEATED_INDEPENDENT_MATCH" if independent_available else "HELDOUT_MATCH_NO_INDEPENDENT_REFERENCE"),
+                                  gpmc_p50_ms=statistics.median(g)/1e6,
+                                  taylor_p50_ms=statistics.median(t)/1e6,
+                                  gpmc_over_taylor_wall_ratio=statistics.median(g)/statistics.median(t),
+                                  taylor_paired_wins=sum(y<x for x,y in zip(g,t)))
+                else:
+                    cohort["status"]="INCOMPLETE_CENSORED_FALLBACK_OR_DISAGREEMENT"
+                persist(args,report)
+                print("TAYLOR_COHORT_FINAL",case,bits,cohort["status"],cohort["completion_counts"],cohort["certified_route_count"],cohort.get("gpmc_over_taylor_wall_ratio"),flush=True)
+                continue
             if args.frontier_pilot or args.taylor_pilot:
                 # One genuinely long pair at each precision first, not a
                 # seven-trial campaign or a claim from a censored control.

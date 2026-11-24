@@ -340,13 +340,13 @@ jobs:
     # Keep one existing workflow, parallelize the three previously
     # source-qualified hard cases with independent timeout/artifact.
     needs: original-long-tail-source-locked-screen
-    if: ${{ !cancelled() && ((inputs.suite == 'full' && needs.original-long-tail-source-locked-screen.result == 'success') || ((((github.event_name == 'pull_request' && github.event.label.name == 'run-gf2-taylor' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/mpfr-exact-residual-arena-reuse-20261118')) || (inputs.suite == 'focused' && inputs.case == 'feynman_gf2_8_mult')) && needs.original-long-tail-source-locked-screen.result == 'skipped')) }}
+    if: ${{ !cancelled() && ((inputs.suite == 'full' && needs.original-long-tail-source-locked-screen.result == 'success') || ((((github.event_name == 'pull_request' && (github.event.label.name == 'run-gf2-taylor' || github.event.label.name == 'run-gf2-taylor-cohort') && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/mpfr-exact-residual-arena-reuse-20261118')) || (inputs.suite == 'focused' && inputs.case == 'feynman_gf2_8_mult')) && needs.original-long-tail-source-locked-screen.result == 'skipped')) }}
     strategy:
       fail-fast: false
       matrix:
-        case: ${{ fromJSON(inputs.suite == 'full' && '["mqt_qnn_12","feynman_gf2_8_mult","feynman_ham15_med"]' || '["feynman_gf2_8_mult"]') }}
+        case: ${{ fromJSON(inputs.suite == 'full' && '["mqt_qnn_12","feynman_gf2_8_mult","feynman_ham15_med"]' || (github.event.label.name == 'run-gf2-taylor-cohort' && '["feynman_gf2_6_mult","feynman_gf2_8_mult"]' || '["feynman_gf2_8_mult"]')) }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: ${{ matrix.case == 'feynman_gf2_6_mult' && 65 || 35 }}
     steps:
       - name: Checkout RaWMoCS research source
         uses: actions/checkout@v4
@@ -413,7 +413,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo build --release --manifest-path benchmarks/mpfr_research/Cargo.toml
-      - name: Independently time one 100/333-bit 120s original-CNF pilot
+      - name: Time bounded 100/333-bit original-CNF Taylor or baseline pilot
         shell: bash
         run: |
           set -euo pipefail
@@ -422,6 +422,7 @@ jobs:
           pilot=()
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             pilot+=(--taylor-pilot)
+            if [[ "${{ github.event.label.name }}" == "run-gf2-taylor-cohort" ]]; then pilot+=(--taylor-cohort); fi
           elif [[ "${{ inputs.suite }}" == "focused" ]]; then
             if [[ "${{ inputs.gf2_kernel }}" == "taylor" ]]; then pilot+=(--taylor-pilot); else pilot+=(--frontier-pilot); fi
           fi

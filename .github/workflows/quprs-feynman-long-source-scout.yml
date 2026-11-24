@@ -555,7 +555,7 @@ jobs:
 
   original-qnn-cardinality-pilot:
     # Explicit label or manual dispatch only; no costly per-push campaign.
-    if: ${{ (github.event_name == 'pull_request' && github.event.label.name == 'run-qnn-cardinality' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/mpfr-exact-residual-arena-reuse-20261118') || (github.event_name == 'workflow_dispatch' && inputs.suite == 'focused' && inputs.case == 'mqt_qnn_12') }}
+    if: ${{ (github.event_name == 'pull_request' && github.event.label.name == 'run-qnn-cardinality-native' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/mpfr-exact-residual-arena-reuse-20261118') || (github.event_name == 'workflow_dispatch' && inputs.suite == 'focused' && inputs.case == 'mqt_qnn_12') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
@@ -599,6 +599,15 @@ jobs:
           test "$(git -C .upstream/gpmc rev-parse HEAD)" = "89bbc89d0de918e7a5385740355df55765039230"
           cmake -S .upstream/gpmc -B .upstream/gpmc/build -G Ninja -DCMAKE_BUILD_TYPE=Release
           cmake --build .upstream/gpmc/build --target gpmc-bin --parallel 2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/mpfr_research -> target
+          key: source-locked-high-cost-cohort
+      - name: Qualify native cardinality against exhaustive original-CNF oracle
+        run: |
+          cargo test --release --manifest-path benchmarks/mpfr_research/Cargo.toml factor_cardinality::tests
+          cargo build --release --manifest-path benchmarks/mpfr_research/Cargo.toml
       - name: Same-run original QNN8 and QNN12 cardinality research pilot
         run: |
           set -euo pipefail
@@ -611,6 +620,7 @@ jobs:
             --corpus .research/long-tail \
             --quprs .upstream/quprs --gpmc-source .upstream/gpmc \
             --gpmc .upstream/gpmc/build/gpmc \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
             --report .research/qnn-cardinality/pilot.json \
             | tee .research/qnn-cardinality/pilot.log
       - name: Preserve candidate, interval and censored control results

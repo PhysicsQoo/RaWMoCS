@@ -156,12 +156,18 @@ def native(cmd: list[str], arm: str, duration: int, digits: int | None) -> dict:
                 if not match or int(match.group(8)) != digits or \
                         int(match.group(9)) != BITS[digits]:
                     raise ValueError("INVALID_OR_MISSING_MPFR_PRECISION")
-                if arm in ("indexed_fused", "indexed_conditioned"):
+                if arm in ("indexed_fused", "indexed_conditioned", "indexed_interned"):
                     ve = re.search(r"^RESEARCH_MPFR_FACTOR_VE enabled=true completed=(true|false) eligible=(true|false) capped=(true|false) ", process.stderr, re.M)
                     if not ve:
                         raise ValueError("MISSING_INDEXED_FUSED_PATH_EVIDENCE")
                     row["factor_ve_completed"] = ve.group(1) == "true"
                     row["factor_ve_capped"] = ve.group(3) == "true"
+                if arm == "indexed_interned":
+                    trace = re.search(r"^RESEARCH_MPFR_INDEXED_INTERNED mul=(\d+) add=(\d+) nontrivial=(\d+) hits=(\d+) peak_pool=(\d+) gc=(\d+) gc_scans=(\d+) peak_live=(\d+) removed=(\d+)$", process.stderr, re.M)
+                    if not trace:
+                        raise ValueError("MISSING_INDEXED_INTERNED_PATH_EVIDENCE")
+                    for i, key in enumerate(("mul","add","nontrivial","hits","peak_pool","gc","gc_scans","peak_live","removed"), 1):
+                        row["interned_" + key] = int(trace.group(i))
                 if arm == "indexed_conditioned":
                     trace = re.search(r"^RESEARCH_MPFR_INDEXED_CONDITION selected=(\d+) probes=(\d+) branches_completed=(\d+) root_work=(\d+) root_peak=(\d+) chosen_work=(\d+) chosen_peak=(\d+) planning_ns=(\d+)$", process.stderr, re.M)
                     if not trace:

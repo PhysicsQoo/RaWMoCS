@@ -26,13 +26,16 @@ from quprs_long_tail_paired import (
 CASES = ("feynman_gf2_6_mult", "mqt_qnn_8", "mqt_wstate_16", "mqt_qwalk_5")
 INDEXED_ARM = "indexed_fused"
 CONDITIONED_ARM = "indexed_conditioned"
+INTERNED_ARM = "indexed_interned"
 
-def indexed_command(args, name, cnf, digits, conditioned=False):
+def indexed_command(args, name, cnf, digits, conditioned=False, interned=False):
     cmd = command(args, name, cnf, digits, "inline_full")
     position = cmd.index("--hashbrown-borrowed")
     cmd[position:position] = ["--factor-variable-elimination", "--factor-ve-indexed-fused"]
     if conditioned:
         cmd.insert(position + 2, "--factor-ve-indexed-conditioned")
+    if interned:
+        cmd.insert(position + 2, "--factor-ve-indexed-interned")
     return cmd
 
 TRIALS = 7
@@ -195,6 +198,8 @@ def self_test() -> None:
         assert indexed.index("--factor-ve-indexed-fused") + 1 == indexed.index("--hashbrown-borrowed")
         conditioned = indexed_command(fake, CASES[0], cnf, digits, conditioned=True)
         assert conditioned.index("--factor-ve-indexed-conditioned") == conditioned.index("--factor-ve-indexed-fused") + 1
+        interned = indexed_command(fake, CASES[0], cnf, digits, interned=True)
+        assert interned.index("--factor-ve-indexed-interned") == interned.index("--factor-ve-indexed-fused") + 1
         for name in GPMC_ABLATIONS:
             cmd = gpmc_ablation_cmd(fake, cnf, digits, name)
             assert cmd[1:3] == ["-mode=1", f"-prec={digits}"]
@@ -209,6 +214,7 @@ def main() -> None:
     ap.add_argument("--self-test", action="store_true")
     ap.add_argument("--indexed-fused", action="store_true")
     ap.add_argument("--indexed-conditioned", action="store_true")
+    ap.add_argument("--indexed-interned-only", action="store_true")
     ap.add_argument("--case", choices=CASES)
     for name in ("quprs", "gpmc-source", "corpus", "gpmc", "mpfr", "report"):
         ap.add_argument("--" + name, type=Path)
@@ -221,6 +227,8 @@ def main() -> None:
             ap.error("missing --" + name.replace("_", "-"))
     if args.indexed_conditioned and not args.indexed_fused:
         ap.error("--indexed-conditioned requires --indexed-fused")
+    if args.indexed_interned_only and (args.indexed_fused or args.indexed_conditioned or args.case != "mqt_wstate_16"):
+        ap.error("interned-only is an independent focused W-state16 pair")
     src_report = args.corpus / "long-tail-source-locked-evidence.json"
     if not src_report.is_file():
         raise SystemExit("MISSING_ORIGINAL_SOURCE_SCREEN")
@@ -234,9 +242,11 @@ def main() -> None:
         "source_lock": {"quprs": QU_PRS_SHA, "gpmc": GPMC_SHA},
         "research_bound": {"seconds_per_solver": MAX_WALL_SECONDS, "AS_bytes": AS_BYTES,
                            "rust_node_budget": 1_000_000_000},
-        "design": "seven fresh rotated native processes per arm and precision; one exploratory native GPMC feature-toggle sample each",
+        "design": ("seven fresh rotated GPMC/interned pairs per precision; no historical timeout arms or ablations"
+                   if args.indexed_interned_only else "seven fresh rotated native processes per arm and precision; one exploratory native GPMC feature-toggle sample each"),
         "indexed_fused_enabled": args.indexed_fused,
         "indexed_conditioned_enabled": args.indexed_conditioned,
+        "indexed_interned_only": args.indexed_interned_only,
         "not_a_production_go": True,
         "full_oracle_caveat": ORACLE_LIMIT, "cohorts": [],
     }
@@ -251,18 +261,48 @@ def main() -> None:
         arms = (*ARMS, INDEXED_ARM) if args.indexed_fused else ARMS
         if args.indexed_conditioned:
             arms = (*arms, CONDITIONED_ARM)
+        if args.indexed_interned_only:
+            arms = ("gpmc", INTERNED_ARM)
         for trial in range(TRIALS):
             shift = trial % len(arms)
             rotated = arms[shift:] + arms[:shift]
             for arm in rotated:
-                cmd = (indexed_command(args, args.case, cnf, digits, conditioned=arm == CONDITIONED_ARM)
-                       if arm in (INDEXED_ARM, CONDITIONED_ARM) else command(args, args.case, cnf, digits, arm))
+                cmd = (indexed_command(args, args.case, cnf, digits, conditioned=arm == CONDITIONED_ARM,
+                                       interned=arm == INTERNED_ARM)
+                       if arm in (INDEXED_ARM, CONDITIONED_ARM, INTERNED_ARM) else command(args, args.case, cnf, digits, arm))
                 record = native(cmd, arm, MAX_WALL_SECONDS, digits)
                 record["trial"] = trial
                 cohort["native_trials"].append(record)
                 persist(args, result)
                 print(f"LONGTAIL_7TRIAL case={args.case} bits={bits} "
                       f"trial={trial} arm={arm} status={record['status']}", flush=True)
+        if args.indexed_interned_only:
+            gp = [r for r in cohort["native_trials"] if r["arm"] == "gpmc"]
+            rs = [r for r in cohort["native_trials"] if r["arm"] == INTERNED_ARM]
+            assert len(gp) == len(rs) == TRIALS
+            refs = [r for r in gp if r["status"] == "COMPLETED"]
+            completed = [r for r in rs if r["status"] == "COMPLETED"]
+            cohort["gpmc_completions"] = len(refs)
+            cohort["indexed_interned_completions"] = len(completed)
+            cohort["indexed_interned_fastpath_completions"] = sum(r.get("factor_ve_completed") is True for r in completed)
+            numeric_ok = len(refs) == TRIALS
+            for row in (refs + completed if refs else []):
+                witness = same_complex(refs[0], row, digits)
+                row["source_locked_complex_numeric_witness"] = witness
+                numeric_ok = witness["pass"] and numeric_ok
+            if refs and not numeric_ok and len(refs) == TRIALS:
+                failures = True
+            for name, rows in (("gpmc", refs), ("indexed_interned", completed)):
+                times = [r["wall_ns"] for r in rows]
+                rss = [r["peak_rss_kib"] for r in rows if r.get("peak_rss_kib") is not None]
+                cohort[name + "_p50_wall_ms"] = statistics.median(times) / 1e6 if len(times) == TRIALS else None
+                cohort[name + "_p90_wall_ms"] = percentile(times, .9) / 1e6 if len(times) == TRIALS else None
+                cohort[name + "_p50_rss_kib"] = statistics.median(rss) if len(rss) == TRIALS else None
+            cohort["status"] = ("COMPLETE_MATCHED_FASTPATH" if numeric_ok and cohort["indexed_interned_fastpath_completions"] == TRIALS
+                                else "FAIL_OR_CENSORED_INTERNED_EVIDENCE")
+            cohort["promotion"] = "NOT_AUTHORIZED_RESEARCH_ONLY"
+            persist(args, result)
+            continue
         for name in GPMC_ABLATIONS:
             record = native(gpmc_ablation_cmd(args, cnf, digits, name),
                             "gpmc", MAX_WALL_SECONDS, digits)

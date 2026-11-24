@@ -500,10 +500,11 @@ jobs:
           set -euo pipefail
           python3 -m py_compile benchmarks/mpfr_research/tools/quprs_long_tail_mechanism.py
           python3 benchmarks/mpfr_research/tools/quprs_long_tail_mechanism.py --self-test
-          conditioned=()
-          if [[ "${{ matrix.case }}" == "feynman_gf2_6_mult" ]]; then conditioned+=(--indexed-conditioned); fi
+          arms=(--indexed-fused)
+          if [[ "${{ matrix.case }}" == "feynman_gf2_6_mult" ]]; then arms+=(--indexed-conditioned); fi
+          if [[ "${{ inputs.suite }}" == "focused" && "${{ matrix.case }}" == "mqt_wstate_16" ]]; then arms=(--indexed-interned-only); fi
           python3 benchmarks/mpfr_research/tools/quprs_long_tail_mechanism.py \
-            --indexed-fused "${conditioned[@]}" \
+            "${arms[@]}" \
             --case "${{ matrix.case }}" \
             --quprs .upstream/quprs \
             --gpmc-source .upstream/gpmc \

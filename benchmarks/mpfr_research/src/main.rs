@@ -935,6 +935,10 @@ fn run() -> Result<(), String> {
     let cache_first = if ve_indexed_conditioned {
         args.next().ok_or("missing mode after --factor-ve-indexed-conditioned")?
     } else { cache_first };
+    let ve_indexed_interned = cache_first.to_str() == Some("--factor-ve-indexed-interned");
+    let cache_first = if ve_indexed_interned {
+        args.next().ok_or("missing mode after --factor-ve-indexed-interned")?
+    } else { cache_first };
     let scope_probe_320 = cache_first.to_str() == Some("--factor-ve-scope-probe-320");
     let cache_first = if scope_probe_320 {
         args.next().ok_or("missing mode after --factor-ve-scope-probe-320")?
@@ -1102,6 +1106,9 @@ fn run() -> Result<(), String> {
     }
     if fused_post_analysis && !projected_post_key {
         return Err("--trail-fused-post-analysis requires --trail-post-unit-projected".into());
+    }
+    if ve_indexed_interned && (!ve_indexed_fused || ve_indexed_conditioned) {
+        return Err("--factor-ve-indexed-interned requires indexed fused without conditioning".into());
     }
     if ve_indexed_conditioned && !ve_indexed_fused {
         return Err("--factor-ve-indexed-conditioned requires --factor-ve-indexed-fused".into());
@@ -1290,7 +1297,12 @@ fn run() -> Result<(), String> {
     let primal_build_ns = td_start.elapsed().as_nanos();
     let ve_start = Instant::now();
     let (ve_candidate, ve_stats) = if factor_ve {
-        if ve_indexed_conditioned {
+        if ve_indexed_interned {
+            let (answer, stats, trace) = factor_indexed_fused::count_interned(source, &scope, bits);
+            eprintln!("RESEARCH_MPFR_INDEXED_INTERNED mul={} add={} nontrivial={} hits={} peak_pool={} gc={} gc_scans={} peak_live={} removed={}",
+                trace.mul,trace.add,trace.nontrivial,trace.hits,trace.peak_pool,trace.gc,trace.gc_scans,trace.peak_live,trace.removed);
+            (answer,stats)
+        } else if ve_indexed_conditioned {
             let (answer, stats, trace) = factor_indexed_fused::count_conditioned(source, &scope, bits);
             eprintln!("RESEARCH_MPFR_INDEXED_CONDITION selected={} probes={} branches_completed={} root_work={} root_peak={} chosen_work={} chosen_peak={} planning_ns={}",
                 trace.selected,trace.probes,trace.branches_completed,trace.root_work,trace.root_peak,

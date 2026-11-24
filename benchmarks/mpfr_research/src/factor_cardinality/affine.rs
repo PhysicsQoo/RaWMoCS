@@ -2,6 +2,7 @@
 //! This is a research planner, not a completed weighted model count.
 use super::{extract_with_arity, weight, var, idx, edge, minfill, Graph, Problem};
 use rug::{Integer,Rational};
+use rug::ops::Pow;
 use crate::factor_indexed_fused::{affine_leaf,decode_affine_packed,TaylorStats};
 use std::collections::{BTreeMap,BTreeSet};
 use std::time::Instant;
@@ -300,6 +301,22 @@ fn contract(m:&Model,fixed:&[usize],p:&Plan,modbits:u32,phase:&Integer,start:Ins
     }
     Ok(sum)
 }
+// Choose enough coefficients BEFORE contraction for the absolute
+// tail bound. The certificate's scale is at least one, so this reserves
+// at least half the existing error budget for emitted-decimal rounding.
+fn certified_terms(n:&Integer,d:u32,delta:&Rational,digits:u32)->Result<u32,String>{
+    if *delta==0{return Ok(1);}
+    let a=delta.clone().abs();
+    let target=Rational::from((Integer::from(1),Integer::from(4)*Integer::from(10).pow(digits-6)));
+    for k in 1..=20{
+        if k>d{return Ok(k);}
+        let ratio=Rational::from((d,k+1))*a.clone();
+        if ratio>=1{continue;}
+        let tail=Rational::from(n*Integer::from(d).binomial(k))*a.clone().pow(k)/(Rational::from(1)-ratio);
+        if tail<=target{return Ok(k);}
+    }
+    Err("affine Taylor absolute-tail order cap".into())
+}
 pub(crate) fn run_taylor(mut args:impl Iterator<Item=std::ffi::OsString>)->Result<(),String>{
     let digits:u32=args.next().and_then(|x|x.into_string().ok()).ok_or("missing digits")?.parse().map_err(|_|"invalid digits")?;
     let bits=match digits{30=>100,100=>333,_=>return Err("unsupported precision".into())};
@@ -314,7 +331,7 @@ pub(crate) fn run_taylor(mut args:impl Iterator<Item=std::ffi::OsString>)->Resul
     if m.factors.iter().any(|f|f.values.iter().any(Option::is_none)){return Err("affine hard support not closed".into());}
     let before=m.factors.len();m.factors=merged(&m.factors)?;
     let n=Integer::from(1)<<(m.free.len() as u32);
-    let k=if m.delta==0{1}else{(if bits==100{4}else{9}).min(m.degree+1)};
+    let k=certified_terms(&n,m.degree,&m.delta,digits)?;
     let bound=(0..k).map(|j|&n*Integer::from(m.degree).binomial(j)).max().ok_or("affine coefficient bound")?;
     let base=bound.significant_bits()+1;
     let modbits=base.checked_mul(k).ok_or("affine packing overflow")?;
@@ -388,6 +405,15 @@ mod tests{
             }
             assert_eq!(actual,expected);
         }
+    }
+    #[test]
+    fn tail_order_depends_on_model_count_and_target(){
+        let a=Rational::from((Integer::from(1),Integer::from(10).pow(16u32)));
+        let small=certified_terms(&Integer::from(2),10,&a,30).unwrap();
+        let large=certified_terms(&(Integer::from(1)<<328u32),1060,&a,30).unwrap();
+        let high=certified_terms(&(Integer::from(1)<<328u32),1060,&a,100).unwrap();
+        assert!(small<large&&large<high);
+        assert_eq!(certified_terms(&Integer::from(2),10,&Rational::from(0),100).unwrap(),1);
     }
     #[test]
     fn exact_ring_cutset_partition_preserves_polynomial(){

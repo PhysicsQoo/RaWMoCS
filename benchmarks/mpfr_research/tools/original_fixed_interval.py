@@ -139,6 +139,13 @@ def self_test():
         a,b=sorted(rng.randint(-100,100) for _ in range(2));c,d=sorted(rng.randint(-100,100) for _ in range(2))
         lo,hi=mul_interval(a,b,c,d);p=[a*c,a*d,b*c,b*d]
         assert lo*S<=min(p) and hi*S>=max(p)
+    # Exercise actual rounding boundaries, not only sub-grid products.
+    for _ in range(2000):
+        a,b=sorted(rng.randrange(-3*S,3*S) for _ in range(2))
+        c,d=sorted(rng.randrange(-3*S,3*S) for _ in range(2))
+        lo,hi=mul_interval(a,b,c,d)
+        p=[a*c,a*d,b*c,b*d]
+        assert lo==min(p)//S and hi==-((-max(p))//S)
     for _ in range(40):
         n=5;clauses=[tuple(rng.choice((-1,1))*v for v in rng.sample(range(1,n+1),3)) for _ in range(5)]
         weights={v:(Q(rng.randint(-3,3),10),Q(rng.randint(-3,3),10)) for v in list(range(1,n+1))+list(range(-n,0))}

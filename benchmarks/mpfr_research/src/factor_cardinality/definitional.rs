@@ -35,7 +35,10 @@ fn insert(factors: &mut Vec<Factor>, graph: &mut Graph, factor: Factor) {
     factors.push(factor);
 }
 pub(super) fn count(p: &Problem, bits: u32, trace: &mut Trace) -> Result<Outcome,String> {
-    let start=Instant::now();
+    count_bounded(p,bits,trace,105)
+}
+pub(super) fn count_bounded(p:&Problem,bits:u32,trace:&mut Trace,seconds:u64)->Result<Outcome,String>{
+    let deadline=Instant::now()+std::time::Duration::from_secs(seconds);
     let (gates,rep,units,residual)=extract_with_arity(p,2048,4)?;
     let free:BTreeSet<_>=rep.iter().copied().filter(|&l|l!=0&&!units.contains_key(&var(l))).map(var).collect();
     trace.gates=gates.len();
@@ -79,7 +82,7 @@ pub(super) fn count(p: &Problem, bits: u32, trace: &mut Trace) -> Result<Outcome
         factors.push(Factor{scope:vec![v],values:vec![Some(a),Some(b)]});
     }
     while !graph.is_empty() {
-        if start.elapsed().as_secs()>=105 {return Err("definitional deadline".into());}
+        if Instant::now()>=deadline {return Err("definitional deadline".into());}
         let v=*graph.keys().min_by_key(|&&v|minfill(&graph,v)).ok_or("empty graph")?;
         let nb=graph.remove(&v).ok_or("missing pivot")?;
         trace.width=trace.width.max(nb.len());
@@ -102,7 +105,7 @@ pub(super) fn count(p: &Problem, bits: u32, trace: &mut Trace) -> Result<Outcome
         trace.peak=trace.peak.max(live);
         let mut values=Vec::with_capacity(size);
         for m in 0..size {
-            if m%4096==0&&start.elapsed().as_secs()>=105 {return Err("definitional deadline".into());}
+            if m%4096==0&&Instant::now()>=deadline {return Err("definitional deadline".into());}
             let base=(m&low)|((m&!low)<<1);
             let branch=|mask:usize| -> Option<C> {
                 let mut product=C::one(bits);

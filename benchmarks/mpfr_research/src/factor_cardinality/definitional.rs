@@ -369,7 +369,7 @@ mod tests {
             for raw in [
                 "p cnf 5 4\nc t wmc\nc p weight 4 -0.1234567890123456789 0.334455667788990011 0\nc p weight -1 0 0 0\n4 -1 2 0\n-4 1 0\n-4 -2 0\n1 2 3 0\n",
                 "p cnf 3 2\nc t wmc\nc p weight 1 -1 0 0\nc p weight 2 0 0 0\nc p weight -2 0 0 0\n1 2 0\n1 -2 0\n",
-                "p cnf 2 4\nc t wmc\n1 2 0\n1 -2 0\n-1 2 0\n-1 -2 0\n",
+                "p cnf 3 8\nc t wmc\n1 2 3 0\n1 2 -3 0\n1 -2 3 0\n1 -2 -3 0\n-1 2 3 0\n-1 2 -3 0\n-1 -2 3 0\n-1 -2 -3 0\n",
                 "p cnf 3 2\nc t wmc\nc p weight 1 0.3333333333333333333333333333333 -0.2 0\nc p weight -2 1.1 -0.7 0\nc p weight 3 1e-40 1e40 0\n1 -2 0\n2 3 0\n",
             ]{
                 let p=crate::parse_emitted(raw,bits).unwrap();

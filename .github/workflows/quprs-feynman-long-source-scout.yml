@@ -241,13 +241,13 @@ jobs:
   original-long-tail-source-locked-screen:
     # One existing workflow, no new workflows/environment/branch. This costly
     # study is limited to the research PR or explicit manual dispatch.
-    if: inputs.suite == 'full' || (github.event_name == 'pull_request' && (github.event.label.name == 'run-gpmc-completer-scout' || github.event.label.name == 'run-mqt-adaptive-scout') && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/mpfr-exact-residual-arena-reuse-20261118')
+    if: inputs.suite == 'full' || (github.event_name == 'pull_request' && (github.event.label.name == 'run-gpmc-completer-scout' || github.event.label.name == 'run-mqt-adaptive-scout' || github.event.label.name == 'run-qpe-resource-pilot') && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/mpfr-exact-residual-arena-reuse-20261118')
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ github.event.label.name == 'run-mqt-adaptive-scout' && 60 || 40 }}
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(github.event.label.name == 'run-mqt-adaptive-scout' && '[0,1,2,3]' || github.event.label.name == 'run-gpmc-completer-scout' && '[0,1,2]' || '[0]') }}
+        shard: ${{ fromJSON((github.event.label.name == 'run-mqt-adaptive-scout' || github.event.label.name == 'run-qpe-resource-pilot') && '[0,1,2,3]' || github.event.label.name == 'run-gpmc-completer-scout' && '[0,1,2]' || '[0]') }}
     steps:
       - name: Checkout RaWMoCS research-only exporter and runner
         uses: actions/checkout@v4
@@ -365,11 +365,32 @@ jobs:
             --corpus .research/long-tail \
             --report .research/long-tail/mqt-adaptive-scout.json \
             --shard ${{ matrix.shard }} | tee .research/long-tail/mqt-adaptive-scout.log
+      - name: QPE resource-qualified contraction and Graphstate guarded accuracy
+        if: github.event.label.name == 'run-qpe-resource-pilot'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .research/long-tail
+          if [[ "${{ matrix.shard }}" == "3" ]]; then
+            python3 -m venv .research/graphstate-venv
+            source .research/graphstate-venv/bin/activate
+            python3 -m pip install numpy==2.2.6 mpmath==1.3.0
+          fi
+          python3 -m py_compile benchmarks/mpfr_research/tools/quprs_qpe_resource_pilot.py
+          python3 benchmarks/mpfr_research/tools/quprs_qpe_resource_pilot.py \
+            --quprs .upstream/quprs \
+            --gpmc-source .upstream/gpmc \
+            --exporter .upstream/quprs/rust/target/release/examples/quprs_long_tail_source_bridge \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --corpus .research/long-tail \
+            --report .research/long-tail/qpe-resource-pilot.json \
+            --shard ${{ matrix.shard }} | tee .research/long-tail/qpe-resource-pilot.log
       - name: Archive hash-locked 16-source screens before long pilots
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.event.label.name == 'run-mqt-adaptive-scout' && format('original-mqt-adaptive-scout-{0}', matrix.shard) || github.event.label.name == 'run-gpmc-completer-scout' && format('original-gpmc-completer-scout-{0}', matrix.shard) || 'original-rawmocs-gpmc-long-tail-screen' }}
+          name: ${{ github.event.label.name == 'run-qpe-resource-pilot' && format('original-qpe-resource-pilot-{0}', matrix.shard) || github.event.label.name == 'run-mqt-adaptive-scout' && format('original-mqt-adaptive-scout-{0}', matrix.shard) || github.event.label.name == 'run-gpmc-completer-scout' && format('original-gpmc-completer-scout-{0}', matrix.shard) || 'original-rawmocs-gpmc-long-tail-screen' }}
           path: .research/long-tail/
           retention-days: 30
           if-no-files-found: warn

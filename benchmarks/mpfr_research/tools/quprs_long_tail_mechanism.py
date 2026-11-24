@@ -215,6 +215,7 @@ def main() -> None:
     ap.add_argument("--indexed-fused", action="store_true")
     ap.add_argument("--indexed-conditioned", action="store_true")
     ap.add_argument("--indexed-interned-only", action="store_true")
+    ap.add_argument("--definitional-only", action="store_true")
     ap.add_argument("--case", choices=CASES)
     for name in ("quprs", "gpmc-source", "corpus", "gpmc", "mpfr", "report"):
         ap.add_argument("--" + name, type=Path)
@@ -229,11 +230,57 @@ def main() -> None:
         ap.error("--indexed-conditioned requires --indexed-fused")
     if args.indexed_interned_only and (args.indexed_fused or args.indexed_conditioned or args.case != "mqt_wstate_16"):
         ap.error("interned-only is an independent focused W-state16 pair")
+    if args.definitional_only and (args.indexed_fused or args.indexed_conditioned or args.indexed_interned_only or args.case != "mqt_wstate_16"):
+        ap.error("definitional-only is a focused W-state16 comparison")
     src_report = args.corpus / "long-tail-source-locked-evidence.json"
     if not src_report.is_file():
         raise SystemExit("MISSING_ORIGINAL_SOURCE_SCREEN")
     evidence = json.loads(src_report.read_text(encoding="utf-8"))
     prior, cnf = verify_source(args, evidence)
+    if args.definitional_only:
+        result = {"study":"W-state16 private-definition fused contraction",
+                  "status":"IN_PROGRESS", "case":args.case,
+                  "source_cnf_sha256":prior["cnf_sha256"], "source_qasm_sha256":prior["source_qasm_sha256"],
+                  "source_lock":{"quprs":QU_PRS_SHA,"gpmc":GPMC_SHA},
+                  "research_bound":{"seconds_per_solver":MAX_WALL_SECONDS,"AS_bytes":AS_BYTES},
+                  "not_a_production_go":True,"full_oracle_caveat":ORACLE_LIMIT,"cohorts":[]}
+        failures=False
+        persist(args,result)
+        for digits,bits in BITS.items():
+            cohort={"digits":digits,"bits":bits,"trials":[],"pair_witnesses":[]}
+            result["cohorts"].append(cohort)
+            for trial in range(TRIALS):
+                arms=("gpmc","definitional") if (trial+(bits==333))%2==0 else ("definitional","gpmc")
+                for arm in arms:
+                    cmd=command(args,args.case,cnf,digits,"gpmc") if arm=="gpmc" else [str(args.mpfr.resolve()),"--factor-definitional",str(digits),str(cnf.resolve())]
+                    row=native(cmd,arm,MAX_WALL_SECONDS,digits)
+                    row["trial"]=trial
+                    if arm=="definitional" and row["status"]=="COMPLETED":
+                        row["route_complete"]="RESEARCH_MPFR_DEFINITIONAL " in row.get("stderr_tail","")
+                    cohort["trials"].append(row)
+                    persist(args,result)
+                    print("DEFINITIONAL_PILOT",bits,trial,arm,row["status"],row.get("wall_ns"),row.get("route_complete"),flush=True)
+                pair={r["arm"]:r for r in cohort["trials"] if r["trial"]==trial}
+                if all(r["status"]=="COMPLETED" for r in pair.values()):
+                    witness=same_complex(pair["gpmc"],pair["definitional"],digits)
+                    cohort["pair_witnesses"].append(witness)
+                    failures=failures or not witness["pass"]
+                persist(args,result)
+            gp=[r for r in cohort["trials"] if r["arm"]=="gpmc"]
+            rs=[r for r in cohort["trials"] if r["arm"]=="definitional"]
+            cohort["completion_counts"]={arm:sum(r["status"]=="COMPLETED" for r in rows) for arm,rows in (("gpmc",gp),("definitional",rs))}
+            if len(cohort["pair_witnesses"])==TRIALS and all(w["pass"] for w in cohort["pair_witnesses"]) and all(r.get("route_complete") for r in rs):
+                g=statistics.median(r["wall_ns"] for r in gp);t=statistics.median(r["wall_ns"] for r in rs)
+                cohort.update(status="COMPLETE_MATCHED_DEFINITIONAL",gpmc_p50_ms=g/1e6,definitional_p50_ms=t/1e6,gpmc_over_definitional=g/t)
+            else:
+                cohort["status"]="INCOMPLETE_OR_NUMERIC_DISAGREEMENT"
+            persist(args,result)
+            print("DEFINITIONAL_FINAL",bits,cohort["status"],cohort.get("gpmc_over_definitional"),flush=True)
+        result["status"]="NUMERIC_DISAGREEMENT_FAIL" if failures else "EXPLORATORY_EVIDENCE_COMPLETE"
+        persist(args,result)
+        if failures:
+            raise SystemExit("FAIL_SOURCE_LOCKED_SAT_OR_COMPLEX_WMC")
+        return
     result = {
         "study": "Same-original-Weighted-CNF seven-trial GPMC-complete Rust-timeout contrast",
         "status": "IN_PROGRESS", "case": args.case,

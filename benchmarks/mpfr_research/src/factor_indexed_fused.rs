@@ -995,7 +995,14 @@ mod packed_taylor {
     const ONE:u32=1;
     const ZERO:u32=2;
     const NEG:u32=1<<31;
-    fn magnitude(id:u32)->usize{(id&!NEG) as usize}
+    // 19 bits cover the existing 400k pool, 12 encode a binary shift.
+    // Larger valuations retain the excess in the exact stored magnitude.
+    const CORE_BITS:u32=19;
+    const CORE_MASK:u32=(1<<CORE_BITS)-1;
+    const SHIFT_MAX:u32=4095;
+    const SHIFT_MASK:u32=SHIFT_MAX<<CORE_BITS;
+    fn magnitude(id:u32)->usize{(id&CORE_MASK) as usize}
+    fn shift(id:u32)->u32{(id&SHIFT_MASK)>>CORE_BITS}
     fn flip(id:u32)->u32{if id==NO||id==ZERO{id}else{id^NEG}}
 
     #[derive(Default,Debug)]
@@ -1035,15 +1042,22 @@ mod packed_taylor {
             if z==0 {return Ok(ZERO);}
             let sign=if self.signed && z<0 {
                 z = -z;
-                // The half-modulus residue is its own negative.
                 if z.significant_bits()==self.modbits {0}else{NEG}
             }else{0};
-            if z==1 {return Ok(ONE|sign);}
+            let amount=if self.signed{z.find_one(0).unwrap_or(0).min(SHIFT_MAX)}else{0};
+            z>>=amount;
+            let id=self.intern_core(z)?;
+            Ok(id|sign|(amount<<CORE_BITS))
+        }
+        // GC re-interns the stored core, not the tagged residue.
+        fn intern_core(&mut self,z:Integer)->Result<u32,&'static str>{
+            if z==0{return Ok(ZERO);}
+            if z==1{return Ok(ONE);}
             let mut h=DefaultHasher::new();z.hash(&mut h);let h=h.finish();
             let head=self.index.get(&h).copied().unwrap_or(NO);
             let mut at=head;let mut probes=0;
             while at!=NO {
-                if self.values[at as usize]==z {return Ok(at|sign);}
+                if self.values[at as usize]==z {return Ok(at);}
                 probes+=1;if probes>=64 {return Err("taylor_hash_chain");}
                 at=self.links[at as usize];
             }
@@ -1054,7 +1068,7 @@ mod packed_taylor {
                 return Err("taylor_pool");
             }
             let id=self.values.len() as u32;self.values.push(z);self.links.push(head);
-            self.index.insert(h,id);self.stats.peak_pool=self.stats.peak_pool.max(self.values.len());Ok(id|sign)
+            self.index.insert(h,id);self.stats.peak_pool=self.stats.peak_pool.max(self.values.len());Ok(id)
         }
         fn weight(&mut self,c:&C)->Result<u32,&'static str> {
             let e=exponent(c)?;
@@ -1100,29 +1114,54 @@ mod packed_taylor {
                 if a==NO||a==ZERO{return Ok(if a==ZERO&&b==NO{ZERO}else{b});}
                 if b==NO||b==ZERO{return Ok(a);}
             }
-            let (mut x,mut y)=(a,b);
-            if magnitude(x)>magnitude(y){std::mem::swap(&mut x,&mut y);}
+            let sa=shift(a);let sb=shift(b);
+            let shared=if product{sa.saturating_add(sb)}else{sa.min(sb)};
+            if shared>=self.modbits{return Ok(ZERO);}
+            let (mut x,mut y)=if product{
+                (a&!SHIFT_MASK,b&!SHIFT_MASK)
+            }else{
+                ((a&!SHIFT_MASK)|((sa-shared)<<CORE_BITS),(b&!SHIFT_MASK)|((sb-shared)<<CORE_BITS))
+            };
+            if x&!NEG>y&!NEG{std::mem::swap(&mut x,&mut y);}
             let (xm,ym)=(x&!NEG,y&!NEG);
             let relative=(x^y)&NEG!=0;
             let negative=if product{relative}else{x&NEG!=0};
-            if product&&xm==ONE{return Ok(if negative{flip(ym)}else{ym});}
-            if !product&&relative&&xm==ym{return Ok(ZERO);}
-            let key=(xm,if !product&&relative{ym|NEG}else{ym});
-            let memo=if product{&self.mul}else{&self.add};
-            let id=if let Some(&id)=memo.get(&key){id}else{
-                if self.stats.calls>=self.limit{return Err("taylor_arithmetic");}
-                self.stats.calls+=1;
-                let u=&self.values[xm as usize];let v=&self.values[ym as usize];
-                let z=if product{Integer::from(u*v)}else if relative{Integer::from(u-v)}else{Integer::from(u+v)};
-                let id=self.intern(z)?;
-                let memo=if product{&mut self.mul}else{&mut self.add};
-                if memo.len()>=PAIR_CAP{memo.clear();}memo.insert(key,id);id
+            let id=if product&&xm==ONE{ym}
+            else if !product&&xm==ym{
+                if relative{ZERO}else{self.apply_shift(xm,1)?}
+            }else{
+                let key=(xm,if !product&&relative{ym|NEG}else{ym});
+                let memo=if product{&self.mul}else{&self.add};
+                if let Some(&id)=memo.get(&key){id}else{
+                    if self.stats.calls>=self.limit{return Err("taylor_arithmetic");}
+                    self.stats.calls+=1;
+                    let u=&self.values[magnitude(xm)];let v=&self.values[magnitude(ym)];
+                    let z=if product{Integer::from(u*v)}else{
+                        let left=Integer::from(u<<shift(xm));let right=Integer::from(v<<shift(ym));
+                        if relative{left-right}else{left+right}
+                    };
+                    let id=self.intern(z)?;
+                    let memo=if product{&mut self.mul}else{&mut self.add};
+                    if memo.len()>=PAIR_CAP{memo.clear();}memo.insert(key,id);id
+                }
             };
-            Ok(if negative{flip(id)}else{id})
+            let result=self.apply_shift(id,shared)?;
+            Ok(if negative{flip(result)}else{result})
         }
         fn signed_value(&self,id:u32)->Integer{
-            let z=self.values[magnitude(id)].clone();
+            let z=Integer::from(&self.values[magnitude(id)]<<shift(id));
             if id&NEG!=0{-z}else{z}
+        }
+        fn apply_shift(&mut self,id:u32,extra:u32)->Result<u32,&'static str>{
+            if id==NO||id==ZERO||extra==0{return Ok(id);}
+            let amount=shift(id).saturating_add(extra);
+            if amount>=self.modbits{return Ok(ZERO);}
+            if amount<=SHIFT_MAX&&self.values[magnitude(id)].significant_bits().saturating_add(amount)<self.modbits{
+                return Ok((id&!SHIFT_MASK)|(amount<<CORE_BITS));
+            }
+            // Wraparound and shift-tag overflow must be reduced exactly.
+            let z=self.signed_value(id)<<extra;
+            self.intern(z)
         }
         // Charge an upper bound on binary exponentiation operations. The
         // temporary cache is local to a bucket and invalidated after GC.
@@ -1154,9 +1193,9 @@ mod packed_taylor {
             for (i,z) in old.into_iter().enumerate() {
                 if i&1023==0 {deadline(start)?;}
                 if i<3 {self.values.push(z);self.links.push(NO);map[i]=i as u32;}
-                else if mark[i] {map[i]=self.intern(z)?;}
+                else if mark[i] {map[i]=self.intern_core(z)?;}
             }
-            let remap=|id:u32|{let new=map[magnitude(id)];if id&NEG!=0{flip(new)}else{new}};
+            let remap=|id:u32|map[magnitude(id)]|(id&!CORE_MASK);
             *scalar=remap(*scalar);
             for f in buckets.iter_mut().flatten().chain(current.iter_mut()) {
                 for id in &mut f.ids {*id=remap(*id);}
@@ -1538,6 +1577,44 @@ mod packed_taylor {
     #[cfg(test)]
     mod tests {
         use super::*;
+        #[test]
+        fn dyadic_tag_boundary_and_cache_reuse(){
+            let mut ring=Ring::new(8192,Integer::from(-1),100_000).unwrap();
+            ring.signed=true;
+            let mut inputs=Vec::new();
+            for s in [0u32,1,17,4000,4095,4096,6000,8191]{
+                for v in [-37,-1,1,37]{
+                    let z=(Integer::from(v)<<s).keep_signed_bits(8192);
+                    let id=ring.intern(z.clone()).unwrap();
+                    assert_eq!(ring.signed_value(id).keep_signed_bits(8192),z);
+                    inputs.push((id,z));
+                }
+            }
+            for (a,x) in &inputs{
+                for (b,y) in &inputs{
+                    for product in [false,true]{
+                        let expected=(if product{Integer::from(x*y)}else{Integer::from(x+y)}).keep_signed_bits(8192);
+                        let got=ring.op(*a,*b,product).unwrap();
+                        assert_eq!(ring.signed_value(got).keep_signed_bits(8192),expected);
+                    }
+                }
+            }
+            let a=ring.intern(Integer::from(37)).unwrap();
+            let b=ring.intern(Integer::from(41)).unwrap();
+            let ab=ring.op(a,b,true).unwrap();
+            let calls=ring.stats.calls;
+            let shifted=ring.apply_shift(a,17).unwrap();
+            let got=ring.op(shifted,b,true).unwrap();
+            assert_eq!(ring.signed_value(got),ring.signed_value(ab)<<17);
+            assert_eq!(ring.stats.calls,calls);
+            let mut scalar=shifted;
+            let mut out:Vec<_>=inputs.iter().map(|(id,_)|*id).collect();
+            ring.reclaim(&mut [],&mut scalar,&mut [],&mut out,Instant::now()).unwrap();
+            assert_eq!(ring.signed_value(scalar),Integer::from(37)<<17);
+            for (&id,(_,value)) in out.iter().zip(&inputs){
+                assert_eq!(&ring.signed_value(id).keep_signed_bits(8192),value);
+            }
+        }
         #[test]
         fn signed_ring_modular_oracle_and_gc(){
             let mut ring=Ring::new(8,Integer::from(-1),100_000).unwrap();

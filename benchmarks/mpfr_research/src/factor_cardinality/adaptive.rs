@@ -10,6 +10,7 @@ use std::time::{Duration,Instant};
 struct Profile {
     gates:usize,free:usize,residual:usize,width:usize,work:u64,peak:u64,
     cliques:Vec<usize>,phase_eligible:bool,complete:bool,
+    order:Vec<usize>,
 }
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 enum Route { Cardinality, Definitional, Conditioned, Trail }
@@ -42,36 +43,62 @@ fn profile(p:&Problem,raw:&str)->Result<Profile,String>{
         scopes.push(c.into_iter().map(var).collect());
     }
     if scopes.iter().flatten().any(|v|!free.contains(v)){return Err("profile scope ownership".into());}
-    scopes.retain(|s|!s.is_empty());
+    let mut best:Option<Plan>=None;
+    // Keep the original order for cheap admitted instances. For costly
+    // instances use a small deterministic resource portfolio; not a family ID.
+    for (penalty,reverse) in [(0,false),(1,true),(2,true),(0,true)]{
+        let plan=plan_scopes(&free,&scopes,start,penalty,reverse)?;
+        if best.as_ref().is_none_or(|b|(!plan.complete,plan.work,plan.peak,plan.width)<(!b.complete,b.work,b.peak,b.width)){
+            best=Some(plan);
+        }
+        if best.as_ref().is_some_and(|b|b.complete&&b.work<=1_000_000){break;}
+        if start.elapsed()>=Duration::from_secs(2){break;}
+    }
+    if let Some(b)=best{
+        out.width=b.width;out.work=b.work;out.peak=b.peak;out.complete=b.complete;out.order=b.order;
+    }
+    Ok(out)
+}
+#[derive(Default)]
+struct Plan{width:usize,work:u64,peak:u64,complete:bool,order:Vec<usize>}
+fn plan_scopes(free:&BTreeSet<usize>,original:&[BTreeSet<usize>],start:Instant,penalty:usize,reverse:bool)->Result<Plan,String>{
+    let mut scopes=original.to_vec();
     let mut graph:Graph=free.iter().map(|&v|(v,BTreeSet::new())).collect();
     for s in &scopes{for (i,&a) in s.iter().enumerate(){for &b in s.iter().skip(i+1){edge(&mut graph,a,b);}}}
-    let mut live=scopes.iter().map(|s|1u64<<s.len()).sum::<u64>();out.peak=live;
+    let mut live=scopes.iter().map(|s|1u64<<s.len()).sum::<u64>();
+    let mut out=Plan{peak:live,..Plan::default()};
     while !graph.is_empty(){
         if start.elapsed()>=Duration::from_secs(2){return Ok(out);}
-        let v=*graph.keys().min_by_key(|&&v|minfill(&graph,v)).ok_or("profile graph")?;
+        let v=*graph.keys().min_by_key(|&&v|{
+            let (fill,degree,_)=minfill(&graph,v);
+            (fill.saturating_add(penalty.saturating_mul(degree)),degree,if reverse{usize::MAX-v}else{v})
+        }).ok_or("profile graph")?;
         let nb=graph.remove(&v).ok_or("profile pivot")?;
         out.width=out.width.max(nb.len());
-        if nb.len()>18{return Ok(out);}
+        // Width 19 is permitted ONLY with a completed work/live preflight.
+        if nb.len()>19{return Ok(out);}
         let size=1u64<<nb.len();let mut removed=0;let mut incident=0;
         scopes.retain(|s|{if s.contains(&v){removed+=1u64<<s.len();incident+=1;false}else{true}});
         out.work=out.work.saturating_add(2*size*incident);
         out.peak=out.peak.max(live.saturating_add(size));
         live=live.saturating_sub(removed);
-        if !nb.is_empty(){live+=size;scopes.push(nb.clone());}
+        live+=size;scopes.push(nb.clone()); // scalar factors count too
         if out.work>60_000_000||out.peak>2_000_000{return Ok(out);}
         for &u in &nb{
             let s=graph.get_mut(&u).ok_or("profile neighbor")?;
             s.remove(&v);s.extend(nb.iter().filter(|&&x|x!=u).copied());
         }
+        out.order.push(v);
     }
     out.complete=true;
     Ok(out)
 }
+
 fn choose(p:&Profile)->Route{
     // Exact uniform cliques have their own internal limits. A failed
     // admission or time cap never changes the generic source semantics.
     if p.cliques.len()==2{return Route::Cardinality;}
-    if p.complete&&p.width<=18&&p.work<=60_000_000&&p.peak<=2_000_000{
+    if p.complete&&p.width<=19&&p.work<=60_000_000&&p.peak<=2_000_000{
         return Route::Definitional;
     }
     if p.gates>0&&p.residual==0&&p.width==19{return Route::Conditioned;}
@@ -102,12 +129,15 @@ fn solve(p:&Problem,raw:&str,bits:u32,hybrid:bool)->Result<(Outcome,Route,u64,u6
         let attempt=Instant::now();
         let result=match route{
             Route::Cardinality=>count_bounded(p,raw,bits,&mut trace,15),
-            Route::Definitional=>definitional::count_bounded(p,bits,&mut trace,15),
+            Route::Definitional=>definitional::count_planned(p,bits,&mut trace,if profile.width==19{30}else{15},&profile.order),
             Route::Conditioned=>definitional::count_conditioned(p,bits,&mut trace,45),
             Route::Trail=>unreachable!(),
         };
         match result{
-            Ok(answer)=>return Ok((answer,route,0,0,0)),
+            Ok(answer)=>{
+                eprintln!("ADAPTIVE_CONTRACTION width={} work={} peak={} planned_width={} planned_work={} planned_peak={}",trace.width,trace.work,trace.peak,profile.width,profile.work,profile.peak);
+                return Ok((answer,route,0,0,0));
+            },
             Err(reason)=>eprintln!("ADAPTIVE_FALLBACK from={} reason={} attempt_ns={}",route.name(),reason,attempt.elapsed().as_nanos()),
         }
     }
@@ -170,6 +200,18 @@ mod tests{
                 }
             }
         }
+    }
+    #[test]
+    fn width19_admission_requires_complete_resource_plan(){
+        let vars:BTreeSet<_>=(1..=20).collect();
+        let scopes:Vec<_>=vars.iter().flat_map(|&a|vars.range((a+1)..).map(move |&b|BTreeSet::from([a,b]))).collect();
+        let p=plan_scopes(&vars,&scopes,Instant::now(),1,true).unwrap();
+        // Dense complete graph exceeds total lookup cap. Width alone
+        // cannot authorize allocation or computation.
+        assert!(!p.complete);
+        assert_eq!(p.width,19);
+        assert_eq!(choose(&Profile{width:19,complete:false,..Profile::default()}),Route::Trail);
+        assert_eq!(choose(&Profile{width:19,complete:true,work:30_000_000,peak:800_000,..Profile::default()}),Route::Definitional);
     }
     #[test]
     fn policy_uses_structure_and_caps_only(){

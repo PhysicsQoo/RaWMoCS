@@ -115,7 +115,7 @@ def classify_native_failure(returncode: int, stderr: str) -> str:
     return "CENSORED_EXIT_OR_RESOURCE"
 
 
-def native(cmd: list[str], arm: str, duration: int, digits: int | None) -> dict:
+def native(cmd: list[str], arm: str, duration: int, digits: int | None, *, expected_bits: int | None = None) -> dict:
     with tempfile.TemporaryDirectory() as td:
         rss = Path(td) / "rss"
         wrapped = [
@@ -163,7 +163,7 @@ def native(cmd: list[str], arm: str, duration: int, digits: int | None) -> dict:
                     process.stderr, re.M,
                 )
                 if not match or int(match.group(8)) != digits or \
-                        int(match.group(9)) != BITS[digits]:
+                        int(match.group(9)) != (expected_bits if expected_bits is not None else BITS[digits]):
                     raise ValueError("INVALID_OR_MISSING_MPFR_PRECISION")
                 if arm in ("indexed_fused", "indexed_conditioned", "indexed_interned", "indexed_frontier", "indexed_taylor"):
                     ve = re.search(r"^RESEARCH_MPFR_FACTOR_VE enabled=true completed=(true|false) eligible=(true|false) capped=(true|false) ", process.stderr, re.M)

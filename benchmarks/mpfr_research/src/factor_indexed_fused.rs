@@ -1148,6 +1148,14 @@ mod packed_taylor {
             put(IdFactor{vars,ids},&mut buckets,&rank,&mut scalar,&mut live,pool)?;
         }
         stats.factors=remaining.len()+clauses.len();stats.cells=live;
+        execute_buckets(plan,(buckets,scalar,live),stats,pool,start,(WIDTH,false))
+    }
+    // The original indexed route retains its original bounds and support
+    // scan. Affine closure independently proves complete Boolean support.
+    fn execute_buckets(plan:&[usize],state:(Vec<Vec<IdFactor>>,u32,usize),
+        stats:&mut VeStats,pool:&mut Ring,start:Instant,mode:(usize,bool))->Result<u32,&'static str>{
+        let (mut buckets,mut scalar,mut live)=state;
+        let (max_width,full_support)=mode;
         let mut next_gc=340_000;
         for (k,&v) in plan.iter().enumerate() {
             deadline(start)?;
@@ -1160,12 +1168,12 @@ mod packed_taylor {
             } else {
                 let mut rest:Vec<_>=factors.iter().flat_map(|f|f.vars.iter().copied()).filter(|&u|u!=v).collect();
                 rest.sort_unstable();rest.dedup();
-                if rest.len()>WIDTH {return Err("intern_width");}
+                if rest.len()>max_width {return Err("intern_width");}
                 let size=1_usize<<rest.len();
                 let peak=live.saturating_add(size);
                 if peak>TABLE_CAP {return Err("intern_live_cells");}
                 pool.stats.peak_live=pool.stats.peak_live.max(peak);
-                stats.products=stats.products.saturating_add(size.saturating_mul(factors.len()).saturating_mul(4));
+                stats.products=stats.products.saturating_add(size.saturating_mul(factors.len()).saturating_mul(if full_support {2} else {4}));
                 if stats.products>WORK_CAP {return Err("intern_lookups");}
                 stats.cells=stats.cells.saturating_add(size);
                 let mut pivots=Vec::with_capacity(factors.len());
@@ -1190,7 +1198,7 @@ mod packed_taylor {
                     for positive in [false,true] {
                         let local=|i:usize|indices[i]|if positive {pivots[i]} else {0};
                         // Boolean support is checked independently of any zero value.
-                        if factors.iter().enumerate().any(|(i,f)|f.ids[local(i)]==NO) {continue;}
+                        if !full_support && factors.iter().enumerate().any(|(i,f)|f.ids[local(i)]==NO) {continue;}
                         let mut product=ONE;
                         for (i,f) in factors.iter().enumerate() {
                             product=pool.op(product,f.ids[local(i)],true)?;
@@ -1215,6 +1223,52 @@ mod packed_taylor {
         }
         deadline(start)?;
         Ok(scalar)
+    }
+
+    // Original-variable exponent tables have already been conditioned on
+    // a disjoint cutset leaf. No source weight is consumed here a second time.
+    pub(crate) fn affine_leaf(tables:&[(Vec<usize>,Vec<u16>)],plan:&[usize],
+        n:usize,modbits:u32,phase:&Integer,start:Instant,trace:&mut TaylorStats)
+        ->Result<Integer,&'static str>{
+        frontier_deadline(start)?;
+        let local_start=Instant::now();
+        let mut ring=Ring::new(modbits,phase.clone(),TOTAL_ARITH.saturating_sub(trace.arithmetic))?;
+        let mut rank=vec![usize::MAX;n+1];
+        for (i,&v) in plan.iter().enumerate(){
+            if v==0||v>n||rank[v]!=usize::MAX{return Err("affine_rank");}
+            rank[v]=i;
+        }
+        let mut buckets:Vec<Vec<IdFactor>>=(0..plan.len()).map(|_|Vec::new()).collect();
+        let mut scalar=ONE;let mut live=0usize;
+        let mut powers=HashMap::new();
+        for (scope,values) in tables{
+            if scope.len()>10||values.len()!=1usize<<scope.len()||
+               scope.iter().any(|&v|v==0||v>n||rank[v]==usize::MAX) {
+                return Err("affine_table_shape");
+            }
+            let mut ids=Vec::with_capacity(values.len());
+            for &e in values{
+                let id=if let Some(&id)=powers.get(&e){id}else{
+                    let mut z=phase.clone();
+                    z.pow_mod_mut(&Integer::from(e),&ring.modulus).map_err(|_|"affine_modpow")?;
+                    let id=ring.intern(z)?;powers.insert(e,id);id
+                };
+                ids.push(id);
+            }
+            put(IdFactor{vars:scope.clone(),ids},&mut buckets,&rank,&mut scalar,&mut live,&mut ring)?;
+        }
+        let mut stats=VeStats{cells:live,..VeStats::default()};
+        let id=execute_buckets(plan,(buckets,scalar,live),&mut stats,&mut ring,local_start,(18,true))?;
+        if id==NO{return Err("affine_complete_support_invariant");}
+        trace.actual_work=trace.actual_work.saturating_add(stats.products);
+        trace.arithmetic=trace.arithmetic.saturating_add(ring.stats.calls);
+        trace.peak_pool=trace.peak_pool.max(ring.stats.peak_pool);
+        trace.peak_live=trace.peak_live.max(ring.stats.peak_live);
+        trace.gc+=ring.stats.gc;
+        if trace.actual_work>TOTAL_WORK||trace.arithmetic>TOTAL_ARITH{return Err("affine_total_budget");}
+        frontier_deadline(start)?;
+        trace.completed+=1;
+        Ok(ring.values[id as usize].clone())
     }
 
     fn decimal(text:&str)->Result<Rational,&'static str> {
@@ -1480,4 +1534,4 @@ mod packed_taylor {
         }
     }
 }
-pub(crate) use packed_taylor::{count_taylor, carrier as exact_phase_carrier};
+pub(crate) use packed_taylor::{count_taylor, carrier as exact_phase_carrier, affine_leaf, TaylorStats};

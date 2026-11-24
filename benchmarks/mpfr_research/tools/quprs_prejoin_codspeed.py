@@ -1,4 +1,4 @@
-"""Bounded three-arm original QPE16 Simulation, not a long-QPE timing claim."""
+"""Bounded three-arm original QPE8 Simulation, not a long-QPE timing claim."""
 import argparse
 import json
 from pathlib import Path
@@ -13,14 +13,16 @@ from quprs_prejoin_native_pilot import TRACE
 
 ROOT=Path(".research/codspeed-prejoin")
 CONFIG=Path("codspeed-prejoin.generated.yml")
-REL="benchmarks/MQTBench/Random_Rotation/qpeexact_nativegates_ibm_qiskit_opt0_16.qasm"
-BLOB="c83ca9e815dd6d24c822c92892e94f85a0d2c0a0"
+REL="benchmarks/MQTBench/Random_Rotation/qpeexact_nativegates_ibm_qiskit_opt0_8.qasm"
+BLOB="01078415cf504c48fa770c5eea3fa9ccdd22fecd"
+# Historical QPE16 preflight source, independently rehashed from artifact.
+QPE16_CNF_SHA256="6385f6e460c2cf56e40094d2df99815f68deac55d6846e93d5ef627c66822696"
 # First qualified execution freezes the CNF hash; later commits must match it.
 EXPECTED=None
-CASE="extended_qpe16_prejoin_focus"
+CASE="extended_qpe8_prejoin_focus"
 ARMS=("gpmc","adaptive","prejoin")
 DIGITS,BITS,TARGET=60,200,30
-LIMIT,REFERENCE_LIMIT=5,45
+LIMIT,REFERENCE_LIMIT=1,45
 PREC=re.compile(r"^RESEARCH_MPFR_PHASE_NS .* digits=(\d+) bits=(\d+)$",re.M)
 ADAPTIVE=re.compile(r"^ADAPTIVE_CONTRACTION width=(\d+) work=(\d+) peak=(\d+) planned_width=(\d+) planned_work=(\d+) planned_peak=(\d+)$",re.M)
 
@@ -64,7 +66,7 @@ def prepare():
             "source_qasm_sha256":sha(qasm),"checkout":git_sha(Path(".")),"quprs":QU_PRS_SHA,"gpmc":GPMC_SHA,
             "hash_status":"FIRST_FREEZE" if EXPECTED is None else "PRELOCKED",
             "digits":DIGITS,"bits":BITS,"target_digits":TARGET,"native_limit_s":LIMIT,
-            "scope":"whole short original QPE16 proxy only; no long QPE21/22 simulation claim","native":{}}
+            "scope":"whole short original QPE8 proxy only; no long QPE21/22 simulation claim","native":{}}
     path=ROOT/"qualification.json"
     def persist():path.write_text(json.dumps(report,indent=2)+"\n")
     persist()
@@ -96,7 +98,7 @@ def prepare():
         for f in (out,err):f.unlink(missing_ok=True)
         wrapper.write_text("#!/bin/sh\nexec "+shlex.join(cmds[arm])+" >"+shlex.quote(str(out))+" 2>"+shlex.quote(str(err))+"\n")
         wrapper.chmod(0o755)
-        config.extend([f'  - name: "original_focused/qpe16_prejoin/{arm}_mpfr{BITS}"',f'    exec: "./{wrapper}"'])
+        config.extend([f'  - name: "original_focused/qpe8_prejoin/{arm}_mpfr{BITS}"',f'    exec: "./{wrapper}"'])
         persist()
     report["status"]="NATIVE_PREFLIGHT_PASS";persist()
     CONFIG.write_text("\n".join(config)+"\n")

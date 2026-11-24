@@ -183,7 +183,7 @@ fn choose(model:&Model,start:Instant)->Result<(Vec<usize>,Plan),String>{
     }
     Ok((ordered,best))
 }
-pub(super) fn run(mut args:impl Iterator<Item=std::ffi::OsString>)->Result<(),String>{
+pub(crate) fn run(mut args:impl Iterator<Item=std::ffi::OsString>)->Result<(),String>{
     let file=args.next().ok_or("missing source")?;
     if args.next().is_some(){return Err("unexpected arguments".into());}
     let t=Instant::now();

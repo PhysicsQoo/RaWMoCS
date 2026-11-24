@@ -46,7 +46,7 @@ pub(super) fn count_planned(p:&Problem,bits:u32,trace:&mut Trace,seconds:u64,ord
 fn count_impl(p:&Problem,bits:u32,trace:&mut Trace,seconds:u64,order:Option<&[usize]>)->Result<Outcome,String>{
     let deadline=Instant::now()+std::time::Duration::from_secs(seconds);
     let (factors,graph,scalar)=compile(p,bits,trace)?;
-    contract(factors,graph,scalar,bits,trace,deadline,None)
+    contract(factors,graph,scalar,bits,trace,deadline,order)
 }
 type Compiled=(Vec<Factor>,Graph,C);
 fn compile(p:&Problem,bits:u32,trace:&mut Trace)->Result<Compiled,String>{
@@ -97,9 +97,8 @@ fn compile(p:&Problem,bits:u32,trace:&mut Trace)->Result<Compiled,String>{
 fn contract(mut factors:Vec<Factor>,mut graph:Graph,mut scalar:C,bits:u32,trace:&mut Trace,deadline:Instant,order:Option<&[usize]>)->Result<Outcome,String>{
     let mut pivots=order.into_iter().flatten().copied();
     if let Some(order)=order{
-        if order.len()!=free.len()||order.iter().copied().collect::<BTreeSet<_>>()!=free{return Err("definitional plan ownership".into());}
+        if order.len()!=graph.len()||order.iter().copied().collect::<BTreeSet<_>>()!=graph.keys().copied().collect(){return Err("definitional plan ownership".into());}
     }
-    let mut position=0;
     while !graph.is_empty() {
         if Instant::now()>=deadline {return Err("definitional deadline".into());}
         let v=if order.is_some(){pivots.next().ok_or("conditioned plan incomplete")?}else{*graph.keys().min_by_key(|&&v|minfill(&graph,v)).ok_or("empty graph")?};
@@ -202,7 +201,7 @@ fn split_plan(factors:&[Factor],graph:&Graph,deadline:Instant)->Result<SplitPlan
             if Instant::now()>=deadline{return best.ok_or("conditioned planning deadline".into());}
             let mut g=graph.clone();let old=g.remove(&pivot).ok_or("missing split pivot")?;
             for u in old{g.get_mut(&u).ok_or("split neighbor")?.remove(&pivot);}
-            let mut scopes:Vec<BTreeSet<usize>>=factors.iter().map(|f|f.scope.iter().copied().filter(|&v|v!=pivot).collect()).filter(|s:&BTreeSet<_>|!s.is_empty()).collect();
+            let mut scopes:Vec<BTreeSet<usize>>=factors.iter().map(|f|f.scope.iter().copied().filter(|&v|v!=pivot).collect()).collect();
             let mut live=scopes.iter().map(|s|1u64<<s.len()).sum::<u64>();
             let mut order=Vec::new();let mut work=0u64;let mut peak=live;
             while !g.is_empty(){
@@ -218,7 +217,7 @@ fn split_plan(factors:&[Factor],graph:&Graph,deadline:Instant)->Result<SplitPlan
                 peak=peak.max(live.saturating_add(size));
                 if work>60_000_000||peak>2_000_000{break;}
                 live=live.saturating_sub(removed);
-                if !nb.is_empty(){live+=size;scopes.push(nb.clone());}
+                live+=size;scopes.push(nb.clone());
                 order.push(v);
                 for &u in &nb{
                     let s=g.get_mut(&u).ok_or("split neighbor")?;

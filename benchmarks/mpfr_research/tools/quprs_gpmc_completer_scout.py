@@ -207,21 +207,27 @@ def main():
     ap.add_argument("--shard",type=int,choices=range(HOLDOUT_SHARDS),required=True)
     ap.add_argument("--mqt-holdout",action="store_true")
     ap.add_argument("--locked-long",action="store_true")
+    ap.add_argument("--residual-followup",action="store_true")
     args=ap.parse_args()
+    if args.residual_followup and not args.locked_long:ap.error("residual followup requires locked sources")
     if args.locked_long and args.mqt_holdout:ap.error("select one study")
     holdout_self_test()
-    shards=HOLDOUT_SHARDS if args.mqt_holdout or args.locked_long else SHARDS
+    shards=2 if args.residual_followup else HOLDOUT_SHARDS if args.mqt_holdout or args.locked_long else SHARDS
     if args.shard>=shards:ap.error("shard outside selected cohort")
     if git_sha(args.quprs)!=QU_PRS_SHA or git_sha(args.gpmc_source)!=GPMC_SHA:
         raise SystemExit("SOURCE_LOCK_DRIFT")
     args.corpus.mkdir(parents=True,exist_ok=True)
     manifest=locked_long(args.quprs) if args.locked_long else mqt_holdouts(args.quprs) if args.mqt_holdout else candidates(args.quprs)
+    if args.residual_followup:
+        wanted={"600ce6716a69e31e17ffbc571cba581fc58a5b5ed3b7d60227ad41d857374efe","a9757cd5bd730b6f769d2970e3a16ac66fee7157b55f81208c0a7c2cece0023b"}
+        manifest=[r for r in manifest if r["expected_cnf_sha256"] in wanted]
+        if len(manifest)!=2:raise ValueError("MISSING_RESIDUAL_FOLLOWUP")
     selected=manifest[args.shard::shards]
     report={"study":"Original GPMC-completer long-case discovery",
             "source_revisions":{"quprs":QU_PRS_SHA,"gpmc":GPMC_SHA},
             "selection":"both 100/333-bit GPMC screens completed >=10s; rank by min GPMC wall; no Rust-dependent selection",
             "limits":{"wall_s":PAIR_S,"AS_bytes":AS_BYTES,"max_candidates":HOLDOUT_MAX if args.mqt_holdout else MAX_CASES},
-            "shard":args.shard,"mqt_holdout":args.mqt_holdout,"locked_long":args.locked_long,"manifest":manifest,"cases":[],"pilot":None,
+            "shard":args.shard,"mqt_holdout":args.mqt_holdout,"locked_long":args.locked_long,"residual_followup":args.residual_followup,"manifest":manifest,"cases":[],"pilot":None,
             "status":"IN_PROGRESS","independent_full_wmc_reference":False}
     def persist():
         args.report.write_text(json.dumps(report,indent=2)+"\n")

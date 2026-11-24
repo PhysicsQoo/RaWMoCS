@@ -69,20 +69,70 @@ def candidates(root):
     if len({r["case"] for r in out})!=len(out) or len({r["path"] for r in out})!=len(out):
         raise ValueError("DUPLICATE_SOURCE")
     return out
+FOLLOWUP_KNOWN={
+    **KNOWN,
+    "benchmarks/MQTBench/Random_Pauli/qpeinexact_nativegates_ibm_qiskit_opt0_20.qasm":
+        "6a3d579f9776cf25570462f8318e04ecd69f7a5a6cde84a2afc789b5e0672c80",
+    "benchmarks/MQTBench/Random_Pauli/graphstate_nativegates_ibm_qiskit_opt0_16.qasm":
+        "7f874f932882d7a39ff5c7ed9e581ab95b8dac3f5d4b08ee9c880b0fb4a8b8a2",
+}
+def followup_candidates(root):
+    paths=subprocess.check_output(["git","-C",str(root),"ls-tree","-r","--name-only",QU_PRS_SHA,
+        "--","benchmarks/MQTBench"],text=True).splitlines()
+    if not set(FOLLOWUP_KNOWN)<=set(paths):raise ValueError("MISSING_FOLLOWUP_CONTROL")
+    out=[item(p,"known_followup_control") for p in FOLLOWUP_KNOWN]
+    # New Rotation variants, distinct from the first campaign's Pauli cases.
+    for fam,target in [("qnn",8),("wstate",16),("qaoa",11),("grover-noancilla",6),
+                       ("qwalk-noancilla",5),("graphstate",16),("qft",20),("vqe",16)]:
+        pattern=re.compile(re.escape(fam)+r"_nativegates_ibm_qiskit_opt0_(\d+)\.qasm$")
+        rows=[item(p,"new_rotation_holdout") for p in paths
+              if "/Random_Rotation/" in p and p not in FOLLOWUP_KNOWN and pattern.fullmatch(Path(p).name)]
+        rows=[r for r in rows if 4<=r["size"]<=24]
+        if rows:out.append(min(rows,key=lambda r:(abs(r["size"]-target),r["size"],r["path"])))
+    if len({r["case"] for r in out})!=len(out):raise ValueError("DUPLICATE_FOLLOWUP")
+    return out
+
+def guarded_graphstate(args,row,cnf,persist):
+    from qwalk_original_interval import solve,compare
+    source=row["cnf_sha256"]
+    witness=solve(cnf.read_bytes(),source_sha=source)
+    row["independent_interval"]=witness
+    for digits,bits in BITS.items():
+        working=digits+30
+        working_bits={60:200,130:432}[working]
+        cohort={"digits":digits,"bits":bits,"working_digits":working,"working_bits":working_bits,"trials":[]}
+        row["cohorts"].append(cohort)
+        for arm in (("gpmc","adaptive") if bits==100 else ("adaptive","gpmc")):
+            if arm=="gpmc":
+                cmd=command(args,row["case"],cnf,digits,"gpmc")
+                cmd[2]=f"-prec={working}"
+            else:
+                cmd=[str(args.mpfr.resolve()),"--adaptive",str(working),str(cnf.resolve())]
+            r=native(cmd,arm if arm=="gpmc" else "candidate",PAIR_S,working,expected_bits=working_bits)
+            r["arm"]=arm
+            if r["status"]=="COMPLETED":
+                r["independent_witness"]=compare(r,witness,digits,source_sha=source)
+                r["agreement"]=r["independent_witness"]["pass"] and (arm=="gpmc" or result_route(r) is not None)
+            cohort["trials"].append(r);persist()
+            print("MQT_GRAPHSTATE_GUARDED",bits,arm,r["status"],r.get("agreement"),r.get("wall_ns"),flush=True)
+    row["status"]="GUARDED_REFERENCE_PASS" if all(r.get("agreement") for c in row["cohorts"] for r in c["trials"]) else "GUARDED_REFERENCE_INCONCLUSIVE"
+    persist()
+
 def result_route(row):
     if row["status"]!="COMPLETED":return None
-    match=re.search(r"^RESEARCH_MPFR_ADAPTIVE route=(cardinality|definitional|trail) hybrid=(true|false) completed=true$",row.get("stderr_tail",""),re.M)
+    match=re.search(r"^RESEARCH_MPFR_ADAPTIVE route=(cardinality|definitional|conditioned|trail) hybrid=(true|false) completed=true$",row.get("stderr_tail",""),re.M)
     return match[1] if match else None
 def main():
     ap=argparse.ArgumentParser()
     for arg in ("quprs","gpmc-source","exporter","gpmc","mpfr","corpus","report"):
         ap.add_argument("--"+arg,type=Path,required=True)
     ap.add_argument("--shard",type=int,choices=range(SHARDS),required=True)
+    ap.add_argument("--followup",action="store_true")
     args=ap.parse_args()
     if git_sha(args.quprs)!=QU_PRS_SHA or git_sha(args.gpmc_source)!=GPMC_SHA:
         raise SystemExit("SOURCE_LOCK_DRIFT")
     args.corpus.mkdir(parents=True,exist_ok=True)
-    manifest=candidates(args.quprs)
+    manifest=followup_candidates(args.quprs) if args.followup else candidates(args.quprs)
     report={"study":"MQT original-source adaptive router and generic hybrid ablation",
         "source_revisions":{"quprs":QU_PRS_SHA,"gpmc":GPMC_SHA},
         "limits":{"wall_s":PAIR_S,"AS_bytes":AS_BYTES,"max_candidates":MAX_CASES},
@@ -113,8 +163,12 @@ def main():
         if row["source_status"]!="SOURCE_EXACT":
             print("MQT_ADAPTIVE_EXPORT",case,row["source_status"],flush=True)
             continue
-        if item_["path"] in KNOWN and row["cnf_sha256"]!=KNOWN[item_["path"]]:
-            raise SystemExit("KNOWN_QPE_CNF_DRIFT")
+        locks=FOLLOWUP_KNOWN if args.followup else KNOWN
+        if item_["path"] in locks and row["cnf_sha256"]!=locks[item_["path"]]:
+            raise SystemExit("KNOWN_CONTROL_CNF_DRIFT")
+        if args.followup and item_["family"]=="graphstate" and item_["path"] in FOLLOWUP_KNOWN:
+            guarded_graphstate(args,row,cnf,persist)
+            continue
         for digits,bits in BITS.items():
             r=native(command(args,case,cnf,digits,"gpmc"),"gpmc",PAIR_S,digits)
             row["screen"].append({"digits":digits,"bits":bits,**r})

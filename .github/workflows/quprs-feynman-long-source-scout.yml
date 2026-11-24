@@ -247,7 +247,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(github.event.label.name == 'run-qpe-independent-prejoin' && '[0,1]' || github.event.label.name == 'run-mqt-certified-long' && '[0,1,2,3]' || github.event.label.name == 'run-mqt-residual-followup' && '[0,1]' || github.event.label.name == 'run-mqt-locked-long' && '[0,1,2,3]' || github.event.label.name == 'run-mqt-long-holdouts' && '[0,1,2,3]' || github.event.label.name == 'run-qpe-certified-repeat' && '[0,1,2]' || (github.event.label.name == 'run-mqt-adaptive-scout' || github.event.label.name == 'run-qpe-resource-pilot') && '[0,1,2,3]' || github.event.label.name == 'run-gpmc-completer-scout' && '[0,1,2]' || '[0]') }}
+        shard: ${{ fromJSON(github.event.label.name == 'run-qpe-independent-prejoin' && '[0,1,2,3]' || github.event.label.name == 'run-mqt-certified-long' && '[0,1,2,3]' || github.event.label.name == 'run-mqt-residual-followup' && '[0,1]' || github.event.label.name == 'run-mqt-locked-long' && '[0,1,2,3]' || github.event.label.name == 'run-mqt-long-holdouts' && '[0,1,2,3]' || github.event.label.name == 'run-qpe-certified-repeat' && '[0,1,2]' || (github.event.label.name == 'run-mqt-adaptive-scout' || github.event.label.name == 'run-qpe-resource-pilot') && '[0,1,2,3]' || github.event.label.name == 'run-gpmc-completer-scout' && '[0,1,2]' || '[0]') }}
     steps:
       - name: Checkout RaWMoCS research-only exporter and runner
         uses: actions/checkout@v4
@@ -395,7 +395,8 @@ jobs:
           oracle=benchmarks/mpfr_research/tools/original_exact_prejoin.py
           python3 -m py_compile "$oracle"
           python3 "$oracle" --self-test
-          if [[ "${{ matrix.shard }}" == 0 ]]; then
+          shard=${{ matrix.shard }}
+          if (( shard < 2 )); then
             case=extended_mqt_qpeexact_21_5e0db86c6ca4
             rel=benchmarks/MQTBench/Random_Rotation/qpeexact_nativegates_ibm_qiskit_opt0_21.qasm
             expected=ff9bb2ceca9cd9ee7a61026a6c01498a7f8175df6512df80dc8fed2db848dfb4
@@ -414,7 +415,10 @@ jobs:
           cat .research/long-tail/prejoin-reference.json
           python3 -c 'import json; r=json.load(open(".research/long-tail/prejoin-reference.json")); assert r["status"]=="INDEPENDENT_INTERVAL_COMPLETE" and r["bits"]==550 and r["width"]<=19 and r["work"]<=40000000 and r["peak"]<=2000000'
           python3 -m py_compile benchmarks/mpfr_research/tools/quprs_prejoin_native_pilot.py
+          target=30
+          if (( shard % 2 == 1 )); then target=100; fi
           python3 benchmarks/mpfr_research/tools/quprs_prejoin_native_pilot.py \
+            --repeat-target "$target" \
             --cnf ".research/long-tail/$case-gpmc.cnf" \
             --reference .research/long-tail/prejoin-reference.json \
             --gpmc .upstream/gpmc/build/gpmc \

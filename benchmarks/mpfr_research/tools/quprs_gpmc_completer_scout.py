@@ -185,6 +185,79 @@ def locked_pairs(args,report,persist):
             print("LOCKED_LONG_FINAL",case,target,cohort["status"],cohort.get("gpmc_over_rust"),flush=True)
     report["status"]="LOCKED_LONG_EXPLORATORY_COMPLETE";persist()
 
+# Four successful long controls have an independent original-CNF plan
+# within the reference oracle's existing width/work/live caps.
+CERTIFIED_LONG_SHA={
+    "8c7c930ee58721bfecd42e368ba2603fb8072bd99aeb94a9636ba3a2e5da6a1e",
+    "ead9ede46abf2f13920e32b0795d9ae80789377d2bef94565ce188abf0a2a6b2",
+    "08baa5d3fa04df6ec9f69c16593a553f49e18e64f78640973bd98d406fc7b290",
+    "600ce6716a69e31e17ffbc571cba581fc58a5b5ed3b7d60227ad41d857374efe",
+}
+def certified_locked_pairs(args,report,persist):
+    import statistics
+    import sys
+    from original_fixed_interval import compare
+    from quprs_mqt_adaptive_scout import result_route
+    report["reference_limits"]={"wall_s":190,"AS_bytes":AS_BYTES,"fixed_bits":550}
+    for item in report["cases"]:
+        if item["source_status"]!="SOURCE_EXACT":
+            item["status"]="SOURCE_INCONCLUSIVE";persist();continue
+        case=item["case"];cnf=args.corpus/f"{case}-gpmc.cnf"
+        expected=item["expected_cnf_sha256"]
+        if sha(cnf)!=expected:raise SystemExit("LOCKED_CNF_DRIFT")
+        cmd=["/usr/bin/timeout","-k","2s","190s","prlimit",f"--as={AS_BYTES}","--",
+            sys.executable,str(Path(__file__).with_name("original_fixed_interval.py")),str(cnf.resolve()),expected]
+        try:
+            run=subprocess.run(cmd,capture_output=True,text=True,timeout=197)
+            item["reference_process"]={"exit_code":run.returncode,"stderr_tail":run.stderr[-1500:]}
+            if run.returncode:raise ValueError(f"reference exit {run.returncode}")
+            ref=json.loads(run.stdout)
+            if ref["source_sha256"]!=expected or ref["bits"]!=550:raise ValueError("WITNESS_DRIFT")
+        except (ValueError,OSError,subprocess.TimeoutExpired) as e:
+            item["status"]="INDEPENDENT_WITNESS_INCONCLUSIVE";item["witness_error"]=str(e)
+            persist();print("MQT_CERTIFIED_WITNESS_INCONCLUSIVE",case,str(e),flush=True);continue
+        item["independent_witness"]=ref
+        item["pairs"]=[];persist()
+        print("MQT_CERTIFIED_WITNESS",case,ref["width"],ref["work"],ref["peak"],ref["wall_s"],flush=True)
+        for target,bits in BITS.items():
+            # Both arms use identical working precision. An accuracy failure
+            # can trigger a separate complete guarded cohort; never pool them.
+            for digits,working_bits in [(target,bits),(target+30,{30:200,100:432}[target])]:
+                cohort={"target_digits":target,"working_digits":digits,"working_bits":working_bits,"trials":[]}
+                item["pairs"].append(cohort)
+                for trial in range(7):
+                    arms=("gpmc","adaptive") if (trial+(target==100))%2==0 else ("adaptive","gpmc")
+                    pair=[]
+                    for arm in arms:
+                        if sha(cnf)!=expected:raise SystemExit("LOCKED_CNF_DRIFT")
+                        cmd=([str(args.gpmc.resolve()),"-mode=1",f"-prec={digits}",str(cnf.resolve())]
+                             if arm=="gpmc" else [str(args.mpfr.resolve()),"--adaptive",str(digits),str(cnf.resolve())])
+                        r=native(cmd,"gpmc" if arm=="gpmc" else "candidate",PAIR_S,digits,expected_bits=working_bits)
+                        r.update(arm=arm,trial=trial)
+                        if r["status"]=="COMPLETED":
+                            r["independent_witness"]=compare(r,ref,target)
+                            r["route_verified"]=arm=="gpmc" or result_route(r)=="definitional"
+                        pair.append(r);cohort["trials"].append(r);persist()
+                        print("MQT_CERTIFIED_PAIR",case,target,working_bits,trial,arm,r["status"],r.get("independent_witness",{}).get("pass"),r.get("wall_ns"),flush=True)
+                    if any(r["status"]!="COMPLETED" for r in pair):
+                        cohort["status"]="CENSORED_PAIR";break
+                    if not all(r.get("route_verified") for r in pair):
+                        cohort["status"]="ROUTE_INCONCLUSIVE";break
+                    if not all(r["independent_witness"]["pass"] for r in pair):
+                        cohort["status"]="ACCURACY_INCONCLUSIVE";break
+                else:
+                    g=statistics.median(r["wall_ns"] for r in cohort["trials"] if r["arm"]=="gpmc")
+                    t=statistics.median(r["wall_ns"] for r in cohort["trials"] if r["arm"]=="adaptive")
+                    cohort.update(status="CERTIFIED_SEVEN_MATCHED_PAIRS",gpmc_median_s=g/1e9,rust_median_s=t/1e9,gpmc_over_rust=g/t)
+                persist()
+                print("MQT_CERTIFIED_FINAL",case,target,working_bits,cohort["status"],cohort.get("gpmc_over_rust"),flush=True)
+                if cohort["status"]!="ACCURACY_INCONCLUSIVE":break
+        passed={c["target_digits"] for c in item["pairs"] if c["status"]=="CERTIFIED_SEVEN_MATCHED_PAIRS"}
+        item["status"]="CERTIFIED_COMPLETE" if passed==set(BITS) else "CERTIFIED_INCONCLUSIVE"
+        persist()
+    report["status"]="CERTIFIED_COMPLETE" if all(r.get("status")=="CERTIFIED_COMPLETE" for r in report["cases"]) else "CERTIFIED_INCONCLUSIVE"
+    persist()
+
 def qualified(rows):
     return (len(rows)==2 and all(r["status"]=="COMPLETED" and r["wall_ns"]>=MIN_SECONDS*10**9 for r in rows))
 
@@ -208,8 +281,10 @@ def main():
     ap.add_argument("--mqt-holdout",action="store_true")
     ap.add_argument("--locked-long",action="store_true")
     ap.add_argument("--residual-followup",action="store_true")
+    ap.add_argument("--certified-long",action="store_true")
     args=ap.parse_args()
-    if args.residual_followup and not args.locked_long:ap.error("residual followup requires locked sources")
+    if (args.residual_followup or args.certified_long) and not args.locked_long:ap.error("followup requires locked sources")
+    if args.residual_followup and args.certified_long:ap.error("select one followup")
     if args.locked_long and args.mqt_holdout:ap.error("select one study")
     holdout_self_test()
     shards=2 if args.residual_followup else HOLDOUT_SHARDS if args.mqt_holdout or args.locked_long else SHARDS
@@ -222,12 +297,15 @@ def main():
         wanted={"600ce6716a69e31e17ffbc571cba581fc58a5b5ed3b7d60227ad41d857374efe","a9757cd5bd730b6f769d2970e3a16ac66fee7157b55f81208c0a7c2cece0023b"}
         manifest=[r for r in manifest if r["expected_cnf_sha256"] in wanted]
         if len(manifest)!=2:raise ValueError("MISSING_RESIDUAL_FOLLOWUP")
+    if args.certified_long:
+        manifest=[r for r in manifest if r["expected_cnf_sha256"] in CERTIFIED_LONG_SHA]
+        if len(manifest)!=4:raise ValueError("MISSING_CERTIFIED_LONG")
     selected=manifest[args.shard::shards]
     report={"study":"Original GPMC-completer long-case discovery",
             "source_revisions":{"quprs":QU_PRS_SHA,"gpmc":GPMC_SHA},
             "selection":"both 100/333-bit GPMC screens completed >=10s; rank by min GPMC wall; no Rust-dependent selection",
             "limits":{"wall_s":PAIR_S,"AS_bytes":AS_BYTES,"max_candidates":HOLDOUT_MAX if args.mqt_holdout else MAX_CASES},
-            "shard":args.shard,"mqt_holdout":args.mqt_holdout,"locked_long":args.locked_long,"residual_followup":args.residual_followup,"manifest":manifest,"cases":[],"pilot":None,
+            "shard":args.shard,"mqt_holdout":args.mqt_holdout,"locked_long":args.locked_long,"residual_followup":args.residual_followup,"certified_long":args.certified_long,"manifest":manifest,"cases":[],"pilot":None,
             "status":"IN_PROGRESS","independent_full_wmc_reference":False}
     def persist():
         args.report.write_text(json.dumps(report,indent=2)+"\n")
@@ -266,6 +344,8 @@ def main():
                     break
         row["qualified"]=qualified(row["screen"])
         persist()
+    if args.certified_long:
+        certified_locked_pairs(args,report,persist);return
     if args.locked_long:
         locked_pairs(args,report,persist);return
     eligible=sorted((r for r in report["cases"] if r["qualified"]),

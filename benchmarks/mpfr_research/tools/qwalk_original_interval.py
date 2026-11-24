@@ -8,12 +8,14 @@ import itertools
 import time
 
 SOURCE_SHA="adde521cb9182d603d08eb7a07991f4fdae75ba3ee7635da9e6a606a7d9b945e"
+GRAPHSTATE_SHA="7f874f932882d7a39ff5c7ed9e581ab95b8dac3f5d4b08ee9c880b0fb4a8b8a2"
+ALLOWED_SOURCE_SHA=(SOURCE_SHA,GRAPHSTATE_SHA)
 
-def solve(raw, bits=550):
+def solve(raw, bits=550, *, source_sha=SOURCE_SHA):
     import mpmath as mp
     import numpy as np
     start=time.monotonic()
-    if sha256(raw).hexdigest()!=SOURCE_SHA or bits!=550:
+    if source_sha not in ALLOWED_SOURCE_SHA or sha256(raw).hexdigest()!=source_sha or bits!=550:
         raise ValueError("QWALK_SOURCE_OR_PRECISION_DRIFT")
     mp.iv.prec=bits
     lines=raw.decode().splitlines()
@@ -83,12 +85,12 @@ def solve(raw, bits=550):
     def exact(t):
         sign,man,exp,_=t
         return Q((-1 if sign else 1)*man)*Q(2)**exp
-    return dict(source_sha256=SOURCE_SHA,bits=bits,variables=n,clauses=nc,
+    return dict(source_sha256=source_sha,bits=bits,variables=n,clauses=nc,
                 width=width,work=work,sat=True,real=[str(exact(t)) for t in res.real._mpi_],
                 imag=[str(exact(t)) for t in res.imag._mpi_],wall_s=time.monotonic()-start)
 
-def compare(row, witness, target_digits):
-    if witness["source_sha256"]!=SOURCE_SHA or target_digits not in (30,100):
+def compare(row, witness, target_digits, *, source_sha=SOURCE_SHA):
+    if source_sha not in ALLOWED_SOURCE_SHA or witness["source_sha256"]!=source_sha or target_digits not in (30,100):
         raise ValueError("WITNESS_CONTRACT_DRIFT")
     if row["status"]!="COMPLETED":
         raise ValueError("INCOMPLETE_ARM")

@@ -642,7 +642,7 @@ mod value_reuse {
                     }
                 }
                 live-=factors.iter().map(|f|f.ids.len()).sum::<usize>();drop(factors);
-                put(IdFactor{vars:rest,ids},&mut buckets,rank,&mut scalar,&mut live,pool)?;
+                put(IdFactor{vars:rest,ids},&mut buckets,&rank,&mut scalar,&mut live,pool)?;
             }
             stats.eliminated+=1;
             if pool.values.len()>=next_gc {
@@ -1214,7 +1214,7 @@ mod packed_taylor {
                     }
                 }
                 live-=factors.iter().map(|f|f.ids.len()).sum::<usize>();drop(factors);
-                put(IdFactor{vars:rest,ids},&mut buckets,&rank,&mut scalar,&mut live,pool)?;
+                put(IdFactor{vars:rest,ids},&mut buckets,rank,&mut scalar,&mut live,pool)?;
             }
             stats.eliminated+=1;
             if pool.values.len()>=50_000 {

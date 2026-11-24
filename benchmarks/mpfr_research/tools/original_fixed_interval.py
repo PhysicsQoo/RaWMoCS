@@ -12,6 +12,8 @@ ONE=(S,S,0,0)
 ZERO=(0,0,0,0)
 MAX_WIDTH=19
 MAX_CLAUSE_WIDTH=9
+MAX_SOURCE_VARS=4096
+MAX_SOURCE_CLAUSES=16000
 MAX_WORK=40_000_000
 MAX_LIVE=2_000_000
 
@@ -50,7 +52,7 @@ def add(x,y):
     if y is None:return x
     return tuple(a+b for a,b in zip(x,y))
 
-def solve(raw,expected_sha,deadline_seconds=180):
+def solve(raw,expected_sha,deadline_seconds=180,*,order_policy=None):
     if sha256(raw).hexdigest()!=expected_sha:raise ValueError('SOURCE_DRIFT')
     start=monotonic();weights={};clauses=[];n=nc=None
     for line in raw.decode().splitlines():
@@ -58,7 +60,9 @@ def solve(raw,expected_sha,deadline_seconds=180):
         if not p:continue
         if p[:2]==['p','cnf']:
             if n is not None:raise ValueError('DUPLICATE_HEADER')
-            n,nc=map(int,p[2:]);continue
+            n,nc=map(int,p[2:])
+            if not 0<=n<=MAX_SOURCE_VARS or not 0<=nc<=MAX_SOURCE_CLAUSES:raise ValueError('SOURCE_CAP')
+            continue
         if p[:3]==['c','p','weight']:
             if len(p)!=7 or p[6]!='0':raise ValueError('WEIGHT_FORMAT')
             v=int(p[3])
@@ -69,8 +73,12 @@ def solve(raw,expected_sha,deadline_seconds=180):
         c=tuple(map(int,p[:-1]))
         if any(not 1<=abs(v)<=n for v in c):raise ValueError('CLAUSE_LITERAL')
         clauses.append(c)
+        if len(clauses)>nc:raise ValueError('CLAUSE_COUNT')
     if n is None or len(clauses)!=nc:raise ValueError('CLAUSE_COUNT')
-    if n>2048 or nc>10000:raise ValueError('SOURCE_CAP')
+    # A deterministic structural policy, independent of the native solver's
+    # gate extraction or arithmetic; large inputs avoid expensive fill scoring.
+    if order_policy is None:order_policy='degree-reverse' if n>2048 or nc>10000 else 'fill-reverse'
+    if order_policy not in ('degree-reverse','fill-reverse'):raise ValueError('ORDER_POLICY')
     # Bound the actual initial factor cells before allocating any tables.
     # One nine-literal original W-state clause is within the existing live budget.
     clause_scopes=[tuple(sorted(set(map(abs,c)))) for c in clauses]
@@ -86,7 +94,8 @@ def solve(raw,expected_sha,deadline_seconds=180):
     g={v:set(s) for v,s in adj.items()};scopes=[s for s,_ in fs];order=[];width=work=0;live=sum(1<<len(s) for s in scopes);peak=live
     while g:
         if monotonic()-start>deadline_seconds:raise ValueError('PLAN_DEADLINE')
-        v=min(g,key=lambda v:(sum(b not in g[a] for a,b in combinations(g[v],2)),len(g[v]),-v))
+        if order_policy=='degree-reverse':v=min(g,key=lambda v:(len(g[v]),-v))
+        else:v=min(g,key=lambda v:(sum(b not in g[a] for a,b in combinations(g[v],2)),len(g[v]),-v))
         nb=g.pop(v);width=max(width,len(nb))
         if len(nb)>MAX_WIDTH:raise ValueError('WIDTH_CAP')
         bucket=[s for s in scopes if v in s];scopes=[s for s in scopes if v not in s];size=1<<len(nb)
@@ -128,7 +137,7 @@ def solve(raw,expected_sha,deadline_seconds=180):
         result=mul(result,vals[0])
     sat=result is not None
     if result is None:result=ZERO
-    return dict(source_sha256=expected_sha,bits=BITS,variables=n,clauses=nc,width=width,work=work,peak=peak,sat=sat,real=[str(Q(x,S)) for x in result[:2]],imag=[str(Q(x,S)) for x in result[2:]],wall_s=monotonic()-start)
+    return dict(source_sha256=expected_sha,bits=BITS,variables=n,clauses=nc,order_policy=order_policy,width=width,work=work,peak=peak,sat=sat,real=[str(Q(x,S)) for x in result[:2]],imag=[str(Q(x,S)) for x in result[2:]],wall_s=monotonic()-start)
 
 def compare(row,ref,digits):
     if row['status']!='COMPLETED' or digits not in (30,100):raise ValueError('INVALID_WITNESS_COMPARISON')
@@ -155,7 +164,7 @@ def self_test():
         n=5;clauses=[tuple(rng.choice((-1,1))*v for v in rng.sample(range(1,n+1),3)) for _ in range(5)]
         weights={v:(Q(rng.randint(-3,3),10),Q(rng.randint(-3,3),10)) for v in list(range(1,n+1))+list(range(-n,0))}
         raw=(f'p cnf {n} {len(clauses)}\nc t wmc\n'+''.join(f'c p weight {v} {float(a):.1f} {float(b):.1f} 0\n' for v,(a,b) in weights.items())+''.join(' '.join(map(str,c))+' 0\n' for c in clauses)).encode()
-        ref=solve(raw,sha256(raw).hexdigest());sat=False;re=im=Q(0)
+        refs=[solve(raw,sha256(raw).hexdigest(),order_policy=p) for p in ('fill-reverse','degree-reverse')];sat=False;re=im=Q(0)
         for m in range(1<<n):
             truth=lambda l:bool(m&(1<<(abs(l)-1)))==(l>0)
             if not all(any(truth(l) for l in c) for c in clauses):continue
@@ -163,7 +172,8 @@ def self_test():
             for v in range(1,n+1):
                 c,d=weights[v if truth(v) else -v];a,b=a*c-b*d,a*d+b*c
             re+=a;im+=b
-        assert ref['sat']==sat and Q(ref['real'][0])<=re<=Q(ref['real'][1]) and Q(ref['imag'][0])<=im<=Q(ref['imag'][1])
+        for ref in refs:
+            assert ref['sat']==sat and Q(ref['real'][0])<=re<=Q(ref['real'][1]) and Q(ref['imag'][0])<=im<=Q(ref['imag'][1])
     # Original wide-clause factor: independent exact enumeration, signed complex
     # weights, an explicit zero weight and both satisfiable/contradictory controls.
     for extra in ([],[(-1,), (1,)]):
@@ -180,7 +190,11 @@ def self_test():
                 c,d=weights[v if truth(v) else -v];a,b=a*c-b*d,a*d+b*c
             re+=a;im+=b
         assert ref['sat']==sat and Q(ref['real'][0])<=re<=Q(ref['real'][1]) and Q(ref['imag'][0])<=im<=Q(ref['imag'][1])
-    for raw,reason in ((b'p cnf 10 1\n1 2 3 4 5 6 7 8 9 10 0\n','CLAUSE_WIDTH'),
+    # Large free-variable case checks default policy and exact ownership.
+    raw=b'p cnf 2050 0\n'
+    ref=solve(raw,sha256(raw).hexdigest())
+    assert ref['order_policy']=='degree-reverse' and ref['sat'] and all(Q(x)==2**2050 for x in ref['real']) and all(Q(x)==0 for x in ref['imag'])
+    for raw,reason in ((b'p cnf 4097 0\n','SOURCE_CAP'),(b'p cnf 1 16001\n','SOURCE_CAP'),(b'p cnf 10 1\n1 2 3 4 5 6 7 8 9 10 0\n','CLAUSE_WIDTH'),
                        (b'p cnf 9 4000\n'+b'1 2 3 4 5 6 7 8 9 0\n'*4000,'INITIAL_RESOURCE_CAP')):
         try:
             solve(raw,sha256(raw).hexdigest())

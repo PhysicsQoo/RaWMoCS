@@ -252,11 +252,12 @@ def main():
     ap=argparse.ArgumentParser()
     for field in ("corpus","quprs","gpmc-source","gpmc","report"):
         ap.add_argument("--"+field,type=Path,required=True)
+    ap.add_argument("--mpfr",type=Path)
     args=ap.parse_args()
     assert git_sha(args.quprs)==QU_PRS_SHA and git_sha(args.gpmc_source)==GPMC_SHA
     e=json.loads((args.corpus/"long-tail-source-locked-evidence.json").read_text())
     assert e["status"]=="LONGTAIL_SCREEN_COMPLETE" and e["source_revisions"]=={"quprs":QU_PRS_SHA,"gpmc":GPMC_SHA}
-    out={"kind":"PYTHON_RESEARCH_PILOT_NOT_RUST_NATIVE","source_revisions":e["source_revisions"],"cases":[]}
+    out={"kind":"NATIVE_MPFR_RESEARCH_PILOT" if args.mpfr else "PYTHON_RESEARCH_PILOT_NOT_RUST_NATIVE","source_revisions":e["source_revisions"],"cases":[]}
     def persist():
         args.report.parent.mkdir(parents=True,exist_ok=True)
         args.report.write_text(json.dumps(out,indent=2)+"\n")
@@ -272,18 +273,30 @@ def main():
         persist()
         assert witness["status"]=="COMPLETED"
         for digits,bits in ((30,100),(100,333)):
-            # One exploratory paired fresh process per precision, reversed order.
-            arms=("gpmc","cardinality") if bits==100 else ("cardinality","gpmc")
-            for arm in arms:
-                row=native(command(args,name,cnf,digits,"gpmc"),"gpmc",120,digits) if arm=="gpmc" else run_candidate(cnf,bits,"cardinality")
-                row["bits"]=bits
-                case["trials"].append(row)
-                persist()
-                if row["status"]=="COMPLETED":
-                    row["relative_error_upper"]=check(row,witness,digits)
-                print("QNN_CARDINALITY",name,bits,arm,json.dumps(row),flush=True)
-                persist()
-            assert all(r["status"]=="COMPLETED" for r in case["trials"] if r["arm"]=="cardinality"),"candidate incomplete"
+            # QNN8 completed control: seven alternating fresh-process pairs.
+            # QNN12 long censored control: one pair, no completed speed ratio.
+            candidate="native_cardinality" if args.mpfr else "cardinality"
+            count=7 if args.mpfr and name=="mqt_qnn_8" else 1
+            for trial in range(count):
+                arms=("gpmc",candidate) if (trial+(bits==333))%2==0 else (candidate,"gpmc")
+                for arm in arms:
+                    if arm=="gpmc":
+                        row=native(command(args,name,cnf,digits,"gpmc"),"gpmc",120,digits)
+                    elif args.mpfr:
+                        row=native([str(args.mpfr),"--factor-cardinality",str(digits),str(cnf)],arm,120,digits)
+                        if row["status"]=="COMPLETED":
+                            assert "RESEARCH_MPFR_CARDINALITY " in row["stderr_tail"],"missing native route evidence"
+                    else:
+                        row=run_candidate(cnf,bits,"cardinality")
+                    row["bits"]=bits
+                    row["trial"]=trial+1
+                    case["trials"].append(row)
+                    persist()
+                    if row["status"]=="COMPLETED":
+                        row["relative_error_upper"]=check(row,witness,digits)
+                    print("QNN_CARDINALITY",name,bits,arm,json.dumps(row),flush=True)
+                    persist()
+            assert all(r["status"]=="COMPLETED" for r in case["trials"] if r["arm"]==candidate),"candidate incomplete"
     out["status"]="EXPLORATORY_INTERVAL_CHECKED"
     persist()
 

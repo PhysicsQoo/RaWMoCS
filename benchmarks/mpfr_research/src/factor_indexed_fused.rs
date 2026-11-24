@@ -1211,7 +1211,7 @@ mod packed_taylor {
             return Err("taylor_decimal");
         }
         let mut num=Integer::from_str_radix(&format!("{whole}{fraction}"),10).map_err(|_|"taylor_decimal")?;
-        if negative {num=-num;}
+        if negative {num = -num;}
         let scale=exp-fraction.len() as i32;
         let den=if scale<0 {Integer::from(10).pow((-scale) as u32)}
             else {num*=Integer::from(10).pow(scale as u32);Integer::from(1)};
@@ -1315,7 +1315,7 @@ mod packed_taylor {
             if c.clone().abs()>&n*binomial(d,j){return Err("taylor_coefficient_bound");}
             packed-=&c;packed>>=base;
             let mut term=power.clone()*Rational::from(c);
-            if (j>>1)&1==1 {term=-term;}
+            if (j>>1)&1==1 {term = -term;}
             if j&1==0 {re+=term;}else{im+=term;}
             power*=&delta;
         }
@@ -1326,11 +1326,13 @@ mod packed_taylor {
             Rational::from(&n*binomial(d,k))*a.pow(k)/(Rational::from(1)-ratio)
         };
         let r=Float::with_val(bits,&re);let i=Float::with_val(bits,&im);
-        let rr=r.to_rational().ok_or("taylor_round")?;let ii=i.to_rational().ok_or("taylor_round")?;
+        // Certify exactly the same decimal strings emitted by main.rs,
+        // including MPFR and decimal formatting rounding. Retain the
+        // existing stricter half-guard, with no tolerance expansion.
+        let rr=decimal(&r.to_string_radix(10,Some(digits as usize+4)))?;
+        let ii=decimal(&i.to_string_radix(10,Some(digits as usize+4)))?;
         let error=(rr-re.clone()).abs().max((ii-im.clone()).abs())+tail.clone();
         let scale=Rational::from(1).max(re.abs()-tail.clone()).max(im.abs()-tail);
-        // Reserve half the existing relative error budget for decimal output
-        // formatting. If the certificate is insufficient, fail closed.
         let guard=Rational::from((Integer::from(1),Integer::from(2)*Integer::from(10).pow(digits-6)));
         if error>scale*guard{return Err("taylor_error_certificate");}
         if start.elapsed().as_secs()>=110{return Err("taylor_deadline");}

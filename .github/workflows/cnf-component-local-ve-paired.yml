@@ -1,15 +1,6 @@
 name: Same-CNF Feynman AND/OR component-local signed Complex Factor-VE study
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/cnf-component-local-ve-paired.yml
-      - benchmarks/mpfr_research/src/main.rs
-      - benchmarks/mpfr_research/src/trail_engine.rs
-      - benchmarks/mpfr_research/src/factor_variable_elimination.rs
-      - benchmarks/mpfr_research/src/trail_engine.rs
-      - benchmarks/mpfr_research/tools/quprs_cnf_component_local_ve_ab.py
-      - docs/residual-factor-ve-hybrid-research.md
   workflow_dispatch:
 
 permissions:

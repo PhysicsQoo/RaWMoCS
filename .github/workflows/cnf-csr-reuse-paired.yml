@@ -1,13 +1,6 @@
 name: Same-CNF GPMC versus Rust CSR workspace-reuse research
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/cnf-csr-reuse-paired.yml
-      - benchmarks/mpfr_research/src/main.rs
-      - benchmarks/mpfr_research/src/csr_workspace.rs
-      - benchmarks/rust_core/tools/quprs_cnf_csr_reuse_ab.py
-      - docs/cnf-csr-reuse-research.md
   workflow_dispatch:
 
 permissions:

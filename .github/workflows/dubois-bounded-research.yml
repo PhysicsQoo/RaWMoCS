@@ -1,10 +1,6 @@
 name: Certified Dubois20 bounded solver research
 
 on:
-  pull_request:
-    paths:
-      - "benchmarks/rust_core/**"
-      - ".github/workflows/dubois-bounded-research.yml"
   workflow_dispatch:
 
 permissions:

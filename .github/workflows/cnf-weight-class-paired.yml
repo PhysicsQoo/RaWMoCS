@@ -1,13 +1,6 @@
 name: Same-CNF GPMC versus Rust weighted component cache research
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/cnf-weight-class-paired.yml
-      - benchmarks/mpfr_research/src/main.rs
-      - benchmarks/mpfr_research/src/trail_engine.rs
-      - benchmarks/mpfr_research/tools/quprs_cnf_weight_cache_ab.py
-      - docs/cnf-weight-class-cache-research.md
   workflow_dispatch:
 
 permissions:

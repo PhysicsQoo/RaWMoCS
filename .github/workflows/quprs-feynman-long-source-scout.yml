@@ -1,39 +1,36 @@
 name: Original larger Feynman QuPRS CNF bounded source scout
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/quprs-feynman-long-source-scout.yml"
-      - "benchmarks/rust_core/tools/quprs_long_feynman_reference.rs"
-      - "benchmarks/mpfr_research/tools/quprs_long_tail_mechanism.py"
-      - "benchmarks/mpfr_research/src/factor_indexed_fused.rs"
-      - "benchmarks/mpfr_research/tools/quprs_long_tail_scc_poc.py"
-      - "benchmarks/rust_core/tools/quprs_long_tail_source_bridge.rs"
-      - "benchmarks/mpfr_research/tools/quprs_long_tail_paired.py"
-      - "docs/original-long-tail-weighted-cnf-benchmark.md"
-      - "benchmarks/rust_core/tools/quprs_long_feynman_pilot.py"
-      - "benchmarks/rust_core/tools/quprs_feynman_node_budget_ab.py"
-      - "benchmarks/rust_core/tools/quprs_mpfr_shared_long_ab.py"
-      - "benchmarks/rust_core/tools/quprs_mpfr_indexed_unit_long_ab.py"
-      - "benchmarks/rust_core/tools/quprs_mpfr_csr_unit_long_ab.py"
-      - "benchmarks/rust_core/tools/quprs_mpfr_csr_cache_factorial_long_ab.py"
-      - "benchmarks/rust_core/tools/quprs_mpfr_packed_cache_long_ab.py"
-      - "benchmarks/rust_core/tools/quprs_mpfr_packed_fast_long_ab.py"
-      - "benchmarks/rust_core/tools/quprs_mpfr_packed_factor_ab.py"
-      - "benchmarks/rust_core/tools/quprs_mpfr_frequency_scratch_long_ab.py"
-      - "benchmarks/rust_core/tools/quprs_mpfr_cache_capacity_long_ab.py"
-      - "benchmarks/mpfr_research/src/main.rs"
   workflow_dispatch:
+    inputs:
+      suite:
+        description: "Focused: one prior-source case; full: explicit nine-job campaign"
+        type: choice
+        required: true
+        default: focused
+        options: [focused, full]
+      case:
+        description: "One case for focused validation"
+        type: choice
+        required: true
+        default: feynman_gf2_6_mult
+        options: [feynman_gf2_6_mult, mqt_qnn_8, mqt_wstate_16, mqt_qwalk_5]
+      source_run_id:
+        description: "Focused: existing run with verified source-screen artifact"
+        type: string
+        required: false
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: original-feynman-scout-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   bounded-original-feynman:
+    if: inputs.suite == 'full'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -236,7 +233,7 @@ jobs:
   original-long-tail-source-locked-screen:
     # One existing workflow, no new workflows/environment/branch. This costly
     # study is limited to the research PR or explicit manual dispatch.
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.number == 128
+    if: inputs.suite == 'full'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -335,7 +332,7 @@ jobs:
     # Keep one existing workflow, parallelize the three previously
     # source-qualified hard cases with independent timeout/artifact.
     needs: original-long-tail-source-locked-screen
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.number == 128
+    if: inputs.suite == 'full'
     strategy:
       fail-fast: false
       matrix:
@@ -423,11 +420,11 @@ jobs:
     # 7 fresh alternating head-to-head trials per precision; GPMC feature
     # toggles are separate single-trial exploratory mechanism probes.
     needs: original-long-tail-source-locked-screen
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.number == 128
+    if: ${{ !cancelled() && ((inputs.suite == 'full' && needs.original-long-tail-source-locked-screen.result == 'success') || (inputs.suite == 'focused' && needs.original-long-tail-source-locked-screen.result == 'skipped')) }}
     strategy:
       fail-fast: false
       matrix:
-        case: [feynman_gf2_6_mult, mqt_qnn_8, mqt_wstate_16, mqt_qwalk_5]
+        case: ${{ fromJSON(inputs.suite == 'full' && '["feynman_gf2_6_mult","mqt_qnn_8","mqt_wstate_16","mqt_qwalk_5"]' || format('["{0}"]', inputs.case)) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -455,9 +452,26 @@ jobs:
         with:
           workspaces: benchmarks/mpfr_research -> target
           key: source-locked-high-cost-cohort
-      - name: Download unchanged original source screening evidence
+      - name: Require an explicit source artifact in focused mode
+        if: inputs.suite == 'focused'
+        env:
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo "Focused mode requires a numeric source_run_id"; exit 2; }
+      - name: Download unchanged original source screening evidence (full)
+        if: inputs.suite == 'full'
         uses: actions/download-artifact@v4
         with:
+          name: original-rawmocs-gpmc-long-tail-screen
+          path: .research/long-tail
+      - name: Reuse source-locked artifact from selected run (focused)
+        if: inputs.suite == 'focused'
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.source_run_id }}
           name: original-rawmocs-gpmc-long-tail-screen
           path: .research/long-tail
       - name: Verify original upstream source locks and install MPFR

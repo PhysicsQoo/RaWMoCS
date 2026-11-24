@@ -1,13 +1,6 @@
 name: Same-CNF GPMC versus Rust prehashed exact cache research
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/cnf-prehash-paired.yml
-      - benchmarks/mpfr_research/src/main.rs
-      - benchmarks/mpfr_research/src/trail_engine.rs
-      - benchmarks/mpfr_research/tools/quprs_cnf_prehash_ab.py
-      - docs/cnf-prehash-research.md
   workflow_dispatch:
 
 permissions:

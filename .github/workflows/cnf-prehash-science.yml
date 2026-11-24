@@ -1,12 +1,6 @@
 name: Original weighted-CNF exact prehashed residual cache correctness
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/cnf-prehash-science.yml
-      - benchmarks/mpfr_research/src/main.rs
-      - benchmarks/mpfr_research/src/trail_engine.rs
-      - docs/cnf-prehash-research.md
   workflow_dispatch:
 
 permissions:

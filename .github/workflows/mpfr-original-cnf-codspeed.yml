@@ -1,12 +1,6 @@
 name: Original QuPRS Weighted CNF MPFR CodSpeed flamegraphs
 
 on:
-  pull_request:
-    paths:
-      - codspeed.yml
-      - .github/workflows/mpfr-original-cnf-codspeed.yml
-      - benchmarks/mpfr_research/**
-      - benchmarks/rust_core/tools/quprs_long_feynman_reference.rs
   workflow_dispatch:
 
 permissions:

@@ -1,12 +1,6 @@
 name: Same-CNF GPMC versus Rust unit-closure pivot research
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/cnf-unit-closure-paired.yml
-      - benchmarks/mpfr_research/src/main.rs
-      - benchmarks/rust_core/tools/quprs_cnf_unit_closure_ab.py
-      - docs/cnf-unit-closure-research.md
   workflow_dispatch:
 
 permissions:

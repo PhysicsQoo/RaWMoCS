@@ -1,21 +1,6 @@
 name: QuPRS original encoder-emitted weighted-CNF study
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/quprs-encoder-source-capture.yml"
-      - "benchmarks/rust_core/tools/quprs_encoder_validate.py"
-      - "benchmarks/rust_core/tools/quprs_encoder_paired.py"
-      - "benchmarks/rust_core/tools/quprs_representative_native.py"
-      - "benchmarks/rust_core/tools/quprs_optimizer_paired.py"
-      - "benchmarks/rust_core/tools/quprs_precision_sweep.py"
-      - "benchmarks/rust_core/tools/quprs_mpfr_matched.py"
-      - "benchmarks/rust_core/tools/quprs_mpfr_cache_ab.py"
-      - "benchmarks/rust_core/tools/quprs_mpfr_composed_ab.py"
-      - "benchmarks/rust_core/tools/quprs_mpfr_shared_residual_ab.py"
-      - "benchmarks/rust_core/tools/quprs_mpfr_indexed_unit_ab.py"
-      - "benchmarks/mpfr_research/**"
-      - "benchmarks/rust_core/examples/quprs_encoder_research_cli.rs"
   push:
     branches: [main]
     paths:

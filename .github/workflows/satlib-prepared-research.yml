@@ -1,11 +1,6 @@
 name: Source-pinned SATLIB Full WMC prepared-input research
 
 on:
-  pull_request:
-    paths:
-      - "crates/rawmocs-core/src/lib.rs"
-      - "benchmarks/rust_core/**"
-      - ".github/workflows/satlib-prepared-research.yml"
   workflow_dispatch:
 
 permissions:

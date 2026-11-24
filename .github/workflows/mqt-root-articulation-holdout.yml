@@ -1,16 +1,6 @@
 name: Same-CNF MQT Bench root-only separator Pivot holdout
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/mqt-root-articulation-holdout.yml"
-      - "benchmarks/mpfr_research/tools/quprs_mqt_root_separator_ab.py"
-      - "docs/mqt-root-articulation-holdout.md"
-      - "benchmarks/mpfr_research/src/trail_engine.rs"
-      - "benchmarks/mpfr_research/src/separator_pivot.rs"
-      - "benchmarks/rust_core/tools/quprs_mqtbench_original_cnf.rs"
-      - "benchmarks/rust_core/tools/quprs_mqtbench_original_cnf_ab.py"
-      - "benchmarks/mpfr_research/src/main.rs"
   workflow_dispatch:
 
 permissions:

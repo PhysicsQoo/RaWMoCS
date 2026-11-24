@@ -1,31 +1,6 @@
 name: Same-CNF original MQT exact reusable key arena holdout vs GPMC
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/mqt-reusable-key-arena-holdout.yml"
-      - "benchmarks/mpfr_research/tools/quprs_mqt_key_arena_ab.py"
-      - "benchmarks/mpfr_research/tools/quprs_mqt_factor_ve_ab.py"
-      - "benchmarks/mpfr_research/tools/quprs_factor_preflight_paired.py"
-      - "benchmarks/mpfr_research/tools/quprs_full_live_key_paired.py"
-      - "benchmarks/mpfr_research/tools/quprs_forest_dp_paired.py"
-      - "benchmarks/mpfr_research/tools/quprs_join_tree_paired.py"
-      - "docs/bounded-residual-join-tree-research.md"
-      - "benchmarks/mpfr_research/src/factor_forest_dp.rs"
-      - "docs/exact-forest-component-dp-research.md"
-      - "docs/full-live-clause-residual-key-research.md"
-      - "docs/reusable-key-arena-research.md"
-      - "benchmarks/mpfr_research/src/trail_engine.rs"
-      - "benchmarks/mpfr_research/tools/quprs_cnf_key_arena_ab.py"
-      - "benchmarks/mpfr_research/tools/quprs_scope_stamp_paired.py"
-      - "benchmarks/mpfr_research/tools/quprs_active_bitmap_paired.py"
-      - "benchmarks/mpfr_research/tools/quprs_reversible_literal_mask_paired.py"
-      - "benchmarks/mpfr_research/tools/quprs_fused_pre_paired.py"
-      - "benchmarks/mpfr_research/tools/quprs_cnf_scoped_dsu_ab.py"
-      - "benchmarks/mpfr_research/tools/quprs_cnf_scoped_dsu_ab.py"
-      - "benchmarks/rust_core/tools/quprs_mqtbench_original_cnf.rs"
-      - "benchmarks/rust_core/tools/quprs_mqtbench_original_cnf_ab.py"
-      - "benchmarks/mpfr_research/src/main.rs"
   workflow_dispatch:
 
 permissions:

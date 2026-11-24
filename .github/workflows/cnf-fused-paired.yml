@@ -1,13 +1,6 @@
 name: Same-CNF GPMC versus Rust fused compact residual research
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/cnf-fused-paired.yml
-      - benchmarks/mpfr_research/src/main.rs
-      - benchmarks/mpfr_research/src/trail_engine.rs
-      - benchmarks/mpfr_research/tools/quprs_cnf_fused_ab.py
-      - docs/cnf-fused-research.md
   workflow_dispatch:
 
 permissions:

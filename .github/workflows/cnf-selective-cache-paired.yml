@@ -1,13 +1,6 @@
 name: Same-CNF GPMC versus Rust selective weighted component cache research
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/cnf-selective-cache-paired.yml
-      - benchmarks/mpfr_research/src/main.rs
-      - benchmarks/mpfr_research/src/trail_engine.rs
-      - benchmarks/mpfr_research/tools/quprs_cnf_selective_ab.py
-      - docs/cnf-selective-cache-research.md
   workflow_dispatch:
 
 permissions:

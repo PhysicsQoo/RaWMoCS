@@ -1,13 +1,6 @@
 name: Weighted CNF-only bounded unit-propagated pivot lookahead science
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/cnf-unit-closure-science.yml
-      - benchmarks/mpfr_research/src/main.rs
-      - benchmarks/mpfr_research/src/unit_closure_pivot.rs
-      - benchmarks/rust_core/tools/quprs_cnf_unit_closure_ab.py
-      - docs/cnf-unit-closure-research.md
   workflow_dispatch:
 
 permissions:

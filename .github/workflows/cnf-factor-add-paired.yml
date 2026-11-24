@@ -1,18 +1,6 @@
 name: Same-CNF Feynman original weighted CNF bounded ADD pilot
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/cnf-factor-add-paired.yml
-      - benchmarks/mpfr_research/src/main.rs
-      - benchmarks/mpfr_research/src/trail_engine.rs
-      - benchmarks/mpfr_research/src/factor_variable_elimination.rs
-      - benchmarks/mpfr_research/src/factor_add_elimination.rs
-      - benchmarks/mpfr_research/src/factor_minfill_order.rs
-      - benchmarks/mpfr_research/src/factor_primal_minor_bound.rs
-      - benchmarks/mpfr_research/tools/quprs_cnf_factor_add_ab.py
-      - docs/exact-signed-add-factor-research.md
-      - docs/factor-ve-primal-minor-bound-research.md
   workflow_dispatch:
 
 permissions:

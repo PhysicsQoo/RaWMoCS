@@ -1,12 +1,6 @@
 name: Original weighted-CNF post-unit exact weighted component cache correctness
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/cnf-post-unit-science.yml
-      - benchmarks/mpfr_research/src/main.rs
-      - benchmarks/mpfr_research/src/trail_engine.rs
-      - docs/cnf-post-unit-research.md
   workflow_dispatch:
 
 permissions:

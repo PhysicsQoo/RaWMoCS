@@ -1,25 +1,6 @@
 name: Same-CNF Feynman exact Factor VE bounded min-fill order study
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/cnf-factor-ve-minfill-paired.yml
-      - benchmarks/mpfr_research/src/main.rs
-      - benchmarks/mpfr_research/src/trail_engine.rs
-      - benchmarks/mpfr_research/src/factor_variable_elimination.rs
-      - benchmarks/mpfr_research/src/factor_minfill_order.rs
-      - benchmarks/mpfr_research/src/factor_primal_minor_bound.rs
-      - benchmarks/mpfr_research/tools/quprs_cnf_factor_minfill_ab.py
-      - benchmarks/mpfr_research/tools/quprs_factor_preflight_paired.py
-      - benchmarks/mpfr_research/tools/quprs_full_live_key_paired.py
-      - benchmarks/mpfr_research/tools/quprs_forest_dp_paired.py
-      - benchmarks/mpfr_research/tools/quprs_join_tree_paired.py
-      - docs/bounded-residual-join-tree-research.md
-      - benchmarks/mpfr_research/src/factor_forest_dp.rs
-      - docs/exact-forest-component-dp-research.md
-      - docs/full-live-clause-residual-key-research.md
-      - docs/factor-ve-minfill-research.md
-      - docs/factor-ve-primal-minor-bound-research.md
   workflow_dispatch:
 
 permissions:

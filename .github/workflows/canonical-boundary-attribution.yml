@@ -1,11 +1,6 @@
 name: Canonical input boundary attribution research
 
 on:
-  pull_request:
-    paths:
-      - "crates/rawmocs-core/src/lib.rs"
-      - "benchmarks/rust_core/**"
-      - ".github/workflows/canonical-boundary-attribution.yml"
   workflow_dispatch:
 
 permissions:

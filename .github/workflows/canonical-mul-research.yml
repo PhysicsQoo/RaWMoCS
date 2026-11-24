@@ -1,12 +1,6 @@
 name: Canonical exact multiplication research
 
 on:
-  pull_request:
-    paths:
-      - "crates/rawmocs-core/src/lib.rs"
-      - "crates/rawmocs-core/Cargo.toml"
-      - "benchmarks/rust_core/**"
-      - ".github/workflows/canonical-mul-research.yml"
   workflow_dispatch:
 
 permissions:

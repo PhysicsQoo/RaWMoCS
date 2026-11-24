@@ -1013,7 +1013,7 @@ mod packed_taylor {
     }
     #[derive(Default)]
     struct RingStats { calls:usize,peak_pool:usize,peak_live:usize,gc:usize,gc_scans:usize }
-    struct IdFactor {vars:Vec<usize>,ids:Vec<u32>}
+    struct IdFactor {vars:Vec<usize>,ids:Vec<u32>,exponents:Option<Vec<u16>>}
     struct Ring {
         values:Vec<Integer>,links:Vec<u32>,index:HashMap<u64,u32>,
         mul:HashMap<(u32,u32),u32>,add:HashMap<(u32,u32),u32>,
@@ -1080,6 +1080,19 @@ mod packed_taylor {
             if memo.len()>=PAIR_CAP {memo.clear();}
             memo.insert(key,id);Ok(id)
         }
+        // Charge an upper bound on binary exponentiation operations. The
+        // temporary cache is local to a bucket and invalidated after GC.
+        fn affine_power(&mut self,e:u32,cache:&mut HashMap<u32,u32>)->Result<u32,&'static str>{
+            if e==0{return Ok(ONE);}
+            if let Some(&id)=cache.get(&e){return Ok(id);}
+            if e>4096{return Err("affine exponent cap");}
+            let charge=2*(u32::BITS-e.leading_zeros()) as usize;
+            if self.stats.calls.saturating_add(charge)>self.limit{return Err("taylor_arithmetic");}
+            self.stats.calls+=charge;
+            let mut z=self.phase.clone();
+            z.pow_mod_mut(&Integer::from(e),&self.modulus).map_err(|_|"affine_modpow")?;
+            let id=self.intern(z)?;cache.insert(e,id);Ok(id)
+        }
         fn clear_pairs(&mut self) {self.mul.clear();self.add.clear();}
         fn reclaim(&mut self,buckets:&mut [Vec<IdFactor>],scalar:&mut u32,
             current:&mut [IdFactor],output:&mut [u32],start:Instant)->Result<(),&'static str> {
@@ -1131,7 +1144,7 @@ mod packed_taylor {
         for &v in remaining {
             let w=&p.weights[v-1];
             let ids=vec![pool.weight(&w.negative)?,pool.weight(&w.positive)?];
-            put(IdFactor{vars:vec![v],ids},&mut buckets,&rank,&mut scalar,&mut live,pool)?;
+            put(IdFactor{vars:vec![v],ids,exponents:None},&mut buckets,&rank,&mut scalar,&mut live,pool)?;
         }
         for c in clauses {
             let mut vars:Vec<_>=c.iter().map(|l|l.unsigned_abs() as usize).collect();
@@ -1145,7 +1158,7 @@ mod packed_taylor {
             for mask in 0..size {
                 ids.push(if positions.iter().any(|&(j,s)|((mask>>j)&1==1)==s) {ONE} else {NO});
             }
-            put(IdFactor{vars,ids},&mut buckets,&rank,&mut scalar,&mut live,pool)?;
+            put(IdFactor{vars,ids,exponents:None},&mut buckets,&rank,&mut scalar,&mut live,pool)?;
         }
         stats.factors=remaining.len()+clauses.len();stats.cells=live;
         execute_buckets((plan,&rank),(buckets,scalar,live),stats,pool,start,(WIDTH,false))
@@ -1188,11 +1201,13 @@ mod packed_taylor {
                     pivots.push(pivot);flips.push(by_bit);
                 }
                 let mut indices=vec![0_usize;factors.len()];
+                let mut exponent_cache:HashMap<u32,u32>=HashMap::new();
                 let mut ids=Vec::new();ids.try_reserve_exact(size).map_err(|_|"intern_allocation")?;
                 for assignment in 0..size {
                     if assignment&255==0 {deadline(start)?;}
                     if assignment&63==0 && pool.values.len()>=next_gc {
                         pool.reclaim(&mut buckets[k+1..],&mut scalar,&mut factors,&mut ids,start)?;
+                        exponent_cache.clear();
                         next_gc=pool.values.len().saturating_add(25_000).clamp(340_000,380_000);
                     }
                     let mut sum=NO;
@@ -1202,7 +1217,13 @@ mod packed_taylor {
                         // Each factor still contributes exactly once per
                         // assignment, including SAT-valued numeric zero.
                         let (mut common,mut left,mut right)=(ONE,ONE,ONE);
+                        let (mut e0,mut e1)=(0u32,0u32);
                         for (i,f) in factors.iter().enumerate() {
+                            if let Some(exps)=&f.exponents {
+                                e0=e0.checked_add(u32::from(exps[indices[i]])).ok_or("affine exponent overflow")?;
+                                e1=e1.checked_add(u32::from(exps[indices[i]|pivots[i]])).ok_or("affine exponent overflow")?;
+                                continue;
+                            }
                             let a=f.ids[indices[i]];
                             let b=f.ids[indices[i]|pivots[i]];
                             if a==NO||b==NO{return Err("affine_complete_support_invariant");}
@@ -1213,6 +1234,13 @@ mod packed_taylor {
                                 right=pool.op(right,b,true)?;
                             }
                         }
+                        let e=e0.min(e1);
+                        let z=pool.affine_power(e,&mut exponent_cache)?;
+                        common=pool.op(common,z,true)?;
+                        let z=pool.affine_power(e0-e,&mut exponent_cache)?;
+                        left=pool.op(left,z,true)?;
+                        let z=pool.affine_power(e1-e,&mut exponent_cache)?;
+                        right=pool.op(right,z,true)?;
                         let joined=pool.op(left,right,false)?;
                         sum=pool.op(common,joined,true)?;
                     }else{
@@ -1235,7 +1263,7 @@ mod packed_taylor {
                     }
                 }
                 live-=factors.iter().map(|f|f.ids.len()).sum::<usize>();drop(factors);
-                put(IdFactor{vars:rest,ids},&mut buckets,rank,&mut scalar,&mut live,pool)?;
+                put(IdFactor{vars:rest,ids,exponents:None},&mut buckets,rank,&mut scalar,&mut live,pool)?;
             }
             stats.eliminated+=1;
             if pool.values.len()>=50_000 {
@@ -1277,7 +1305,7 @@ mod packed_taylor {
                 };
                 ids.push(id);
             }
-            put(IdFactor{vars:scope.clone(),ids},&mut buckets,&rank,&mut scalar,&mut live,&mut ring)?;
+            put(IdFactor{vars:scope.clone(),ids,exponents:Some(values.clone())},&mut buckets,&rank,&mut scalar,&mut live,&mut ring)?;
         }
         let mut stats=VeStats{cells:live,..VeStats::default()};
         let id=execute_buckets((plan,&rank),(buckets,scalar,live),&mut stats,&mut ring,local_start,(18,true))?;
@@ -1583,7 +1611,7 @@ mod packed_taylor {
                 }
             }
             assert_eq!(ring.op(NO,ZERO,true).unwrap(),NO);
-            let mut scalar=a;let mut current=vec![IdFactor{vars:vec![1],ids:vec![a,b]}];
+            let mut scalar=a;let mut current=vec![IdFactor{vars:vec![1],ids:vec![a,b],exponents:None}];
             let mut out=vec![ZERO,b];
             ring.reclaim(&mut [],&mut scalar,&mut current,&mut out,Instant::now()).unwrap();
             assert_eq!(ring.values[scalar as usize],37);

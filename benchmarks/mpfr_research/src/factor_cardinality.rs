@@ -149,13 +149,13 @@ fn project(mask:usize, union:&[usize], scope:&[usize])->usize {
     })
 }
 fn nonzero(x:&C)->bool {x.re!=0||x.im!=0}
-fn multiply(a:Factor,b:Factor,bits:u32,trace:&mut Trace,start:Instant)->Result<Factor,String>{
+fn multiply(a:Factor,b:Factor,bits:u32,trace:&mut Trace,deadline:Instant)->Result<Factor,String>{
     let scope:Vec<_>=a.scope.iter().chain(&b.scope).copied().collect::<BTreeSet<_>>().into_iter().collect();
     if scope.len()>16 {return Err("cardinality bag cap".into());}
     let size=1usize<<scope.len();
     let work=a.poly.len().saturating_mul(b.poly.len()).saturating_mul(size);
     trace.work=trace.work.saturating_add(work);
-    if trace.work>MAX_WORK || start.elapsed().as_secs()>=105 {return Err("cardinality work/deadline cap".into());}
+    if trace.work>MAX_WORK || Instant::now()>=deadline {return Err("cardinality work/deadline cap".into());}
     let pa:Vec<_>=(0..size).map(|m|project(m,&scope,&a.scope)).collect();
     let pb:Vec<_>=(0..size).map(|m|project(m,&scope,&b.scope)).collect();
     let mut poly:Poly=BTreeMap::new();
@@ -244,7 +244,10 @@ fn recognize_cliques(gates:&[Gate],rep:&[i32],free:&BTreeSet<usize>,keys:&[Phase
 }
 
 fn count(p:&Problem,raw:&str,bits:u32,trace:&mut Trace)->Result<Outcome,String> {
-    let start=Instant::now();
+    count_bounded(p,raw,bits,trace,105)
+}
+fn count_bounded(p:&Problem,raw:&str,bits:u32,trace:&mut Trace,seconds:u64)->Result<Outcome,String> {
+    let deadline=Instant::now()+std::time::Duration::from_secs(seconds);
     let (gates,rep,units,residual)=extract(p,1024)?;
     if !residual.is_empty() {return Err("unclosed hard clauses".into());}
     let free:BTreeSet<_>=rep.iter().copied().filter(|&l|l!=0&&!units.contains_key(&var(l))).map(var).collect();
@@ -293,7 +296,7 @@ fn count(p:&Problem,raw:&str,bits:u32,trace:&mut Trace)->Result<Outcome,String> 
         } else {factors.push(Factor::ordinary(vec![v],vec![a,b]));}
     }
     while !graph.is_empty(){
-        if start.elapsed().as_secs()>=105 {return Err("cardinality deadline".into());}
+        if Instant::now()>=deadline {return Err("cardinality deadline".into());}
         let v=*graph.keys().min_by_key(|&&v|minfill(&graph,v)).ok_or("empty graph")?;
         let nb=graph.remove(&v).ok_or("missing pivot")?;
         trace.width=trace.width.max(nb.len());
@@ -302,7 +305,7 @@ fn count(p:&Problem,raw:&str,bits:u32,trace:&mut Trace)->Result<Outcome,String> 
         factors=rest;
         bucket.sort_by_key(|f|(f.poly.len(),f.scope.len()));
         let mut iter=bucket.into_iter();let mut a=iter.next().ok_or("empty pivot bucket")?;
-        for b in iter {a=multiply(a,b,bits,trace,start)?;}
+        for b in iter {a=multiply(a,b,bits,trace,deadline)?;}
         factors.push(sum_out(a,v,bits));
         if factors.iter().map(Factor::cells).sum::<usize>()>2_000_000 {
             return Err("cardinality live cap".into());
@@ -314,7 +317,7 @@ fn count(p:&Problem,raw:&str,bits:u32,trace:&mut Trace)->Result<Outcome,String> 
     }
     let mut iter=factors.into_iter();
     let mut f=iter.next().ok_or("empty final factor")?;
-    for b in iter {f=multiply(f,b,bits,trace,start)?;}
+    for b in iter {f=multiply(f,b,bits,trace,deadline)?;}
     if !f.scope.is_empty(){return Err("uneliminated variables".into());}
     let mut powers=Vec::new();
     for phase in phases {

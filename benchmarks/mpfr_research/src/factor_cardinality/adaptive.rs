@@ -204,7 +204,8 @@ mod tests{
     #[test]
     fn width19_admission_requires_complete_resource_plan(){
         let vars:BTreeSet<_>=(1..=20).collect();
-        let scopes:Vec<_>=vars.iter().flat_map(|&a|vars.range((a+1)..).map(move |&b|BTreeSet::from([a,b]))).collect();
+        let mut scopes=Vec::new();
+        for &a in &vars{for &b in vars.range((a+1)..){for _ in 0..4{scopes.push(BTreeSet::from([a,b]));}}}
         let p=plan_scopes(&vars,&scopes,Instant::now(),1,true).unwrap();
         // Dense complete graph exceeds total lookup cap. Width alone
         // cannot authorize allocation or computation.

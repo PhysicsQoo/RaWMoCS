@@ -325,7 +325,7 @@ fn count(p:&Problem,raw:&str,bits:u32,trace:&mut Trace)->Result<Outcome,String> 
 
 pub(super) fn run(mut args:impl Iterator<Item=std::ffi::OsString>, use_definitional:bool)->Result<(),String>{
     let digits:u32=args.next().and_then(|x|x.into_string().ok()).ok_or("missing digits")?.parse().map_err(|_|"invalid digits")?;
-    let bits=match digits{30=>100,100=>333,_=>return Err("unsupported precision".into())};
+    let bits=match digits{30=>100,100=>333,60 if use_definitional=>200,130 if use_definitional=>432,_=>return Err("unsupported precision".into())};
     let path=args.next().ok_or("missing source")?;
     if args.next().is_some(){return Err("unexpected argument".into());}
     let t=Instant::now();

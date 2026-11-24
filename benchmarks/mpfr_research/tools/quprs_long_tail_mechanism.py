@@ -216,6 +216,7 @@ def main() -> None:
     ap.add_argument("--indexed-conditioned", action="store_true")
     ap.add_argument("--indexed-interned-only", action="store_true")
     ap.add_argument("--definitional-only", action="store_true")
+    ap.add_argument("--qwalk-guarded", action="store_true")
     ap.add_argument("--case", choices=CASES)
     for name in ("quprs", "gpmc-source", "corpus", "gpmc", "mpfr", "report"):
         ap.add_argument("--" + name, type=Path)
@@ -232,11 +233,61 @@ def main() -> None:
         ap.error("interned-only is an independent focused W-state16 pair")
     if args.definitional_only and (args.indexed_fused or args.indexed_conditioned or args.indexed_interned_only or args.case not in ("mqt_wstate_16","mqt_qwalk_5")):
         ap.error("definitional-only is a focused W-state16/Qwalk5 comparison")
+    if args.qwalk_guarded and (not args.definitional_only or args.case != "mqt_qwalk_5"):
+        ap.error("guarded diagnostic requires focused Qwalk definitional comparison")
     src_report = args.corpus / "long-tail-source-locked-evidence.json"
     if not src_report.is_file():
         raise SystemExit("MISSING_ORIGINAL_SOURCE_SCREEN")
     evidence = json.loads(src_report.read_text(encoding="utf-8"))
     prior, cnf = verify_source(args, evidence)
+    if args.qwalk_guarded:
+        import qwalk_original_interval as oracle
+        ref=oracle.solve(cnf.read_bytes())
+        result={"study":"Cancellation diagnostic with independently enclosed original CNF",
+                "status":"IN_PROGRESS","case":args.case,"source_cnf_sha256":prior["cnf_sha256"],
+                "source_qasm_sha256":prior["source_qasm_sha256"],
+                "source_lock":{"quprs":QU_PRS_SHA,"gpmc":GPMC_SHA},
+                "witness":ref,"not_a_production_go":True,
+                "limits":{"seconds":MAX_WALL_SECONDS,"AS_bytes":AS_BYTES},
+                "cohorts":[]}
+        persist(args,result)
+        failed=False
+        for target,work_digits,work_bits in ((30,60,200),(100,130,432)):
+            cohort={"target_digits":target,"target_bits":BITS[target],
+                    "working_digits":work_digits,"working_bits":work_bits,
+                    "status":"IN_PROGRESS","trials":[]}
+            result["cohorts"].append(cohort)
+            # Both arms use the same predeclared extra 30 decimal digits.
+            # Fixed internal precision comparison remains separate evidence.
+            for trial in range(TRIALS):
+                arms=("gpmc","definitional") if (trial+(target==100))%2==0 else ("definitional","gpmc")
+                for arm in arms:
+                    cmd=([str(args.gpmc.resolve()),"-mode=1",f"-prec={work_digits}",str(cnf.resolve())]
+                         if arm=="gpmc" else [str(args.mpfr.resolve()),"--factor-definitional",str(work_digits),str(cnf.resolve())])
+                    row=native(cmd,arm,MAX_WALL_SECONDS,work_digits,expected_bits=work_bits)
+                    row["trial"]=trial
+                    if row["status"]=="COMPLETED":
+                        row["independent_witness"]=oracle.compare(row,ref,target)
+                        row["route_complete"]=arm=="gpmc" or "RESEARCH_MPFR_DEFINITIONAL " in row.get("stderr_tail","")
+                    cohort["trials"].append(row)
+                    persist(args,result)
+                    print("QWALK_GUARDED",target,work_bits,trial,arm,row["status"],row.get("wall_ns"),
+                          row.get("independent_witness",{}).get("pass"),flush=True)
+            gp=[r for r in cohort["trials"] if r["arm"]=="gpmc"]
+            rs=[r for r in cohort["trials"] if r["arm"]=="definitional"]
+            good=all(r["status"]=="COMPLETED" and r.get("route_complete") and r.get("independent_witness",{}).get("pass") for r in cohort["trials"])
+            if good:
+                g=statistics.median(r["wall_ns"] for r in gp);t=statistics.median(r["wall_ns"] for r in rs)
+                cohort.update(status="MATCHED_TARGET_OUTPUT_ACCURACY",gpmc_p50_ms=g/1e6,definitional_p50_ms=t/1e6,gpmc_over_definitional=g/t)
+            else:
+                cohort["status"]="FAIL_OR_CENSORED_GUARDED_ACCURACY"
+                failed=True
+            persist(args,result)
+            print("QWALK_GUARDED_FINAL",target,cohort["status"],cohort.get("gpmc_over_definitional"),flush=True)
+        result["status"]="GUARDED_ACCURACY_FAIL" if failed else "GUARDED_ACCURACY_COMPLETE"
+        persist(args,result)
+        if failed: raise SystemExit("FAIL_QWALK_GUARDED_ACCURACY")
+        return
     if args.definitional_only:
         result = {"study":"Original source private-definition fused contraction",
                   "status":"IN_PROGRESS", "case":args.case,

@@ -2,11 +2,13 @@ name: Rust CodSpeed
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, labeled]
     paths:
       - "crates/rawmocs-core/src/**"
       - "crates/rawmocs-core/Cargo.toml"
       - "benchmarks/rust_core/**"
+      - "benchmarks/mpfr_research/**"
+      - "codspeed.yml"
       - ".github/workflows/codspeed.yml"
   push:
     branches: [main]
@@ -16,6 +18,16 @@ on:
       - "benchmarks/rust_core/**"
       - ".github/workflows/codspeed.yml"
   workflow_dispatch:
+    inputs:
+      study:
+        description: 'Routine only, focused pair, or explicit milestone'
+        type: choice
+        options: [routine, grover5_focus, legacy, grover6_large, wstate16]
+        default: routine
+      digits:
+        type: choice
+        options: ['30', '100']
+        default: '30'
 
 permissions:
   contents: read
@@ -26,6 +38,7 @@ concurrency:
 
 jobs:
   bench-smoke:
+    if: github.event.action != 'labeled' || github.event.label.name == 'run-long-codspeed'
     name: Compile and validate Rust benchmarks (not a timing report)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -100,3 +113,144 @@ jobs:
         with:
           mode: simulation
           run: cd benchmarks/rust_core && cargo codspeed run --bench solver --bench quprs_direct_cnf
+
+  source-locked-flamegraphs:
+    if: >-
+      vars.RAWMOCS_CODSPEED_ENABLED == 'true' &&
+      ((github.event_name == 'workflow_dispatch' && inputs.study != 'routine') ||
+       (github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        github.event.action == 'labeled' &&
+        github.event.label.name == 'run-long-codspeed'))
+    runs-on: ubuntu-24.04
+    # Build/reference overhead is separate from the bounded Simulation step.
+    timeout-minutes: ${{ (github.event_name == 'pull_request' || inputs.study == 'grover5_focus') && 25 || 35 }}
+    env:
+      STUDY: ${{ github.event_name == 'pull_request' && 'grover5_focus' || inputs.study || 'grover5_focus' }}
+      DIGITS: ${{ inputs.digits || '30' }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/QuPRS
+          ref: 0b28736651b3740ed3b201edd2efdef3da541e0d
+          path: .upstream/quprs
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/GPMC
+          ref: 89bbc89d0de918e7a5385740355df55765039230
+          path: .upstream/gpmc
+          submodules: recursive
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            benchmarks/mpfr_research -> target
+            .upstream/quprs/rust -> target
+          key: original-cnf-mpfr-flamegraph-v1
+      - name: Verify identical-source contracts and native libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C .upstream/quprs rev-parse HEAD)" = 0b28736651b3740ed3b201edd2efdef3da541e0d
+          test "$(git -C .upstream/gpmc rev-parse HEAD)" = 89bbc89d0de918e7a5385740355df55765039230
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build libgmp-dev libmpfr-dev zlib1g-dev pkg-config time
+      - name: Build pinned original QuPRS CNF exporter
+        if: env.STUDY == 'legacy'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp benchmarks/rust_core/tools/quprs_long_feynman_reference.rs \
+            .upstream/quprs/rust/quprs/examples/quprs_long_feynman_reference.rs
+          cargo build --locked --release --no-default-features \
+            --manifest-path .upstream/quprs/rust/Cargo.toml \
+            -p quprs --example quprs_long_feynman_reference
+      - name: Freeze three original Weighted CNF inputs outside CodSpeed profiling
+        if: env.STUDY == 'legacy'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .research/codspeed-original-cnf
+          generator="$GITHUB_WORKSPACE/.upstream/quprs/rust/target/release/examples/quprs_long_feynman_reference"
+          for case in feynman_hwb6 feynman_mod_mult_55 feynman_barenco_tof_5; do
+            timeout -k 2s 30s prlimit --as=2147483648 --fsize=2097152 -- \
+              "$generator" "$case" "$GITHUB_WORKSPACE/.upstream/quprs" \
+              "$GITHUB_WORKSPACE/.research/codspeed-original-cnf" \
+              > ".research/codspeed-original-cnf/$case.export.log" 2>&1
+            test -s ".research/codspeed-original-cnf/$case-gpmc.cnf"
+          done
+          printf '%s  %s\n' \
+            e0381c270963e0715273530e48f159dc05b1cd96c9b85a556741a72a4289471d ".research/codspeed-original-cnf/feynman_hwb6-gpmc.cnf" \
+            f8c76d883923363a7fcb5e32d6c6d8914f8443af3582fbe3d2e1d9c0b99c35b7 ".research/codspeed-original-cnf/feynman_mod_mult_55-gpmc.cnf" \
+            f1fb459a058ba3dc17d2bd538a7e8b34e451383ae3384cb58a624bc8194499c3 ".research/codspeed-original-cnf/feynman_barenco_tof_5-gpmc.cnf" \
+            | sha256sum -c -
+      - name: Build pinned long source bridge
+        if: env.STUDY != 'legacy'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp benchmarks/rust_core/tools/quprs_long_tail_source_bridge.rs .upstream/quprs/rust/quprs/examples/quprs_long_tail_source_bridge.rs
+          cargo build --locked --release --no-default-features --manifest-path .upstream/quprs/rust/Cargo.toml -p quprs --example quprs_long_tail_source_bridge
+      - name: Build unchanged original GPMC C++ executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S .upstream/gpmc -B .upstream/gpmc/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build .upstream/gpmc/build --target gpmc-bin --parallel 2
+      - name: Build unmodified Rust MPFR research DPLL and check science
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --release --manifest-path benchmarks/mpfr_research/Cargo.toml
+          cargo build --release --manifest-path benchmarks/mpfr_research/Cargo.toml
+          git diff --exit-code -- benchmarks/mpfr_research/Cargo.lock
+      - name: Qualify original long CNF and generate focused two-arm config
+        if: env.STUDY != 'legacy'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile benchmarks/mpfr_research/tools/quprs_long_codspeed.py
+          flags=()
+          if [[ "$STUDY" != grover5_focus ]]; then flags+=(--milestone); fi
+          python3 benchmarks/mpfr_research/tools/quprs_long_codspeed.py prepare --case "$STUDY" --digits "$DIGITS" "${flags[@]}"
+      - name: CodSpeed native process simulation and flamegraph capture
+        if: env.STUDY == 'legacy'
+        timeout-minutes: 20
+        uses: CodSpeedHQ/action@v5
+        with:
+          mode: simulation
+          # The Action invokes CodSpeed itself; the config discovers all exec targets.
+          # Do not nest `codspeed run` inside the CodSpeed Action.
+          config: codspeed.yml
+      - name: CodSpeed focused original CNF Simulation
+        if: env.STUDY != 'legacy'
+        timeout-minutes: ${{ env.STUDY == 'grover5_focus' && 10 || 20 }}
+        uses: CodSpeedHQ/action@v5
+        with:
+          mode: simulation
+          config: codspeed-long.generated.yml
+      - name: Verify actual simulated output and solver route
+        if: env.STUDY != 'legacy'
+        shell: bash
+        run: python3 benchmarks/mpfr_research/tools/quprs_long_codspeed.py verify
+      - name: Archive exact Weighted CNF source checksums
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: original-weighted-cnf-codspeed-source-provenance
+          path: |
+            .research/codspeed-original-cnf/*.cnf
+            .research/codspeed-original-cnf/*.export.log
+            codspeed.yml
+            codspeed-long.generated.yml
+            .research/codspeed-long/
+          retention-days: 30
+          if-no-files-found: warn

@@ -14,7 +14,7 @@ type Extraction = (Vec<Gate>, Vec<i32>, BTreeMap<usize, bool>, BTreeSet<Set>);
 
 mod definitional;
 mod affine;
-pub(super) use affine::run as run_affine_plan;
+pub(super) use affine::{run as run_affine_plan,run_taylor as run_affine_taylor};
 
 const MAX_CELLS: usize = 500_000;
 const MAX_WORK: usize = 40_000_000;

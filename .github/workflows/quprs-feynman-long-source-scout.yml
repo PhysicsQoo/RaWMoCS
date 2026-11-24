@@ -465,9 +465,22 @@ jobs:
           set -euo pipefail
           baseline=.upstream/rawmocs-native-ab-baseline
           test "$(git -C "$baseline" rev-parse HEAD)" = ee4bd72142c6939a0ea094c8776108bd524810c7
-          cmp "$baseline/benchmarks/mpfr_research/Cargo.lock" benchmarks/mpfr_research/Cargo.lock
+          # The isolated research workspace lockfile is generated, not tracked
+          # at the pinned predecessor. Freeze the same resolved graph for both.
+          cmp "$baseline/benchmarks/mpfr_research/Cargo.toml" benchmarks/mpfr_research/Cargo.toml
+          test -s benchmarks/mpfr_research/Cargo.lock
+          if test -e "$baseline/benchmarks/mpfr_research/Cargo.lock"; then
+            cmp "$baseline/benchmarks/mpfr_research/Cargo.lock" benchmarks/mpfr_research/Cargo.lock
+          else
+            cp benchmarks/mpfr_research/Cargo.lock "$baseline/benchmarks/mpfr_research/Cargo.lock"
+          fi
+          cargo build --locked --release --manifest-path benchmarks/mpfr_research/Cargo.toml
           cargo build --locked --release --manifest-path "$baseline/benchmarks/mpfr_research/Cargo.toml"
-          git -C "$baseline" diff --exit-code -- benchmarks/mpfr_research/Cargo.lock
+          cmp "$baseline/benchmarks/mpfr_research/Cargo.lock" benchmarks/mpfr_research/Cargo.lock
+          mkdir -p .research/long-tail
+          cp benchmarks/mpfr_research/Cargo.lock .research/long-tail/native-ab.Cargo.lock
+          sha256sum .research/long-tail/native-ab.Cargo.lock
+          git -C "$baseline" diff --exit-code -- benchmarks/mpfr_research/Cargo.toml benchmarks/mpfr_research/src
           rustc -Vv
           sha256sum "$baseline/benchmarks/mpfr_research/target/release/rawmocs-mpfr-research" benchmarks/mpfr_research/target/release/rawmocs-mpfr-research
       - name: Independent interval and seven matched native triples for five original MQT long controls

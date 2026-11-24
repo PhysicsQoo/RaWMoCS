@@ -340,11 +340,11 @@ jobs:
     # Keep one existing workflow, parallelize the three previously
     # source-qualified hard cases with independent timeout/artifact.
     needs: original-long-tail-source-locked-screen
-    if: ${{ !cancelled() && ((inputs.suite == 'full' && needs.original-long-tail-source-locked-screen.result == 'success') || ((((github.event_name == 'pull_request' && (github.event.label.name == 'run-gf2-taylor' || github.event.label.name == 'run-gf2-taylor-cohort') && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/mpfr-exact-residual-arena-reuse-20261118')) || (inputs.suite == 'focused' && inputs.case == 'feynman_gf2_8_mult')) && needs.original-long-tail-source-locked-screen.result == 'skipped')) }}
+    if: ${{ !cancelled() && ((inputs.suite == 'full' && needs.original-long-tail-source-locked-screen.result == 'success') || ((((github.event_name == 'pull_request' && (github.event.label.name == 'run-gf2-taylor' || github.event.label.name == 'run-gf2-taylor-cohort' || github.event.label.name == 'run-ham-taylor-strict') && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/mpfr-exact-residual-arena-reuse-20261118')) || (inputs.suite == 'focused' && inputs.case == 'feynman_gf2_8_mult')) && needs.original-long-tail-source-locked-screen.result == 'skipped')) }}
     strategy:
       fail-fast: false
       matrix:
-        case: ${{ fromJSON(inputs.suite == 'full' && '["mqt_qnn_12","feynman_gf2_8_mult","feynman_ham15_med"]' || (github.event.label.name == 'run-gf2-taylor-cohort' && '["feynman_gf2_6_mult","feynman_gf2_8_mult"]' || '["feynman_gf2_8_mult"]')) }}
+        case: ${{ fromJSON(inputs.suite == 'full' && '["mqt_qnn_12","feynman_gf2_8_mult","feynman_ham15_med"]' || (github.event.label.name == 'run-ham-taylor-strict' && '["feynman_ham15_med"]' || github.event.label.name == 'run-gf2-taylor-cohort' && '["feynman_gf2_6_mult","feynman_gf2_8_mult"]' || '["feynman_gf2_8_mult"]')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ matrix.case == 'feynman_gf2_6_mult' && 65 || 35 }}
     steps:
@@ -420,7 +420,9 @@ jobs:
           python3 -m py_compile benchmarks/mpfr_research/tools/quprs_long_tail_paired.py
           python3 benchmarks/mpfr_research/tools/quprs_long_tail_paired.py --self-test
           pilot=()
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+          if [[ "${{ github.event.label.name }}" == "run-ham-taylor-strict" ]]; then
+            pilot+=(--ham-taylor-strict)
+          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
             pilot+=(--taylor-pilot)
             if [[ "${{ github.event.label.name }}" == "run-gf2-taylor-cohort" ]]; then pilot+=(--taylor-cohort); fi
           elif [[ "${{ inputs.suite }}" == "focused" ]]; then

@@ -30,7 +30,7 @@ fn decimal(s:&str)->Result<Rational,String>{
     let (w,f)=a.split_once('.').unwrap_or((a,""));
     if (w.is_empty()&&f.is_empty())||!w.bytes().chain(f.bytes()).all(|b|b.is_ascii_digit()){return Err("decimal digits".into());}
     let mut n=Integer::from_str_radix(&format!("{w}{f}"),10).map_err(|_|"decimal integer")?;
-    if neg{n=-n;}
+    if neg{n = -n;}
     let scale=e-f.len() as i32;
     let d=if scale<0{Integer::from(10).pow((-scale) as u32)}else{n*=Integer::from(10).pow(scale as u32);Integer::from(1)};
     Ok(Rational::from((n,d)))
@@ -377,7 +377,7 @@ mod tests{
                 let yes=|l:i32|(m&(1<<(l.unsigned_abs()-1))!=0)==(l>0);
                 if p.clauses.iter().all(|c|c.iter().copied().any(yes)){
                     expected.sat=true;let mut x=C::one(bits);
-                    for i in 0..6{let w=&p.weights[i];x=x.mul(if m&(1<<i)!=0{&w.positive}else{&w.negative},bits);}
+                    for (i,w) in p.weights.iter().enumerate(){x=x.mul(if m&(1<<i)!=0{&w.positive}else{&w.negative},bits);}
                     expected.count=expected.count.add(&x,bits);
                 }
             }

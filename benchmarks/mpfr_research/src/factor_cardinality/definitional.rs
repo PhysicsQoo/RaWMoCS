@@ -58,6 +58,20 @@ impl MulScratch {
         a.im.assign(&self.arbi + &self.aibr);
     }
 }
+// Only one result cell is allocated per supported assignment. The two
+// accumulators are reset before each branch, including after early UNSAT.
+fn merge_branches(left:&mut C,right:&C,left_sat:bool,right_sat:bool)->Option<C>{
+    match (left_sat,right_sat){
+        (true,true)=>{
+            left.re+=&right.re;
+            left.im+=&right.im;
+            Some(left.clone())
+        }
+        (true,false)=>Some(left.clone()),
+        (false,true)=>Some(right.clone()),
+        (false,false)=>None,
+    }
+}
 fn add(a: Option<C>, b: Option<C>, bits: u32) -> Option<C> {
     match (a,b) {
         (Some(a),Some(b))=>Some(a.add(&b,bits)),
@@ -145,12 +159,13 @@ fn compile(p:&Problem,bits:u32,trace:&mut Trace,adaptive:bool)->Result<Compiled,
     Ok((factors,graph,scalar))
 }
 fn contract(factors:Vec<Factor>,graph:Graph,scalar:C,bits:u32,trace:&mut Trace,deadline:Instant,order:Option<&[usize]>)->Result<Outcome,String>{
-    contract_impl(factors,graph,scalar,bits,trace,deadline,order,true)
+    contract_impl(factors,graph,scalar,bits,trace,deadline,order,true,true)
 }
 // Retain the previous planned kernel as an exact same-order test control.
 #[allow(clippy::too_many_arguments)]
-fn contract_impl(mut factors:Vec<Factor>,mut graph:Graph,mut scalar:C,bits:u32,trace:&mut Trace,deadline:Instant,order:Option<&[usize]>,reuse_scratch:bool)->Result<Outcome,String>{
+fn contract_impl(mut factors:Vec<Factor>,mut graph:Graph,mut scalar:C,bits:u32,trace:&mut Trace,deadline:Instant,order:Option<&[usize]>,reuse_scratch:bool,reuse_branches:bool)->Result<Outcome,String>{
     let mut scratch=if order.is_some()&&reuse_scratch{Some(MulScratch::new(bits))}else{None};
+    let mut accumulators=if order.is_some()&&reuse_scratch&&reuse_branches{Some((C::one(bits),C::one(bits)))}else{None};
     let mut pivots=order.into_iter().flatten().copied();
     if let Some(order)=order{
         if order.len()!=graph.len()||order.iter().copied().collect::<BTreeSet<_>>()!=graph.keys().copied().collect(){return Err("definitional plan ownership".into());}
@@ -198,18 +213,34 @@ fn contract_impl(mut factors:Vec<Factor>,mut graph:Graph,mut scalar:C,bits:u32,t
             let mut indices=vec![0usize;bucket.len()];
             for m in 0..size{
                 if m%4096==0&&Instant::now()>=deadline{return Err("definitional deadline".into());}
-                let mut branch=|positive:bool|->Option<C>{
-                    let mut product=C::one(bits);
-                    for (i,f) in bucket.iter().enumerate(){
-                        let x=f.values[indices[i]|if positive{pivots[i]}else{0}].as_ref()?;
-                        if let Some(s)=scratch.as_mut(){s.multiply(&mut product,x);}
-                        else{product=multiply(product,x,bits);}
-                    }
-                    Some(product)
-                };
-                let left=branch(false);
-                let right=branch(true);
-                values.push(add(left,right,bits));
+                if let (Some((left,right)),Some(s))=(accumulators.as_mut(),scratch.as_mut()){
+                    let mut branch=|positive:bool,product:&mut C|->bool{
+                        product.re.assign(1);
+                        product.im.assign(0);
+                        for (i,f) in bucket.iter().enumerate(){
+                            let Some(x)=f.values[indices[i]|if positive{pivots[i]}else{0}].as_ref() else{return false;};
+                            s.multiply(product,x);
+                        }
+                        true
+                    };
+                    let left_sat=branch(false,left);
+                    let right_sat=branch(true,right);
+                    values.push(merge_branches(left,right,left_sat,right_sat));
+                }else{
+                    // Keep the two prior kernels for exact same-order controls.
+                    let mut branch=|positive:bool|->Option<C>{
+                        let mut product=C::one(bits);
+                        for (i,f) in bucket.iter().enumerate(){
+                            let x=f.values[indices[i]|if positive{pivots[i]}else{0}].as_ref()?;
+                            if let Some(s)=scratch.as_mut(){s.multiply(&mut product,x);}
+                            else{product=multiply(product,x,bits);}
+                        }
+                        Some(product)
+                    };
+                    let left=branch(false);
+                    let right=branch(true);
+                    values.push(add(left,right,bits));
+                }
                 if m+1<size{
                     let bit=(m+1).trailing_zeros() as usize;
                     for (i,x) in indices.iter_mut().enumerate(){*x^=flips[i][bit];}
@@ -378,16 +409,44 @@ mod tests {
                 for reverse in [false,true]{
                     if reverse{order.reverse();}
                     let mut before=Trace::default();
-                    let mut after=Trace::default();
                     let (f,g,s)=compile(&p,bits,&mut before,true).unwrap();
-                    let expected=contract_impl(f,g,s,bits,&mut before,Instant::now()+std::time::Duration::from_secs(5),Some(&order),false).unwrap();
-                    let (f,g,s)=compile(&p,bits,&mut after,true).unwrap();
-                    let got=contract_impl(f,g,s,bits,&mut after,Instant::now()+std::time::Duration::from_secs(5),Some(&order),true).unwrap();
-                    assert_eq!(got.sat,expected.sat);
-                    exact_complex(&got.count,&expected.count);
-                    assert_eq!((after.width,after.work,after.peak),(before.width,before.work,before.peak));
+                    let expected=contract_impl(f,g,s,bits,&mut before,Instant::now()+std::time::Duration::from_secs(5),Some(&order),false,false).unwrap();
+                    for reuse_branches in [false,true]{
+                        let mut after=Trace::default();
+                        let (f,g,s)=compile(&p,bits,&mut after,true).unwrap();
+                        let got=contract_impl(f,g,s,bits,&mut after,Instant::now()+std::time::Duration::from_secs(5),Some(&order),true,reuse_branches).unwrap();
+                        assert_eq!(got.sat,expected.sat);
+                        exact_complex(&got.count,&expected.count);
+                        assert_eq!((after.width,after.work,after.peak),(before.width,before.work,before.peak));
+                    }
                 }
             }
+        }
+    }
+    #[test]
+    fn reusable_branch_sum_preserves_support_and_rounding(){
+        for bits in [100,333]{
+            let vals:Vec<_>=[
+                ("0","0"),("-0","-0"),("1","0"),("-1","-0"),
+                ("0.123456789012345678901234567890123456789","-1e-80"),
+                ("-0.123456789012345678901234567890123456789","1e-80"),
+                ("1e80","-1e80"),("1e-80","1e80"),
+            ].iter().map(|(a,b)|C::decimal(bits,a,b).unwrap()).collect();
+            let mut left=C::one(bits);
+            let mut right=C::one(bits);
+            for a in &vals{for b in &vals{
+                for left_sat in [false,true]{for right_sat in [false,true]{
+                    left.re.assign(&a.re);left.im.assign(&a.im);
+                    right.re.assign(&b.re);right.im.assign(&b.im);
+                    let expected=add(left_sat.then(||a.clone()),right_sat.then(||b.clone()),bits);
+                    let got=merge_branches(&mut left,&right,left_sat,right_sat);
+                    match (got,expected){
+                        (Some(g),Some(e))=>exact_complex(&g,&e),
+                        (None,None)=>(),
+                        _=>panic!("support changed"),
+                    }
+                }}
+            }}
         }
     }
     #[test]

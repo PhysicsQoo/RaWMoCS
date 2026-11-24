@@ -146,7 +146,7 @@ fn solve(p:&Problem,raw:&str,bits:u32,hybrid:bool)->Result<(Outcome,Route,u64,u6
 }
 pub(crate) fn run(mut args:impl Iterator<Item=std::ffi::OsString>,hybrid:bool)->Result<(),String>{
     let digits:u32=args.next().and_then(|x|x.into_string().ok()).ok_or("missing precision")?.parse().map_err(|_|"invalid precision")?;
-    let bits=match digits{30=>100,100=>333,_=>return Err("unsupported precision".into())};
+    let bits=match digits{30=>100,60=>200,100=>333,130=>432,_=>return Err("unsupported precision".into())};
     let file=args.next().ok_or("missing source")?;
     if args.next().is_some(){return Err("unexpected arguments".into());}
     let t=Instant::now();

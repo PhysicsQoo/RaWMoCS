@@ -230,15 +230,15 @@ def main() -> None:
         ap.error("--indexed-conditioned requires --indexed-fused")
     if args.indexed_interned_only and (args.indexed_fused or args.indexed_conditioned or args.case != "mqt_wstate_16"):
         ap.error("interned-only is an independent focused W-state16 pair")
-    if args.definitional_only and (args.indexed_fused or args.indexed_conditioned or args.indexed_interned_only or args.case != "mqt_wstate_16"):
-        ap.error("definitional-only is a focused W-state16 comparison")
+    if args.definitional_only and (args.indexed_fused or args.indexed_conditioned or args.indexed_interned_only or args.case not in ("mqt_wstate_16","mqt_qwalk_5")):
+        ap.error("definitional-only is a focused W-state16/Qwalk5 comparison")
     src_report = args.corpus / "long-tail-source-locked-evidence.json"
     if not src_report.is_file():
         raise SystemExit("MISSING_ORIGINAL_SOURCE_SCREEN")
     evidence = json.loads(src_report.read_text(encoding="utf-8"))
     prior, cnf = verify_source(args, evidence)
     if args.definitional_only:
-        result = {"study":"W-state16 private-definition fused contraction",
+        result = {"study":"Original source private-definition fused contraction",
                   "status":"IN_PROGRESS", "case":args.case,
                   "source_cnf_sha256":prior["cnf_sha256"], "source_qasm_sha256":prior["source_qasm_sha256"],
                   "source_lock":{"quprs":QU_PRS_SHA,"gpmc":GPMC_SHA},

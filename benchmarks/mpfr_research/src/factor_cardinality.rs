@@ -10,7 +10,9 @@ type Graph = BTreeMap<usize, BTreeSet<usize>>;
 type PhaseKey = (String, String);
 type PhaseEdges = BTreeMap<PhaseKey, Vec<(usize, usize, usize)>>;
 type Gate = (i32, [i32; 2]);
-type Extraction = (Vec<Gate>, Vec<i32>, BTreeMap<usize, bool>);
+type Extraction = (Vec<Gate>, Vec<i32>, BTreeMap<usize, bool>, BTreeSet<Set>);
+
+mod definitional;
 
 const MAX_CELLS: usize = 500_000;
 const MAX_WORK: usize = 40_000_000;
@@ -43,8 +45,8 @@ fn reach(g: &[Vec<usize>], root: usize) -> Vec<bool> {
     }
     seen
 }
-fn extract(p: &Problem) -> Result<Extraction, String> {
-    if p.n > 1024 || p.clauses.len()>10_000 { return Err("cardinality source cap".into()); }
+fn extract(p: &Problem, source_cap: usize) -> Result<Extraction, String> {
+    if p.n > source_cap || p.clauses.len()>10_000 { return Err("cardinality source cap".into()); }
     let clauses: BTreeSet<Set> = p.clauses.iter().map(|c| c.iter().copied().collect())
         .filter(clean).collect();
     let mut occ = vec![BTreeSet::new(); p.n+1];
@@ -101,8 +103,7 @@ fn extract(p: &Problem) -> Result<Extraction, String> {
         if units.insert(var(l),l>0).is_some() {return Err("unit ownership".into());}
         residual=residual.into_iter().filter(|c|!c.contains(&l)).map(|mut c|{c.remove(&-l);c}).collect();
     }
-    if !residual.is_empty() {return Err("unclosed hard clauses".into());}
-    Ok((gates,rep,units))
+    Ok((gates,rep,units,residual))
 }
 
 fn phase_keys(raw: &str, n: usize) -> Vec<PhaseKey> {
@@ -191,7 +192,8 @@ fn minfill(g:&Graph,v:usize)->(usize,usize,usize) {
 
 fn count(p:&Problem,raw:&str,bits:u32,trace:&mut Trace)->Result<Outcome,String> {
     let start=Instant::now();
-    let (gates,rep,units)=extract(p)?;
+    let (gates,rep,units,residual)=extract(p,1024)?;
+    if !residual.is_empty() {return Err("unclosed hard clauses".into());}
     let free:BTreeSet<_>=rep.iter().copied().filter(|&l|l!=0&&!units.contains_key(&var(l))).map(var).collect();
     trace.free=free.len();trace.gates=gates.len();
     let keys=phase_keys(raw,p.n);
@@ -314,7 +316,7 @@ fn count(p:&Problem,raw:&str,bits:u32,trace:&mut Trace)->Result<Outcome,String> 
     Ok(Outcome{sat:true,count:total})
 }
 
-pub(super) fn run(mut args:impl Iterator<Item=std::ffi::OsString>)->Result<(),String>{
+pub(super) fn run(mut args:impl Iterator<Item=std::ffi::OsString>, use_definitional:bool)->Result<(),String>{
     let digits:u32=args.next().and_then(|x|x.into_string().ok()).ok_or("missing digits")?.parse().map_err(|_|"invalid digits")?;
     let bits=match digits{30=>100,100=>333,_=>return Err("unsupported precision".into())};
     let path=args.next().ok_or("missing source")?;
@@ -323,13 +325,14 @@ pub(super) fn run(mut args:impl Iterator<Item=std::ffi::OsString>)->Result<(),St
     let raw=std::fs::read_to_string(path).map_err(|e|e.to_string())?;
     let read_ns=t.elapsed().as_nanos();
     let t=Instant::now();let p=super::parse_emitted(&raw,bits)?;let parse_ns=t.elapsed().as_nanos();
-    let t=Instant::now();let mut trace=Trace::default();let answer=count(&p,&raw,bits,&mut trace)?;
+    let t=Instant::now();let mut trace=Trace::default();let answer=if use_definitional {definitional::count(&p,bits,&mut trace)?} else {count(&p,&raw,bits,&mut trace)?};
     let solve_ns=t.elapsed().as_nanos();let t=Instant::now();
-    println!("s SATISFIABLE");
+    println!("s {}",if answer.sat {"SATISFIABLE"} else {"UNSATISFIABLE"});
     println!("c r mpfr {} {}",answer.count.re.to_string_radix(10,Some(digits as usize+4)),answer.count.im.to_string_radix(10,Some(digits as usize+4)));
     let output_ns=t.elapsed().as_nanos();
     eprintln!("RESEARCH_MPFR_PHASE_NS read={read_ns} parse={parse_ns} solve={solve_ns} output={output_ns} nodes=0 cache_hits=0 decompositions=0 digits={digits} bits={bits}");
-    eprintln!("RESEARCH_MPFR_CARDINALITY gates={} free={} cliques={:?} width={} peak={} work={}",trace.gates,trace.free,trace.cliques,trace.width,trace.peak,trace.work);
+    if use_definitional {eprintln!("RESEARCH_MPFR_DEFINITIONAL gates={} free={} width={} peak={} work={}",trace.gates,trace.free,trace.width,trace.peak,trace.work);}
+    else {eprintln!("RESEARCH_MPFR_CARDINALITY gates={} free={} cliques={:?} width={} peak={} work={}",trace.gates,trace.free,trace.cliques,trace.width,trace.peak,trace.work);}
     Ok(())
 }
 

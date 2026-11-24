@@ -25,11 +25,14 @@ from quprs_long_tail_paired import (
 
 CASES = ("feynman_gf2_6_mult", "mqt_qnn_8", "mqt_wstate_16", "mqt_qwalk_5")
 INDEXED_ARM = "indexed_fused"
+CONDITIONED_ARM = "indexed_conditioned"
 
-def indexed_command(args, name, cnf, digits):
+def indexed_command(args, name, cnf, digits, conditioned=False):
     cmd = command(args, name, cnf, digits, "inline_full")
     position = cmd.index("--hashbrown-borrowed")
     cmd[position:position] = ["--factor-variable-elimination", "--factor-ve-indexed-fused"]
+    if conditioned:
+        cmd.insert(position + 2, "--factor-ve-indexed-conditioned")
     return cmd
 
 TRIALS = 7
@@ -190,6 +193,8 @@ def self_test() -> None:
             assert (LONG_TAIL_NODE_BUDGET in cmd) == (arm == "inline_full")
         indexed = indexed_command(fake, CASES[0], cnf, digits)
         assert indexed.index("--factor-ve-indexed-fused") + 1 == indexed.index("--hashbrown-borrowed")
+        conditioned = indexed_command(fake, CASES[0], cnf, digits, conditioned=True)
+        assert conditioned.index("--factor-ve-indexed-conditioned") == conditioned.index("--factor-ve-indexed-fused") + 1
         for name in GPMC_ABLATIONS:
             cmd = gpmc_ablation_cmd(fake, cnf, digits, name)
             assert cmd[1:3] == ["-mode=1", f"-prec={digits}"]
@@ -203,6 +208,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--self-test", action="store_true")
     ap.add_argument("--indexed-fused", action="store_true")
+    ap.add_argument("--indexed-conditioned", action="store_true")
     ap.add_argument("--case", choices=CASES)
     for name in ("quprs", "gpmc-source", "corpus", "gpmc", "mpfr", "report"):
         ap.add_argument("--" + name, type=Path)
@@ -213,6 +219,8 @@ def main() -> None:
     for name in ("case", "quprs", "gpmc_source", "corpus", "gpmc", "mpfr", "report"):
         if getattr(args, name) is None:
             ap.error("missing --" + name.replace("_", "-"))
+    if args.indexed_conditioned and not args.indexed_fused:
+        ap.error("--indexed-conditioned requires --indexed-fused")
     src_report = args.corpus / "long-tail-source-locked-evidence.json"
     if not src_report.is_file():
         raise SystemExit("MISSING_ORIGINAL_SOURCE_SCREEN")
@@ -228,6 +236,7 @@ def main() -> None:
                            "rust_node_budget": 1_000_000_000},
         "design": "seven fresh rotated native processes per arm and precision; one exploratory native GPMC feature-toggle sample each",
         "indexed_fused_enabled": args.indexed_fused,
+        "indexed_conditioned_enabled": args.indexed_conditioned,
         "not_a_production_go": True,
         "full_oracle_caveat": ORACLE_LIMIT, "cohorts": [],
     }
@@ -240,12 +249,14 @@ def main() -> None:
         result["cohorts"].append(cohort)
         persist(args, result)
         arms = (*ARMS, INDEXED_ARM) if args.indexed_fused else ARMS
+        if args.indexed_conditioned:
+            arms = (*arms, CONDITIONED_ARM)
         for trial in range(TRIALS):
             shift = trial % len(arms)
             rotated = arms[shift:] + arms[:shift]
             for arm in rotated:
-                cmd = (indexed_command(args, args.case, cnf, digits) if arm == INDEXED_ARM
-                       else command(args, args.case, cnf, digits, arm))
+                cmd = (indexed_command(args, args.case, cnf, digits, conditioned=arm == CONDITIONED_ARM)
+                       if arm in (INDEXED_ARM, CONDITIONED_ARM) else command(args, args.case, cnf, digits, arm))
                 record = native(cmd, arm, MAX_WALL_SECONDS, digits)
                 record["trial"] = trial
                 cohort["native_trials"].append(record)
@@ -278,6 +289,24 @@ def main() -> None:
             rss = [r["peak_rss_kib"] for r in completed if r.get("peak_rss_kib") is not None]
             cohort["indexed_fused_p50_rss_kib"] = statistics.median(rss) if len(rss) == TRIALS else None
             cohort["indexed_fused_promotion"] = "NOT_AUTHORIZED_RESEARCH_ONLY"
+        if args.indexed_conditioned:
+            candidates = [r for r in cohort["native_trials"] if r["arm"] == CONDITIONED_ARM]
+            assert len(candidates) == TRIALS
+            refs = [r for r in cohort["native_trials"] if r["arm"] == "gpmc" and r["status"] == "COMPLETED"]
+            completed = [r for r in candidates if r["status"] == "COMPLETED"]
+            for row in completed:
+                if refs:
+                    witness = same_complex(refs[0], row, digits)
+                    row["source_locked_complex_numeric_witness"] = witness
+                    failures = not witness["pass"] or failures
+            cohort["indexed_conditioned_completions"] = len(completed)
+            cohort["indexed_conditioned_fastpath_completions"] = sum(r.get("factor_ve_completed") is True for r in completed)
+            cohort["indexed_conditioned_two_branch_completions"] = sum(r.get("condition_branches_completed") == 2 and r.get("factor_ve_completed") is True for r in completed)
+            cohort["indexed_conditioned_p50_wall_ms"] = statistics.median(r["wall_ns"] for r in completed) / 1e6 if len(completed) == TRIALS else None
+            cohort["indexed_conditioned_p90_wall_ms"] = percentile([r["wall_ns"] for r in completed], .9) / 1e6 if len(completed) == TRIALS else None
+            rss = [r["peak_rss_kib"] for r in completed if r.get("peak_rss_kib") is not None]
+            cohort["indexed_conditioned_p50_rss_kib"] = statistics.median(rss) if len(rss) == TRIALS else None
+            cohort["indexed_conditioned_promotion"] = "NOT_AUTHORIZED_RESEARCH_ONLY"
         persist(args, result)
         print(f"LONGTAIL_7TRIAL_RESULT case={args.case} bits={bits} "
               f"status={cohort['status']} "

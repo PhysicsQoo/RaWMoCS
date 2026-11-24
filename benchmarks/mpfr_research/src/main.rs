@@ -931,6 +931,10 @@ fn run() -> Result<(), String> {
     let cache_first = if ve_indexed_fused {
         args.next().ok_or("missing mode after --factor-ve-indexed-fused")?
     } else { cache_first };
+    let ve_indexed_conditioned = cache_first.to_str() == Some("--factor-ve-indexed-conditioned");
+    let cache_first = if ve_indexed_conditioned {
+        args.next().ok_or("missing mode after --factor-ve-indexed-conditioned")?
+    } else { cache_first };
     let scope_probe_320 = cache_first.to_str() == Some("--factor-ve-scope-probe-320");
     let cache_first = if scope_probe_320 {
         args.next().ok_or("missing mode after --factor-ve-scope-probe-320")?
@@ -1098,6 +1102,9 @@ fn run() -> Result<(), String> {
     }
     if fused_post_analysis && !projected_post_key {
         return Err("--trail-fused-post-analysis requires --trail-post-unit-projected".into());
+    }
+    if ve_indexed_conditioned && !ve_indexed_fused {
+        return Err("--factor-ve-indexed-conditioned requires --factor-ve-indexed-fused".into());
     }
     if ve_indexed_fused && (!factor_ve || scope_probe_320 || ve_min_fill || ve_bag14 || ve_preflight || ve_quick_scope) {
         return Err("--factor-ve-indexed-fused requires --factor-variable-elimination without other VE policy flags".into());
@@ -1283,7 +1290,13 @@ fn run() -> Result<(), String> {
     let primal_build_ns = td_start.elapsed().as_nanos();
     let ve_start = Instant::now();
     let (ve_candidate, ve_stats) = if factor_ve {
-        if ve_indexed_fused {
+        if ve_indexed_conditioned {
+            let (answer, stats, trace) = factor_indexed_fused::count_conditioned(source, &scope, bits);
+            eprintln!("RESEARCH_MPFR_INDEXED_CONDITION selected={} probes={} branches_completed={} root_work={} root_peak={} chosen_work={} chosen_peak={} planning_ns={}",
+                trace.selected,trace.probes,trace.branches_completed,trace.root_work,trace.root_peak,
+                trace.chosen_work,trace.chosen_peak,trace.planning_ns);
+            (answer,stats)
+        } else if ve_indexed_fused {
             factor_indexed_fused::count(source, &scope, bits)
         } else if ve_quick_scope {
             factor_variable_elimination::count_scope_probe_minfill_bag14_quick_scope(source, &scope, bits)

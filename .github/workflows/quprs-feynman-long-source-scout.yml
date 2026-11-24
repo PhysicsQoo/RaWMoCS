@@ -429,7 +429,7 @@ jobs:
       matrix:
         case: [feynman_gf2_6_mult, mqt_qnn_8, mqt_wstate_16, mqt_qwalk_5]
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - name: Checkout RaWMoCS independent mechanism research
         uses: actions/checkout@v4
@@ -478,6 +478,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          cargo test --release --manifest-path benchmarks/mpfr_research/Cargo.toml factor_indexed_fused::tests
           cargo build --release --manifest-path benchmarks/mpfr_research/Cargo.toml
       - name: Same-source seven-trial 100/333-bit GPMC/Rust and GPMC mechanism toggles
         shell: bash
@@ -485,8 +486,10 @@ jobs:
           set -euo pipefail
           python3 -m py_compile benchmarks/mpfr_research/tools/quprs_long_tail_mechanism.py
           python3 benchmarks/mpfr_research/tools/quprs_long_tail_mechanism.py --self-test
+          conditioned=()
+          if [[ "${{ matrix.case }}" == "feynman_gf2_6_mult" ]]; then conditioned+=(--indexed-conditioned); fi
           python3 benchmarks/mpfr_research/tools/quprs_long_tail_mechanism.py \
-            --indexed-fused \
+            --indexed-fused "${conditioned[@]}" \
             --case "${{ matrix.case }}" \
             --quprs .upstream/quprs \
             --gpmc-source .upstream/gpmc \

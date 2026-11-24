@@ -44,7 +44,7 @@ struct Factor { vars: Vec<usize>, values: Vec<Cell> }
 fn deadline(start: Instant) -> Result<(), &'static str> {
     if start.elapsed().as_secs() >= 8 { Err("indexed_deadline") } else { Ok(()) }
 }
-fn order(scope: &[usize], clauses: &[Clause], n: usize, start: Instant, stats: &mut VeStats)
+fn order(scope: &[usize], clauses: &[Clause], n: usize, start: Instant, stats: &mut VeStats, peak_bag: &mut Vec<usize>)
     -> Result<Vec<usize>, &'static str> {
     let mut adj = vec![BTreeSet::<usize>::new(); n+1];
     let mut active: BTreeSet<_> = scope.iter().copied().collect();
@@ -66,7 +66,10 @@ fn order(scope: &[usize], clauses: &[Clause], n: usize, start: Instant, stats: &
             (fill, near.len(), v)
         }).unwrap();
         let near = std::mem::take(&mut adj[v]);
-        stats.width = stats.width.max(near.len()+1);
+        if near.len() + 1 > stats.width {
+            stats.width = near.len() + 1;
+            *peak_bag = near.iter().copied().chain(std::iter::once(v)).collect();
+        }
         if near.len() > WIDTH { return Err("indexed_width"); }
         active.remove(&v);
         for &u in &near {
@@ -89,8 +92,20 @@ fn push(f: Factor, buckets: &mut [Vec<Factor>], rank: &[usize],
     }
     Ok(())
 }
-fn run(p: &Problem, scope: &[usize], bits: u32, start: Instant, stats: &mut VeStats)
-    -> Result<Cell, &'static str> {
+struct Prepared {
+    clauses: Vec<Clause>,
+    remaining: Vec<usize>,
+    scalar: Cell,
+    plan: Vec<usize>,
+    peak_bag: Vec<usize>,
+}
+impl Prepared {
+    fn contradiction() -> Self {
+        Self { clauses: vec![], remaining: vec![], scalar: Cell::No, plan: vec![], peak_bag: vec![] }
+    }
+}
+fn prepare(p: &Problem, scope: &[usize], bits: u32, start: Instant, stats: &mut VeStats,
+           condition: Option<i32>) -> Result<Prepared, &'static str> {
     if p.n > 4096 || scope.len() > 2048 || p.clauses.len() > 6000 || p.weights.len() < p.n {
         return Err("indexed_source");
     }
@@ -110,18 +125,23 @@ fn run(p: &Problem, scope: &[usize], bits: u32, start: Instant, stats: &mut VeSt
         if c.len()>12 { return Err("indexed_clause_width"); }
         cs.push(c);
     }
+    if let Some(l) = condition {
+        let v = l.unsigned_abs() as usize;
+        if v == 0 || v > p.n || !present[v] { return Err("indexed_condition_scope"); }
+        cs.push(vec![l]);
+    }
     cs.sort_unstable(); cs.dedup();
     let mut assigned = vec![0_i8; p.n+1];
     let mut scalar = Cell::One;
     let mut closure_work = 0_usize;
     loop {
         deadline(start)?;
-        if cs.iter().any(Vec::is_empty) { return Ok(Cell::No); }
+        if cs.iter().any(Vec::is_empty) { return Ok(Prepared::contradiction()); }
         let units: Vec<_> = cs.iter().filter(|c| c.len()==1).map(|c| c[0]).collect();
         if units.is_empty() { break; }
         for l in units {
             let v=l.unsigned_abs() as usize; let sign=if l>0 {1} else {-1};
-            if assigned[v] == -sign { return Ok(Cell::No); }
+            if assigned[v] == -sign { return Ok(Prepared::contradiction()); }
             if assigned[v]==0 {
                 assigned[v]=sign;
                 let w=&p.weights[v-1];
@@ -142,9 +162,16 @@ fn run(p: &Problem, scope: &[usize], bits: u32, start: Instant, stats: &mut VeSt
     let remaining: Vec<_>=scope.iter().copied().filter(|&v| assigned[v]==0).collect();
     let plan_start=Instant::now();
     stats.minfill_enabled=true;
-    let plan=order(&remaining,&cs,p.n,start,stats)?;
+    let mut peak_bag = Vec::new();
+    let plan=order(&remaining,&cs,p.n,start,stats,&mut peak_bag)?;
     stats.minfill_plan_ns=plan_start.elapsed().as_nanos();
     stats.minfill_plan_width=stats.width;
+    Ok(Prepared { clauses: cs, remaining, scalar, plan, peak_bag })
+}
+fn execute(p: &Problem, bits: u32, start: Instant, stats: &mut VeStats,
+           prepared: Prepared) -> Result<Cell, &'static str> {
+    let Prepared { clauses: cs, remaining, mut scalar, plan, .. } = prepared;
+    if !scalar.sat() { return Ok(Cell::No); }
     let mut rank=vec![usize::MAX;p.n+1];
     for (i,&v) in plan.iter().enumerate() {rank[v]=i;}
     let mut buckets: Vec<Vec<Factor>>=(0..plan.len()).map(|_|Vec::new()).collect();
@@ -167,7 +194,8 @@ fn run(p: &Problem, scope: &[usize], bits: u32, start: Instant, stats: &mut VeSt
         }
         push(Factor{vars,values},&mut buckets,&rank,&mut scalar,&mut live,bits)?;
     }
-    stats.factors=remaining.len()+cs.len(); stats.cells=live;
+    stats.factors=stats.factors.saturating_add(remaining.len()+cs.len());
+    stats.cells=stats.cells.saturating_add(live);
     for (k,&v) in plan.iter().enumerate() {
         deadline(start)?;
         let factors=std::mem::take(&mut buckets[k]);
@@ -227,12 +255,140 @@ fn run(p: &Problem, scope: &[usize], bits: u32, start: Instant, stats: &mut VeSt
 pub(crate) fn count(p:&Problem,scope:&[usize],bits:u32)->(Option<Outcome>,VeStats) {
     let mut stats=VeStats{eligible:true,source_vars:p.n,scope_vars:scope.len(),source_clauses:p.clauses.len(),
         source_max_clause_width:p.clauses.iter().map(Vec::len).max().unwrap_or(0),..VeStats::default()};
-    let answer=match run(p,scope,bits,Instant::now(),&mut stats) {
+    let start=Instant::now();
+    let answer=match prepare(p,scope,bits,start,&mut stats,None)
+        .and_then(|prepared| execute(p,bits,start,&mut stats,prepared)) {
         Ok(x)=>Some(Outcome{sat:x.sat(),count:x.value(bits)}),
         Err(reason)=>{stats.capped=true;stats.cap_reason=reason;None}
     };
     (answer,stats)
 }
+
+// Scope-only replay of the actual bucket schedule: counts both input and
+// output live cells, and four potential lookups per factor/output cell.
+// No numerical factors allocated; saturation is a conservative rejection.
+#[derive(Clone, Copy, Debug, Default)]
+struct Estimate { work: usize, peak: usize, width: usize }
+impl Estimate {
+    fn fits(self) -> bool { self.work <= LOOKUPS && self.peak <= CELLS }
+}
+fn estimate(p: &Prepared, n: usize, start: Instant) -> Result<Estimate, &'static str> {
+    if !p.scalar.sat() { return Ok(Estimate::default()); }
+    let mut rank = vec![usize::MAX; n+1];
+    for (i,&v) in p.plan.iter().enumerate() { rank[v]=i; }
+    let mut buckets: Vec<Vec<Vec<usize>>> = (0..p.plan.len()).map(|_| Vec::new()).collect();
+    let mut live = 0_usize;
+    for &v in &p.remaining { buckets[rank[v]].push(vec![v]); live += 2; }
+    for c in &p.clauses {
+        let mut vars: Vec<_> = c.iter().map(|l|l.unsigned_abs() as usize).collect();
+        vars.sort_unstable(); vars.dedup();
+        live = live.saturating_add(1_usize << vars.len());
+        let k = vars.iter().map(|&v|rank[v]).min().ok_or("indexed_estimate_scope")?;
+        buckets[k].push(vars);
+    }
+    let mut e = Estimate { peak: live, ..Estimate::default() };
+    for (k,&v) in p.plan.iter().enumerate() {
+        deadline(start)?;
+        let factors = std::mem::take(&mut buckets[k]);
+        let mut rest: Vec<_> = factors.iter().flatten().copied().filter(|&x|x!=v).collect();
+        rest.sort_unstable(); rest.dedup();
+        if factors.is_empty() || rest.len()>WIDTH { return Err("indexed_estimate_width"); }
+        let size=1_usize<<rest.len();
+        e.width=e.width.max(rest.len()+1);
+        e.peak=e.peak.max(live.saturating_add(size));
+        e.work=e.work.saturating_add(size.saturating_mul(factors.len()).saturating_mul(4));
+        live=live.checked_sub(factors.iter().map(|f|1_usize<<f.len()).sum::<usize>())
+            .ok_or("indexed_estimate_live")?;
+        if !rest.is_empty() {
+            let next=rest.iter().map(|&u|rank[u]).min().unwrap();
+            buckets[next].push(rest);
+            live=live.saturating_add(size);
+        }
+    }
+    Ok(e)
+}
+fn qualifies(root: Estimate, neg: Estimate, pos: Estimate) -> bool {
+    let work=neg.work.saturating_add(pos.work);
+    neg.fits() && pos.fits() && work<=LOOKUPS && neg.width.max(pos.width)<root.width
+        && work.saturating_mul(5)<=root.work.saturating_mul(4)
+}
+#[derive(Default, Debug)]
+pub(crate) struct ConditionStats {
+    pub(crate) selected: usize,
+    pub(crate) probes: usize,
+    pub(crate) branches_completed: usize,
+    pub(crate) root_work: usize,
+    pub(crate) root_peak: usize,
+    pub(crate) chosen_work: usize,
+    pub(crate) chosen_peak: usize,
+    pub(crate) planning_ns: u128,
+}
+fn conditioned(p: &Problem, scope: &[usize], bits: u32, start: Instant,
+    stats: &mut VeStats, trace: &mut ConditionStats) -> Result<Cell, &'static str> {
+    let root=prepare(p,scope,bits,start,stats,None)?;
+    let base=estimate(&root,p.n,start)?;
+    trace.root_work=base.work;
+    trace.root_peak=base.peak;
+    // Do not add expensive planning to the already-small QNN-like path.
+    // Probe only a wide, costly bucket; if both branches do not qualify,
+    // keep the unsplit root (or fall back before allocating factor tables).
+    let mut best: Option<((usize,usize,usize), Prepared, Prepared)> = None;
+    if base.width>=17 && (base.peak>=100_000 || base.work>=4_000_000) {
+        let mut degree=vec![BTreeSet::<usize>::new();p.n+1];
+        for c in &root.clauses {
+            let vars: BTreeSet<_>=c.iter().map(|l|l.unsigned_abs() as usize).collect();
+            for &v in &vars { degree[v].extend(vars.iter().copied().filter(|&u|u!=v)); }
+        }
+        let mut candidates=root.peak_bag.clone();
+        candidates.sort_unstable_by_key(|&v|(std::cmp::Reverse(degree[v].len()),v));
+        for v in candidates.into_iter().take(6) {
+            deadline(start)?;
+            trace.probes+=1;
+            let mut ns=VeStats::default();
+            let mut ps=VeStats::default();
+            let Ok(neg)=prepare(p,scope,bits,start,&mut ns,Some(-(v as i32))) else { continue };
+            let Ok(pos)=prepare(p,scope,bits,start,&mut ps,Some(v as i32)) else { continue };
+            let a=estimate(&neg,p.n,start)?;
+            let b=estimate(&pos,p.n,start)?;
+            if !qualifies(base,a,b) { continue; }
+            let key=(a.work.saturating_add(b.work),a.peak.max(b.peak),v);
+            if best.as_ref().is_none_or(|(previous,_,_)|key<*previous) {
+                best=Some((key,neg,pos));
+            }
+        }
+    }
+    trace.planning_ns=start.elapsed().as_nanos();
+    if let Some(((work,peak,v),neg,pos))=best {
+        trace.selected=v; trace.chosen_work=work; trace.chosen_peak=peak;
+        // The two prepared cofactors each include the conditioned literal's
+        // weight exactly once in their unit-closure scalar. Both must finish.
+        // Shared start and counters enforce the total deadline/work cap.
+        drop(root);
+        let negative=execute(p,bits,start,stats,neg)?;
+        trace.branches_completed=1;
+        let positive=execute(p,bits,start,stats,pos)?;
+        trace.branches_completed=2;
+        deadline(start)?;
+        Ok(negative.add(&positive,bits))
+    } else if base.fits() {
+        execute(p,bits,start,stats,root)
+    } else {
+        Err("indexed_condition_no_admissible_plan")
+    }
+}
+pub(crate) fn count_conditioned(p:&Problem,scope:&[usize],bits:u32)
+    ->(Option<Outcome>,VeStats,ConditionStats) {
+    let mut stats=VeStats{eligible:true,source_vars:p.n,scope_vars:scope.len(),
+        source_clauses:p.clauses.len(),
+        source_max_clause_width:p.clauses.iter().map(Vec::len).max().unwrap_or(0),..VeStats::default()};
+    let mut trace=ConditionStats::default();
+    let answer=match conditioned(p,scope,bits,Instant::now(),&mut stats,&mut trace) {
+        Ok(x)=>Some(Outcome{sat:x.sat(),count:x.value(bits)}),
+        Err(reason)=>{stats.capped=true;stats.cap_reason=reason;None}
+    };
+    (answer,stats,trace)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,9 +422,41 @@ mod tests {
                     assert_eq!(got.sat,expected.sat);
                     assert_eq!(got.count.re,expected.count.re);
                     assert_eq!(got.count.im,expected.count.im);
+                    let (routed,_,_)=count_conditioned(problem,&vars,bits);
+                    let routed=routed.expect("small root must fit");
+                    assert_eq!(routed.sat,expected.sat);
+                    assert_eq!(routed.count.re,expected.count.re);
+                    assert_eq!(routed.count.im,expected.count.im);
+                    if let Some(&v)=vars.first() {
+                        let start=Instant::now();
+                        let mut ns=VeStats::default();
+                        let mut ps=VeStats::default();
+                        let neg=prepare(problem,&vars,bits,start,&mut ns,Some(-(v as i32))).unwrap();
+                        let pos=prepare(problem,&vars,bits,start,&mut ps,Some(v as i32)).unwrap();
+                        let a=estimate(&neg,problem.n,start).unwrap();
+                        let b=estimate(&pos,problem.n,start).unwrap();
+                        let mut shared=VeStats::default();
+                        let x=execute(problem,bits,start,&mut shared,neg).unwrap();
+                        let y=execute(problem,bits,start,&mut shared,pos).unwrap();
+                        let total=x.add(&y,bits);
+                        assert!(shared.products<=a.work+b.work);
+                        assert_eq!(total.sat(),expected.sat);
+                        assert_eq!(total.value(bits).re,expected.count.re);
+                        assert_eq!(total.value(bits).im,expected.count.im);
+                    }
                 }
             }
         }
+    }
+    #[test]
+    fn conditioning_gate_counts_both_branches_and_live_peak() {
+        let root=Estimate{work:10_000_000,peak:390_000,width:18};
+        let a=Estimate{work:3_000_000,peak:100_000,width:16};
+        let b=Estimate{work:4_900_000,peak:130_000,width:17};
+        assert!(qualifies(root,a,b));
+        assert!(!qualifies(root,a,Estimate{work:5_100_000,..b}));
+        assert!(!qualifies(root,a,Estimate{peak:300_001,..b}));
+        assert!(!qualifies(root,a,Estimate{width:18,..b}));
     }
     #[test]
     fn indexed_width_rejects_without_verdict() {

@@ -280,12 +280,15 @@ def main() -> None:
     ap.add_argument("--frontier-pilot", action="store_true")
     ap.add_argument("--taylor-pilot", action="store_true")
     ap.add_argument("--taylor-cohort", action="store_true")
+    ap.add_argument("--ham-taylor-strict", action="store_true")
     for field in ("quprs", "gpmc-source", "exporter", "gpmc", "mpfr", "corpus", "report"):
         ap.add_argument("--" + field, type=Path)
     args = ap.parse_args()
     self_test()
     if args.self_test:
         return
+    if args.ham_taylor_strict and (args.stage != "pilot" or args.pilot_case != "feynman_ham15_med" or args.taylor_pilot or args.frontier_pilot or args.taylor_cohort):
+        ap.error("strict Ham Taylor requires only the original Ham15 pilot")
     if args.taylor_cohort and (not args.taylor_pilot or args.stage != "pilot"):
         ap.error("Taylor cohort requires explicit Taylor pilot")
     permitted = ("feynman_gf2_6_mult", "feynman_gf2_8_mult") if args.taylor_cohort else ("feynman_gf2_8_mult",)
@@ -469,6 +472,45 @@ def main() -> None:
                       "trials": [], "design": "EXPLORATORY_TWO_TRIALS_NOT_PRODUCTION_GO"}
             item["pilot"].append(cohort)
             persist(args, report)
+            if args.ham_taylor_strict:
+                # No fallback and no cap relaxation. This establishes
+                # which existing Taylor admission/certificate fails.
+                cohort.update(design="STRICT_HAM15_TAYLOR_ADMISSION_AND_ONE_PAIRED_120S_PROBE",
+                              promotion="NOT_AUTHORIZED_RESEARCH_ONLY",
+                              independent_reference="UNAVAILABLE_FULL_WMC",
+                              arithmetic_contract="same target output accuracy, exact Taylor vs MPFR")
+                if sha(cnf)!="ef06785a88976f3e8d70823207965c99eda26e2821cd3f1e40254085c5b8d0d3":
+                    raise SystemExit("HAM15_ORIGINAL_CNF_DRIFT")
+                arms=("gpmc","strict_taylor") if bits==100 else ("strict_taylor","gpmc")
+                for arm in arms:
+                    cmd=command(args,case,cnf,digits,"gpmc") if arm=="gpmc" else [str(args.mpfr.resolve()),"--factor-taylor-strict",str(digits),str(cnf.resolve())]
+                    row=native(cmd,arm,PAIR_S,digits)
+                    if arm=="strict_taylor":
+                        match=re.search(r"^RESEARCH_MPFR_TAYLOR_STRICT (.*)$",row.get("stderr_tail",""),re.M)
+                        if match:
+                            row["strict_admission"]=dict(part.split("=",1) for part in match.group(1).split())
+                        else:
+                            row["strict_admission"]={"reason":"TRACE_MISSING_OR_PROCESS_CENSORED"}
+                        row["certified_route_complete"]=row["status"]=="COMPLETED" and row["strict_admission"].get("certified")=="true" and row["strict_admission"].get("capped")=="false"
+                    cohort["trials"].append(row)
+                    persist(args,report)
+                    print("HAM_TAYLOR_STRICT",bits,arm,row["status"],row.get("wall_ns"),row.get("strict_admission"),flush=True)
+                pair={r["arm"]:r for r in cohort["trials"]}
+                gp,rs=pair["gpmc"],pair["strict_taylor"]
+                if gp["status"]=="COMPLETED" and rs["status"]=="COMPLETED":
+                    witness=complex_relative_witness(gp,rs,digits)
+                    cohort["numeric_witness"]=witness
+                    if not witness["pass"] or gp["sat"]!=rs["sat"]:
+                        numeric_disagreement=True
+                        cohort["status"]="FAIL_OR_PRECISION_INCONCLUSIVE"
+                    else:
+                        cohort["status"]="SINGLE_MATCHED_STRICT_TAYLOR" if rs["certified_route_complete"] else "ROUTE_UNVERIFIED"
+                elif rs["certified_route_complete"]:
+                    cohort["status"]="CERTIFIED_TAYLOR_GPMC_CENSORED_NO_INDEPENDENT_REFERENCE"
+                else:
+                    cohort["status"]="STRICT_TAYLOR_ADMISSION_OR_RESOURCE_CENSORED"
+                persist(args,report)
+                continue
             if args.taylor_cohort:
                 # Predeclared case-specific repeat counts: the genuinely
                 # long GF2^8 control is costly; GF2^6 is a held-out source

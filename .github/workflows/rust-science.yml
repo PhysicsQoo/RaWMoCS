@@ -91,6 +91,8 @@ jobs:
         with:
           workspaces: benchmarks/mpfr_research -> target
           key: consolidated-mpfr-science
+      - name: GF2 exact rational witness arithmetic and negative controls
+        run: python3 benchmarks/mpfr_research/tools/gf2_taylor_witness.py
       - name: Full MPFR correctness suite (including 100/333-bit indexed tests)
         run: cargo test --manifest-path benchmarks/mpfr_research/Cargo.toml
       - name: Strict MPFR Clippy

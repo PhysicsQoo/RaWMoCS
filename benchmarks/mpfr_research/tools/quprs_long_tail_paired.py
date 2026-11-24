@@ -26,6 +26,7 @@ from quprs_cnf_factor_minfill_ab import build_command
 from quprs_mqtbench_original_cnf_ab import complex_relative_witness
 from quprs_paired_native import parse_out
 from quprs_encoder_validate import parse_cnf
+import gf2_taylor_witness
 
 QU_PRS_SHA = "0b28736651b3740ed3b201edd2efdef3da541e0d"
 GPMC_SHA = "89bbc89d0de918e7a5385740355df55765039230"
@@ -257,6 +258,7 @@ def self_test() -> None:
         raise AssertionError("index rejects untrusted path")
     except ValueError:
         pass
+    gf2_taylor_witness.self_test()
     print("ORIGINAL_LONGTAIL_SOURCE_PRECISION_ARM_PREFLIGHT_PASS", flush=True)
 
 def main() -> None:
@@ -448,6 +450,7 @@ def main() -> None:
                 # One genuinely long pair at each precision first, not a
                 # seven-trial campaign or a claim from a censored control.
                 cohort["design"] = "EXPLORATORY_ONE_PAIRED_120S_TRIAL_NOT_PRODUCTION_GO"
+                source_sha = gf2_taylor_witness.verify_source(cnf)
                 arms = ("gpmc", "indexed_frontier") if digits == 30 else ("indexed_frontier", "gpmc")
                 for arm in arms:
                     cmd = frontier_command(args, case, cnf, digits) if arm == "indexed_frontier" else command(args, case, cnf, digits, arm)
@@ -459,6 +462,13 @@ def main() -> None:
                 members = {x["arm"]: x for x in cohort["trials"]}
                 control, candidate = members["gpmc"], members["indexed_frontier"]
                 fastpath = candidate["status"] == "COMPLETED" and candidate.get("factor_ve_completed") is True and candidate.get("frontier_planned") == candidate.get("frontier_completed")
+                independent = {
+                    arm: gf2_taylor_witness.compare(row, digits, source_sha)
+                    for arm, row in members.items() if row["status"] == "COMPLETED"
+                }
+                cohort["independent_numeric_witnesses"] = independent
+                if any(not item["pass"] for item in independent.values()):
+                    numeric_disagreement = True
                 if control["status"] == "COMPLETED" and candidate["status"] == "COMPLETED":
                     witness = complex_relative_witness(control, candidate, digits)
                     cohort["numeric_witness"] = witness
@@ -468,10 +478,14 @@ def main() -> None:
                     else:
                         cohort["status"] = "EXPLORATORY_MATCHED_FRONTIER" if fastpath else "MATCHED_FALLBACK_NOT_FRONTIER"
                 elif fastpath:
-                    cohort["status"] = "FRONTIER_COMPLETE_REFERENCE_CENSORED_UNVERIFIED"
+                    cohort["status"] = "FRONTIER_COMPLETE_INDEPENDENT_ENCLOSURE_REFERENCE_CENSORED"
                 else:
                     cohort["status"] = "CENSORED_OR_FALLBACK_FRONTIER_PILOT"
+                if any(not item["pass"] for item in independent.values()):
+                    cohort["status"] = "FAIL_OR_INCONCLUSIVE_INDEPENDENT_NUMERIC_WITNESS"
                 cohort["frontier_fastpath_complete"] = fastpath
+                cohort["frontier_independent_numeric_pass"] = bool(independent.get("indexed_frontier",{}).get("pass"))
+                cohort["performance_claim"] = "SINGLE_EXPLORATORY_PAIR_NO_PROMOTION"
                 cohort["promotion"] = "NOT_AUTHORIZED_RESEARCH_ONLY"
                 persist(args, report)
                 continue

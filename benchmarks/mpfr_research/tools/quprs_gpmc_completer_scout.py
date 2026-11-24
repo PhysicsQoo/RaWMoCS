@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Original-source, GPMC-completer-first scout. No solver-win-based selection."""
 import argparse
+from hashlib import sha256
 import json
 from pathlib import Path
 import re
@@ -56,7 +57,10 @@ def candidates(root):
         for family, group in groups:
             if len(group)>j:
                 size, rel=group[j]
-                out.append({"case":f"extended_{family}_{size}", "family":family, "size":size, "path":rel})
+                variant=re.sub(r"[^a-z0-9]+","_",str(Path(rel).parent).lower()).strip("_")
+                suffix=sha256(rel.encode()).hexdigest()[:12]
+                out.append({"case":f"extended_{family}_{size}_{suffix}", "family":family, "size":size, "variant":variant,"path":rel})
+    if len({r["case"] for r in out})!=len(out):raise ValueError("DUPLICATE_SOURCE_ID")
     return out[:MAX_CASES]
 
 def qualified(rows):

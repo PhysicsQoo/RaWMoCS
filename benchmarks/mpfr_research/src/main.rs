@@ -943,6 +943,10 @@ fn run() -> Result<(), String> {
     let cache_first = if ve_indexed_frontier {
         args.next().ok_or("missing mode after --factor-ve-indexed-frontier")?
     } else { cache_first };
+    let ve_indexed_taylor = cache_first.to_str() == Some("--factor-ve-indexed-taylor");
+    let cache_first = if ve_indexed_taylor {
+        args.next().ok_or("missing mode after --factor-ve-indexed-taylor")?
+    } else { cache_first };
     let scope_probe_320 = cache_first.to_str() == Some("--factor-ve-scope-probe-320");
     let cache_first = if scope_probe_320 {
         args.next().ok_or("missing mode after --factor-ve-scope-probe-320")?
@@ -1110,6 +1114,9 @@ fn run() -> Result<(), String> {
     }
     if fused_post_analysis && !projected_post_key {
         return Err("--trail-fused-post-analysis requires --trail-post-unit-projected".into());
+    }
+    if ve_indexed_taylor && (!ve_indexed_fused || ve_indexed_conditioned || ve_indexed_interned || ve_indexed_frontier) {
+        return Err("--factor-ve-indexed-taylor requires indexed fused without other indexed routes".into());
     }
     if ve_indexed_frontier && (!ve_indexed_fused || ve_indexed_conditioned || ve_indexed_interned) {
         return Err("--factor-ve-indexed-frontier requires indexed fused without other indexed routes".into());
@@ -1304,7 +1311,13 @@ fn run() -> Result<(), String> {
     let primal_build_ns = td_start.elapsed().as_nanos();
     let ve_start = Instant::now();
     let (ve_candidate, ve_stats) = if factor_ve {
-        if ve_indexed_frontier {
+        if ve_indexed_taylor {
+            let (answer, stats, trace) = factor_indexed_fused::count_taylor(&p,&raw,bits,digits);
+            eprintln!("RESEARCH_MPFR_INDEXED_TAYLOR planned={} count_completed={} completed={} terms={} base_bits={} degree={} model_bits={} arithmetic={} actual_work={} peak_pool={} peak_live={} gc={} certified={}",
+                trace.planned,trace.count_completed,trace.completed,trace.terms,trace.base_bits,trace.degree,
+                trace.model_bits,trace.arithmetic,trace.actual_work,trace.peak_pool,trace.peak_live,trace.gc,trace.certified);
+            (answer,stats)
+        } else if ve_indexed_frontier {
             let (answer, stats, trace) = factor_indexed_fused::count_frontier(source, &scope, bits);
             eprintln!("RESEARCH_MPFR_INDEXED_FRONTIER planned={} completed={} pruned={} estimated_work={} estimated_peak={} scc_merges={} arithmetic={} actual_work={} planning_ns={}",
                 trace.planned,trace.completed,trace.pruned,trace.estimated_work,trace.estimated_peak,trace.scc_merges,

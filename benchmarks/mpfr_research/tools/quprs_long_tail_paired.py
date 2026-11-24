@@ -96,10 +96,11 @@ def command(args: argparse.Namespace, name: str, cnf: Path, digits: int, arm: st
             raise ValueError("RUST_NATIVE_CONTROL_DRIFT")
     return cmd
 
-def frontier_command(args: argparse.Namespace, name: str, cnf: Path, digits: int) -> list[str]:
+def frontier_command(args: argparse.Namespace, name: str, cnf: Path, digits: int, *, taylor=False) -> list[str]:
     cmd = command(args, name, cnf, digits, "inline_full")
     position = cmd.index("--hashbrown-borrowed")
-    cmd[position:position] = ["--factor-variable-elimination", "--factor-ve-indexed-fused", "--factor-ve-indexed-frontier"]
+    cmd[position:position] = ["--factor-variable-elimination", "--factor-ve-indexed-fused",
+                              "--factor-ve-indexed-taylor" if taylor else "--factor-ve-indexed-frontier"]
     return cmd
 
 
@@ -164,12 +165,19 @@ def native(cmd: list[str], arm: str, duration: int, digits: int | None) -> dict:
                 if not match or int(match.group(8)) != digits or \
                         int(match.group(9)) != BITS[digits]:
                     raise ValueError("INVALID_OR_MISSING_MPFR_PRECISION")
-                if arm in ("indexed_fused", "indexed_conditioned", "indexed_interned", "indexed_frontier"):
+                if arm in ("indexed_fused", "indexed_conditioned", "indexed_interned", "indexed_frontier", "indexed_taylor"):
                     ve = re.search(r"^RESEARCH_MPFR_FACTOR_VE enabled=true completed=(true|false) eligible=(true|false) capped=(true|false) ", process.stderr, re.M)
                     if not ve:
                         raise ValueError("MISSING_INDEXED_FUSED_PATH_EVIDENCE")
                     row["factor_ve_completed"] = ve.group(1) == "true"
                     row["factor_ve_capped"] = ve.group(3) == "true"
+                if arm == "indexed_taylor":
+                    trace = re.search(r"^RESEARCH_MPFR_INDEXED_TAYLOR planned=(\d+) count_completed=(\d+) completed=(\d+) terms=(\d+) base_bits=(\d+) degree=(\d+) model_bits=(\d+) arithmetic=(\d+) actual_work=(\d+) peak_pool=(\d+) peak_live=(\d+) gc=(\d+) certified=(true|false)$", process.stderr, re.M)
+                    if not trace:
+                        raise ValueError("MISSING_INDEXED_TAYLOR_PATH_EVIDENCE")
+                    for i,key in enumerate(("planned","count_completed","completed","terms","base_bits","degree","model_bits","arithmetic","actual_work","peak_pool","peak_live","gc"),1):
+                        row["taylor_" + key] = int(trace.group(i))
+                    row["taylor_certified"] = trace.group(13) == "true"
                 if arm == "indexed_frontier":
                     trace = re.search(r"^RESEARCH_MPFR_INDEXED_FRONTIER planned=(\d+) completed=(\d+) pruned=(\d+) estimated_work=(\d+) estimated_peak=(\d+) scc_merges=(\d+) arithmetic=(\d+) actual_work=(\d+) planning_ns=(\d+)$", process.stderr, re.M)
                     if not trace:
@@ -258,6 +266,9 @@ def self_test() -> None:
         raise AssertionError("index rejects untrusted path")
     except ValueError:
         pass
+    for digits in BITS:
+        cmd = frontier_command(fake, "feynman_gf2_8_mult", Path("/original-weighted.cnf"), digits, taylor=True)
+        assert cmd.count("--factor-ve-indexed-taylor") == 1 and "--factor-ve-indexed-frontier" not in cmd
     gf2_taylor_witness.self_test()
     print("ORIGINAL_LONGTAIL_SOURCE_PRECISION_ARM_PREFLIGHT_PASS", flush=True)
 
@@ -267,14 +278,17 @@ def main() -> None:
     ap.add_argument("--stage", choices=("screen", "pilot"), default="screen")
     ap.add_argument("--pilot-case", type=str)
     ap.add_argument("--frontier-pilot", action="store_true")
+    ap.add_argument("--taylor-pilot", action="store_true")
     for field in ("quprs", "gpmc-source", "exporter", "gpmc", "mpfr", "corpus", "report"):
         ap.add_argument("--" + field, type=Path)
     args = ap.parse_args()
     self_test()
     if args.self_test:
         return
-    if args.frontier_pilot and (args.stage != "pilot" or args.pilot_case != "feynman_gf2_8_mult"):
-        ap.error("--frontier-pilot requires the focused GF2^8 original-source pilot")
+    if (args.frontier_pilot or args.taylor_pilot) and (args.stage != "pilot" or args.pilot_case != "feynman_gf2_8_mult"):
+        ap.error("frontier/Taylor modes require the focused GF2^8 original-source pilot")
+    if args.frontier_pilot and args.taylor_pilot:
+        ap.error("select one focused kernel, not both")
     required = ("quprs", "gpmc_source", "gpmc", "mpfr", "corpus", "report")
     if args.stage == "screen":
         required += ("exporter",)
@@ -446,22 +460,29 @@ def main() -> None:
                       "trials": [], "design": "EXPLORATORY_TWO_TRIALS_NOT_PRODUCTION_GO"}
             item["pilot"].append(cohort)
             persist(args, report)
-            if args.frontier_pilot:
+            if args.frontier_pilot or args.taylor_pilot:
                 # One genuinely long pair at each precision first, not a
                 # seven-trial campaign or a claim from a censored control.
                 cohort["design"] = "EXPLORATORY_ONE_PAIRED_120S_TRIAL_NOT_PRODUCTION_GO"
                 source_sha = gf2_taylor_witness.verify_source(cnf)
-                arms = ("gpmc", "indexed_frontier") if digits == 30 else ("indexed_frontier", "gpmc")
+                candidate_arm = "indexed_taylor" if args.taylor_pilot else "indexed_frontier"
+                cohort["arithmetic_contract"] = ("exact source-decimal integer ring with certified target output precision; GPMC MPFR internal arithmetic differs"
+                                                  if args.taylor_pilot else "equal-bit MPFR internal arithmetic")
+                arms = ("gpmc", candidate_arm) if digits == 30 else (candidate_arm, "gpmc")
                 for arm in arms:
-                    cmd = frontier_command(args, case, cnf, digits) if arm == "indexed_frontier" else command(args, case, cnf, digits, arm)
+                    cmd = frontier_command(args, case, cnf, digits, taylor=args.taylor_pilot) if arm == candidate_arm else command(args, case, cnf, digits, arm)
                     row = native(cmd, arm, PAIR_S, digits)
                     row["trial"] = 0
                     cohort["trials"].append(row)
                     persist(args, report)
                     print(f"LONGTAIL_FRONTIER_PILOT case={case} bits={bits} arm={arm} status={row['status']}", flush=True)
                 members = {x["arm"]: x for x in cohort["trials"]}
-                control, candidate = members["gpmc"], members["indexed_frontier"]
-                fastpath = candidate["status"] == "COMPLETED" and candidate.get("factor_ve_completed") is True and candidate.get("frontier_planned") == candidate.get("frontier_completed")
+                control, candidate = members["gpmc"], members[candidate_arm]
+                fastpath = candidate["status"] == "COMPLETED" and candidate.get("factor_ve_completed") is True
+                if args.taylor_pilot:
+                    fastpath = fastpath and candidate.get("taylor_certified") is True and candidate.get("taylor_planned") == candidate.get("taylor_completed") == candidate.get("taylor_count_completed")
+                else:
+                    fastpath = fastpath and candidate.get("frontier_planned") == candidate.get("frontier_completed")
                 independent = {
                     arm: gf2_taylor_witness.compare(row, digits, source_sha)
                     for arm, row in members.items() if row["status"] == "COMPLETED"
@@ -484,7 +505,8 @@ def main() -> None:
                 if any(not item["pass"] for item in independent.values()):
                     cohort["status"] = "FAIL_OR_INCONCLUSIVE_INDEPENDENT_NUMERIC_WITNESS"
                 cohort["frontier_fastpath_complete"] = fastpath
-                cohort["frontier_independent_numeric_pass"] = bool(independent.get("indexed_frontier",{}).get("pass"))
+                cohort["frontier_independent_numeric_pass"] = bool(independent.get(candidate_arm,{}).get("pass"))
+                cohort["candidate_arm"] = candidate_arm
                 cohort["performance_claim"] = "SINGLE_EXPLORATORY_PAIR_NO_PROMOTION"
                 cohort["promotion"] = "NOT_AUTHORIZED_RESEARCH_ONLY"
                 persist(args, report)

@@ -15,6 +15,12 @@ on:
         required: true
         default: feynman_gf2_6_mult
         options: [feynman_gf2_6_mult, mqt_qnn_8, mqt_wstate_16, mqt_qwalk_5, feynman_gf2_8_mult]
+      gf2_kernel:
+        description: "Focused GF2^8 only: MPFR frontier or exact-decimal Taylor ring"
+        type: choice
+        required: true
+        default: frontier
+        options: [frontier, taylor]
       source_run_id:
         description: "Focused: existing run with verified source-screen artifact"
         type: string
@@ -412,7 +418,9 @@ jobs:
           python3 -m py_compile benchmarks/mpfr_research/tools/quprs_long_tail_paired.py
           python3 benchmarks/mpfr_research/tools/quprs_long_tail_paired.py --self-test
           pilot=()
-          if [[ "${{ inputs.suite }}" == "focused" ]]; then pilot+=(--frontier-pilot); fi
+          if [[ "${{ inputs.suite }}" == "focused" ]]; then
+            if [[ "${{ inputs.gf2_kernel }}" == "taylor" ]]; then pilot+=(--taylor-pilot); else pilot+=(--frontier-pilot); fi
+          fi
           python3 benchmarks/mpfr_research/tools/quprs_long_tail_paired.py \
             --stage pilot --pilot-case "${{ matrix.case }}" "${pilot[@]}" \
             --quprs .upstream/quprs \

@@ -11,6 +11,7 @@ S=1<<BITS
 ONE=(S,S,0,0)
 ZERO=(0,0,0,0)
 MAX_WIDTH=19
+MAX_CLAUSE_WIDTH=9
 MAX_WORK=40_000_000
 MAX_LIVE=2_000_000
 
@@ -70,10 +71,14 @@ def solve(raw,expected_sha,deadline_seconds=180):
         clauses.append(c)
     if n is None or len(clauses)!=nc:raise ValueError('CLAUSE_COUNT')
     if n>2048 or nc>10000:raise ValueError('SOURCE_CAP')
+    # Bound the actual initial factor cells before allocating any tables.
+    # One nine-literal original W-state clause is within the existing live budget.
+    clause_scopes=[tuple(sorted(set(map(abs,c)))) for c in clauses]
+    if any(len(scope)>MAX_CLAUSE_WIDTH for scope in clause_scopes):raise ValueError('CLAUSE_WIDTH')
+    initial_cells=2*n+sum(1<<len(scope) for scope in clause_scopes)
+    if initial_cells>MAX_LIVE:raise ValueError('INITIAL_RESOURCE_CAP')
     fs=[];adj={v:set() for v in range(1,n+1)}
-    for c in clauses:
-        scope=tuple(sorted(set(map(abs,c))))
-        if len(scope)>8:raise ValueError('CLAUSE_WIDTH')
+    for c,scope in zip(clauses,clause_scopes):
         vals=[ONE if any(bool(m&(1<<scope.index(abs(l))))==(l>0) for l in c) else None for m in range(1<<len(scope))]
         fs.append((scope,vals))
         for a,b in combinations(scope,2):adj[a].add(b);adj[b].add(a)
@@ -159,6 +164,30 @@ def self_test():
                 c,d=weights[v if truth(v) else -v];a,b=a*c-b*d,a*d+b*c
             re+=a;im+=b
         assert ref['sat']==sat and Q(ref['real'][0])<=re<=Q(ref['real'][1]) and Q(ref['imag'][0])<=im<=Q(ref['imag'][1])
+    # Original wide-clause factor: independent exact enumeration, signed complex
+    # weights, an explicit zero weight and both satisfiable/contradictory controls.
+    for extra in ([],[(-1,), (1,)]):
+        n=9;clauses=[tuple(range(1,10)),(-1,2),(-3,4)]+extra
+        weights={v:(Q((v%5)-2,10),Q((v%3)-1,10)) for v in range(-9,10) if v}
+        weights[1]=(Q(0),Q(0))
+        raw=(f'p cnf {n} {len(clauses)}\nc t wmc\n'+''.join(f'c p weight {v} {float(a):.1f} {float(b):.1f} 0\n' for v,(a,b) in weights.items())+''.join(' '.join(map(str,c))+' 0\n' for c in clauses)).encode()
+        ref=solve(raw,sha256(raw).hexdigest());sat=False;re=im=Q(0)
+        for m in range(1<<n):
+            truth=lambda l:bool(m&(1<<(abs(l)-1)))==(l>0)
+            if not all(any(truth(l) for l in c) for c in clauses):continue
+            sat=True;a,b=Q(1),Q(0)
+            for v in range(1,n+1):
+                c,d=weights[v if truth(v) else -v];a,b=a*c-b*d,a*d+b*c
+            re+=a;im+=b
+        assert ref['sat']==sat and Q(ref['real'][0])<=re<=Q(ref['real'][1]) and Q(ref['imag'][0])<=im<=Q(ref['imag'][1])
+    for raw,reason in ((b'p cnf 10 1\n1 2 3 4 5 6 7 8 9 10 0\n','CLAUSE_WIDTH'),
+                       (b'p cnf 9 4000\n'+b'1 2 3 4 5 6 7 8 9 0\n'*4000,'INITIAL_RESOURCE_CAP')):
+        try:
+            solve(raw,sha256(raw).hexdigest())
+        except ValueError as exc:
+            assert str(exc)==reason
+        else:
+            raise AssertionError('invalid initial factor budget admitted')
     print('FIXED_INTERVAL_SELF_TEST PASS',file=sys.stderr,flush=True)
 
 if __name__=='__main__':

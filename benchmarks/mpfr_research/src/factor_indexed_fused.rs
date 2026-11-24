@@ -484,8 +484,12 @@ mod value_reuse {
                 if a==ONE {return Ok(b);}
                 if b==ONE {return Ok(a);}
             } else {
-                if a==NO||a==ZERO {return Ok(b);}
-                if b==NO||b==ZERO {return Ok(a);}
+                // Boolean OR is independent of the numeric zero. In
+                // particular ZERO + NO and NO + ZERO must both be ZERO.
+                if a==NO {return Ok(b);}
+                if b==NO {return Ok(a);}
+                if a==ZERO {return Ok(b);}
+                if b==ZERO {return Ok(a);}
             }
             self.stats.nontrivial+=1;
             let key=(a,b); // ordered pair: preserve this finite-precision operation
@@ -688,6 +692,17 @@ mod value_reuse {
                 let b=pool.intern(C::decimal(bits,"1.0000000000000000000000002","-0").unwrap()).unwrap();
                 assert_ne!(a,b);assert_ne!(a,ONE);
                 assert_eq!(pool.intern(C::decimal(bits,"1.0000000000000000000000001","-0").unwrap()).unwrap(),a);
+                for a in [NO,ONE,ZERO] {
+                    for b in [NO,ONE,ZERO] {
+                        let sum=pool.op(a,b,false).unwrap();
+                        let product=pool.op(a,b,true).unwrap();
+                        assert_eq!(sum!=NO,a!=NO||b!=NO);
+                        assert_eq!(product!=NO,a!=NO&&b!=NO);
+                        let expected=usize::from(a==ONE)+usize::from(b==ONE);
+                        assert_eq!(pool.values[sum as usize].re,expected);
+                        assert_eq!(pool.values[product as usize].re,usize::from(a==ONE&&b==ONE));
+                    }
+                }
                 assert_eq!(pool.op(NO,ZERO,true).unwrap(),NO);
                 assert_eq!(pool.op(ZERO,ONE,true).unwrap(),ZERO);
                 let v=pool.op(a,b,true).unwrap();
@@ -1046,8 +1061,12 @@ mod packed_taylor {
                 if a==ONE {return Ok(b);}
                 if b==ONE {return Ok(a);}
             } else {
-                if a==NO||a==ZERO {return Ok(b);}
-                if b==NO||b==ZERO {return Ok(a);}
+                // Boolean OR is independent of the numeric zero. In
+                // particular ZERO + NO and NO + ZERO must both be ZERO.
+                if a==NO {return Ok(b);}
+                if b==NO {return Ok(a);}
+                if a==ZERO {return Ok(b);}
+                if b==ZERO {return Ok(a);}
             }
             let key=(a.min(b),a.max(b)); // exact commutative ring
             let memo=if product {&self.mul} else {&self.add};
@@ -1441,6 +1460,16 @@ mod packed_taylor {
             let b=ring.intern(Integer::from(-37)).unwrap();
             assert_ne!(dead,b);
             assert_eq!(ring.op(a,b,false).unwrap(),ZERO);
+            for x in [NO,ONE,ZERO] {
+                for y in [NO,ONE,ZERO] {
+                    let sum=ring.op(x,y,false).unwrap();
+                    let product=ring.op(x,y,true).unwrap();
+                    assert_eq!(sum!=NO,x!=NO||y!=NO);
+                    assert_eq!(product!=NO,x!=NO&&y!=NO);
+                    assert_eq!(ring.values[sum as usize],usize::from(x==ONE)+usize::from(y==ONE));
+                    assert_eq!(ring.values[product as usize],usize::from(x==ONE&&y==ONE));
+                }
+            }
             assert_eq!(ring.op(NO,ZERO,true).unwrap(),NO);
             let mut scalar=a;let mut current=vec![IdFactor{vars:vec![1],ids:vec![a,b]}];
             let mut out=vec![ZERO,b];

@@ -301,6 +301,71 @@ fn contract(m:&Model,fixed:&[usize],p:&Plan,modbits:u32,phase:&Integer,start:Ins
     }
     Ok(sum)
 }
+// A Boolean phase indicator is an affine-subspace indicator iff its
+// translated support is a linear subspace. Exact rank/cardinality test.
+fn affine_indicator(f:&Factor)->bool{
+    if f.values.iter().any(|v|!matches!(v,Some(0|1))){return false;}
+    let support:Vec<_>=f.values.iter().enumerate().filter_map(|(i,v)|(*v==Some(1)).then_some(i)).collect();
+    if support.is_empty(){return true;}
+    let mut basis=BTreeMap::new();
+    let origin=support[0];
+    for x in &support{
+        let mut row=x^origin;
+        while row!=0{
+            let pivot=row.ilog2();
+            if let Some(b)=basis.get(&pivot){row^=*b;}else{basis.insert(pivot,row);break;}
+        }
+    }
+    support.len()==1usize<<basis.len()
+}
+#[derive(Debug)]
+struct PhaseBound{ coefficient_scale:Integer, rank:usize, quadratic_vars:usize, admitted:bool }
+// Write E=sum_i b_i with affine indicators b_i. Its parity ANF is
+// exact. Freeze every variable occurring in terms of degree >=3.
+// The remaining quadratic block has fixed GF(2) polar rank r.
+// A quadratic Walsh coefficient has magnitude <=2^(l-r/2).
+// Each product of j indicators is itself an affine indicator, with
+// Fourier l1 norm <=1 even after fixing the high-degree variables.
+// Hence |[t^j] sum_x(-1+t)^E(x)| <= 2^(free-r/2)*binom(d,j).
+// If admission fails, retain the original model-count bound.
+fn phase_bound(m:&Model)->PhaseBound{
+    let fallback=||PhaseBound{coefficient_scale:Integer::from(1)<<(m.free.len() as u32),rank:0,quadratic_vars:0,admitted:false};
+    if m.factors.len()>m.degree as usize||m.factors.iter().any(|f|!affine_indicator(f)){return fallback();}
+    let mut anf=BTreeSet::<Vec<usize>>::new();
+    for f in &m.factors{
+        let mut c:Vec<_>=f.values.iter().map(|v|v==&Some(1)).collect();
+        for i in 0..f.scope.len(){
+            for mask in 0..c.len(){
+                if mask&(1<<i)!=0{c[mask]^=c[mask^(1<<i)];}
+            }
+        }
+        for (mask,value) in c.into_iter().enumerate(){
+            if !value{continue;}
+            let term:Vec<_>=f.scope.iter().enumerate().filter_map(|(i,&v)|(mask&(1<<i)!=0).then_some(v)).collect();
+            if !anf.remove(&term){anf.insert(term);}
+        }
+    }
+    let high:BTreeSet<_>=anf.iter().filter(|s|s.len()>=3).flatten().copied().collect();
+    let low:BTreeSet<_>=m.free.difference(&high).copied().collect();
+    let mut rows:BTreeMap<usize,BTreeSet<usize>>=low.iter().map(|&v|(v,BTreeSet::new())).collect();
+    for term in &anf{
+        if term.len()==2&&low.contains(&term[0])&&low.contains(&term[1]){
+            rows.get_mut(&term[0]).expect("low row").insert(term[1]);
+            rows.get_mut(&term[1]).expect("low row").insert(term[0]);
+        }
+    }
+    let mut basis=BTreeMap::<usize,BTreeSet<usize>>::new();
+    for (_,mut row) in rows{
+        while let Some(&pivot)=row.last(){
+            if let Some(b)=basis.get(&pivot){row=row.symmetric_difference(b).copied().collect();}
+            else{basis.insert(pivot,row);break;}
+        }
+    }
+    let rank=basis.len();
+    if rank%2!=0||rank>low.len(){return fallback();}
+    PhaseBound{coefficient_scale:Integer::from(1)<<((m.free.len()-rank/2) as u32),rank,quadratic_vars:low.len(),admitted:true}
+}
+
 // Choose enough coefficients BEFORE contraction for the absolute
 // tail bound. The certificate's scale is at least one, so this reserves
 // at least half the existing error budget for emitted-decimal rounding.
@@ -329,10 +394,16 @@ pub(crate) fn run_taylor(mut args:impl Iterator<Item=std::ffi::OsString>)->Resul
     // Current research route proves a bijection with all assignments to
     // the free variables. Non-affine residual clauses fail closed.
     if m.factors.iter().any(|f|f.values.iter().any(Option::is_none)){return Err("affine hard support not closed".into());}
-    let before=m.factors.len();m.factors=merged(&m.factors)?;
+    let before=m.factors.len();
+    // Keep one original indicator per phase weight until the rank bound
+    // has been established; merging can obscure affine support.
+    let rank_bound=phase_bound(&m);
+    m.factors=merged(&m.factors)?;
     let n=Integer::from(1)<<(m.free.len() as u32);
-    let k=certified_terms(&n,m.degree,&m.delta,digits)?;
-    let bound=(0..k).map(|j|&n*Integer::from(m.degree).binomial(j)).max().ok_or("affine coefficient bound")?;
+    let coefficient_scale=&rank_bound.coefficient_scale;
+    let k=certified_terms(coefficient_scale,m.degree,&m.delta,digits)?;
+    let bound=(0..k).map(|j|coefficient_scale*Integer::from(m.degree).binomial(j)).max().ok_or("affine coefficient bound")?;
+    eprintln!("AFFINE_PHASE_RANK admitted={} quadratic_vars={} rank={} model_bits={} coefficient_scale_bits={} terms={k}",rank_bound.admitted,rank_bound.quadratic_vars,rank_bound.rank,n.significant_bits(),coefficient_scale.significant_bits());
     let base=bound.significant_bits()+1;
     let modbits=base.checked_mul(k).ok_or("affine packing overflow")?;
     let phase=(Integer::from(1)<<base)-1;
@@ -341,7 +412,7 @@ pub(crate) fn run_taylor(mut args:impl Iterator<Item=std::ffi::OsString>)->Resul
     let mut trace=TaylorStats::default();
     let packed=contract(&m,&fixed,&plan,modbits,&phase,start,&mut trace)?;
     if trace.completed!=trace.planned{return Err("affine incomplete leaves".into());}
-    let answer=decode_affine_packed(packed,&n,&m.delta,(m.degree,k,base),(bits,digits),start)?;
+    let answer=decode_affine_packed(packed,coefficient_scale,&m.delta,(m.degree,k,base),(bits,digits),start)?;
     let solve_ns=start.elapsed().as_nanos();let t=Instant::now();
     println!("s SATISFIABLE");
     println!("c r mpfr {} {}",answer.count.re.to_string_radix(10,Some(digits as usize+4)),answer.count.im.to_string_radix(10,Some(digits as usize+4)));
@@ -405,6 +476,43 @@ mod tests{
             }
             assert_eq!(actual,expected);
         }
+    }
+    #[test]
+    fn quadratic_walsh_bound_with_affine_insertions(){
+        // Quadratic phase on variables 1..4; a cubic term on 5..7.
+        // Includes a non-axis-aligned affine indicator (x1 XOR x2).
+        let factors=vec![
+            Factor{scope:vec![1,2],values:vec![Some(0),Some(0),Some(0),Some(1)]},
+            Factor{scope:vec![3,4],values:vec![Some(0),Some(0),Some(0),Some(1)]},
+            Factor{scope:vec![5,6,7],values:(0..8).map(|i|Some(u16::from(i==7))).collect()},
+            Factor{scope:vec![1,2],values:vec![Some(0),Some(1),Some(1),Some(0)]},
+        ];
+        let m=Model{free:(1..=7).collect(),factors,gates:4,xor:0,initial_free:7,degree:4,delta:Rational::from((1,100))};
+        let bound=phase_bound(&m);
+        assert!(bound.admitted);
+        assert_eq!((bound.quadratic_vars,bound.rank),(4,4));
+        assert_eq!(bound.coefficient_scale,32);
+        let free:Vec<_>=m.free.iter().copied().collect();
+        let mut coeff=vec![Integer::from(0);5];
+        for mask in 0..128{
+            let e=m.factors.iter().map(|f|{
+                let i=f.scope.iter().enumerate().fold(0,|a,(j,&v)|a|(usize::from(at(&free,mask,v))<<j));
+                u32::from(f.values[i].unwrap())
+            }).sum::<u32>();
+            for (j,c) in coeff.iter_mut().enumerate().take(e as usize+1){
+                let term=Integer::from(e).binomial(j as u32);
+                if (e-j as u32)%2==0{*c+=term;}else{*c-=term;}
+            }
+        }
+        for (j,c) in coeff.into_iter().enumerate(){
+            assert!(c.abs()<=&bound.coefficient_scale*Integer::from(m.degree).binomial(j as u32));
+        }
+        // Three-element support is not affine: never apply the bound.
+        let bad=Factor{scope:vec![1,2],values:vec![Some(1),Some(1),Some(1),Some(0)]};
+        assert!(!affine_indicator(&bad));
+        let mut m=m;m.factors[0]=bad;
+        assert!(!phase_bound(&m).admitted);
+        assert_eq!(phase_bound(&m).coefficient_scale,128);
     }
     #[test]
     fn tail_order_depends_on_model_count_and_target(){

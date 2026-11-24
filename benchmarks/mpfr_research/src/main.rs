@@ -772,6 +772,9 @@ fn run() -> Result<(), String> {
     let first = args.next().ok_or(
         "usage: rawmocs-mpfr-research [--node-budget=250000|--node-budget=1000000|--node-budget=1000000000] [--cache-limit=25000|--cache-limit=50000|--cache-limit=100000] [--indexed-unit-prop|--indexed-unit-prop-after-8192|--indexed-unit-prop-csr|--indexed-unit-prop-csr-after-8192] [--shared-residual-key|--packed-residual-key|--packed-residual-key-fast|--packed-residual-key-hash-only|--packed-residual-key-bypass-only] [--fast-assign] [--reuse-frequency-scratch] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
     )?;
+    if matches!(first.to_str(),Some("--adaptive"|"--adaptive-hybrid")) {
+        return factor_cardinality::run_adaptive(args,first.to_str()==Some("--adaptive-hybrid"));
+    }
     if first.to_str() == Some("--factor-affine-taylor") {
         return factor_cardinality::run_affine_taylor(args);
     }

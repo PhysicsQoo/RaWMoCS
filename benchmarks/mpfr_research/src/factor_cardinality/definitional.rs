@@ -1,5 +1,5 @@
 //! Research-only fused bucket contraction with exact Boolean support.
-use super::{extract_with_arity, weight, var, idx, edge, minfill, Graph, Trace, C, Outcome, Problem};
+use super::{extract_with_arity, extract_with_limits, weight, var, idx, edge, minfill, Graph, Trace, C, Outcome, Problem};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
@@ -45,13 +45,27 @@ pub(super) fn count_planned(p:&Problem,bits:u32,trace:&mut Trace,seconds:u64,ord
 }
 fn count_impl(p:&Problem,bits:u32,trace:&mut Trace,seconds:u64,order:Option<&[usize]>)->Result<Outcome,String>{
     let deadline=Instant::now()+std::time::Duration::from_secs(seconds);
-    let (factors,graph,scalar)=compile(p,bits,trace)?;
+    let (factors,graph,scalar)=compile(p,bits,trace,order.is_some())?;
     contract(factors,graph,scalar,bits,trace,deadline,order)
 }
 type Compiled=(Vec<Factor>,Graph,C);
-fn compile(p:&Problem,bits:u32,trace:&mut Trace)->Result<Compiled,String>{
-    let (gates,rep,units,residual)=extract_with_arity(p,2048,4)?;
+fn compile(p:&Problem,bits:u32,trace:&mut Trace,adaptive:bool)->Result<Compiled,String>{
+    let (gates,rep,units,residual)=if adaptive{extract_with_limits(p,4096,16_000,4)?}else{extract_with_arity(p,2048,4)?};
     let free:BTreeSet<_>=rep.iter().copied().filter(|&l|l!=0&&!units.contains_key(&var(l))).map(var).collect();
+    // Bound all initial factor cells before allocating even a single table.
+    // Standalone keeps the legacy arity; planned execution uses the same
+    // checked source/table limits as the structural profiler.
+    let max_arity=if adaptive{12}else{8};
+    let mut cells=free.len().saturating_mul(2);
+    for (_,a) in &gates{
+        let scope:BTreeSet<_>=a.iter().map(|&l|rep[idx(l)]).filter(|&l|l!=0&&!units.contains_key(&var(l))).map(var).collect();
+        cells=cells.saturating_add(1usize<<scope.len());
+    }
+    for c in &residual{
+        if c.len()>max_arity{return Err("residual clause arity cap".into());}
+        cells=cells.saturating_add(1usize<<c.len());
+    }
+    if cells>2_000_000{return Err("definitional initial cells cap".into());}
     trace.gates=gates.len();
     trace.free=free.len();
     let mut scalar=C::one(bits);
@@ -81,7 +95,7 @@ fn compile(p:&Problem,bits:u32,trace:&mut Trace)->Result<Compiled,String>{
         insert(&mut factors,&mut graph,Factor{scope,values:vals});
     }
     for c in residual {
-        if c.len()>8 {return Err("residual clause arity cap".into());}
+        if c.len()>max_arity {return Err("residual clause arity cap".into());}
         let scope:Vec<_>=c.iter().copied().map(var).collect::<BTreeSet<_>>().into_iter().collect();
         if scope.iter().any(|v|!free.contains(v)) {return Err("residual ownership".into());}
         let values=(0..(1usize<<scope.len())).map(|mask| {
@@ -258,7 +272,7 @@ fn split_contract(factors:&[Factor],graph:&Graph,scalar:&C,bits:u32,trace:&mut T
 }
 pub(super) fn count_conditioned(p:&Problem,bits:u32,trace:&mut Trace,seconds:u64)->Result<Outcome,String>{
     let deadline=Instant::now()+std::time::Duration::from_secs(seconds);
-    let (factors,graph,scalar)=compile(p,bits,trace)?;
+    let (factors,graph,scalar)=compile(p,bits,trace,true)?;
     let plan=split_plan(&factors,&graph,deadline.min(Instant::now()+std::time::Duration::from_secs(2)))?;
     eprintln!("DEFINITIONAL_SPLIT_PLAN pivot={} leaves=2 work_upper={} peak_upper={}",plan.pivot,plan.work,plan.peak);
     let answer=split_contract(&factors,&graph,&scalar,bits,trace,deadline,&plan)?;
@@ -286,6 +300,18 @@ mod tests {
             }else{
                 assert!(count_conditioned(&p,100,&mut Trace::default(),5).is_err());
             }
+        }
+    }
+    #[test]
+    fn planned_wide_clause_admission_keeps_boolean_support(){
+        let raw="p cnf 9 1\nc t wmc\nc p weight 1 -1 0 0\n1 2 3 4 5 6 7 8 9 0\n";
+        for bits in [100,333]{
+            let p=crate::parse_emitted(raw,bits).unwrap();
+            assert!(count(&p,bits,&mut Trace::default()).is_err());
+            let order:Vec<_>=(1..=9).collect();
+            let answer=count_planned(&p,bits,&mut Trace::default(),15,&order).unwrap();
+            // All 512 assignments cancel except the excluded all-false one.
+            assert!(answer.sat);assert_eq!(answer.count.re,-1);assert_eq!(answer.count.im,0);
         }
     }
     #[test]

@@ -77,7 +77,7 @@ def select_mqt_holdouts(paths,excluded):
     from quprs_mqt_adaptive_scout import item
     groups=[]
     for family,target in HOLDOUT_TARGETS:
-        pattern=re.compile(re.escape(family)+r"_nativegates_ibm_qiskit_opt0_(\\d+)\\.qasm$")
+        pattern=re.compile(re.escape(family)+r"_nativegates_ibm_qiskit_opt0_(\d+)\.qasm$")
         rows=[]
         for rel in paths:
             if rel in excluded or not rel.startswith("benchmarks/MQTBench/"):

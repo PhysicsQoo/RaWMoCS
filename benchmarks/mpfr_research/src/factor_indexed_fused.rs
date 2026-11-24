@@ -1034,7 +1034,7 @@ mod packed_taylor {
             z.keep_signed_bits_mut(self.modbits);
             if z==0 {return Ok(ZERO);}
             let sign=if self.signed && z<0 {
-                z=-z;
+                z = -z;
                 // The half-modulus residue is its own negative.
                 if z.significant_bits()==self.modbits {0}else{NEG}
             }else{0};

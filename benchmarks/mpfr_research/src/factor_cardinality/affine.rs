@@ -336,7 +336,7 @@ fn phase_bound(m:&Model)->PhaseBound{
         let mut c:Vec<_>=f.values.iter().map(|v|v==&Some(1)).collect();
         for i in 0..f.scope.len(){
             for mask in 0..c.len(){
-                if mask&(1<<i)!=0{c[mask]^=c[mask^(1<<i)];}
+                if mask&(1<<i)!=0{let value=c[mask^(1<<i)];c[mask]^=value;}
             }
         }
         for (mask,value) in c.into_iter().enumerate(){
@@ -355,14 +355,14 @@ fn phase_bound(m:&Model)->PhaseBound{
         }
     }
     let mut basis=BTreeMap::<usize,BTreeSet<usize>>::new();
-    for (_,mut row) in rows{
+    for mut row in rows.into_values(){
         while let Some(&pivot)=row.last(){
             if let Some(b)=basis.get(&pivot){row=row.symmetric_difference(b).copied().collect();}
             else{basis.insert(pivot,row);break;}
         }
     }
     let rank=basis.len();
-    if rank%2!=0||rank>low.len(){return fallback();}
+    if rank&1!=0||rank>low.len(){return fallback();}
     PhaseBound{coefficient_scale:Integer::from(1)<<((m.free.len()-rank/2) as u32),rank,quadratic_vars:low.len(),admitted:true}
 }
 
@@ -501,7 +501,7 @@ mod tests{
             }).sum::<u32>();
             for (j,c) in coeff.iter_mut().enumerate().take(e as usize+1){
                 let term=Integer::from(e).binomial(j as u32);
-                if (e-j as u32)%2==0{*c+=term;}else{*c-=term;}
+                if (e-j as u32)&1==0{*c+=term;}else{*c-=term;}
             }
         }
         for (j,c) in coeff.into_iter().enumerate(){

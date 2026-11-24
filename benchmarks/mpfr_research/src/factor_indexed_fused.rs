@@ -1196,6 +1196,26 @@ mod packed_taylor {
                         next_gc=pool.values.len().saturating_add(25_000).clamp(340_000,380_000);
                     }
                     let mut sum=NO;
+                    if full_support {
+                        // Both branches have Boolean support. Factor their
+                        // identical values once: common*(left+right).
+                        // Each factor still contributes exactly once per
+                        // assignment, including SAT-valued numeric zero.
+                        let (mut common,mut left,mut right)=(ONE,ONE,ONE);
+                        for (i,f) in factors.iter().enumerate() {
+                            let a=f.ids[indices[i]];
+                            let b=f.ids[indices[i]|pivots[i]];
+                            if a==NO||b==NO{return Err("affine_complete_support_invariant");}
+                            if a==b{
+                                common=pool.op(common,a,true)?;
+                            }else{
+                                left=pool.op(left,a,true)?;
+                                right=pool.op(right,b,true)?;
+                            }
+                        }
+                        let joined=pool.op(left,right,false)?;
+                        sum=pool.op(common,joined,true)?;
+                    }else{
                     for positive in [false,true] {
                         let local=|i:usize|indices[i]|if positive {pivots[i]} else {0};
                         // Boolean support is checked independently of any zero value.
@@ -1206,6 +1226,7 @@ mod packed_taylor {
                             if product==ZERO {break;}
                         }
                         sum=pool.op(sum,product,false)?;
+                    }
                     }
                     stats.zero_sat+=usize::from(sum==ZERO);ids.push(sum);
                     if assignment+1<size {
@@ -1413,9 +1434,14 @@ mod packed_taylor {
         let rr=decimal(&r.to_string_radix(10,Some(digits as usize+4)))?;
         let ii=decimal(&i.to_string_radix(10,Some(digits as usize+4)))?;
         let error=(rr-re.clone()).abs().max((ii-im.clone()).abs())+tail.clone();
-        let scale=Rational::from(1).max(re.abs()-tail.clone()).max(im.abs()-tail);
+        let scale=Rational::from(1).max(re.abs()-tail.clone()).max(im.abs()-tail.clone());
         let guard=Rational::from((Integer::from(1),Integer::from(2)*Integer::from(10).pow(digits-6)));
-        if error>scale*guard{return Err("taylor_error_certificate");}
+        if error>scale.clone()*guard.clone(){
+            eprintln!("TAYLOR_CERTIFICATE_REJECT tail_log2_est={} scale_log2_est={} error_log2_est={} guard_log2_est={}",
+                Float::with_val(64,&tail).log2(),
+                Float::with_val(64,&scale).log2(),Float::with_val(64,&error).log2(),Float::with_val(64,&guard).log2());
+            return Err("taylor_error_certificate");
+        }
         if start.elapsed().as_secs()>=110{return Err("taylor_deadline");}
         Ok(Outcome{sat:true,count:C{re:r,im:i}})
     }
@@ -1433,6 +1459,30 @@ mod packed_taylor {
     #[cfg(test)]
     mod tests {
         use super::*;
+        #[test]
+        fn affine_common_branch_factorization_exact(){
+            let tables=vec![
+                (vec![1,2],vec![0,0,1,2]),
+                (vec![1,3],vec![1,1,0,1]),
+                (vec![1,2,3],vec![0,1,0,0,2,2,1,1]),
+                (vec![2,3],vec![1,0,1,0]),
+            ];
+            for phase in [Integer::from(-1),Integer::from(7),Integer::from(0)]{
+                let mut exact=Integer::from(0);
+                for mask in 0usize..8{
+                    let e:u32=tables.iter().map(|(s,t)|{
+                        let idx=s.iter().enumerate().fold(0,|acc,(j,&v)|acc|(((mask>>(v-1))&1)<<j));
+                        t[idx] as u32
+                    }).sum();
+                    exact+=phase.clone().pow(e);
+                }
+                let mut trace=TaylorStats::default();
+                let got=affine_leaf(&tables,&[1,2,3],3,64,&phase,Instant::now(),&mut trace).unwrap();
+                assert_eq!(got,exact);
+                assert_eq!(trace.completed,1);
+            }
+        }
+
         #[test]
         fn decimal_and_phase_recognition(){
             assert_eq!(decimal("1.2246467991473532e-16").unwrap(),

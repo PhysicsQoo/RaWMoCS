@@ -281,12 +281,15 @@ def main() -> None:
     ap.add_argument("--taylor-pilot", action="store_true")
     ap.add_argument("--taylor-cohort", action="store_true")
     ap.add_argument("--ham-taylor-strict", action="store_true")
+    ap.add_argument("--ham-affine-plan", action="store_true")
     for field in ("quprs", "gpmc-source", "exporter", "gpmc", "mpfr", "corpus", "report"):
         ap.add_argument("--" + field, type=Path)
     args = ap.parse_args()
     self_test()
     if args.self_test:
         return
+    if args.ham_affine_plan and (args.stage != "pilot" or args.pilot_case != "feynman_ham15_med" or args.ham_taylor_strict or args.taylor_pilot or args.frontier_pilot or args.taylor_cohort):
+        ap.error("affine planning requires only the source-locked Ham15 pilot")
     if args.ham_taylor_strict and (args.stage != "pilot" or args.pilot_case != "feynman_ham15_med" or args.taylor_pilot or args.frontier_pilot or args.taylor_cohort):
         ap.error("strict Ham Taylor requires only the original Ham15 pilot")
     if args.taylor_cohort and (not args.taylor_pilot or args.stage != "pilot"):
@@ -463,6 +466,38 @@ def main() -> None:
         print(f"LONGTAIL_SCREEN_FINAL status={report['status']} "
               f"source_cases={len(report['cases'])} "
               f"screen_long={len(qualified)} selected={report['selected']}", flush=True)
+        return
+    if args.ham_affine_plan:
+        cnf=args.corpus / "feynman_ham15_med-gpmc.cnf"
+        if sha(cnf)!="ef06785a88976f3e8d70823207965c99eda26e2821cd3f1e40254085c5b8d0d3":
+            raise SystemExit("HAM15_ORIGINAL_CNF_DRIFT")
+        cmd=["/usr/bin/timeout","-k","2s","75s","prlimit",f"--as={AS_BYTES}",f"--fsize={FS_BYTES}","--",
+             str(args.mpfr.resolve()),"--factor-affine-plan",str(cnf.resolve())]
+        t=time.perf_counter_ns()
+        run=subprocess.run(cmd,capture_output=True,text=True,timeout=82)
+        evidence={"exit_code":run.returncode,"wall_ns":time.perf_counter_ns()-t,
+                  "source_cnf_sha256":sha(cnf),"stdout":run.stdout,"stderr":run.stderr,
+                  "planner_only":True,"wmc_completed":False}
+        report["affine_plan"]=evidence
+        print(run.stdout,flush=True)
+        if run.stderr: print(run.stderr,flush=True)
+        compile_trace=re.search(r"^AFFINE_COMPILE variables=(\d+) private_gates=(\d+) initial_free=(\d+) xor=(\d+) free=(\d+) factors=(\d+) degree=(\d+) delta=(\S+)$",run.stdout,re.M)
+        final_trace=re.search(r"^AFFINE_PLAN_FINAL width=(\d+) leaves=(\d+) cells=(\d+) lookups=(\d+) cutset=\[([^]]*)\] elapsed_ms=(\d+) planner_only=true$",run.stdout,re.M)
+        if run.returncode or not compile_trace or not final_trace:
+            report["status"]="AFFINE_PLAN_FAIL_OR_CENSORED"
+            persist(args,report)
+            raise SystemExit("AFFINE_PLAN_FAIL_OR_CENSORED")
+        evidence["compiled"]={k:int(v) for k,v in zip(("variables","private_gates","initial_free","xor","free","factors","degree"),compile_trace.groups()[:7])}
+        evidence["delta"]=compile_trace.group(8)
+        evidence["final"]={k:int(v) for k,v in zip(("width","leaves","cells","lookups"),final_trace.groups()[:4])}
+        evidence["cutset"]=[int(v) for v in final_trace.group(5).split(",") if v.strip()]
+        evidence["elapsed_ms"]=int(final_trace.group(6))
+        if (evidence["compiled"]["variables"],evidence["compiled"]["private_gates"],evidence["compiled"]["xor"],evidence["compiled"]["free"])!=(1411,1060,6,328):
+            report["status"]="AFFINE_SOURCE_STRUCTURAL_MISMATCH"
+            persist(args,report)
+            raise SystemExit("AFFINE_SOURCE_STRUCTURAL_MISMATCH")
+        report["status"]="AFFINE_PLAN_COMPLETE_NO_WMC_CLAIM"
+        persist(args,report)
         return
     for item in selected:
         case = item["case"]

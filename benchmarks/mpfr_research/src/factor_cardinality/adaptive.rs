@@ -208,8 +208,48 @@ fn solve(p:&Problem,raw:&str,bits:u32,hybrid:bool)->Result<(Outcome,Route,u64,u6
     let (answer,nodes,hits,components)=generic(p,bits,hybrid)?;
     Ok((answer,Route::Trail,nodes,hits,components))
 }
+// Fixed node prefix of the actual adaptive Trail fallback. A node-budget
+// stop is diagnostic, never a complete model count or SAT verdict.
+fn trail_prefix(p:&Problem,bits:u32,compact:bool,profile:bool)->Result<String,String>{
+    const NODES:u64=512;
+    let start=Instant::now();
+    let (reduced,scope,_)=weighted_equivalence::reduce(p,bits);
+    let mut trail=TrailEngine::new(&reduced,bits,50_000,NODES);
+    trail.use_inline_weight_relabel=true;
+    trail.use_parent_ids=compact;
+    trail.use_compact_residual=compact;
+    trail.use_prehashed_cache=compact;
+    trail.use_fused_compact=compact;
+    // Keep source-variable keys and branch policy unchanged, not weight
+    // class relabeling, component VE or an alternate search order.
+    trail.stage_profile=profile;
+    let result=trail.count(scope,0);
+    let status=match result{
+        Ok(answer)=>format!("COMPLETE sat={} real={} imag={}",answer.sat,
+            answer.count.re.to_string_radix(10,None),answer.count.im.to_string_radix(10,None)),
+        Err(reason) if reason=="node limit"&&trail.stats.nodes==NODES=>"NODE_PREFIX_ONLY".into(),
+        Err(reason)=>return Err(reason),
+    };
+    if profile{
+        eprintln!("TRAIL_PREFIX_PROFILE_NS compact={} total={} key={} lookup={} unit={} frequency={} components={} materialize={} order={} pack={}",
+            compact,start.elapsed().as_nanos(),trail.stage_key_ns,trail.stage_lookup_ns,
+            trail.stage_unit_ns,trail.stage_frequency_ns,trail.stage_components_ns,
+            trail.stage_key_materialize_ns,trail.stage_key_order_ns,trail.stage_key_pack_ns);
+    }
+    Ok(format!("TRAIL_PREFIX_V1 bits={bits} nodes={} cache_hits={} decompositions={} assignments={} {status}",
+        trail.stats.nodes,trail.stats.cache_hits,trail.stats.decompositions,trail.assignments))
+}
 pub(crate) fn run(mut args:impl Iterator<Item=std::ffi::OsString>,hybrid:bool)->Result<(),String>{
-    let digits:u32=args.next().and_then(|x|x.into_string().ok()).ok_or("missing precision")?.parse().map_err(|_|"invalid precision")?;
+    let first=args.next().and_then(|x|x.into_string().ok()).ok_or("missing precision")?;
+    let mode=match first.as_str(){
+        "trail-prefix-legacy"=>Some((false,false)),
+        "trail-prefix-compact"=>Some((true,false)),
+        "trail-prefix-legacy-profile"=>Some((false,true)),
+        "trail-prefix-compact-profile"=>Some((true,true)),
+        _=>None,
+    };
+    if mode.is_some()&&hybrid{return Err("prefix requires non-hybrid adaptive".into());}
+    let digits:u32=if mode.is_some(){args.next().and_then(|x|x.into_string().ok()).ok_or("missing precision")?}else{first}.parse().map_err(|_|"invalid precision")?;
     let bits=match digits{30=>100,60=>200,100=>333,130=>432,_=>return Err("unsupported precision".into())};
     let file=args.next().ok_or("missing source")?;
     if args.next().is_some(){return Err("unexpected arguments".into());}
@@ -217,6 +257,10 @@ pub(crate) fn run(mut args:impl Iterator<Item=std::ffi::OsString>,hybrid:bool)->
     let raw=std::fs::read_to_string(file).map_err(|e|e.to_string())?;
     let read_ns=t.elapsed().as_nanos();
     let t=Instant::now();let p=parse_emitted(&raw,bits)?;let parse_ns=t.elapsed().as_nanos();
+    if let Some((compact,profile))=mode{
+        println!("{}",trail_prefix(&p,bits,compact,profile)?);
+        return Ok(());
+    }
     let t=Instant::now();let (answer,route,nodes,cache_hits,decompositions)=solve(&p,&raw,bits,hybrid)?;
     let solve_ns=t.elapsed().as_nanos();let t=Instant::now();
     println!("s {}",if answer.sat{"SATISFIABLE"}else{"UNSATISFIABLE"});

@@ -5,6 +5,7 @@ use std::collections::{BTreeMap,BTreeSet};
 use std::time::{Duration,Instant};
 
 const WIDTH:usize=19;
+const RESIDUAL_CAP:usize=256;
 const WORK:usize=40_000_000;
 const LIVE:usize=2_000_000;
 const LOCAL_WORK:usize=1_000_000;
@@ -162,7 +163,7 @@ fn local(p:&Problem,raw:&str,d:Instant)->Result<Local,String>{
         insert(&mut fs,&mut scalar,Factor{scope:out,values:vals})?;
         nodes.remove(&v);
     }
-    if nodes.len()>64{return Err("residual variable cap".into());}
+    if nodes.len()>RESIDUAL_CAP{return Err("residual variable cap".into());}
     Ok((fs,nodes,scalar,cost))
 }
 fn restrict(fs:&[Factor<R>],scalar:&Cell<R>,cuts:&[usize],m:usize)->Result<(Vec<Factor<R>>,Cell<R>),String>{
@@ -181,9 +182,9 @@ fn restrict(fs:&[Factor<R>],scalar:&Cell<R>,cuts:&[usize],m:usize)->Result<(Vec<
     }
     Ok((out,scalar))
 }
-#[derive(Clone)]
+#[derive(Clone,Debug,PartialEq,Eq)]
 struct Op{ids:Vec<usize>,dst:usize,out:Vec<usize>,pivot:Option<usize>}
-#[derive(Clone)]
+#[derive(Clone,Debug,PartialEq,Eq)]
 struct Plan{ops:Vec<Op>,cost:Cost,extra:usize}
 // Dense indices are local to a plan; original variable IDs and ordering remain
 // unchanged. A mask represents the same undirected graph as the ordered sets.
@@ -195,47 +196,71 @@ fn mask_indices(mut m:u64)->impl Iterator<Item=usize>{
         Some(i)
     })
 }
-fn fill_count(graph:&[u64],nb:u64)->usize{
+#[derive(Clone,Copy)]
+struct Mask<const N:usize>([u64;N]);
+impl<const N:usize> Mask<N>{
+    fn empty()->Self{Self([0;N])}
+    fn insert(&mut self,i:usize){self.0[i/64]|=1u64<<(i%64);}
+    fn remove(&mut self,i:usize){self.0[i/64]&=!(1u64<<(i%64));}
+    fn count(self)->usize{self.0.iter().map(|w|w.count_ones() as usize).sum()}
+    fn indices(self)->impl Iterator<Item=usize>{
+        self.0.into_iter().enumerate().flat_map(|(k,w)|mask_indices(w).map(move|i|64*k+i))
+    }
+    fn union(&mut self,b:Self){for (a,b) in self.0.iter_mut().zip(b.0){*a|=b;}}
+    fn difference_count(self,b:Self)->usize{
+        self.0.into_iter().zip(b.0).map(|(a,b)|(a&!b).count_ones() as usize).sum()
+    }
+}
+fn fill_words<const N:usize>(graph:&[Mask<N>],nb:Mask<N>)->usize{
     let mut remaining=nb;
     let mut fill=0;
-    while remaining!=0{
-        let i=remaining.trailing_zeros() as usize;
-        remaining&=remaining-1;
-        fill+=(remaining&!graph[i]).count_ones() as usize;
+    for i in nb.indices(){
+        remaining.remove(i);
+        fill+=remaining.difference_count(graph[i]);
     }
     fill
 }
+#[cfg(test)]
+fn fill_count(graph:&[u64],nb:u64)->usize{
+    let graph:Vec<_>=graph.iter().map(|&w|Mask([w])).collect();
+    fill_words(&graph,Mask([nb]))
+}
 fn plan(fs:&[Factor<R>],nodes:&Scope,policy:(Option<usize>,bool),retained:usize,d:Instant)->Result<Option<Plan>,String>{
+    if nodes.len()<=64{plan_words::<1>(fs,nodes,policy,retained,d)}
+    else{plan_words::<4>(fs,nodes,policy,retained,d)}
+}
+fn plan_words<const N:usize>(fs:&[Factor<R>],nodes:&Scope,policy:(Option<usize>,bool),retained:usize,d:Instant)->Result<Option<Plan>,String>{
     let mut scopes:BTreeMap<usize,Scope>=fs.iter().enumerate().map(|(i,f)|(i,f.scope.iter().copied().collect())).collect();
     let vars:Vec<_>=nodes.iter().copied().collect();
-    if vars.len()>64{return Err("plan mask cap".into());}
-    let mut graph=vec![0u64;vars.len()];
-    let mut active=if vars.len()==64{u64::MAX}else{(1u64<<vars.len())-1};
+    if vars.len()>64*N||vars.len()>RESIDUAL_CAP{return Err("plan mask cap".into());}
+    let mut graph=vec![Mask::<N>::empty();vars.len()];
+    let mut active=Mask::<N>::empty();
+    for i in 0..vars.len(){active.insert(i);}
     for s in scopes.values(){
-        let mut m=0u64;
-        for v in s{m|=1u64<<vars.binary_search(v).map_err(|_|"plan owner")?;}
-        for i in mask_indices(m){graph[i]|=m&!(1u64<<i);}
+        let mut m=Mask::<N>::empty();
+        for v in s{m.insert(vars.binary_search(v).map_err(|_|"plan owner")?);}
+        for i in m.indices(){let mut nb=m;nb.remove(i);graph[i].union(nb);}
     }
     let mut live=fs.iter().map(|f|f.values.len()).sum::<usize>();
     let extra=retained+live;
     let mut cost=Cost{peak:live+extra,..Cost::default()};
     let mut ops=Vec::new();let mut next=scopes.len();
-    while active!=0{
+    while active.count()!=0{
         deadline(d)?;
-        let i=mask_indices(active).min_by_key(|&i|{
+        let i=active.indices().min_by_key(|&i|{
             let nb=graph[i];
-            let degree=nb.count_ones() as usize;
-            let fill=if policy.0.is_some(){fill_count(&graph,nb)}else{0};
+            let degree=nb.count();
+            let fill=if policy.0.is_some(){fill_words(&graph,nb)}else{0};
             let v=vars[i];
             (policy.0.map_or(degree,|p|fill+p*degree),degree,if policy.1{usize::MAX-v}else{v})
         }).ok_or("plan pivot")?;
         let v=vars[i];
         let neighbors=graph[i];
-        let nb:Scope=mask_indices(neighbors).map(|j|vars[j]).collect();
+        let nb:Scope=neighbors.indices().map(|j|vars[j]).collect();
         if nb.len()>WIDTH{return Ok(None);}
         cost.width=cost.width.max(nb.len());
-        active&=!(1u64<<i);
-        graph[i]=0;
+        active.remove(i);
+        graph[i]=Mask::empty();
         let mut bucket:Vec<_>=scopes.iter().filter(|(_,s)|s.contains(&v)).map(|(&i,s)|(i,s.clone())).collect();
         for (i,_) in &bucket{scopes.remove(i);}
         while bucket.len()>2{
@@ -260,8 +285,8 @@ fn plan(fs:&[Factor<R>],nodes:&Scope,policy:(Option<usize>,bool),retained:usize,
         live=live+size-bucket.iter().map(|(_,s)|1usize<<s.len()).sum::<usize>();
         ops.push(Op{ids:bucket.iter().map(|(i,_)|*i).collect(),dst:next,out:nb.iter().copied().collect(),pivot:Some(v)});
         scopes.insert(next,nb.clone());next+=1;
-        for j in mask_indices(neighbors){
-            graph[j]=(graph[j]&!(1u64<<i))|(neighbors&!(1u64<<j));
+        for j in neighbors.indices(){
+            graph[j].remove(i);let mut fill=neighbors;fill.remove(j);graph[j].union(fill);
         }
     }
     Ok(Some(Plan{ops,cost,extra}))
@@ -453,6 +478,31 @@ mod tests{
             }
             assert!(pool.is_empty());
         }
+    }
+    #[test]
+    fn multiword_plan_matches_single_word_and_crosses_boundaries(){
+        let d=Instant::now()+Duration::from_secs(10);
+        let make=|n:usize|->Vec<Factor<R>>{(1..n).map(|i|Factor{
+            scope:vec![i,i+1],values:vec![Some(one());4]
+        }).collect()};
+        for n in [1,5,64]{
+            let fs=make(n);let nodes:Scope=(1..=n).collect();
+            for p in [Some(0),Some(4),None]{for reverse in [true,false]{
+                assert_eq!(plan_words::<1>(&fs,&nodes,(p,reverse),0,d).unwrap(),
+                           plan_words::<4>(&fs,&nodes,(p,reverse),0,d).unwrap());
+            }}
+        }
+        let mut m=Mask::<4>::empty();
+        for i in [0,63,64,127,128,191,192,255]{m.insert(i);}
+        assert_eq!(m.indices().collect::<Vec<_>>(),vec![0,63,64,127,128,191,192,255]);
+        m.remove(64);assert_eq!(m.count(),7);
+        let g=vec![Mask::<4>::empty();256];
+        assert_eq!(fill_words(&g,m),21);
+        let n=170;let fs=make(n);let nodes:Scope=(1..=n).collect();
+        let p=plan(&fs,&nodes,(Some(0),false),0,d).unwrap().unwrap();
+        assert_eq!(p.ops.iter().filter(|op|op.pivot.is_some()).count(),n);
+        assert_eq!(p.cost.width,1);
+        assert!(plan_words::<1>(&fs,&nodes,(Some(0),false),0,d).is_err());
     }
     #[test]
     fn mask_fill_matches_set_reference(){

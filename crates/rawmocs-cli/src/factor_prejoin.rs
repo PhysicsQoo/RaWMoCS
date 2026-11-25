@@ -777,12 +777,57 @@ fn plan_words_impl<const N: usize, const MASK_PAIRS: bool>(
     Ok(Some(Plan { ops, cost, extra }))
 }
 type Selected = (Vec<usize>, Vec<Plan>, Cost);
+// Bounded deterministic extension: only the degree-ranked top 12 variables
+// are eligible for three cuts (at most 220 candidates / eight leaves each).
+// Width, aggregate work, peak and shared deadline checks remain unchanged.
+fn triples(high: &[usize]) -> Vec<Vec<usize>> {
+    let mut out = Vec::new();
+    for (i, &a) in high.iter().enumerate() {
+        for (j, &b) in high.iter().enumerate().skip(i + 1) {
+            for &c in high.iter().skip(j + 1) {
+                out.push(vec![a, b, c]);
+            }
+        }
+    }
+    out
+}
+
 fn choose(
     fs: &[Factor<R>],
     nodes: &Scope,
     scalar: &Cell<R>,
     local: &Cost,
     d: Instant,
+) -> Result<Selected, String> {
+    let base = choose_search(fs, nodes, scalar, local, d, None)?;
+    // Explicit branch-only ablation. Never relax the existing hard budgets.
+    // Explore peak-first leaves and zero/one cuts at <=125% of base work.
+    if base.0.is_empty()
+        && std::env::var("RAWMOCS_RESEARCH_PEAK_FIRST").as_deref() == Ok("1")
+    {
+        let max_work = WORK.min(base.2.work.saturating_mul(5) / 4);
+        match choose_search(fs, nodes, scalar, local, d, Some((max_work, base.2.peak))) {
+            Ok(candidate) => {
+                eprintln!("PREJOIN_RESEARCH_PEAK base={} candidate={} base_work={} candidate_work={}",
+                          base.2.peak, candidate.2.peak, base.2.work, candidate.2.work);
+                return Ok(candidate);
+            }
+            Err(e) if e == "no bounded prejoin plan" || e == "prejoin deadline" => {
+                eprintln!("PREJOIN_RESEARCH_PEAK no_improvement reason={e}");
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(base)
+}
+
+fn choose_search(
+    fs: &[Factor<R>],
+    nodes: &Scope,
+    scalar: &Cell<R>,
+    local: &Cost,
+    d: Instant,
+    memory_budget: Option<(usize, usize)>,
 ) -> Result<Selected, String> {
     let retained = fs.iter().map(|f| f.values.len()).sum::<usize>();
     let mut high: Vec<_> = nodes.iter().copied().collect();
@@ -796,17 +841,21 @@ fn choose(
         (usize::MAX - nb.len(), *v)
     });
     high.truncate(12);
-    for n in 0..=2 {
+    let mut memory_best: Option<Selected> = None;
+    for n in 0..=if memory_budget.is_some() { 1 } else { 3 } {
         let candidates: Vec<Vec<usize>> = match n {
             0 => vec![vec![]],
             1 => nodes.iter().map(|&v| vec![v]).collect(),
-            _ => high
+            2 => high
                 .iter()
                 .enumerate()
                 .flat_map(|(i, &v)| high.iter().skip(i + 1).map(move |&u| vec![v, u]))
                 .collect(),
+            _ => triples(&high),
         };
         let mut best: Option<Selected> = None;
+        let attempted = candidates.len();
+        let mut admitted = 0usize;
         for cuts in candidates {
             deadline(d)?;
             let ns: Scope = nodes
@@ -818,19 +867,22 @@ fn choose(
             let mut cost = local.clone();
             for m in 0..1usize << cuts.len() {
                 let (f, _) = restrict(fs, scalar, &cuts, m)?;
-                let mut leaf: Option<Plan> = None;
+                let mut options = Vec::new();
                 for p in [Some(0), Some(4), None] {
                     for reverse in [true, false] {
                         if let Some(x) = plan(&f, &ns, (p, reverse), retained, d)? {
-                            if leaf.as_ref().is_none_or(|b| {
-                                (x.cost.work, x.cost.peak, x.cost.width)
-                                    < (b.cost.work, b.cost.peak, b.cost.width)
-                            }) {
-                                leaf = Some(x);
-                            }
+                            options.push(x);
                         }
                     }
                 }
+                let min_work = options.iter().map(|x| x.cost.work).min();
+                let leaf = if memory_budget.is_some() {
+                    options.into_iter()
+                        .filter(|x| min_work.is_some_and(|w| x.cost.work <= w.saturating_mul(5) / 4))
+                        .min_by_key(|x| (x.cost.peak, x.cost.work, x.cost.width))
+                } else {
+                    options.into_iter().min_by_key(|x| (x.cost.work, x.cost.peak, x.cost.width))
+                };
                 let Some(x) = leaf else {
                     break;
                 };
@@ -843,19 +895,30 @@ fn choose(
             if plans.len() == 1 << cuts.len()
                 && cost.work <= WORK
                 && cost.peak <= LIVE
-                && best.as_ref().is_none_or(|b| {
-                    (cost.work, cost.peak, cost.width, &cuts)
-                        < (b.2.work, b.2.peak, b.2.width, &b.0)
-                })
             {
-                best = Some((cuts, plans, cost));
+                admitted += 1;
+                if let Some((max_work, max_peak)) = memory_budget {
+                    if cost.work <= max_work && cost.peak < max_peak
+                        && memory_best.as_ref().is_none_or(|b|
+                            (cost.peak, cost.work, cost.width, &cuts)
+                                < (b.2.peak, b.2.work, b.2.width, &b.0))
+                    {
+                        memory_best = Some((cuts, plans, cost));
+                    }
+                } else if best.as_ref().is_none_or(|b|
+                    (cost.work, cost.peak, cost.width, &cuts)
+                        < (b.2.work, b.2.peak, b.2.width, &b.0))
+                {
+                    best = Some((cuts, plans, cost));
+                }
             }
         }
+        eprintln!("PREJOIN_RESEARCH_LEVEL cuts={n} attempted={attempted} admitted={admitted} memory_mode={}", memory_budget.is_some());
         if let Some(b) = best {
             return Ok(b);
         }
     }
-    Err("no bounded prejoin plan".into())
+    memory_best.ok_or_else(|| "no bounded prejoin plan".into())
 }
 fn mpfr(x: Cell<R>, bits: u32) -> Cell<C> {
     x.map(|(a, b)| C {
@@ -1488,6 +1551,16 @@ mod tests {
                 assert_eq!(a.count.im, im);
             }
         }
+    }
+    #[test]
+    fn three_cut_candidates_are_unique_and_bounded() {
+        let ranked: Vec<_> = (0..12).rev().collect();
+        let got = triples(&ranked);
+        assert_eq!(got.len(), 220);
+        assert_eq!(got.iter().collect::<BTreeSet<_>>().len(), 220);
+        assert_eq!(got[0], vec![11, 10, 9]);
+        assert!(got.iter().all(|c| c.len() == 3 && c[0] > c[1] && c[1] > c[2]));
+        assert!(triples(&[1, 2]).is_empty());
     }
     #[test]
     fn bounded_prejoin_replay_matches_exact_enumeration() {

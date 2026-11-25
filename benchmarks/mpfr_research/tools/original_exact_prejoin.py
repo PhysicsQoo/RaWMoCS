@@ -708,11 +708,25 @@ def shared_work_profile(branches, local):
 def local_width_profile(raw,expected, *, incremental=False):
     """Structural exact local reduction only; same arithmetic/work/live caps."""
     start=monotonic();rows=[]
+    baseline=None;parity=None
+    if incremental:
+        t=monotonic()
+        try:
+            baseline=local_reduce(raw,expected,t+PLAN_SECONDS,diagnostic=True)
+            parity=dict(status="BASELINE_COMPLETE",baseline_wall_s=monotonic()-t)
+        except ValueError as exc:
+            if str(exc)!="LOCAL_DEADLINE":raise
+            parity=dict(status="BASELINE_DEADLINE",baseline_wall_s=monotonic()-t)
     for width in (4,5,6):
         t=monotonic()
         try:
-            fs,nodes,_,local=local_reduce(raw,expected,t+PLAN_SECONDS,
+            result=local_reduce(raw,expected,t+PLAN_SECONDS,
                 diagnostic=True,local_width=width,incremental=incremental)
+            fs,nodes,_,local=result
+            if width==4 and baseline is not None:
+                if result!=baseline:raise ValueError("LOCAL_INCREMENTAL_PARITY_DRIFT")
+                parity["status"]="EXACT_FRONTIER_PARITY_PASS"
+                baseline=None
             _,parts=residual_components(fs,nodes)
             rows.append(dict(local_width=width,status="COMPLETE",local=local,
                 largest_component=max((len(p) for p in parts),default=0),
@@ -721,7 +735,7 @@ def local_width_profile(raw,expected, *, incremental=False):
             if str(exc) not in ("LOCAL_DEADLINE","LOCAL_RESOURCE","LOCAL_EXACT_BITS","LOCAL_LIVE"):
                 raise
             rows.append(dict(local_width=width,status=str(exc),wall_s=monotonic()-t))
-    return dict(status="LOCAL_WIDTH_PROFILE_ONLY",source_sha256=expected,incremental=incremental,rows=rows,
+    return dict(status="LOCAL_WIDTH_PROFILE_ONLY",source_sha256=expected,incremental=incremental,parity=parity,rows=rows,
                 wall_s=monotonic()-start)
 
 def replay_graph_order(raw, expected):

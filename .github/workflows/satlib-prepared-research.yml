@@ -2,6 +2,8 @@ name: Source-pinned SATLIB Full WMC prepared-input research
 
 on:
   workflow_dispatch:
+  pull_request:
+    types: [labeled]
 
 permissions:
   contents: read
@@ -12,6 +14,7 @@ concurrency:
 
 jobs:
   satlib-native:
+    if: github.event_name == 'workflow_dispatch'
     name: Byte-pinned SATLIB exact oracle and native WallTime/lifetime
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -55,3 +58,69 @@ jobs:
           path: satlib-prepared-evidence.tsv
           if-no-files-found: warn
           retention-days: 14
+
+  mcc-real-wmc-scout:
+    name: Official MCC2024 Track 2 bounded real-WMC scout
+    if: github.event_name == 'pull_request' && github.event.label.name == 'run-mcc-real-wmc-scout' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/mpfr-exact-residual-arena-reuse-20261118'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/GPMC
+          ref: 89bbc89d0de918e7a5385740355df55765039230
+          path: .upstream/gpmc
+          submodules: recursive
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/mpfr_research -> target
+      - name: Build unchanged original GPMC and exact research CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C .upstream/gpmc rev-parse HEAD)" = 89bbc89d0de918e7a5385740355df55765039230
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build libgmp-dev libmpfr-dev zlib1g-dev time pkg-config
+          cmake -S .upstream/gpmc -B .upstream/gpmc/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build .upstream/gpmc/build --target gpmc-bin --parallel 2
+          cargo test --release --manifest-path benchmarks/mpfr_research/Cargo.toml
+          cargo build --release --manifest-path benchmarks/mpfr_research/Cargo.toml
+      - name: Download and verify official competition archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .research/mcc2024
+          curl --fail --location --retry 2 --max-time 120 --max-filesize 100000000 \
+            'https://zenodo.org/records/14249068/files/mc2024-track2-wmc_competition.tar?download=1' \
+            -o .research/mcc2024-track2.tar
+          printf '%s  %s\n' 1c7e6279eaf29bf3731cebe07eedf107 .research/mcc2024-track2.tar | md5sum -c -
+          sha256sum .research/mcc2024-track2.tar
+      - name: Admit original decimal-real sources and screen long GPMC cases
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -m py_compile benchmarks/mpfr_research/tools/mcc2024_real_wmc_scout.py
+          python3 benchmarks/mpfr_research/tools/mcc2024_real_wmc_scout.py \
+            --archive .research/mcc2024-track2.tar --gpmc-source .upstream/gpmc \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --out .research/mcc2024 --shard "$SHARD" | tee .research/mcc2024/scout.log
+      - name: Archive original and common input bytes, all trial rows and source rejects
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcc2024-real-wmc-scout-${{ matrix.shard }}
+          path: .research/mcc2024/
+          if-no-files-found: warn
+          retention-days: 30

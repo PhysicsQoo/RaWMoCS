@@ -8,6 +8,7 @@ from fractions import Fraction as Q
 from hashlib import sha256
 from itertools import combinations, product
 import heapq
+from functools import lru_cache
 import json
 from pathlib import Path
 from time import monotonic
@@ -738,7 +739,102 @@ def local_width_profile(raw,expected, *, incremental=False):
     return dict(status="LOCAL_WIDTH_PROFILE_ONLY",source_sha256=expected,incremental=incremental,parity=parity,rows=rows,
                 wall_s=monotonic()-start)
 
-def replay_graph_order(raw, expected):
+# Boolean support is independent of complex cancellation: None is false,
+# supported complex zero is true. Replay the identical fixed plan only.
+@lru_cache(maxsize=32)
+def support_lane_mask(block,total):
+    if block<1 or total<2*block or total%(2*block):
+        raise ValueError("SUPPORT_MASK_SHAPE")
+    mask=(1<<block)-1
+    span=2*block
+    while span<total:
+        mask|=mask<<span
+        span*=2
+    return mask
+
+
+def support_expand_one(x,n,k):
+    length=1<<n
+    block=1<<k
+    shift=length//2
+    while shift>=block:
+        x=(x|(x<<shift))&support_lane_mask(shift,2*length)
+        shift//=2
+    return x|(x<<block)
+
+
+def support_project_one(x,n,k):
+    length=1<<n
+    block=1<<k
+    x=(x|(x>>block))&support_lane_mask(block,length)
+    shift=block
+    while shift<length//2:
+        x=(x|(x>>shift))&support_lane_mask(2*shift,length) if 4*shift<=length else x|(x>>shift)
+        shift*=2
+    return x&((1<<(length//2))-1)
+
+
+def support_expand(x,scope,out):
+    scope=list(scope)
+    if tuple(scope)!=tuple(sorted(set(scope))) or tuple(out)!=tuple(sorted(set(out))) or not set(scope)<=set(out) or len(out)>MAX_WIDTH+1:
+        raise ValueError("SUPPORT_SCOPE")
+    for k,v in enumerate(out):
+        if v not in scope:
+            x=support_expand_one(x,len(scope),k)
+            scope.insert(k,v)
+    if tuple(scope)!=tuple(out):raise ValueError("SUPPORT_ORDER")
+    return x
+
+
+def support_bits(vals):
+    packed=bytearray((len(vals)+7)//8)
+    for i,x in enumerate(vals):
+        if x is not None:packed[i//8]|=1<<(i%8)
+    return int.from_bytes(packed,"little")
+
+
+def support_plan_profile(factors,p,deadline):
+    tables={i:(s,support_bits(t)) for i,(s,t) in enumerate(factors)}
+    dense=visits=supported=0
+    for op,ids,dst,out,v in p["ops"]:
+        if monotonic()>=deadline:raise ValueError("SUPPORT_DEADLINE")
+        scope=tuple(out) if op=="join" else tuple(sorted((*out,v)))
+        lanes=1<<len(scope)
+        active=(1<<lanes)-1
+        # Join always traverses every output cell and is conservatively
+        # charged two operand visits. Sum follows existing ordered early break.
+        for i in ids:
+            s,mask=tables[i]
+            expanded=support_expand(mask,s,scope)
+            visits+=lanes if op=="join" else active.bit_count()
+            active&=expanded
+            if op=="sum":supported+=active.bit_count()
+        if op=="join":supported+=active.bit_count()
+        dense+=lanes*len(ids)
+        if op=="sum":active=support_project_one(active,len(scope),scope.index(v))
+        for i in ids:del tables[i]
+        tables[dst]=(out,active)
+    if dense!=p["work"] or any(s for s,_ in tables.values()):
+        raise ValueError("SUPPORT_PLAN_DRIFT")
+    return dict(dense_operand_visits=dense,early_break_operand_visits=visits,
+                supported_product_calls=supported,root_support=[bool(mask) for _,mask in tables.values()])
+
+
+def support_work_profile(branches,local,deadline):
+    rows=[]
+    for fs,p in branches:
+        rows.append(support_plan_profile(fs,p,deadline))
+    conditioning=len(branches)*local["retained_cells"]+local["work"]
+    dense=sum(r["dense_operand_visits"] for r in rows)+conditioning
+    visits=sum(r["early_break_operand_visits"] for r in rows)+conditioning
+    return dict(branches=len(rows),dense_work=dense,early_break_work_proxy=visits,
+        supported_product_calls=sum(r["supported_product_calls"] for r in rows),
+        conditioning_charge=conditioning,visits_within_original_work_cap=visits<=MAX_WORK,
+        branch_profiles=rows,
+        note="Exact Boolean support replay; operand-visit proxy only. Dense output/index traversal, bitset cost and RSS are not bounded by this proxy; no solver admission or numeric claim.")
+
+
+def replay_graph_order(raw, expected, *, support_profile=False):
     """Replay a graph-screened candidate on every exact restricted factor set.
     Report aggregate structural caps, not a numeric witness. The graph-only
     search and replay have separate deadlines and no solver route changes.
@@ -781,6 +877,13 @@ def replay_graph_order(raw, expected):
         if len(planned)==1<<len(cuts):
             row["sharing"]=shared_work_profile(planned,local)
             if row["sharing"]["repeated_work"]!=row["work"]:raise ValueError("SHARED_TOTAL_DRIFT")
+            if support_profile:
+                try:
+                    row["support"]=support_work_profile(planned,local,monotonic()+30)
+                    if row["support"]["dense_work"]!=row["work"]:raise ValueError("SUPPORT_TOTAL_DRIFT")
+                except ValueError as exc:
+                    if str(exc)!="SUPPORT_DEADLINE":raise
+                    row["support"]=dict(status="SUPPORT_DEADLINE")
         if any(b["status"]!="FEASIBLE" for b in row["branches"]):
             row["status"]="BRANCH_CAP_REJECTED"
         elif row["work"]>MAX_WORK or row["peak"]>MAX_LIVE or row["width"]>MAX_WIDTH:
@@ -882,6 +985,27 @@ def self_test():
     other=[((1,),[ONE,None])]
     different=shared_work_profile([(tiny,plan_a),(other,plan_a)],dict(work=0,retained_cells=2))
     assert different["unique_operations"]==2
+    # Exact expansion/projection parity, including supported numeric zero.
+    for n in range(1,6):
+        for k in range(n):
+            old=(1<<(1<<(n-1)))-1
+            sample=old//3
+            expanded=support_expand_one(sample,n-1,k)
+            want=sum(((sample>>((i&((1<<k)-1))|((i>>(k+1))<<k)))&1)<<i for i in range(1<<n))
+            assert expanded==want
+            assert support_project_one(expanded,n,k)==sample
+            x=((1<<(1<<n))-1)//5
+            want=0
+            for i in range(1<<(n-1)):
+                j=(i&((1<<k)-1))|((i>>k)<<(k+1))
+                want|=int(bool(x&((1<<j)|(1<<(j|(1<<k))))))<<i
+            assert support_project_one(x,n,k)==want
+    fs=[((1,),[None,ZERO]),((1,),[ONE,ONE]),((1,),[ONE,None])]
+    p=plan(fs,{1},(None,False),6,monotonic()+5)
+    support=support_plan_profile(fs,p,monotonic()+5)
+    assert support["root_support"]==[False]
+    assert support["early_break_operand_visits"]<=support["dense_operand_visits"]
+    assert support_bits([None,ZERO,ONE])==6
     widths=local_width_profile(raw,h,incremental=True)
     assert widths["status"]=="LOCAL_WIDTH_PROFILE_ONLY"
     assert [r["local_width"] for r in widths["rows"]]==[4,5,6]
@@ -900,6 +1024,7 @@ if __name__=="__main__":
     mode.add_argument("--extended-cutset-profile",action="store_true")
     mode.add_argument("--graph-order-profile",action="store_true")
     mode.add_argument("--replay-graph-order",action="store_true")
+    mode.add_argument("--support-work-profile",action="store_true")
     mode.add_argument("--local-width-profile",action="store_true")
     mode.add_argument("--incremental-local-width-profile",action="store_true")
     a=ap.parse_args()
@@ -911,6 +1036,7 @@ if __name__=="__main__":
         raw=a.cnf.read_bytes()
         result=(local_width_profile(raw,a.sha256,incremental=True) if a.incremental_local_width_profile else
                 local_width_profile(raw,a.sha256) if a.local_width_profile else
+                replay_graph_order(raw,a.sha256,support_profile=True) if a.support_work_profile else
                 replay_graph_order(raw,a.sha256) if a.replay_graph_order else
                 graph_order_profile(raw,a.sha256) if a.graph_order_profile else
                 extended_cutset_profile(raw,a.sha256) if a.extended_cutset_profile else

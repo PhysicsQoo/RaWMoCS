@@ -1,0 +1,106 @@
+name: Source release
+
+on:
+  push:
+    branches: [main]
+    paths: [releases/request.json]
+  pull_request:
+    paths:
+      - releases/**
+      - crates/rawmocs-cli/tools/release_source.py
+      - .github/workflows/release-source.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: source-release-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Verify immutable release evidence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate full gates and source package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python crates/rawmocs-cli/tools/release_source.py prepare --request releases/request.json --out verified-release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-source-release
+          path: verified-release/
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish verified source-only release
+    needs: preflight
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: verified-source-release
+          path: verified-release
+      - name: Recheck immutable evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python crates/rawmocs-cli/tools/release_source.py verify --request releases/request.json --out verified-release
+      - name: Create draft, verify assets, publish and read back
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(jq -er .version releases/request.json)
+          sha=$(jq -er .revision releases/request.json)
+          notes=$(jq -er .notes releases/request.json)
+          tag="v$version"
+          repo="$GITHUB_REPOSITORY"
+          test "$GITHUB_REF" = refs/heads/main
+          test "$repo" = PhysicsQoo/RaWMoCS
+          test -f "$notes"
+          # Refuse existing tag/draft/release; no force update or asset clobber.
+          test -z "$(git ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}")"
+          existing=$(gh api --paginate "repos/$repo/releases?per_page=100" --jq '.[] | .tag_name')
+          if grep -Fxq "$tag" <<< "$existing"; then
+            echo "Existing release requires explicit review" >&2
+            exit 1
+          fi
+          gh release create "$tag" -R "$repo" --target "$sha" --title "RaWMoCS $tag" --notes-file "$notes" --draft \
+            "verified-release/rawmocs-$version-source.tar.gz" verified-release/SHA256SUMS verified-release/source-package.json
+          gh release view "$tag" -R "$repo" --json isDraft,isPrerelease,targetCommitish,tagName,assets > draft.json
+          jq -e --arg tag "$tag" --arg sha "$sha" '.isDraft and (.isPrerelease|not) and .tagName==$tag and .targetCommitish==$sha and (.assets|length)==3' draft.json
+          mkdir readback
+          gh release download "$tag" -R "$repo" -D readback
+          for f in "rawmocs-$version-source.tar.gz" SHA256SUMS source-package.json; do
+            cmp "verified-release/$f" "readback/$f"
+          done
+          gh release edit "$tag" -R "$repo" --draft=false --latest
+          gh release view "$tag" -R "$repo" --json isDraft,isPrerelease,tagName,url,assets > published.json
+          jq -e --arg tag "$tag" '(.isDraft|not) and (.isPrerelease|not) and .tagName==$tag and (.assets|length)==3' published.json
+          test "$(git ls-remote --tags origin "refs/tags/$tag" | cut -f1)" = "$sha"
+          echo "RELEASE_PUBLISHED $tag $sha"
+          jq -r .url published.json

@@ -86,9 +86,35 @@ jobs:
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: crates/rawmocs-cli -> target
+      - name: Recover first successful lock and prepare formatting on CI
+        if: hashFiles('crates/rawmocs-cli/Cargo.lock') == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .release-evidence/bootstrap
+          gh run download 45577824974 --repo "$GITHUB_REPOSITORY" --name rawmocs-v010-candidate-evidence --dir .release-evidence/bootstrap
+          mapfile -t locks < <(find .release-evidence/bootstrap -type f -name Cargo.lock)
+          test "${#locks[@]}" -eq 1
+          printf '%s  %s\n' 0dc915436e5ff815e45f5a3a6950038d8197fe46b49700e5a2658be263bba59d "${locks[0]}" | sha256sum -c -
+          cp "${locks[0]}" crates/rawmocs-cli/Cargo.lock
+          cargo fmt --manifest-path crates/rawmocs-cli/Cargo.toml
+          # Read back the exact bytes via the immutable job log. Never
+          # silently push CI-generated changes into the release branch.
+          for file in Cargo.lock src/main.rs src/factor_prejoin.rs; do
+            p="crates/rawmocs-cli/$file"
+            echo "RELEASE_BOOTSTRAP_FILE_BEGIN $file $(sha256sum "$p" | cut -d' ' -f1)"
+            base64 -w 100 "$p" | sed 's/^/RELEASE_BOOTSTRAP_DATA /'
+            echo "RELEASE_BOOTSTRAP_FILE_END $file"
+          done
+          echo "RELEASE_BOOTSTRAP_ONLY: formatted working copy; commit exact bytes and rerun from clean checkout"
+          echo "RELEASE_BOOTSTRAP_ONLY=true" >> "$GITHUB_ENV"
       - name: Build and test candidate with resolved dependency lock
         shell: bash
         run: |
@@ -96,10 +122,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libgmp-dev libmpfr-dev m4 make gcc time pkg-config
           manifest=crates/rawmocs-cli/Cargo.toml
-          if [[ ! -f crates/rawmocs-cli/Cargo.lock ]]; then
-            cargo generate-lockfile --manifest-path "$manifest"
-            echo "RELEASE_LOCK_BOOTSTRAP_ONLY: commit resolved lock before final release"
-          fi
+          test -f crates/rawmocs-cli/Cargo.lock
+          cargo fmt --manifest-path "$manifest" -- --check
+          cargo clippy --locked --manifest-path "$manifest" --all-targets -- -D warnings
           cargo test --locked --release --manifest-path "$manifest"
           cargo build --locked --release --manifest-path "$manifest"
       - name: Exercise executable success, SAT-zero and fail-closed contracts
@@ -134,6 +159,7 @@ jobs:
           done
           sha256sum "$bin" crates/rawmocs-cli/Cargo.lock | tee .release-evidence/build.sha256
       - name: Transfer previously independently qualified original QuPRS cases
+        if: env.RELEASE_BOOTSTRAP_ONLY != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

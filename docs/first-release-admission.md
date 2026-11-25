@@ -30,6 +30,9 @@ fallback and executable need independent release acceptance.
 - [ ] Distinct execution failure categories and empty stdout; supervisor
   classifies external timeout, cancellation and memory failure separately.
   Stack/source/resource limits remain explicit, not numeric results.
+- [ ] Configurable shared solver deadline: zero-budget actual CLI failure,
+  positive-budget output parity, and analytical larger-CNF family checks
+  (component split, signed cancellation, imaginary-only count, UNSAT).
 
 - [ ] Existing reference workspace and original QuPRS A0 science checks.
 - [ ] Release executable tests (all copied kernel tests, signed-complex

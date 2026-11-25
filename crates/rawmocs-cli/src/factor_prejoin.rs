@@ -1066,7 +1066,8 @@ pub(crate) fn solve_until(
     d: Instant,
 ) -> Result<Outcome, String> {
     let start = Instant::now();
-    let pd = d.min(start + Duration::from_secs(30));
+    let planning_budget = (d.saturating_duration_since(start) * 2 / 3).min(Duration::from_secs(30));
+    let pd = start + planning_budget;
     let planning_error = |e: String| {
         if e == "prejoin deadline" && Instant::now() < d {
             "prejoin planning budget".into()

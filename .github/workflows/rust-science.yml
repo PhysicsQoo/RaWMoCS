@@ -144,6 +144,19 @@ jobs:
           test "$rc" -eq 6
           test ! -s .release-evidence/rejected.stdout
           grep -F 'RAWMOCS_FAILURE kind=ROUTE_REJECTED' .release-evidence/rejected.stderr
+          rc=0
+          "$bin" --digits 60 --timeout-ms 0 .release-evidence/wide-general.cnf > .release-evidence/deadline.stdout 2> .release-evidence/deadline.stderr || rc=$?
+          test "$rc" -eq 4
+          test ! -s .release-evidence/deadline.stdout
+          grep -F 'RAWMOCS_FAILURE kind=TIMEOUT' .release-evidence/deadline.stderr
+          "$bin" --digits 60 --timeout-ms 20000 --solver general .release-evidence/wide-general.cnf > .release-evidence/configured.stdout 2> .release-evidence/configured.stderr
+          cmp .release-evidence/wide-general.stdout .release-evidence/configured.stdout
+          printf 'p cnf 4097 0\nc t wmc\n' > .release-evidence/resource.cnf
+          rc=0
+          "$bin" --digits 60 .release-evidence/resource.cnf > .release-evidence/resource.stdout 2> .release-evidence/resource.stderr || rc=$?
+          test "$rc" -eq 5
+          test ! -s .release-evidence/resource.stdout
+          grep -F 'RAWMOCS_FAILURE kind=RESOURCE_LIMIT' .release-evidence/resource.stderr
           sha256sum "$bin" crates/rawmocs-cli/Cargo.lock | tee .release-evidence/build.sha256
       - name: Transfer previously independently qualified original QuPRS cases
         env:

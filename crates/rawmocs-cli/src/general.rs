@@ -43,11 +43,7 @@ fn root(parent: &mut [usize], mut x: usize) -> usize {
     }
     x
 }
-fn components(
-    clauses: &[Clause],
-    scope: &[usize],
-    n: usize,
-) -> Vec<(Vec<usize>, Vec<Clause>)> {
+fn components(clauses: &[Clause], scope: &[usize], n: usize) -> Vec<(Vec<usize>, Vec<Clause>)> {
     let mut parent: Vec<_> = (0..=n).collect();
     for c in clauses {
         let first = c[0].unsigned_abs() as usize;
@@ -89,9 +85,8 @@ impl Engine<'_> {
         if !out.count.re.is_finite() || !out.count.im.is_finite() {
             return Err("nonfinite general".into());
         }
-        let items = key.scope.len()
-            + key.clauses.len()
-            + key.clauses.iter().map(Vec::len).sum::<usize>();
+        let items =
+            key.scope.len() + key.clauses.len() + key.clauses.iter().map(Vec::len).sum::<usize>();
         // Cache admission is optional: exhaustion never stops search.
         if self.cache.len() < 10_000 && self.cache_items + items <= 400_000 {
             self.cache_items += items;

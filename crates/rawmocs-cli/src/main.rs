@@ -166,7 +166,7 @@ fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
 }
 
 const MAX_SOURCE_BYTES: u64 = 2_000_000;
-const HELP: &str = "rawmocs --digits {30|60|100|130} [--solver auto|prejoin|general|reference] FILE\n\
+const HELP: &str = "rawmocs --digits {30|60|100|130} [--solver auto|prejoin|general|reference] [--timeout-ms N] FILE\n\
 Full signed complex WMC for QuPRS weighted CNF. Output is rounded MPFR, not a certified interval.\n\
 Exit 0: complete SAT and complex count. Nonzero: classified failure, empty stdout. Use an external process resource supervisor.";
 fn read_source(path: &std::ffi::OsStr) -> Result<String, String> {
@@ -253,8 +253,20 @@ fn reference(p: &Problem, raw: &str, bits: u32) -> Result<Outcome, String> {
         },
     })
 }
+#[cfg(test)]
 fn solve(p: &Problem, raw: &str, bits: u32, mode: &str) -> Result<(Outcome, &'static str), String> {
-    let deadline = Instant::now() + Duration::from_secs(45);
+    solve_until(p, raw, bits, mode, Instant::now() + Duration::from_secs(45))
+}
+fn solve_until(
+    p: &Problem,
+    raw: &str,
+    bits: u32,
+    mode: &str,
+    deadline: Instant,
+) -> Result<(Outcome, &'static str), String> {
+    if Instant::now() >= deadline {
+        return Err("solver deadline".into());
+    }
     if mode == "reference" {
         return reference(p, raw, bits).map(|a| (a, "reference"));
     }
@@ -289,7 +301,7 @@ fn solve(p: &Problem, raw: &str, bits: u32, mode: &str) -> Result<(Outcome, &'st
 }
 fn failure(reason: &str) -> (&'static str, i32) {
     match reason {
-        "general deadline" | "prejoin deadline" => ("TIMEOUT", 4),
+        "general deadline" | "prejoin deadline" | "solver deadline" => ("TIMEOUT", 4),
         "source bytes cap" | "oversize CNF" | "general stack limit" => ("RESOURCE_LIMIT", 5),
         "unsupported input semantics" => ("UNSUPPORTED_INPUT", 3),
         "source clause cap"
@@ -333,15 +345,33 @@ fn run() -> Result<(), String> {
     };
     let mut file = args.next().ok_or("missing source")?;
     let mut mode = "auto".to_owned();
-    if file == "--solver" {
-        mode = args
-            .next()
-            .and_then(|x| x.into_string().ok())
-            .ok_or("missing solver")?;
+    let mut timeout_ms = None;
+    let mut mode_seen = false;
+    loop {
+        if file == "--solver" && !mode_seen {
+            mode = args
+                .next()
+                .and_then(|x| x.into_string().ok())
+                .ok_or("missing solver")?;
+            mode_seen = true;
+        } else if file == "--timeout-ms" && timeout_ms.is_none() {
+            let ms = args
+                .next()
+                .and_then(|x| x.into_string().ok())
+                .and_then(|x| x.parse::<u64>().ok())
+                .filter(|&ms| ms <= 86_400_000)
+                .ok_or("INPUT: invalid timeout-ms (expected 0..86400000)")?;
+            timeout_ms = Some(ms);
+        } else {
+            break;
+        }
         file = args.next().ok_or("missing source")?;
     }
     if args.next().is_some() {
         return Err("unexpected arguments".into());
+    }
+    if mode == "reference" && timeout_ms.is_some() {
+        return Err("INPUT: reference uses external timeout only".into());
     }
     let raw = read_source(&file).map_err(|e| {
         if e == "source bytes cap" {
@@ -361,7 +391,11 @@ fn run() -> Result<(), String> {
         return Err("INPUT: invalid solver".into());
     }
     let start = Instant::now();
-    let (answer, route) = solve(&problem, &raw, bits, &mode)?;
+    let deadline = start + Duration::from_millis(timeout_ms.unwrap_or(45_000));
+    let (answer, route) = solve_until(&problem, &raw, bits, &mode, deadline)?;
+    if mode != "reference" && Instant::now() >= deadline {
+        return Err("solver deadline".into());
+    }
     if !answer.count.re.is_finite() || !answer.count.im.is_finite() {
         return Err("nonfinite result".into());
     }
@@ -391,8 +425,12 @@ fn main() {
         let (kind, code) = if reason.starts_with("INPUT:")
             || matches!(
                 reason.as_str(),
-                HELP | "missing digits" | "invalid digits" | "unsupported digits"
-                    | "missing source" | "missing solver" | "unexpected arguments"
+                HELP | "missing digits"
+                    | "invalid digits"
+                    | "unsupported digits"
+                    | "missing source"
+                    | "missing solver"
+                    | "unexpected arguments"
             ) {
             ("INVALID_INPUT", 2)
         } else {
@@ -424,7 +462,7 @@ mod tests {
         }
     }
     #[test]
-    fn auto_reference_on_wide_clause_and_empty_scope() {
+    fn auto_general_on_wide_clause_and_empty_scope() {
         let raw = "p cnf 10 1\nc t wmc\n1 2 3 4 5 6 7 8 9 10 0\n";
         let p = parse_emitted(raw, 200).unwrap();
         let (a, route) = solve(&p, raw, 200, "auto").unwrap();
@@ -472,6 +510,44 @@ mod tests {
             general::solve(&p, 200, Instant::now()).err().as_deref(),
             Some("general deadline")
         );
+    }
+    #[test]
+    fn general_large_analytic_families() {
+        for bits in [100, 200, 333, 432] {
+            for (raw, sat, real, imag) in [
+                (
+                    "p cnf 64 2\nc t wmc\n1 2 3 4 5 6 7 8 9 10 0\n-11 -12 -13 -14 -15 -16 -17 -18 -19 -20 0\n",
+                    true,
+                    1023_i128 * 1023 * (1_i128 << 44),
+                    0,
+                ),
+                (
+                    "p cnf 40 1\nc t wmc\nc p weight 40 -1 0 0\n1 2 3 4 5 6 7 8 9 10 0\n",
+                    true,
+                    0,
+                    0,
+                ),
+                (
+                    "p cnf 40 1\nc t wmc\nc p weight 40 -1 0.5 0\n1 2 3 4 5 6 7 8 9 10 0\n",
+                    true,
+                    0,
+                    1023_i128 * (1_i128 << 28),
+                ),
+                (
+                    "p cnf 40 3\nc t wmc\n1 2 3 4 5 6 7 8 9 10 0\n40 0\n-40 0\n",
+                    false,
+                    0,
+                    0,
+                ),
+            ] {
+                let p = parse_emitted(raw, bits).unwrap();
+                let (a, route) = solve(&p, raw, bits, "auto").unwrap();
+                assert_eq!(route, "general");
+                assert_eq!(a.sat, sat);
+                assert_eq!(a.count.re, real);
+                assert_eq!(a.count.im, imag);
+            }
+        }
     }
     #[test]
     fn strict_parser_rejects_unsupported_semantics() {

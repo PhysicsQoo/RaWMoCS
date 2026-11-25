@@ -51,8 +51,10 @@ count and empty stdout. Stderr reports INVALID_INPUT (2), UNSUPPORTED_INPUT
 (3), TIMEOUT (4), RESOURCE_LIMIT (5), explicit ROUTE_REJECTED (6), or
 INTERNAL_ERROR (7). The supervisor must classify external timeout,
 cancellation and OOM/kill from process evidence; partial stdout is invalid.
-Auto routing uses one 45-second solver deadline and a 30-second prejoin
-planning budget. The general route has no 32-variable admission cutoff;
+Auto routing uses one solver deadline (45 seconds by default). Set
+`--timeout-ms N` (0 to 86400000; zero expires immediately) after `--digits`.
+Planning uses at most two thirds of the remaining time and 30 seconds.
+The reference diagnostic uses the external process supervisor instead. The general route has no 32-variable admission cutoff;
 it retains the parser's input bounds, an explicit stack-depth resource
 guard, and optional bounded cache. The exact-rational reference is an
 explicit small-case diagnostic, not the auto fallback. An external process

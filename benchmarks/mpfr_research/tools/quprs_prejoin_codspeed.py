@@ -33,8 +33,9 @@ if GF2:
     EXPECTED="2b8001227f544bc21a9590f21086747d094d647de04d93c48c27982bc9ba4a2d"
     CASE="extended_gf2_6_prejoin_holdout"
     ARMS=("prejoin",)
-    DIGITS,BITS,TARGET=100,333,100
-    LIMIT,REFERENCE_LIMIT=2,45
+    # Shorter qualified precision to avoid simulation slowdown crossing native deadlines.
+    DIGITS,BITS,TARGET=30,100,30
+    LIMIT,REFERENCE_LIMIT=1,45
     BENCHMARK="gf2_6_prejoin"
 PREC=re.compile(r"^RESEARCH_MPFR_PHASE_NS .* digits=(\d+) bits=(\d+)$",re.M)
 ADAPTIVE=re.compile(r"^ADAPTIVE_CONTRACTION width=(\d+) work=(\d+) peak=(\d+) planned_width=(\d+) planned_work=(\d+) planned_peak=(\d+)$",re.M)

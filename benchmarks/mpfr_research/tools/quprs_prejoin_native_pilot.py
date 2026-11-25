@@ -19,6 +19,8 @@ def main():
                          help="Repeat an already qualified original 100/333-bit cohort without precision drift")
     repeats.add_argument("--profile-fixed-target",type=int,choices=[30,100],
                          help="One fixed-precision three-arm diagnostic; preserve censored adaptive results")
+    repeats.add_argument("--pilot-guarded-target",type=int,choices=[30,100],
+                         help="One guarded matched pair; skip Rust when GPMC does not complete")
     ap.add_argument("--planner-baseline",type=Path,
                     help="Pinned old ordered-set planner binary, for same-run fixed seven-pair A/B")
     a=ap.parse_args()
@@ -32,11 +34,12 @@ def main():
     fixed=a.repeat_fixed_target is not None
     repeat=fixed or a.repeat_target is not None
     profile=a.profile_fixed_target is not None
+    guarded_pilot=a.pilot_guarded_target is not None
     count=7 if repeat else 1
-    targets=([a.profile_fixed_target] if profile else [a.repeat_fixed_target if fixed else a.repeat_target] if repeat else [30,100])
+    targets=([a.profile_fixed_target] if profile else [a.repeat_fixed_target if fixed else a.repeat_target] if repeat else [a.pilot_guarded_target] if guarded_pilot else [30,100])
     report={"status":"IN_PROGRESS","source_sha256":expected,"reference_sha256":sha(a.reference),
             "gpmc_binary_sha256":sha(a.gpmc),"rust_binary_sha256":sha(a.mpfr),
-            "repeat_count":count,"repeat_precision_policy":"fixed-profile" if profile else "fixed" if fixed else "guarded" if repeat else "pilot","cohorts":[]}
+            "repeat_count":count,"repeat_precision_policy":"fixed-profile" if profile else "fixed" if fixed else "guarded" if repeat else "guarded-pilot" if guarded_pilot else "pilot","cohorts":[]}
     if ab:report["planner_baseline_sha256"]=sha(a.planner_baseline)
     def persist():
         a.report.write_text(json.dumps(report,indent=2)+"\n")
@@ -44,7 +47,7 @@ def main():
     for target in targets:
         guarded=(60,200) if target==30 else (130,432)
         original=(target,100 if target==30 else 333)
-        precisions=([original] if fixed or profile else [guarded] if repeat else [original,guarded])
+        precisions=([original] if fixed or profile else [guarded] if repeat or guarded_pilot else [original,guarded])
         for digits,bits in precisions:
             cohort={"target_digits":target,"working_digits":digits,"bits":bits,"trials":[]}
             report["cohorts"].append(cohort)
@@ -52,6 +55,7 @@ def main():
             for trial in range(count):
                 rows={}
                 arms=("gpmc","prejoin") if (trial+(target==100))%2==0 else ("prejoin","gpmc")
+                if guarded_pilot:arms=("gpmc","prejoin")
                 if profile:arms=arms+("adaptive",)
                 if ab:
                     base=("gpmc","planner_baseline","prejoin")
@@ -85,6 +89,9 @@ def main():
                     rows[arm]=row
                     persist()
                     print("PREJOIN_NATIVE_ROW",target,bits,trial,arm,row["status"],row.get("wall_ns"),row.get("witness",{}).get("pass"),flush=True)
+                    if guarded_pilot and arm=="gpmc" and row["status"]!="COMPLETED":
+                        cohort["status"]="GPMC_CENSORED_SKIP";break
+                if guarded_pilot and cohort.get("status")=="GPMC_CENSORED_SKIP":break
                 g,r=(rows[k] for k in ("gpmc","prejoin"))
                 if any(x["status"]!="COMPLETED" for x in (g,r)) or not r.get("route_pass"):
                     cohort["status"]="RESOURCE_OR_ROUTE_INCONCLUSIVE";break

@@ -23,6 +23,8 @@ def main():
                          help="One guarded matched pair; skip Rust when GPMC does not complete")
     ap.add_argument("--planner-baseline",type=Path,
                     help="Pinned old ordered-set planner binary, for same-run fixed seven-pair A/B")
+    ap.add_argument("--max-residual",type=int,choices=[64,256],default=64,
+                    help="Explicit research-only wide residual admission; other caps unchanged")
     a=ap.parse_args()
     ab=a.planner_baseline is not None
     if ab and a.repeat_fixed_target is None:ap.error("planner A/B requires fixed-repeat target")
@@ -41,7 +43,7 @@ def main():
     targets=([a.profile_fixed_target] if profile else [a.repeat_fixed_target if fixed else a.repeat_target] if repeat else [a.pilot_guarded_target] if guarded_pilot else [30,100])
     report={"status":"IN_PROGRESS","source_sha256":expected,"reference_sha256":sha(a.reference),"reference_method":ref["status"],
             "gpmc_binary_sha256":sha(a.gpmc),"rust_binary_sha256":sha(a.mpfr),
-            "repeat_count":count,"repeat_precision_policy":"fixed-profile" if profile else "fixed" if fixed else "guarded" if repeat else "guarded-pilot" if guarded_pilot else "pilot","cohorts":[]}
+            "max_residual":a.max_residual,"repeat_count":count,"repeat_precision_policy":"fixed-profile" if profile else "fixed" if fixed else "guarded" if repeat else "guarded-pilot" if guarded_pilot else "pilot","cohorts":[]}
     if ab:report["planner_baseline_sha256"]=sha(a.planner_baseline)
     def persist():
         a.report.write_text(json.dumps(report,indent=2)+"\n")
@@ -85,12 +87,13 @@ def main():
                                 residual,cuts,leaves,width,work,peak,joins,plan_ns=map(int,t[0])
                                 row["trace"]={"residual":residual,"cuts":cuts,"leaves":leaves,"width":width,
                                               "work":work,"peak":peak,"joins":joins,"plan_ns":plan_ns}
-                                row["route_pass"]=(residual<=64 and cuts<=2 and leaves==1<<cuts and
+                                row["route_pass"]=(residual<=a.max_residual and cuts<=2 and leaves==1<<cuts and
                                                    width<=19 and work<=40_000_000 and peak<=2_000_000)
                             else:row["route_pass"]=False
                     rows[arm]=row
                     persist()
                     print("PREJOIN_NATIVE_ROW",target,bits,trial,arm,row["status"],row.get("wall_ns"),row.get("witness",{}).get("pass"),flush=True)
+                    if row["status"]!="COMPLETED":print("PREJOIN_CENSORED_STDERR",arm,row.get("stderr_tail","")[-2000:],flush=True)
                     if guarded_pilot and arm=="gpmc" and row["status"]!="COMPLETED":
                         cohort["status"]="GPMC_CENSORED_SKIP";break
                 if guarded_pilot and cohort.get("status")=="GPMC_CENSORED_SKIP":break

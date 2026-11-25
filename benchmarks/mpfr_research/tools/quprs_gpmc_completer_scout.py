@@ -146,6 +146,42 @@ def prejoin_holdouts(root):
     excluded.update("benchmarks/MQTBench/"+rel for rel,_ in LOCKED_LONG)
     return select_prejoin_holdouts(paths,excluded)
 
+# Third discovery cohort: focus the untested transition region around
+# qualified 20-22 qubit QPE and the QFT width barrier, including compiler
+# variants. Source selection does not use any new solver result.
+FRONTIER_TARGETS=(("qpeinexact",22),("qft",22),("qpeexact",22),("qnn",12),
+                  ("qpeinexact",23),("qft",24),("qpeexact",23),("wstate",16))
+FRONTIER_MAX=8
+
+def select_frontier_holdouts(paths,excluded):
+    from quprs_mqt_adaptive_scout import item
+    used=set(excluded)
+    out=[]
+    for family,target in FRONTIER_TARGETS:
+        pattern=re.compile(re.escape(family)+r"_nativegates_ibm_qiskit_opt0_(\d+)\.qasm$")
+        rows=[]
+        for rel in paths:
+            if rel in used or not rel.startswith("benchmarks/MQTBench/"):continue
+            m=pattern.fullmatch(Path(rel).name)
+            if not m or abs(int(m[1])-target)>1:continue
+            if Path(rel).parent.name not in ("Random_Pauli","Random_Rotation","h,ry,rz,cx"):continue
+            rows.append(item(rel,"third_frontier_long_discovery"))
+        if rows:
+            row=min(rows,key=lambda r:(abs(r["size"]-target),
+                r["variant"].endswith("h,ry,rz,cx"),r["size"],r["path"]))
+            out.append(row);used.add(row["path"])
+    if len(out)>FRONTIER_MAX or len({r["path"] for r in out})!=len(out):
+        raise ValueError("DUPLICATE_FRONTIER_HOLDOUT")
+    return out
+
+def frontier_holdouts(root):
+    from quprs_mqt_adaptive_scout import candidates as previous_mqt, followup_candidates
+    paths=subprocess.check_output(["git","-C",str(root),"ls-tree","-r","--name-only",QU_PRS_SHA,
+        "--","benchmarks/MQTBench"],text=True).splitlines()
+    excluded={r["path"] for r in candidates(root)+previous_mqt(root)+followup_candidates(root)+mqt_holdouts(root)+prejoin_holdouts(root)}
+    excluded.update("benchmarks/MQTBench/"+rel for rel,_ in LOCKED_LONG)
+    return select_frontier_holdouts(paths,excluded)
+
 def holdout_self_test():
     pauli="benchmarks/MQTBench/Random_Pauli/qpeexact_nativegates_ibm_qiskit_opt0_22.qasm"
     rotation=pauli.replace("Random_Pauli","Random_Rotation")
@@ -162,6 +198,10 @@ def holdout_self_test():
     a=select_prejoin_holdouts([qft,qft2,qpe],{qft})
     assert a==select_prejoin_holdouts([qpe,qft2,qft],{qft})
     assert {r["path"] for r in a}=={qft2,qpe}
+    qft3=qft.replace("_23.qasm","_22.qasm")
+    a=select_frontier_holdouts([qft,qft2,qft3,qpe],{qft})
+    assert a==select_frontier_holdouts([qpe,qft3,qft2,qft],{qft})
+    assert {r["path"] for r in a}=={qft2,qft3,qpe}
     assert not qualified([{"status":"CENSORED_TIME","wall_ns":120*10**9},
                           {"status":"COMPLETED","wall_ns":20*10**9}])
     assert qualified([{"status":"COMPLETED","wall_ns":20*10**9},
@@ -379,6 +419,7 @@ def main():
     ap.add_argument("--shard",type=int,choices=range(HOLDOUT_SHARDS),required=True)
     ap.add_argument("--mqt-holdout",action="store_true")
     ap.add_argument("--prejoin-holdout",action="store_true")
+    ap.add_argument("--frontier-holdout",action="store_true")
     ap.add_argument("--locked-long",action="store_true")
     ap.add_argument("--residual-followup",action="store_true")
     ap.add_argument("--certified-long",action="store_true")
@@ -394,15 +435,15 @@ def main():
             orders=[native_ab_order(t,target) for t in range(7)]
             assert all(set(o)=={"gpmc","baseline","adaptive"} for o in orders)
             assert all(2<=sum(o[i]==arm for o in orders)<=3 for i in range(3) for arm in orders[0])
-    if sum((args.locked_long,args.mqt_holdout,args.prejoin_holdout))>1:ap.error("select one study")
+    if sum((args.locked_long,args.mqt_holdout,args.prejoin_holdout,args.frontier_holdout))>1:ap.error("select one study")
     holdout_self_test()
-    shards=2 if args.residual_followup else HOLDOUT_SHARDS if args.mqt_holdout or args.locked_long or args.prejoin_holdout else SHARDS
+    shards=2 if args.residual_followup else HOLDOUT_SHARDS if args.mqt_holdout or args.locked_long or args.prejoin_holdout or args.frontier_holdout else SHARDS
     if args.shard>=shards:ap.error("shard outside selected cohort")
     if git_sha(args.quprs)!=QU_PRS_SHA or git_sha(args.gpmc_source)!=GPMC_SHA:
         raise SystemExit("SOURCE_LOCK_DRIFT")
     args.corpus.mkdir(parents=True,exist_ok=True)
-    manifest=locked_long(args.quprs) if args.locked_long else prejoin_holdouts(args.quprs) if args.prejoin_holdout else mqt_holdouts(args.quprs) if args.mqt_holdout else candidates(args.quprs)
-    if args.prejoin_holdout and not manifest:raise ValueError("EMPTY_PREJOIN_HOLDOUT")
+    manifest=locked_long(args.quprs) if args.locked_long else frontier_holdouts(args.quprs) if args.frontier_holdout else prejoin_holdouts(args.quprs) if args.prejoin_holdout else mqt_holdouts(args.quprs) if args.mqt_holdout else candidates(args.quprs)
+    if (args.prejoin_holdout or args.frontier_holdout) and not manifest:raise ValueError("EMPTY_PREJOIN_HOLDOUT")
     if args.residual_followup:
         wanted={"600ce6716a69e31e17ffbc571cba581fc58a5b5ed3b7d60227ad41d857374efe","a9757cd5bd730b6f769d2970e3a16ac66fee7157b55f81208c0a7c2cece0023b"}
         manifest=[r for r in manifest if r["expected_cnf_sha256"] in wanted]
@@ -414,8 +455,8 @@ def main():
     report={"study":"Original GPMC-completer long-case discovery",
             "source_revisions":{"quprs":QU_PRS_SHA,"gpmc":GPMC_SHA},
             "selection":"both 100/333-bit GPMC screens completed >=10s; rank by min GPMC wall; no Rust-dependent selection",
-            "limits":{"wall_s":PAIR_S,"AS_bytes":AS_BYTES,"max_candidates":PREJOIN_SCOUT_MAX if args.prejoin_holdout else HOLDOUT_MAX if args.mqt_holdout else MAX_CASES},
-            "shard":args.shard,"mqt_holdout":args.mqt_holdout,"prejoin_holdout":args.prejoin_holdout,"locked_long":args.locked_long,"residual_followup":args.residual_followup,"certified_long":args.certified_long,"manifest":manifest,"cases":[],"pilot":None,
+            "limits":{"wall_s":PAIR_S,"AS_bytes":AS_BYTES,"max_candidates":FRONTIER_MAX if args.frontier_holdout else PREJOIN_SCOUT_MAX if args.prejoin_holdout else HOLDOUT_MAX if args.mqt_holdout else MAX_CASES},
+            "shard":args.shard,"mqt_holdout":args.mqt_holdout,"prejoin_holdout":args.prejoin_holdout,"frontier_holdout":args.frontier_holdout,"locked_long":args.locked_long,"residual_followup":args.residual_followup,"certified_long":args.certified_long,"manifest":manifest,"cases":[],"pilot":None,
             "status":"IN_PROGRESS","independent_full_wmc_reference":False}
     def persist():
         args.report.write_text(json.dumps(report,indent=2)+"\n")
@@ -464,16 +505,18 @@ def main():
     eligible=sorted((r for r in report["cases"] if r["qualified"]),
                     key=lambda r:(-min(x["wall_ns"] for x in r["screen"]),r["case"]))
     report["qualified_cases"]=[r["case"] for r in eligible]
-    # At most one exploratory pair per precision per shard, after control-only selection.
-    if eligible:
-        item=eligible[0]
+    # Frontier study tests every eligible source (at most two per shard),
+    # not merely the longest or the fastest Rust candidate.
+    if args.frontier_holdout:report["pilots"]=[]
+    for item in (eligible if args.frontier_holdout else eligible[:1]):
         case=item["case"]
         cnf=args.corpus/f"{case}-gpmc.cnf"
         if sha(cnf)!=item["cnf_sha256"]:raise SystemExit("CNF_DRIFT")
         pilot={"case":case,"cohorts":[],"status":"EXPLORATORY_ONE_PAIR_PER_PRECISION"}
-        report["pilot"]=pilot
+        if args.frontier_holdout:report["pilots"].append(pilot)
+        else:report["pilot"]=pilot
         for digits,bits in BITS.items():
-            if args.prejoin_holdout:
+            if args.prejoin_holdout or args.frontier_holdout:
                 route="--factor-prejoin"
                 rust=[str(args.mpfr.resolve()),route,str(digits),str(cnf.resolve())]
             elif args.mqt_holdout:
@@ -491,6 +534,8 @@ def main():
                 cohort["trials"].append(r)
                 persist()
                 print("COMPLETER_PILOT",case,bits,arm,r["status"],r.get("wall_ns"),flush=True)
+                if args.frontier_holdout and r["status"]!="COMPLETED":
+                    print("FRONTIER_CENSORED",case,bits,arm,r.get("stderr_tail","")[-1200:],flush=True)
             pair={r["arm"]:r for r in cohort["trials"]}
             a,b=pair["gpmc"],pair["rust"]
             if a["status"]==b["status"]=="COMPLETED":
@@ -521,6 +566,8 @@ def main():
                     cohort["status"]="NUMERIC_OR_ROUTE_INCONCLUSIVE"
             else:
                 cohort["status"]="CENSORED_PAIR"
+            if args.frontier_holdout:
+                print("FRONTIER_PAIR_FINAL",case,bits,item["cnf_sha256"],cohort["status"],cohort.get("gpmc_over_rust"),cohort.get("prejoin_trace"),flush=True)
             persist()
     report["status"]="SCREEN_COMPLETE_EXPLORATORY"
     persist()

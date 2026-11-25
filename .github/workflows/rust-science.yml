@@ -12,6 +12,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   core:
@@ -75,3 +76,77 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --workspace
+
+  release-cli:
+    name: First release CLI and source-locked transfer gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/rawmocs-cli -> target
+      - name: Build and test candidate with resolved dependency lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgmp-dev libmpfr-dev m4 make gcc time pkg-config
+          manifest=crates/rawmocs-cli/Cargo.toml
+          if [[ ! -f crates/rawmocs-cli/Cargo.lock ]]; then
+            cargo generate-lockfile --manifest-path "$manifest"
+            echo "RELEASE_LOCK_BOOTSTRAP_ONLY: commit resolved lock before final release"
+          fi
+          cargo test --locked --release --manifest-path "$manifest"
+          cargo build --locked --release --manifest-path "$manifest"
+      - name: Exercise executable success, SAT-zero and fail-closed contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .release-evidence
+          bin=crates/rawmocs-cli/target/release/rawmocs
+          "$bin" --version | tee .release-evidence/version.txt
+          grep -Fx 'rawmocs 0.1.0' .release-evidence/version.txt
+          "$bin" --help > .release-evidence/help.txt
+          printf 'p cnf 1 0\nc t wmc\nc p weight 1 -1 0 0\n' > .release-evidence/sat-zero.cnf
+          printf 'p cnf 1 2\nc t wmc\n1 0\n-1 0\n' > .release-evidence/unsat.cnf
+          printf 'p cnf 1 0\nc t pwmc\n' > .release-evidence/unsupported.cnf
+          printf 'p cnf 33 1\nc t wmc\n1 2 3 4 5 6 7 8 9 10 0\n' > .release-evidence/bounded-unknown.cnf
+          for name in sat-zero unsat unsupported bounded-unknown; do
+            rc=0
+            timeout -k 2s 60s prlimit --as=3221225472 -- "$bin" --digits 60 ".release-evidence/$name.cnf" > ".release-evidence/$name.stdout" 2> ".release-evidence/$name.stderr" || rc=$?
+            if [[ "$name" == unsupported || "$name" == bounded-unknown ]]; then
+              test "$rc" -eq 2
+              test "$(cat ".release-evidence/$name.stdout")" = 's UNKNOWN'
+            else
+              test "$rc" -eq 0
+              test "$(wc -l < ".release-evidence/$name.stdout")" -eq 2
+              if [[ "$name" == sat-zero ]]; then
+                grep -Fx 's SATISFIABLE' ".release-evidence/$name.stdout"
+              else
+                grep -Fx 's UNSATISFIABLE' ".release-evidence/$name.stdout"
+              fi
+              python3 -c 'from fractions import Fraction; import sys; x=open(sys.argv[1]).read().splitlines()[1].split(); assert x[:3]==["c","r","mpfr"] and len(x)==5 and Fraction(x[3])==Fraction(x[4])==0' ".release-evidence/$name.stdout"
+            fi
+          done
+          sha256sum "$bin" crates/rawmocs-cli/Cargo.lock | tee .release-evidence/build.sha256
+      - name: Transfer previously independently qualified original QuPRS cases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 crates/rawmocs-cli/tools/release_transfer.py --bin crates/rawmocs-cli/target/release/rawmocs --repo "$GITHUB_REPOSITORY" --out .release-evidence/transfer
+      - name: Archive candidate lock and immutable evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rawmocs-v010-candidate-evidence
+          path: |
+            crates/rawmocs-cli/Cargo.lock
+            .release-evidence/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30

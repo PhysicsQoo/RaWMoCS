@@ -317,6 +317,15 @@ impl Scratch{
         if b.re==1&&b.im==0{return;}
         if a.re==1&&a.im==0{a.re.assign(&b.re);a.im.assign(&b.im);return;}
         let [ac,bd,ad,bc]=&mut self.0;
+        // A finite purely real right operand needs only two rounded products.
+        // Retain the full formula for zero outputs (signed-zero semantics),
+        // overflow/underflow to zero, and nonfinite intermediate values.
+        if b.im==0&&a.re.is_finite()&&a.im.is_finite()&&b.re.is_finite(){
+            ac.assign(&a.re*&b.re);bc.assign(&a.im*&b.re);
+            if ac.is_finite()&&bc.is_finite()&&*ac!=0&&*bc!=0{
+                a.re.assign(&*ac);a.im.assign(&*bc);return;
+            }
+        }
         ac.assign(&a.re*&b.re);bd.assign(&a.im*&b.im);ad.assign(&a.re*&b.im);bc.assign(&a.im*&b.re);
         a.re.assign(&*ac-&*bd);a.im.assign(&*ad+&*bc);
     }
@@ -418,6 +427,37 @@ pub(crate) fn run(mut args:impl Iterator<Item=std::ffi::OsString>)->Result<(),St
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]
+    fn mpfr_real_axis_shortcut_preserves_four_product_rounding(){
+        for bits in [100,333]{
+            let vals=[(0,0),(1,0),(-1,0),(0,1),(0,-1),(2,3),(-3,2),(2,0),(-7,0)];
+            let mut numbers:Vec<C>=vals.into_iter().map(|(re,im)|C{
+                re:Float::with_val(bits,re),im:Float::with_val(bits,im)
+            }).collect();
+            numbers.push(C{re:Float::with_val(bits,decimal("0.12345678901234567890123456789").unwrap()),
+                im:Float::with_val(bits,decimal("-1e-80").unwrap())});
+            numbers.push(C{re:Float::with_val(bits,decimal("-0.1234567890123456789").unwrap()),im:Float::new(bits)});
+            numbers.push(C{re:Float::with_val(bits,decimal("1e80").unwrap()),im:Float::with_val(bits,-0.0)});
+            let mut scratch=Scratch::new(bits);
+            for a in &numbers{for b in &numbers{
+                let mut expected=a.clone();
+                if (a.re==0&&a.im==0)||(b.re==0&&b.im==0){expected.re.assign(0);expected.im.assign(0);}
+                else if b.re==1&&b.im==0{}
+                else if a.re==1&&a.im==0{expected=b.clone();}
+                else{
+                    let ac=Float::with_val(bits,&a.re*&b.re);
+                    let bd=Float::with_val(bits,&a.im*&b.im);
+                    let ad=Float::with_val(bits,&a.re*&b.im);
+                    let bc=Float::with_val(bits,&a.im*&b.re);
+                    expected.re.assign(&ac-&bd);expected.im.assign(&ad+&bc);
+                }
+                let mut actual=a.clone();scratch.multiply(&mut actual,b);
+                assert_eq!(actual.re,expected.re);assert_eq!(actual.im,expected.im);
+                assert_eq!(actual.re.is_sign_negative(),expected.re.is_sign_negative());
+                assert_eq!(actual.im.is_sign_negative(),expected.im.is_sign_negative());
+            }}
+        }
+    }
     #[test]
     fn mask_fill_matches_set_reference(){
         // Every undirected graph on five vertices, every neighborhood.

@@ -317,18 +317,16 @@ impl Scratch{
         if b.re==1&&b.im==0{return;}
         if a.re==1&&a.im==0{a.re.assign(&b.re);a.im.assign(&b.im);return;}
         let [ac,bd,ad,bc]=&mut self.0;
-        // A finite purely real right operand needs only two rounded products.
-        // Retain the full formula for zero outputs (signed-zero semantics),
-        // overflow/underflow to zero, and nonfinite intermediate values.
-        if b.im==0&&a.re.is_finite()&&a.im.is_finite()&&b.re.is_finite(){
-            ac.assign(&a.re*&b.re);bc.assign(&a.im*&b.re);
-            if ac.is_finite()&&bc.is_finite()&&*ac!=0&&*bc!=0{
-                a.re.assign(&*ac);a.im.assign(&*bc);return;
-            }
-        }
         ac.assign(&a.re*&b.re);bd.assign(&a.im*&b.im);ad.assign(&a.re*&b.im);bc.assign(&a.im*&b.re);
         a.re.assign(&*ac-&*bd);a.im.assign(&*ad+&*bc);
     }
+}
+// Reuse only dead table entries, at the same precision. Support remains
+// Option<C>; a numeric zero must never become an absent entry.
+fn recycle_copy(pool:&mut Vec<C>,x:&C)->C{
+    if let Some(mut y)=pool.pop(){
+        y.re.assign(&x.re);y.im.assign(&x.im);y
+    }else{x.clone()}
 }
 fn cadd(a:Cell<C>,b:Cell<C>)->Cell<C>{
     match(a,b){(Some(mut a),Some(b))=>{a.re+=&b.re;a.im+=&b.im;Some(a)},(a,None)|(None,a)=>a}
@@ -338,6 +336,10 @@ fn execute(fs:Vec<Factor<R>>,scalar:Cell<R>,p:&Plan,bits:u32,d:Instant)->Result<
     let mut live=tables.values().map(|f|f.values.len()).sum::<usize>();
     let mut cost=Cost{peak:live+p.extra,..Cost::default()};
     let mut scratch=Scratch::new(bits);
+    // Bound additional retained cells by unused certified peak headroom.
+    // The original replay cost remains unchanged; the pool is extra storage.
+    let recycle_cap=32_768.min(LIVE.saturating_sub(p.cost.peak));
+    let mut recycle=Vec::new();
     let (mut left,mut right)=(C::one(bits),C::one(bits));
     for op in &p.ops{
         deadline(d)?;
@@ -369,10 +371,19 @@ fn execute(fs:Vec<Factor<R>>,scalar:Cell<R>,p:&Plan,bits:u32,d:Instant)->Result<
             };
             let a=branch(false,&mut left);
             let b=op.pivot.is_some()&&branch(true,&mut right);
-            values.push(match(a,b){(true,true)=>{left.re+=&right.re;left.im+=&right.im;Some(left.clone())},(true,false)=>Some(left.clone()),(false,true)=>Some(right.clone()),_=>None});
+            values.push(match(a,b){(true,true)=>{left.re+=&right.re;left.im+=&right.im;Some(recycle_copy(&mut recycle,&left))},(true,false)=>Some(recycle_copy(&mut recycle,&left)),(false,true)=>Some(recycle_copy(&mut recycle,&right)),_=>None});
             if m+1<size{let bit=(m+1).trailing_zeros() as usize;for (i,x) in indices.iter_mut().enumerate(){*x^=flips[i][bit];}}
         }
         live=live+size-bucket.iter().map(|f|f.values.len()).sum::<usize>();
+        // No references to consumed factors survive the operation.
+        // Do not scan an entire dead table once the bounded pool is full.
+        for f in bucket{
+            if recycle.len()==recycle_cap{break;}
+            for x in f.values.into_iter().flatten(){
+                recycle.push(x);
+                if recycle.len()==recycle_cap{break;}
+            }
+        }
         tables.insert(op.dst,Factor{scope:op.out.clone(),values});
     }
     if cost!=p.cost{return Err("plan replay drift".into());}
@@ -428,34 +439,19 @@ pub(crate) fn run(mut args:impl Iterator<Item=std::ffi::OsString>)->Result<(),St
 mod tests{
     use super::*;
     #[test]
-    fn mpfr_real_axis_shortcut_preserves_four_product_rounding(){
+    fn recycled_complex_copy_matches_clone_including_signed_zero(){
         for bits in [100,333]{
-            let vals=[(0,0),(1,0),(-1,0),(0,1),(0,-1),(2,3),(-3,2),(2,0),(-7,0)];
-            let mut numbers:Vec<C>=vals.into_iter().map(|(re,im)|C{
-                re:Float::with_val(bits,re),im:Float::with_val(bits,im)
-            }).collect();
-            numbers.push(C{re:Float::with_val(bits,decimal("0.12345678901234567890123456789").unwrap()),
-                im:Float::with_val(bits,decimal("-1e-80").unwrap())});
-            numbers.push(C{re:Float::with_val(bits,decimal("-0.1234567890123456789").unwrap()),im:Float::with_val(bits,0)});
-            numbers.push(C{re:Float::with_val(bits,decimal("1e80").unwrap()),im:Float::with_val(bits,-0.0)});
-            let mut scratch=Scratch::new(bits);
-            for a in &numbers{for b in &numbers{
-                let mut expected=a.clone();
-                if (a.re==0&&a.im==0)||(b.re==0&&b.im==0){expected.re.assign(0);expected.im.assign(0);}
-                else if b.re==1&&b.im==0{}
-                else if a.re==1&&a.im==0{expected=b.clone();}
-                else{
-                    let ac=Float::with_val(bits,&a.re*&b.re);
-                    let bd=Float::with_val(bits,&a.im*&b.im);
-                    let ad=Float::with_val(bits,&a.re*&b.im);
-                    let bc=Float::with_val(bits,&a.im*&b.re);
-                    expected.re.assign(&ac-&bd);expected.im.assign(&ad+&bc);
-                }
-                let mut actual=a.clone();scratch.multiply(&mut actual,b);
-                assert_eq!(actual.re,expected.re);assert_eq!(actual.im,expected.im);
-                assert_eq!(actual.re.is_sign_negative(),expected.re.is_sign_negative());
-                assert_eq!(actual.im.is_sign_negative(),expected.im.is_sign_negative());
-            }}
+            let mut pool=vec![C::one(bits),C::one(bits)];
+            for x in [C{re:Float::with_val(bits,-0.0),im:Float::with_val(bits,0)},
+                C{re:Float::with_val(bits,decimal("0.12345678901234567890123456789").unwrap()),
+                    im:Float::with_val(bits,decimal("-1e-80").unwrap())},C::one(bits)]{
+                let y=recycle_copy(&mut pool,&x);
+                assert_eq!(y.re,x.re);assert_eq!(y.im,x.im);
+                assert_eq!(y.re.prec(),bits);assert_eq!(y.im.prec(),bits);
+                assert_eq!(y.re.is_sign_negative(),x.re.is_sign_negative());
+                assert_eq!(y.im.is_sign_negative(),x.im.is_sign_negative());
+            }
+            assert!(pool.is_empty());
         }
     }
     #[test]

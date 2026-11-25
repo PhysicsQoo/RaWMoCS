@@ -2,7 +2,7 @@
 
 Rust-based Algebraic Weighted Model Counting Solver.
 
-RaWMoCS is an experimental Rust library for **full complex WMC** over exact
+The original RaWMoCS reference library implements **full complex WMC** over exact
 Gaussian rational weights. The initial reference engine includes original-CNF
 unit propagation, chronological weighted DPLL, component decomposition, and a
 canonical residual cache.
@@ -10,6 +10,54 @@ canonical residual cache.
 The numerical count and Boolean satisfiability are separate; a satisfiable
 formula can have zero weighted count. All variables have independently defined
 positive and negative literal weights.
+
+## First release candidate: QuPRS weighted CNF executable
+
+The v0.1.0 candidate is an opt-in, bounded signed-complex full WMC executable
+for weighted CNF emitted by QuPRS. It selects a factor-prejoin route from
+the CNF structure, with a small exact-rational reference fallback for
+ordinary admission failures. It never selects by circuit name or source
+benchmark ID. The reference crate and its API remain unchanged.
+
+Build on Linux x86-64 with Rust, GMP/MPFR build prerequisites and a resolved
+dependency lock:
+
+```sh
+cargo build --locked --release --manifest-path crates/rawmocs-cli/Cargo.toml
+crates/rawmocs-cli/target/release/rawmocs --digits 60 input.cnf
+```
+
+The release candidate lock must be committed before publication; the initial
+CI may bootstrap it. The four supported digit selectors are 30, 60, 100, 130
+(working precisions 100, 200, 333, 432 bits). These selectors are working
+precision choices, not a certified number of correct decimal digits.
+QuPRS should use guarded precision where required and handle UNKNOWN
+independently from SAT, UNSAT, and numeric zero.
+
+The source format is strict, with a `p cnf N M` header, `c t wmc`,
+optional `c p weight L REAL IMAG 0` records, then one terminated clause
+per line. Omitted literal weights are independently one. The finite
+decimal grammar and source size limits are enforced. Example:
+
+```
+p cnf 1 0
+c t wmc
+c p weight 1 -1 0 0
+```
+
+A complete solve emits exactly a Boolean status and a rounded complex count
+(`c r mpfr REAL IMAG`); SAT with zero is valid. Exit 2 and `s UNKNOWN`
+without a count indicate error/unsupported input or a normal bounded solve
+failure. A supervisor must treat any killed process or nonzero exit as
+unknown, even if output was partially captured. The executable does not
+promise a hard RSS limit or a process-wide timeout internally. Use an external
+resource supervisor. The small reference fallback is limited to 32 variables,
+2048 clauses, weight-bit, cache-payload, depth and node caps.
+Large rejected instances may remain UNKNOWN.
+
+**Candidate only:** see [release admission](docs/first-release-admission.md).
+No claim of competition-wide performance, projected WMC, exact
+transcendental phase weights, certified rounding or equivalence checking.
 
 ## Scientific baseline
 
@@ -38,7 +86,7 @@ The external A0 integration tests are ignored by default and **fail closed**
 when invoked without their source-pinned fixture directory. CI checks out the
 existing original files and then runs those tests with `QUPRS_A0_DIR`.
 
-This is a research prototype, **not** a production solver or a quantum-circuit
+The exact reference engine remains a research prototype, **not** a production solver or a quantum-circuit
 equivalence checker. The finite node budget and depth limit return an error
 instead of a partial count; the cache uses an entry-count limit, not a memory
 byte limit. OS-level hard RSS caps, wall-clock timeout/cancellation,

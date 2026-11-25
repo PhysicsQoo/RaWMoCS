@@ -126,7 +126,7 @@ jobs:
     # Build/reference overhead is separate from the bounded Simulation step.
     timeout-minutes: ${{ (github.event_name == 'pull_request' || inputs.study == 'grover5_focus' || inputs.study == 'qpe8_prejoin') && 25 || 35 }}
     env:
-      STUDY: ${{ github.event.label.name == 'run-prejoin-local-prefix' && 'grover_local_prefix' || github.event.label.name == 'run-prejoin-pair-kernel' && 'grover_pair_kernel' || (github.event.label.name == 'run-gf2-contraction-codspeed' || github.event.label.name == 'run-prejoin-incremental-grover-repeat') && 'gf2_6_axis_ab' || github.event.label.name == 'run-prejoin-codspeed' && 'qpe8_prejoin' || github.event_name == 'pull_request' && 'grover5_focus' || inputs.study || 'grover5_focus' }}
+      STUDY: ${{ (github.event.label.name == 'run-prejoin-local-prefix' || github.event.label.name == 'run-prejoin-incremental-grover-repeat') && 'grover_local_prefix' || github.event.label.name == 'run-prejoin-pair-kernel' && 'grover_pair_kernel' || github.event.label.name == 'run-gf2-contraction-codspeed' && 'gf2_6_axis_ab' || github.event.label.name == 'run-prejoin-codspeed' && 'qpe8_prejoin' || github.event_name == 'pull_request' && 'grover5_focus' || inputs.study || 'grover5_focus' }}
       DIGITS: ${{ inputs.digits || '30' }}
     permissions:
       contents: read
@@ -362,16 +362,24 @@ jobs:
           bin=benchmarks/mpfr_research/target/release/rawmocs-mpfr-research
           sha256sum "$cnf" "$bin" > "$root/local-prefix.sha256"
           for trial in 1 2 3; do
-            timeout -k 2s 35s prlimit --as=3221225472 -- "$bin" --factor-prejoin local-profile "$cnf" > "$root/local-full-$trial.stdout" 2> "$root/local-full-$trial.stderr"
+            timeout -k 2s 35s prlimit --as=3221225472 -- "$bin" --factor-prejoin local-compare "$cnf" > "$root/local-full-$trial.stdout" 2> "$root/local-full-$trial.stderr"
+            test "$(grep -c '^LOCAL_PROFILE_NS ' "$root/local-full-$trial.stderr")" -eq 2
             grep '^LOCAL_PROFILE_NS ' "$root/local-full-$trial.stderr"
-            grep '^LOCAL_PROBE_V1 mode=local-profile eliminated=2986 remaining=59 ' "$root/local-full-$trial.stdout"
+            grep '^LOCAL_EXACT_FRONTIER_AND_PREFIX_PARITY_PASS$' "$root/local-full-$trial.stderr"
+            grep '^LOCAL_PROBE_V1 mode=local-compare eliminated=2986 remaining=59 ' "$root/local-full-$trial.stdout"
             cmp "$root/local-full-1.stdout" "$root/local-full-$trial.stdout"
           done
-          timeout -k 2s 3s prlimit --as=3221225472 -- "$bin" --factor-prejoin local-prefix "$cnf" > "$root/local-prefix.native"
-          grep '^LOCAL_PROBE_V1 mode=local-prefix eliminated=512 ' "$root/local-prefix.native"
-          printf '#!/bin/sh\nexec %s --factor-prejoin local-prefix %s > %s/local-prefix.simulated\n' "$bin" "$cnf" "$root" > "$root/local-prefix.sh"
-          chmod +x "$root/local-prefix.sh"
-          printf 'options:\n  max-time: "3s"\nbenchmarks:\n  - name: "original_partial/grover6_variant/local_prefix512"\n    exec: "./%s/local-prefix.sh"\n' "$root" > codspeed-prejoin.generated.yml
+          printf 'options:\n  max-time: "3s"\nbenchmarks:\n' > codspeed-prejoin.generated.yml
+          for arm in legacy counted; do
+            mode=local-prefix
+            if [[ "$arm" == legacy ]]; then mode=local-prefix-legacy; fi
+            timeout -k 2s 3s prlimit --as=3221225472 -- "$bin" --factor-prejoin "$mode" "$cnf" > "$root/local-$arm.native"
+            grep '^LOCAL_PROBE_V1 mode=local-prefix eliminated=512 ' "$root/local-$arm.native"
+            printf '#!/bin/sh\nexec %s --factor-prejoin %s %s > %s/local-%s.simulated\n' "$bin" "$mode" "$cnf" "$root" "$arm" > "$root/local-$arm.sh"
+            chmod +x "$root/local-$arm.sh"
+            printf '  - name: "original_partial/grover6_variant/local_prefix512_%s"\n    exec: "./%s/local-%s.sh"\n' "$arm" "$root" "$arm" >> codspeed-prejoin.generated.yml
+          done
+          cmp "$root/local-legacy.native" "$root/local-counted.native"
       - name: CodSpeed bounded exact-local prefix Simulation
         if: env.STUDY == 'grover_local_prefix'
         timeout-minutes: 5
@@ -386,7 +394,10 @@ jobs:
           set -euo pipefail
           root=.research/codspeed-prejoin
           sha256sum -c "$root/local-prefix.sha256"
-          cmp "$root/local-prefix.native" "$root/local-prefix.simulated"
+          for arm in legacy counted; do
+            cmp "$root/local-$arm.native" "$root/local-$arm.simulated"
+          done
+          cmp "$root/local-legacy.simulated" "$root/local-counted.simulated"
           echo LOCAL_PREFIX_SIMULATION_STRUCTURAL_PARITY_PASS
       - name: Archive exact Weighted CNF source checksums
         if: always()

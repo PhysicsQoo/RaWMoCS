@@ -185,25 +185,57 @@ fn restrict(fs:&[Factor<R>],scalar:&Cell<R>,cuts:&[usize],m:usize)->Result<(Vec<
 struct Op{ids:Vec<usize>,dst:usize,out:Vec<usize>,pivot:Option<usize>}
 #[derive(Clone)]
 struct Plan{ops:Vec<Op>,cost:Cost,extra:usize}
+// Dense indices are local to a plan; original variable IDs and ordering remain
+// unchanged. A mask represents the same undirected graph as the ordered sets.
+fn mask_indices(mut m:u64)->impl Iterator<Item=usize>{
+    std::iter::from_fn(move ||{
+        if m==0{return None;}
+        let i=m.trailing_zeros() as usize;
+        m&=m-1;
+        Some(i)
+    })
+}
+fn fill_count(graph:&[u64],nb:u64)->usize{
+    let mut remaining=nb;
+    let mut fill=0;
+    while remaining!=0{
+        let i=remaining.trailing_zeros() as usize;
+        remaining&=remaining-1;
+        fill+=(remaining&!graph[i]).count_ones() as usize;
+    }
+    fill
+}
 fn plan(fs:&[Factor<R>],nodes:&Scope,policy:(Option<usize>,bool),retained:usize,d:Instant)->Result<Option<Plan>,String>{
     let mut scopes:BTreeMap<usize,Scope>=fs.iter().enumerate().map(|(i,f)|(i,f.scope.iter().copied().collect())).collect();
-    let mut graph:BTreeMap<usize,Scope>=nodes.iter().map(|&v|(v,Scope::new())).collect();
-    for s in scopes.values(){for &v in s{graph.get_mut(&v).ok_or("plan owner")?.extend(s.iter().copied().filter(|&u|u!=v));}}
+    let vars:Vec<_>=nodes.iter().copied().collect();
+    if vars.len()>64{return Err("plan mask cap".into());}
+    let mut graph=vec![0u64;vars.len()];
+    let mut active=if vars.len()==64{u64::MAX}else{(1u64<<vars.len())-1};
+    for s in scopes.values(){
+        let mut m=0u64;
+        for v in s{m|=1u64<<vars.binary_search(v).map_err(|_|"plan owner")?;}
+        for i in mask_indices(m){graph[i]|=m&!(1u64<<i);}
+    }
     let mut live=fs.iter().map(|f|f.values.len()).sum::<usize>();
     let extra=retained+live;
     let mut cost=Cost{peak:live+extra,..Cost::default()};
     let mut ops=Vec::new();let mut next=scopes.len();
-    while !graph.is_empty(){
+    while active!=0{
         deadline(d)?;
-        let (&v,nb)=graph.iter().min_by_key(|(v,nb)|{
-            let degree=nb.len();
-            let fill=if policy.0.is_some(){nb.iter().enumerate().map(|(i,a)|nb.iter().skip(i+1).filter(|b|!graph[a].contains(*b)).count()).sum::<usize>()}else{0};
-            (policy.0.map_or(degree,|p|fill+p*degree),degree,if policy.1{usize::MAX-**v}else{**v})
+        let i=mask_indices(active).min_by_key(|&i|{
+            let nb=graph[i];
+            let degree=nb.count_ones() as usize;
+            let fill=if policy.0.is_some(){fill_count(&graph,nb)}else{0};
+            let v=vars[i];
+            (policy.0.map_or(degree,|p|fill+p*degree),degree,if policy.1{usize::MAX-v}else{v})
         }).ok_or("plan pivot")?;
-        let nb=nb.clone();
+        let v=vars[i];
+        let neighbors=graph[i];
+        let nb:Scope=mask_indices(neighbors).map(|j|vars[j]).collect();
         if nb.len()>WIDTH{return Ok(None);}
         cost.width=cost.width.max(nb.len());
-        graph.remove(&v);
+        active&=!(1u64<<i);
+        graph[i]=0;
         let mut bucket:Vec<_>=scopes.iter().filter(|(_,s)|s.contains(&v)).map(|(&i,s)|(i,s.clone())).collect();
         for (i,_) in &bucket{scopes.remove(i);}
         while bucket.len()>2{
@@ -228,9 +260,8 @@ fn plan(fs:&[Factor<R>],nodes:&Scope,policy:(Option<usize>,bool),retained:usize,
         live=live+size-bucket.iter().map(|(_,s)|1usize<<s.len()).sum::<usize>();
         ops.push(Op{ids:bucket.iter().map(|(i,_)|*i).collect(),dst:next,out:nb.iter().copied().collect(),pivot:Some(v)});
         scopes.insert(next,nb.clone());next+=1;
-        for &u in &nb{
-            let s=graph.get_mut(&u).ok_or("plan neighbor")?;
-            s.remove(&v);s.extend(nb.iter().copied().filter(|&x|x!=u));
+        for j in mask_indices(neighbors){
+            graph[j]=(graph[j]&!(1u64<<i))|(neighbors&!(1u64<<j));
         }
     }
     Ok(Some(Plan{ops,cost,extra}))
@@ -387,6 +418,26 @@ pub(crate) fn run(mut args:impl Iterator<Item=std::ffi::OsString>)->Result<(),St
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]
+    fn mask_fill_matches_set_reference(){
+        // Every undirected graph on five vertices, every neighborhood.
+        for edges in 0..1024u64{
+            let mut graph=[0u64;5];let mut bit=0;
+            for i in 0..5{for j in i+1..5{
+                if edges&(1<<bit)!=0{graph[i]|=1<<j;graph[j]|=1<<i;}
+                bit+=1;
+            }}
+            for nb in 0..32u64{
+                let mut expected=0;
+                for i in 0..5{for j in i+1..5{
+                    if nb&(1<<i)!=0&&nb&(1<<j)!=0&&graph[i]&(1<<j)==0{expected+=1;}
+                }}
+                assert_eq!(fill_count(&graph,nb),expected);
+            }
+        }
+        assert_eq!(mask_indices(u64::MAX).collect::<Vec<_>>(),(0..64).collect::<Vec<_>>());
+        assert_eq!(fill_count(&[0u64;64],u64::MAX),2016);
+    }
     #[test]
     fn exact_rational_identity_shortcuts_match_full_formula(){
         let values=[(0,0),(1,0),(-1,0),(0,1),(0,-1),(2,3),(-3,2)];

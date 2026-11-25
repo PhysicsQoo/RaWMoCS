@@ -20,6 +20,13 @@ fallback and executable need independent release acceptance.
 
 ## Admission gates
 
+Candidate `9c82851baf07154953745b6ce3b2bd9efbe25036` passed
+[science CI 45586377302](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/45586377302):
+8/8 jobs, 17 CLI tests, kernel OOM delta 0 to 1 with non-OOM SIGKILL
+negative control, six byte-identical regenerated source CNFs and seven
+independent interval witnesses. The expiring historical transfer job is
+retired from mandatory CI; retain its script and prior receipts for audit.
+
 Prior candidate `2123f1327a5be8e5fe1904210621fe75fbb6d945` passed
 [science CI 45585168839](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/45585168839):
 7/7 jobs, 17 CLI tests, deep 600-variable case with 599 observed frames,
@@ -70,7 +77,7 @@ acceptance; historical PASS is not a substitute.
   byte-identical research bridge and two independent oracle files under
   `crates/rawmocs-cli/tools/repro/` from `379b47242cbd9b4a1e597afc6377cbaf0ac13bce`.
   Verify source Git blobs, exact CNF SHA256, and seven numeric witnesses;
-  retain historical transfer gate until the new regeneration gate passes.
+  historical transfer gate passed before retirement.
 - [ ] Kernel OOM admission on isolated Linux cgroup v2 with read-back
   memory.max=48 MiB, zero swap and memory.events.local oom_kill delta.
   Require actual solver SIGKILL and empty stdout; negative externally
@@ -82,6 +89,11 @@ acceptance; historical PASS is not a substitute.
   precision on representative QuPRS long cases, with p50/p90/RSS and
   independent real/imag witness. Bounded Simulation/Flamegraph regression
   for the executable; simulation must not be conflated with wall time.
+  Initial native matrix: QPE inexact 22 (432 bits), Grover 6 (432 bits),
+  GF2^7 (333 bits). Same-run regenerated CNF and independent reference,
+  GPMC revision 89bbc89d0de918e7a5385740355df55765039230, 120s and 3 GiB
+  per arm. Preserve censored rows, publish ratios only for seven complete
+  witnessed pairs. No speed floor inferred from past research binaries.
 - [ ] Cross-platform scope and packaging declared only for validated targets.
   Initial executable CI is Linux x86-64; portable reference tests do not
   imply MPFR executable portability.

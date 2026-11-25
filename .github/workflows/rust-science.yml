@@ -162,12 +162,6 @@ jobs:
         run: |
           set -euo pipefail
           python3 crates/rawmocs-cli/tools/general_resources.py --bin crates/rawmocs-cli/target/release/rawmocs --out .release-evidence/general-resources
-      - name: Transfer previously independently qualified original QuPRS cases
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          python3 crates/rawmocs-cli/tools/release_transfer.py --bin crates/rawmocs-cli/target/release/rawmocs --repo "$GITHUB_REPOSITORY" --out .release-evidence/transfer
       - name: Checkout pinned QuPRS integration source
         uses: actions/checkout@v4
         with:
@@ -258,5 +252,57 @@ jobs:
           name: rawmocs-v010-durable-rebuild
           path: .release-rebuild/
           include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+
+  release-native-paired:
+    name: Release matched native GPMC (${{ matrix.case }})
+    needs: durable-source-rebuild
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [qpeinexact22-432, grover6-432, gf2-7-333]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: rawmocs-v010-durable-rebuild
+          path: .release-rebuild
+      - uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/GPMC
+          ref: 89bbc89d0de918e7a5385740355df55765039230
+          path: .gpmc-release
+          submodules: recursive
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/rawmocs-cli -> target
+      - name: Build pinned GPMC and locked release binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C .gpmc-release rev-parse HEAD)" = 89bbc89d0de918e7a5385740355df55765039230
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build libgmp-dev libmpfr-dev zlib1g-dev m4 make gcc time pkg-config
+          cmake -S .gpmc-release -B .gpmc-release/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build .gpmc-release/build --target gpmc-bin --parallel 2
+          cargo build --locked --release --manifest-path crates/rawmocs-cli/Cargo.toml
+      - name: Seven order-rotated same-precision native pairs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 crates/rawmocs-cli/tools/release_native_paired.py --case "${{ matrix.case }}" --corpus .release-rebuild --gpmc-source .gpmc-release --gpmc .gpmc-release/build/gpmc --bin crates/rawmocs-cli/target/release/rawmocs --out ".release-pairs/${{ matrix.case }}"
+      - name: Archive all attempted pairs and censored evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rawmocs-v010-paired-${{ matrix.case }}
+          path: .release-pairs/
           if-no-files-found: warn
           retention-days: 30

@@ -1,0 +1,57 @@
+name: Publish admitted source release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'releases/**'
+      - 'scripts/release_source.py'
+      - '.github/workflows/source-release.yml'
+  pull_request:
+    paths:
+      - 'releases/**'
+      - 'scripts/release_source.py'
+      - '.github/workflows/source-release.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: source-release-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate pinned source release request (read only)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify workflow evidence and exact source archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release_source.py validate
+
+  publish:
+    name: Publish verified source assets
+    needs: validate
+    if: github.repository == 'PhysicsQoo/RaWMoCS' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Recheck request and publish a stable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release_source.py publish

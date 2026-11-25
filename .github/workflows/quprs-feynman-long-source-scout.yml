@@ -523,8 +523,8 @@ jobs:
           cmp ".research/long-tail/$case.qasm" ".upstream/quprs/$rel"
           printf '%s  %s\n' "$expected" ".research/long-tail/$case-gpmc.cnf" | sha256sum -c -
           if [[ "${{ github.event.label.name }}" == run-prejoin-grover-local-width ]]; then
-            /usr/bin/time -v -o .research/long-tail/local-width.resources.log timeout -k 2s 100s prlimit --as=3221225472 -- \
-              python3 "$oracle" ".research/long-tail/$case-gpmc.cnf" "$expected" --local-width-profile \
+            /usr/bin/time -v -o .research/long-tail/local-width.resources.log timeout -k 2s 135s prlimit --as=3221225472 -- \
+              python3 "$oracle" ".research/long-tail/$case-gpmc.cnf" "$expected" --incremental-local-width-profile \
               > .research/long-tail/local-width.json 2> .research/long-tail/local-width.stderr.log || { tail -c 4096 .research/long-tail/local-width.stderr.log; exit 1; }
             cat .research/long-tail/local-width.json
             exit 0

@@ -288,16 +288,16 @@ def plan(factors, nodes, policy, retained, deadline):
                 retained_extra=extra)
 
 
-def choose(factors, nodes, scalar, local, deadline, cut_sizes=(0,1,2)):
+def choose(factors, nodes, scalar, local, deadline, cut_sizes=(0,1,2), *, high_limit=12):
     adjacency = {v:set() for v in nodes}
     for s,_ in factors:
         for v in s:
             adjacency[v].update(set(s)-{v})
-    high = sorted(nodes,key=lambda v:(-len(adjacency[v]),v))[:12]
+    high = sorted(nodes,key=lambda v:(-len(adjacency[v]),v))[:high_limit]
     counts = []
     for cuts in cut_sizes:
         candidates = ([()] if cuts==0 else [(v,) for v in sorted(nodes)] if cuts==1
-                      else list(combinations(high,2)))
+                      else list(combinations(high,cuts)))
         best = None
         admitted = 0
         for pivots in candidates:
@@ -541,6 +541,33 @@ def cutset_spectrum(raw, expected):
         work_ratio=None if first is None or best is None or not best["work"] else first["work"]/best["work"],
         wall_s=monotonic()-start)
 
+def extended_cutset_profile(raw, expected):
+    """Structural only: search 3/4 cuts among the top eight residual degrees.
+    Each size gets a separate bounded search. A deadline is inconclusive,
+    never evidence of infeasibility. No numerical contraction is executed.
+    """
+    start=monotonic()
+    factors,nodes,scalar,local=local_reduce(raw,expected,start+PLAN_SECONDS)
+    rows=[]
+    for n in (3,4):
+        t=monotonic()
+        try:
+            (work,peak,width,pivots),branches,counts=choose(
+                factors,nodes,scalar,local,t+PLAN_SECONDS,cut_sizes=(n,),high_limit=8)
+            rows.append(dict(cutset_size=n,status="FEASIBLE",work=work,peak=peak,
+                width=width,pivots=pivots,search=counts,leaves=len(branches),
+                joins=sum(p["joins"] for _,p in branches),wall_s=monotonic()-t))
+        except ValueError as exc:
+            reason=str(exc)
+            if reason not in ("PLAN_DEADLINE","NO_BOUNDED_PREJOIN_PLAN"):
+                raise
+            rows.append(dict(cutset_size=n,status="DEADLINE" if reason=="PLAN_DEADLINE" else "NO_FEASIBLE_PLAN",
+                reason=reason,wall_s=monotonic()-t))
+    return dict(status="EXTENDED_CUTSET_PROFILE_ONLY",source_sha256=expected,
+        local=local,high_degree_pool=8,rows=rows,
+        all_sizes_complete=all(r["status"]!="DEADLINE" for r in rows),
+        wall_s=monotonic()-start)
+
 def self_test():
     import random
     from original_fixed_interval import solve as baseline
@@ -600,6 +627,14 @@ def self_test():
     profile=residual_profile(raw,h)
     assert profile["status"]=="RESIDUAL_PROFILE_ONLY"
     assert sum(c["nodes"] for c in profile["components"])==profile["local"]["residual"]
+    extended=extended_cutset_profile(raw,h)
+    assert extended["status"]=="EXTENDED_CUTSET_PROFILE_ONLY"
+    assert [r["cutset_size"] for r in extended["rows"]]==[3,4]
+    assert extended["all_sizes_complete"]
+    for row in extended["rows"]:
+        if row["status"]=="FEASIBLE":
+            assert len(row["pivots"])==row["cutset_size"]
+            assert row["leaves"]==1<<row["cutset_size"]
     print("EXACT_PREJOIN_SELF_TEST PASS")
 
 
@@ -612,6 +647,7 @@ if __name__=="__main__":
     mode.add_argument("--profile",action="store_true")
     mode.add_argument("--cutset-spectrum",action="store_true")
     mode.add_argument("--residual-profile",action="store_true")
+    mode.add_argument("--extended-cutset-profile",action="store_true")
     a=ap.parse_args()
     if a.self_test:
         self_test()
@@ -619,6 +655,7 @@ if __name__=="__main__":
         if a.cnf is None or a.sha256 is None:
             ap.error("CNF and SHA256 required")
         raw=a.cnf.read_bytes()
-        result=(residual_profile(raw,a.sha256) if a.residual_profile else
+        result=(extended_cutset_profile(raw,a.sha256) if a.extended_cutset_profile else
+                residual_profile(raw,a.sha256) if a.residual_profile else
                 cutset_spectrum(raw,a.sha256) if a.cutset_spectrum else solve(raw,a.sha256,profile=a.profile))
         print(json.dumps(result,indent=2))

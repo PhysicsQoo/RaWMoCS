@@ -259,6 +259,17 @@ jobs:
       - name: Verify actual prejoin proxy outputs and routes
         if: env.STUDY == 'qpe8_prejoin' || env.STUDY == 'gf2_6_prejoin'
         run: python3 benchmarks/mpfr_research/tools/quprs_prejoin_codspeed.py verify
+      - name: Report bounded prejoin Simulation stderr on failure
+        if: failure() && (env.STUDY == 'qpe8_prejoin' || env.STUDY == 'gf2_6_prejoin')
+        shell: bash
+        run: |
+          for f in .research/codspeed-prejoin/*.stderr; do
+            if [[ -f "$f" ]]; then
+              printf '%s\n' "$f"
+              tail -c 4096 "$f"
+              printf '\n'
+            fi
+          done
       - name: Archive exact Weighted CNF source checksums
         if: always()
         uses: actions/upload-artifact@v4

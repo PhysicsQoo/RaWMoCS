@@ -255,6 +255,9 @@ impl<const N:usize> Mask<N>{
         self.0.into_iter().enumerate().flat_map(|(k,w)|mask_indices(w).map(move|i|64*k+i))
     }
     fn union(&mut self,b:Self){for (a,b) in self.0.iter_mut().zip(b.0){*a|=b;}}
+    fn union_count(self,b:Self)->usize{
+        self.0.into_iter().zip(b.0).map(|(a,b)|(a|b).count_ones() as usize).sum()
+    }
     fn difference_count(self,b:Self)->usize{
         self.0.into_iter().zip(b.0).map(|(a,b)|(a&!b).count_ones() as usize).sum()
     }
@@ -278,6 +281,9 @@ fn plan(fs:&[Factor<R>],nodes:&Scope,policy:(Option<usize>,bool),retained:usize,
     else{plan_words::<4>(fs,nodes,policy,retained,d)}
 }
 fn plan_words<const N:usize>(fs:&[Factor<R>],nodes:&Scope,policy:(Option<usize>,bool),retained:usize,d:Instant)->Result<Option<Plan>,String>{
+    plan_words_impl::<N,true>(fs,nodes,policy,retained,d)
+}
+fn plan_words_impl<const N:usize,const MASK_PAIRS:bool>(fs:&[Factor<R>],nodes:&Scope,policy:(Option<usize>,bool),retained:usize,d:Instant)->Result<Option<Plan>,String>{
     let mut scopes:BTreeMap<usize,Scope>=fs.iter().enumerate().map(|(i,f)|(i,f.scope.iter().copied().collect())).collect();
     let vars:Vec<_>=nodes.iter().copied().collect();
     if vars.len()>64*N||vars.len()>RESIDUAL_CAP{return Err("plan mask cap".into());}
@@ -311,16 +317,30 @@ fn plan_words<const N:usize>(fs:&[Factor<R>],nodes:&Scope,policy:(Option<usize>,
         graph[i]=Mask::empty();
         let mut bucket:Vec<_>=scopes.iter().filter(|(_,s)|s.contains(&v)).map(|(&i,s)|(i,s.clone())).collect();
         for (i,_) in &bucket{scopes.remove(i);}
+        // One exact mask per bucket scope; pair ranking is unchanged. The
+        // sidecar follows the original survivor order and append-only dst IDs.
+        let mut pair_masks:Vec<Mask<N>>=Vec::new();
+        if MASK_PAIRS&&bucket.len()>2{
+            for (_,s) in &bucket{
+                let mut m=Mask::<N>::empty();
+                for u in s{m.insert(vars.binary_search(u).map_err(|_|"pair owner")?);}
+                pair_masks.push(m);
+            }
+        }
         while bucket.len()>2{
             let mut best=None;
             for i in 0..bucket.len(){for j in i+1..bucket.len(){
-                let n=bucket[i].1.union(&bucket[j].1).count();
+                let n=if MASK_PAIRS{pair_masks[i].union_count(pair_masks[j])}else{bucket[i].1.union(&bucket[j].1).count()};
                 if n<nb.len()&&best.is_none_or(|k|(n,i,j)<k){best=Some((n,i,j));}
             }}
             let Some((n,i,j))=best else{break;};
             let size=1usize<<n;
             if live+size+extra>LIVE{break;}
             let (ib,b)=bucket.remove(j);let (ia,a)=bucket.remove(i);
+            if MASK_PAIRS{
+                let b=pair_masks.remove(j);let mut a=pair_masks.remove(i);
+                a.union(b);pair_masks.push(a);
+            }
             let u:Scope=a.union(&b).copied().collect();
             cost.work+=2*size;cost.peak=cost.peak.max(live+size+extra);cost.joins+=1;
             live=live+size-(1<<a.len())-(1<<b.len());
@@ -551,6 +571,32 @@ mod tests{
         assert_eq!(p.ops.iter().filter(|op|op.pivot.is_some()).count(),n);
         assert_eq!(p.cost.width,1);
         assert!(plan_words::<1>(&fs,&nodes,(Some(0),false),0,d).is_err());
+    }
+    #[test]
+    fn pair_mask_plans_match_ordered_set_reference(){
+        // Full ordered plan, not just aggregate work. Duplicates and dense
+        // buckets exercise repeated merges, tie breaks and appended masks.
+        for n in [9usize,70]{
+            let nodes:Scope=(1..=n).collect();
+            for seed in 0..12usize{
+                let mut fs=Vec::new();
+                for j in 0..(n*2){
+                    let scope:Vec<_>=[1+(j+seed)%n,1+(j+1+seed)%n,1+(j+3+seed)%n].into_iter().collect::<Scope>().into_iter().collect();
+                    fs.push(Factor{values:vec![Some(one());1<<scope.len()],scope});
+                }
+                let d=Instant::now()+Duration::from_secs(10);
+                for p in [Some(0),Some(4),None]{for reverse in [true,false]{
+                    let a=plan_words_impl::<4,false>(&fs,&nodes,(p,reverse),0,d).unwrap();
+                    let b=plan_words_impl::<4,true>(&fs,&nodes,(p,reverse),0,d).unwrap();
+                    assert_eq!(a,b);
+                    if n<=64{assert_eq!(a,plan_words_impl::<1,true>(&fs,&nodes,(p,reverse),0,d).unwrap());}
+                }}
+            }
+        }
+        let mut a=Mask::<4>::empty();let mut b=Mask::<4>::empty();
+        for i in [0,63,64,129,255]{a.insert(i);}
+        for i in [63,65,129,200,255]{b.insert(i);}
+        assert_eq!(a.union_count(b),7);
     }
     #[test]
     fn mask_fill_matches_set_reference(){

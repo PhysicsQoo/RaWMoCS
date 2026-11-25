@@ -568,6 +568,75 @@ def extended_cutset_profile(raw, expected):
         all_sizes_complete=all(r["status"]!="DEADLINE" for r in rows),
         wall_s=monotonic()-start)
 
+def graph_order_profile(raw, expected):
+    """Graph-only order search on the unconditioned residual primal graph.
+    Removing cut vertices is conservative: exact restriction may remove
+    further axes. Width is an upper bound, not a work/live admission proof.
+    No numeric execution. Deterministic seeds and fixed trial/deadline caps.
+    """
+    import random
+    start=monotonic()
+    factors,nodes,_,local=local_reduce(raw,expected,start+PLAN_SECONDS)
+    adjacency,_=residual_components(factors,nodes)
+    high=sorted(nodes,key=lambda v:(-len(adjacency[v]),v))[:8]
+    ids=sorted(nodes)
+    index={v:i for i,v in enumerate(ids)}
+    masks=[sum(1<<index[u] for u in adjacency[v]) for v in ids]
+    full=(1<<len(ids))-1
+    deadline=start+60
+    def indices(mask):
+        while mask:
+            bit=mask&-mask
+            yield bit.bit_length()-1
+            mask^=bit
+    def order(cuts,penalty,seed):
+        active=full
+        for v in cuts:active &= ~(1<<index[v])
+        g=[m&active for m in masks]
+        rng=random.Random(seed)
+        ranks=list(range(len(ids)))
+        rng.shuffle(ranks)
+        width=0;cells=0;seq=[]
+        while active:
+            if monotonic()>=deadline:raise ValueError("ORDER_DEADLINE")
+            def score(i):
+                nb=g[i];degree=nb.bit_count()
+                if penalty is None:return (degree,degree,ranks[i])
+                fill=sum((nb&~g[j]).bit_count()-1 for j in indices(nb))//2
+                return (fill+penalty*degree,degree,ranks[i])
+            i=min(indices(active),key=score)
+            nb=g[i];width=max(width,nb.bit_count())
+            cells+=1<<nb.bit_count()
+            seq.append(ids[i])
+            active &= ~(1<<i)
+            for j in indices(nb):g[j]=(g[j]|nb)&~((1<<i)|(1<<j))
+            g[i]=0
+        return dict(width=width,elimination_cells=cells,cutset=list(cuts),penalty=penalty,seed=seed,order=seq)
+    rows=[]
+    for n in (0,1,2,3,4):
+        candidates=list(combinations(high,n))
+        # Fixed reproducible sample of at most 12 cutsets, independent of timing.
+        rng=random.Random(21+n);rng.shuffle(candidates)
+        selected=candidates[:12]
+        best=None;trials=0
+        try:
+            for cuts in selected:
+                for penalty in (0,1,4,None):
+                    for seed in (0,1,2):
+                        row=order(cuts,penalty,seed)
+                        trials+=1
+                        key=(row["width"],row["elimination_cells"],row["cutset"],seed)
+                        if best is None or key<best[0]:best=(key,row)
+        except ValueError as exc:
+            if str(exc)!="ORDER_DEADLINE":raise
+        rows.append(dict(cutset_size=n,available=len(candidates),sampled=len(selected),
+            trials=trials,planned_trials=len(selected)*12,
+            status="COMPLETE" if trials==len(selected)*12 else "DEADLINE",
+            best_observed=None if best is None else best[1]))
+        if monotonic()>=deadline:break
+    return dict(status="GRAPH_ORDER_PROFILE_ONLY",source_sha256=expected,
+        local=local,degree_pool=high,rows=rows,wall_s=monotonic()-start)
+
 def self_test():
     import random
     from original_fixed_interval import solve as baseline
@@ -635,6 +704,14 @@ def self_test():
         if row["status"]=="FEASIBLE":
             assert len(row["pivots"])==row["cutset_size"]
             assert row["leaves"]==1<<row["cutset_size"]
+    orders=graph_order_profile(raw,h)
+    assert orders["status"]=="GRAPH_ORDER_PROFILE_ONLY"
+    for row in orders["rows"]:
+        best=row["best_observed"]
+        if best:
+            assert len(best["order"])+len(best["cutset"])==orders["local"]["residual"]
+            assert len(set(best["order"]+best["cutset"]))==orders["local"]["residual"]
+            assert best["width"]<=max(0,len(best["order"])-1)
     print("EXACT_PREJOIN_SELF_TEST PASS")
 
 
@@ -648,6 +725,7 @@ if __name__=="__main__":
     mode.add_argument("--cutset-spectrum",action="store_true")
     mode.add_argument("--residual-profile",action="store_true")
     mode.add_argument("--extended-cutset-profile",action="store_true")
+    mode.add_argument("--graph-order-profile",action="store_true")
     a=ap.parse_args()
     if a.self_test:
         self_test()
@@ -655,7 +733,8 @@ if __name__=="__main__":
         if a.cnf is None or a.sha256 is None:
             ap.error("CNF and SHA256 required")
         raw=a.cnf.read_bytes()
-        result=(extended_cutset_profile(raw,a.sha256) if a.extended_cutset_profile else
+        result=(graph_order_profile(raw,a.sha256) if a.graph_order_profile else
+                extended_cutset_profile(raw,a.sha256) if a.extended_cutset_profile else
                 residual_profile(raw,a.sha256) if a.residual_profile else
                 cutset_spectrum(raw,a.sha256) if a.cutset_spectrum else solve(raw,a.sha256,profile=a.profile))
         print(json.dumps(result,indent=2))

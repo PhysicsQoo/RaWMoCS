@@ -257,7 +257,7 @@ jobs:
         if: github.event.label.name == 'run-prejoin-planner-ab' || github.event.label.name == 'run-prejoin-support-ab' || github.event.label.name == 'run-prejoin-recycle-ab' || github.event.label.name == 'run-prejoin-incremental-grover-repeat'
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.label.name == 'run-prejoin-incremental-grover-repeat' && '5df2d9deec42ebbe42d00b0d23bb0e4dff682bb6' || github.event.label.name == 'run-prejoin-recycle-ab' && '6e1d3deb998e0cae186c5751914e6275bc8b37ef' || github.event.label.name == 'run-prejoin-support-ab' && '3a91f438d24793cefe8a63704b1075a7381ca5b0' || '2fbdda903101b3787c83d05316a2fe08133804de' }}
+          ref: ${{ github.event.label.name == 'run-prejoin-incremental-grover-repeat' && 'd68b37ac85958af3fd36c84db2a86dea14391e2f' || github.event.label.name == 'run-prejoin-recycle-ab' && '6e1d3deb998e0cae186c5751914e6275bc8b37ef' || github.event.label.name == 'run-prejoin-support-ab' && '3a91f438d24793cefe8a63704b1075a7381ca5b0' || '2fbdda903101b3787c83d05316a2fe08133804de' }}
           path: .upstream/planner-baseline
           persist-credentials: false
       - name: Checkout exactly pinned original QuPRS QASM corpus
@@ -417,7 +417,7 @@ jobs:
           expected_baseline=2fbdda903101b3787c83d05316a2fe08133804de
           if [[ "${{ github.event.label.name }}" == run-prejoin-support-ab ]]; then expected_baseline=3a91f438d24793cefe8a63704b1075a7381ca5b0; fi
           if [[ "${{ github.event.label.name }}" == run-prejoin-recycle-ab ]]; then expected_baseline=6e1d3deb998e0cae186c5751914e6275bc8b37ef; fi
-          if [[ "${{ github.event.label.name }}" == run-prejoin-incremental-grover-repeat ]]; then expected_baseline=5df2d9deec42ebbe42d00b0d23bb0e4dff682bb6; fi
+          if [[ "${{ github.event.label.name }}" == run-prejoin-incremental-grover-repeat ]]; then expected_baseline=d68b37ac85958af3fd36c84db2a86dea14391e2f; fi
           test "$(git -C .upstream/planner-baseline rev-parse HEAD)" = "$expected_baseline"
           baseline=.upstream/planner-baseline
           cmp "$baseline/benchmarks/mpfr_research/Cargo.toml" benchmarks/mpfr_research/Cargo.toml

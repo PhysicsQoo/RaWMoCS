@@ -73,6 +73,31 @@ explicit small-case diagnostic, not the auto fallback. An external process
 resource supervisor is still required for hard RSS and whole-process time.
 The heap frame guard is not a bound on all allocations.
 
+### Opt-in QuPRS Python adapter
+
+For a QuPRS Python version supporting scoped solver registration (release
+CI pins revision `b398f07d6845efc23540549ccbfec717c27b1722`), add
+`crates/rawmocs-cli/tools` from the source package to your Python import
+path. The adapter does not change QuPRS's default GPMC solver.
+
+```python
+from rawmocs_quprs import registered_rawmocs
+from QuPRS.interface.ps2wmc import run_wmc
+
+with registered_rawmocs("/absolute/path/to/rawmocs", digits=60):
+    count = run_wmc("input.cnf", "rawmocs", timeout=20, preserve_count=True)
+```
+
+This selects a 200-bit working precision and the QuPRS external deadline.
+Linux `prlimit` applies a 3 GiB address-space cap by default; it is not a
+physical RSS limit or kernel OOM classifier. An internal search deadline
+can also be selected with `timeout_ms`. The returned `PrintedCount` is a
+numerical observation, not an equivalence verdict or certified error
+bound; use `RawAdapter.parse_protocol` for the explicit Boolean SAT status.
+Registration is scoped and no failure is converted to a count or silently
+retried with another solver. This is not a built-in QuPRS adapter, Rust FFI
+integration, or default-solver migration.
+
 **Candidate only:** see [release admission](docs/first-release-admission.md).
 No claim of competition-wide performance, projected WMC, exact
 transcendental phase weights, certified rounding or equivalence checking.

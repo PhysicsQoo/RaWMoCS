@@ -5,69 +5,29 @@ Uses the actual QuPRS encoder, registered external adapter, and process
 supervisor. Does not modify QuPRS, its Rust FFI, or its default solver.
 """
 import argparse
-from contextlib import contextmanager
 from fractions import Fraction
 import hashlib
 from itertools import product
 import json
-import math
-import os
 from pathlib import Path
 import shlex
 import subprocess
-import time
 
 import symengine as se
 import sympy as sp
 from QuPRS.pathsum import F, PathSum, Register
 from QuPRS.interface.ps2wmc import to_DIMACS, run_wmc
-from QuPRS.utils.precision_count import PrintedCount, _number_and_unit
 from QuPRS.utils.solver_adapter import (
-    SolverAdapter, SolverCapabilities, SolverExecutionError, SolverResultError,
-    execute_solver, registered_solver_adapter,
+    SolverExecutionError, SolverResultError,
+    execute_solver, get_solver_adapter, registered_solver_adapter,
 )
 from QuPRS.utils.solver_process import run, SolverTimeout, SolverProcessError
 
-class RawAdapter(SolverAdapter):
-    def format_weights(self, real, imag):
-        return f"{real} {imag} 0", "1.0 0.0 0"
-
-    @staticmethod
-    def parse_protocol(stdout):
-        lines = stdout.splitlines()
-        if len(lines) != 2 or lines[0] not in ("s SATISFIABLE", "s UNSATISFIABLE"):
-            raise SolverResultError("RaWMoCS incomplete or invalid SAT status")
-        f = lines[1].split()
-        if len(f) != 5 or f[:3] != ["c", "r", "mpfr"] or any("/" in x for x in f[3:]):
-            raise SolverResultError("RaWMoCS invalid count record")
-        try:
-            real, ru = _number_and_unit(f[3])
-            imag, iu = _number_and_unit(f[4])
-        except ValueError as e:
-            raise SolverResultError(str(e)) from e
-        sat = lines[0] == "s SATISFIABLE"
-        if not sat and (real or imag):
-            raise SolverResultError("RaWMoCS UNSAT with nonzero count")
-        return sat, PrintedCount(real, imag, ru, iu, "rawmocs-mpfr")
-
-    def parse_output_precise(self, stdout):
-        return self.parse_protocol(stdout)[1]
-
-    def parse_output(self, stdout):
-        p = self.parse_output_precise(stdout)
-        try:
-            re, im = float(p.real), float(p.imag)
-        except OverflowError as e:
-            raise SolverResultError("count outside finite binary64 range") from e
-        if not math.isfinite(re) or not math.isfinite(im):
-            raise SolverResultError("count outside finite binary64 range")
-        return complex(re, im)
+from rawmocs_quprs import create_adapter, registered_rawmocs
 
 def adapter(path):
-    @contextmanager
-    def resource():
-        yield path
-    return RawAdapter("rawmocs", ("--digits", "60"), SolverCapabilities("pair"), resource)
+    # Fault executables are supervised by QuPRS's existing process runner.
+    return create_adapter(path, address_space_bytes=None)
 
 def no_other_solver(_):
     raise AssertionError("Unexpected fallback or implicit solver resource")
@@ -132,7 +92,13 @@ def main():
     def save():
         (a.out/"integration.json").write_text(json.dumps(report,indent=2)+"\n")
     save()
-    real=adapter(wrapper.resolve())
+    real=create_adapter(binary)
+    assert real.arguments[:3]==("--as=3221225472","--",str(binary))
+    default_gpmc=get_solver_adapter("gpmc")
+    expect(ValueError,lambda:get_solver_adapter("rawmocs"))
+    expect(ValueError,lambda:create_adapter(binary,digits=31))
+    expect(ValueError,lambda:create_adapter(binary,timeout_ms=-1))
+    expect(ValueError,lambda:create_adapter(binary,address_space_bytes=0))
     reg=Register(1)
     identity=F(reg)
     flip=F(reg,data={reg[0].name:sp.Not(sp.Symbol(reg[0].name))},bits=(reg[0].name,))
@@ -176,6 +142,23 @@ def main():
         invalid=a.out/"invalid.cnf";invalid.write_text("p cnf 1 0\nc t pwmc\n")
         expect(SolverExecutionError,lambda:run_wmc(str(invalid),"rawmocs",timeout=20,preserve_count=True))
         report["controls"].append("actual-unsupported-input")
+    expect(ValueError,lambda:get_solver_adapter("rawmocs"))
+    assert get_solver_adapter("gpmc") is default_gpmc
+    # Use the public context helper with each admitted working precision.
+    # Test SAT-zero/UNSAT separately through the exported parser.
+    for digits in (30,60,100,130):
+        with registered_rawmocs(binary,digits=digits,timeout_ms=10000) as configured:
+            p=run_wmc(str(a.out/"sat-zero.cnf"),"rawmocs",timeout=20,preserve_count=True)
+            assert p.real==p.imag==0
+            actual=run([str(wrapper.resolve()),"--digits",str(digits),str(a.out/"sat-zero.cnf")],timeout=20)
+            assert actual.returncode==0 and configured.parse_protocol(actual.stdout)[0]
+        expect(ValueError,lambda:get_solver_adapter("rawmocs"))
+        report["controls"].append(f"registered-precision-{digits}");save()
+    with registered_rawmocs(binary,timeout_ms=0):
+        expect(SolverExecutionError,lambda:run_wmc(str(a.out/"sat-zero.cnf"),"rawmocs",timeout=20,preserve_count=True))
+    report["controls"].append("configured-internal-timeout")
+    assert get_solver_adapter("gpmc") is default_gpmc
+    report["controls"].append("scope-restoration");save()
     # Fault processes isolate the existing QuPRS transport/lifecycle;
     # not evidence of a real solver numerical result or hard RSS limit.
     for name,body,exc in [

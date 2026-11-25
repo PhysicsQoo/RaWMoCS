@@ -109,6 +109,11 @@ acceptance; historical PASS is not a substitute.
 - [ ] QuPRS adapter integration: actual exported CNF, process exit handling,
   numerical guard, SAT/zero/unknown separation, timeout, cancellation and
   resource supervisor. Never convert execution failure to a definitive verdict.
+  Distribute the opt-in Python adapter as reusable rawmocs_quprs.py, exercise
+  the actual imported module at all four precisions and zero internal budget,
+  and verify registry restoration without replacing default GPMC. QuPRS's
+  PrintedCount does not retain SAT; the explicit protocol parser does.
+  Native QuPRS default integration/Rust FFI are outside v0.1.0 scope.
 - [ ] Fresh seven-trial order-rotated matched GPMC comparison at the same
   precision on representative QuPRS long cases, with p50/p90/RSS and
   independent real/imag witness. Bounded Simulation/Flamegraph regression

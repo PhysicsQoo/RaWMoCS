@@ -19,7 +19,11 @@ def main():
                          help="Repeat an already qualified original 100/333-bit cohort without precision drift")
     repeats.add_argument("--profile-fixed-target",type=int,choices=[30,100],
                          help="One fixed-precision three-arm diagnostic; preserve censored adaptive results")
+    ap.add_argument("--planner-baseline",type=Path,
+                    help="Pinned old ordered-set planner binary, for same-run fixed seven-pair A/B")
     a=ap.parse_args()
+    ab=a.planner_baseline is not None
+    if ab and a.repeat_fixed_target is None:ap.error("planner A/B requires fixed-repeat target")
     ref=json.loads(a.reference.read_text())
     expected=ref["source_sha256"]
     if (sha(a.cnf)!=expected or ref["status"]!="INDEPENDENT_INTERVAL_COMPLETE" or ref["bits"]!=550
@@ -33,6 +37,7 @@ def main():
     report={"status":"IN_PROGRESS","source_sha256":expected,"reference_sha256":sha(a.reference),
             "gpmc_binary_sha256":sha(a.gpmc),"rust_binary_sha256":sha(a.mpfr),
             "repeat_count":count,"repeat_precision_policy":"fixed-profile" if profile else "fixed" if fixed else "guarded" if repeat else "pilot","cohorts":[]}
+    if ab:report["planner_baseline_sha256"]=sha(a.planner_baseline)
     def persist():
         a.report.write_text(json.dumps(report,indent=2)+"\n")
     persist()
@@ -48,23 +53,27 @@ def main():
                 rows={}
                 arms=("gpmc","prejoin") if (trial+(target==100))%2==0 else ("prejoin","gpmc")
                 if profile:arms=arms+("adaptive",)
+                if ab:
+                    base=("gpmc","planner_baseline","prejoin")
+                    offset=(trial+(target==100))%3
+                    arms=base[offset:]+base[:offset]
                 cohort["trials"].append({"trial":trial,"order":arms,"rows":rows})
                 for arm in arms:
                     if sha(a.cnf)!=expected or sha(a.reference)!=report["reference_sha256"]:
                         raise ValueError("INPUT_DRIFT")
                     cmd=([str(a.gpmc.resolve()),"-mode=1",f"-prec={digits}",str(a.cnf.resolve())] if arm=="gpmc" else
-                         [str(a.mpfr.resolve()),"--adaptive" if arm=="adaptive" else "--factor-prejoin",str(digits),str(a.cnf.resolve())])
+                         [str((a.planner_baseline if arm=="planner_baseline" else a.mpfr).resolve()),"--adaptive" if arm=="adaptive" else "--factor-prejoin",str(digits),str(a.cnf.resolve())])
                     row=native(cmd,"gpmc" if arm=="gpmc" else "candidate",PAIR_S,digits,expected_bits=bits)
                     if row["status"]=="COMPLETED":
                         row["witness"]=compare(row,ref,target)
                         if arm=="adaptive":
                             from quprs_mqt_adaptive_scout import result_route
                             row["route"]=result_route(row)
-                        if arm=="prejoin":
+                        if arm in ("prejoin","planner_baseline"):
                             phases=re.findall(r"^PREJOIN_PHASE_NS local=(\d+) choose=(\d+) restrict=(\d+) execute=(\d+)$",row["stderr_tail"],re.M)
                             if len(phases)==1:
                                 row["phases_ns"]=dict(zip(("local","choose","restrict","execute"),map(int,phases[0])))
-                            if profile and len(phases)!=1:raise ValueError("MISSING_PREJOIN_PHASES")
+                            if (profile or ab) and len(phases)!=1:raise ValueError("MISSING_PREJOIN_PHASES")
                             t=TRACE.findall(row["stderr_tail"])
                             if len(t)==1:
                                 residual,cuts,leaves,width,work,peak,joins,plan_ns=map(int,t[0])
@@ -91,6 +100,15 @@ def main():
                             cohort["adaptive_status"]="ACCURACY_OR_ROUTE_INCONCLUSIVE"
                         else:cohort["adaptive_status"]="CERTIFIED_SINGLE_PAIR"
                     print("PREJOIN_PROFILE",target,bits,r["phases_ns"],"adaptive",cohort["adaptive_status"],ar.get("route"),ar.get("wall_ns"),flush=True)
+                if ab:
+                    old=rows["planner_baseline"]
+                    if (old["status"]!="COMPLETED" or not old.get("route_pass") or
+                        not old["witness"]["pass"] or not old.get("peak_rss_kib",0)>0):
+                        cohort["status"]="BASELINE_INCONCLUSIVE";break
+                    keys=("residual","cuts","leaves","width","work","peak","joins")
+                    if any(old["trace"][k]!=r["trace"][k] for k in keys):
+                        cohort["status"]="BASELINE_PLAN_SIGNATURE_DRIFT";break
+                    print("PREJOIN_PLANNER_AB",target,bits,trial,old["phases_ns"]["choose"],r["phases_ns"]["choose"],old["wall_ns"],r["wall_ns"],flush=True)
                 sig=tuple(r["trace"][k] for k in ("residual","cuts","leaves","width","work","peak","joins"))
                 signatures.append(sig)
                 if len(set(signatures))!=1:
@@ -110,6 +128,17 @@ def main():
                     paired_rust_wins=sum(b<a for a,b in zip(g,r)),
                     median_rss_kib={arm:statistics.median(values(arm,"peak_rss_kib")) for arm in ("gpmc","prejoin")},
                     plan_signature=signatures[0])
+                if ab:
+                    old=values("planner_baseline","wall_ns")
+                    old_plan=[t["rows"]["planner_baseline"]["phases_ns"]["choose"] for t in cohort["trials"]]
+                    new_plan=[t["rows"]["prejoin"]["phases_ns"]["choose"] for t in cohort["trials"]]
+                    cohort["planner_ab"]={"baseline_p50_s":statistics.median(old)/1e9,"baseline_p90_s":p90(old)/1e9,
+                        "baseline_choose_p50_ms":statistics.median(old_plan)/1e6,"candidate_choose_p50_ms":statistics.median(new_plan)/1e6,
+                        "choose_speedup":statistics.median(old_plan)/statistics.median(new_plan),
+                        "native_speedup":statistics.median(old)/statistics.median(r),
+                        "native_paired_wins":sum(b<a for a,b in zip(old,r)),
+                        "baseline_rss_kib":statistics.median(values("planner_baseline","peak_rss_kib"))}
+                    print("PREJOIN_PLANNER_AB_FINAL",target,bits,cohort["planner_ab"],flush=True)
             persist()
             print("PREJOIN_NATIVE_FINAL",target,bits,cohort["status"],
                   {k:cohort.get(k) for k in ("gpmc_median_s","rust_median_s","gpmc_p90_s","rust_p90_s","gpmc_over_rust","paired_ratio_median","median_rss_kib","plan_signature")},flush=True)

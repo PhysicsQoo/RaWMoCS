@@ -60,6 +60,12 @@ fn rmul(a:&R,b:&R)->Result<R,String>{
     if b.0==0&&b.1==1{return checked((-a.1.clone(),a.0.clone()));}
     if a.0==0&&a.1== -1{return checked((b.1.clone(),-b.0.clone()));}
     if b.0==0&&b.1== -1{return checked((a.1.clone(),-a.0.clone()));}
+    // Non-unit real/imaginary axes require only two rational products.
+    // Keep exact support and the same final bit-cap check as the full formula.
+    if a.1==0{return checked((Rational::from(&a.0*&b.0),Rational::from(&a.0*&b.1)));}
+    if b.1==0{return checked((Rational::from(&a.0*&b.0),Rational::from(&a.1*&b.0)));}
+    if a.0==0{return checked((-Rational::from(&a.1*&b.1),Rational::from(&a.1*&b.0)));}
+    if b.0==0{return checked((-Rational::from(&a.1*&b.1),Rational::from(&a.0*&b.1)));}
     rmul_full(a,b)
 }
 fn radd(a:Cell<R>,b:Cell<R>)->Result<Cell<R>,String>{
@@ -378,6 +384,11 @@ mod tests{
         x.push((decimal("-1.0000000000000000").unwrap(),decimal("1.2246467991473532e-16").unwrap()));
         x.push((decimal("0.12345678901234567890123456789").unwrap(),decimal("-1e-80").unwrap()));
         x.push((decimal("1e80").unwrap(),decimal("1e-80").unwrap()));
+        for v in ["2","-3","0.125","-0.1234567890123456789","1e80","1e-80"]{
+            let q=decimal(v).unwrap();
+            x.push((q.clone(),Rational::from(0)));
+            x.push((Rational::from(0),q));
+        }
         for a in &x{for b in &x{
             assert_eq!(rmul(a,b).unwrap(),rmul_full(a,b).unwrap());
         }}

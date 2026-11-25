@@ -28,16 +28,18 @@ def main():
     if ab and a.repeat_fixed_target is None:ap.error("planner A/B requires fixed-repeat target")
     ref=json.loads(a.reference.read_text())
     expected=ref["source_sha256"]
-    if (sha(a.cnf)!=expected or ref["status"]!="INDEPENDENT_INTERVAL_COMPLETE" or ref["bits"]!=550
+    if (sha(a.cnf)!=expected or ref["status"] not in ("INDEPENDENT_INTERVAL_COMPLETE","INDEPENDENT_FIXED_INTERVAL_COMPLETE") or ref["bits"]!=550
         or ref["width"]>19 or ref["work"]>40_000_000 or ref["peak"]>2_000_000):
         raise ValueError("REFERENCE_DRIFT")
+    if ref["status"]=="INDEPENDENT_FIXED_INTERVAL_COMPLETE" and ref.get("order_policy") not in ("fill-reverse","degree-reverse"):
+        raise ValueError("REFERENCE_POLICY_DRIFT")
     fixed=a.repeat_fixed_target is not None
     repeat=fixed or a.repeat_target is not None
     profile=a.profile_fixed_target is not None
     guarded_pilot=a.pilot_guarded_target is not None
     count=7 if repeat else 1
     targets=([a.profile_fixed_target] if profile else [a.repeat_fixed_target if fixed else a.repeat_target] if repeat else [a.pilot_guarded_target] if guarded_pilot else [30,100])
-    report={"status":"IN_PROGRESS","source_sha256":expected,"reference_sha256":sha(a.reference),
+    report={"status":"IN_PROGRESS","source_sha256":expected,"reference_sha256":sha(a.reference),"reference_method":ref["status"],
             "gpmc_binary_sha256":sha(a.gpmc),"rust_binary_sha256":sha(a.mpfr),
             "repeat_count":count,"repeat_precision_policy":"fixed-profile" if profile else "fixed" if fixed else "guarded" if repeat else "guarded-pilot" if guarded_pilot else "pilot","cohorts":[]}
     if ab:report["planner_baseline_sha256"]=sha(a.planner_baseline)

@@ -346,13 +346,23 @@ fn execute(fs:Vec<Factor<R>>,scalar:Cell<R>,p:&Plan,bits:u32,d:Instant)->Result<
 fn solve(p:&Problem,raw:&str,bits:u32)->Result<Outcome,String>{
     let start=Instant::now();let d=start+Duration::from_secs(45);let pd=start+Duration::from_secs(30);
     let (fs,nodes,scalar,local)=local(p,raw,pd)?;
+    let local_ns=start.elapsed().as_nanos();
+    let phase=Instant::now();
     let (cuts,plans,cost)=choose(&fs,&nodes,&scalar,&local,pd)?;
+    let choose_ns=phase.elapsed().as_nanos();
     let plan_ns=start.elapsed().as_nanos();
     let mut out=None;
+    let mut restrict_ns=0;
+    let mut execute_ns=0;
     for (m,plan) in plans.iter().enumerate(){
+        let phase=Instant::now();
         let (f,s)=restrict(&fs,&scalar,&cuts,m)?;
+        restrict_ns+=phase.elapsed().as_nanos();
+        let phase=Instant::now();
         out=cadd(out,execute(f,s,plan,bits,d)?);
+        execute_ns+=phase.elapsed().as_nanos();
     }
+    eprintln!("PREJOIN_PHASE_NS local={local_ns} choose={choose_ns} restrict={restrict_ns} execute={execute_ns}");
     eprintln!("PREJOIN_COMPLETE residual={} cuts={} leaves={} width={} work={} peak={} joins={} plan_ns={}",nodes.len(),cuts.len(),plans.len(),cost.width,cost.work,cost.peak,cost.joins,plan_ns);
     match out{
         None=>Ok(Outcome::unsat(bits)),

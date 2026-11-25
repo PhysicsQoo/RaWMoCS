@@ -121,12 +121,12 @@ jobs:
        (github.event_name == 'pull_request' &&
         github.event.pull_request.head.repo.full_name == github.repository &&
         github.event.action == 'labeled' &&
-        (github.event.label.name == 'run-long-codspeed' || github.event.label.name == 'run-prejoin-codspeed' || github.event.label.name == 'run-gf2-contraction-codspeed' || github.event.label.name == 'run-prejoin-incremental-grover-repeat' || github.event.label.name == 'run-prejoin-pair-kernel')))
+        (github.event.label.name == 'run-long-codspeed' || github.event.label.name == 'run-prejoin-codspeed' || github.event.label.name == 'run-gf2-contraction-codspeed' || github.event.label.name == 'run-prejoin-incremental-grover-repeat' || github.event.label.name == 'run-prejoin-pair-kernel' || github.event.label.name == 'run-prejoin-local-prefix')))
     runs-on: ubuntu-24.04
     # Build/reference overhead is separate from the bounded Simulation step.
     timeout-minutes: ${{ (github.event_name == 'pull_request' || inputs.study == 'grover5_focus' || inputs.study == 'qpe8_prejoin') && 25 || 35 }}
     env:
-      STUDY: ${{ github.event.label.name == 'run-prejoin-pair-kernel' && 'grover_pair_kernel' || (github.event.label.name == 'run-gf2-contraction-codspeed' || github.event.label.name == 'run-prejoin-incremental-grover-repeat') && 'gf2_6_axis_ab' || github.event.label.name == 'run-prejoin-codspeed' && 'qpe8_prejoin' || github.event_name == 'pull_request' && 'grover5_focus' || inputs.study || 'grover5_focus' }}
+      STUDY: ${{ github.event.label.name == 'run-prejoin-local-prefix' && 'grover_local_prefix' || github.event.label.name == 'run-prejoin-pair-kernel' && 'grover_pair_kernel' || (github.event.label.name == 'run-gf2-contraction-codspeed' || github.event.label.name == 'run-prejoin-incremental-grover-repeat') && 'gf2_6_axis_ab' || github.event.label.name == 'run-prejoin-codspeed' && 'qpe8_prejoin' || github.event_name == 'pull_request' && 'grover5_focus' || inputs.study || 'grover5_focus' }}
       DIGITS: ${{ inputs.digits || '30' }}
     permissions:
       contents: read
@@ -200,7 +200,7 @@ jobs:
           cp benchmarks/rust_core/tools/quprs_long_tail_source_bridge.rs .upstream/quprs/rust/quprs/examples/quprs_long_tail_source_bridge.rs
           cargo build --locked --release --no-default-features --manifest-path .upstream/quprs/rust/Cargo.toml -p quprs --example quprs_long_tail_source_bridge
       - name: Build unchanged original GPMC C++ executable
-        if: env.STUDY != 'gf2_6_prejoin' && env.STUDY != 'gf2_6_axis_ab' && env.STUDY != 'grover_pair_kernel'
+        if: env.STUDY != 'gf2_6_prejoin' && env.STUDY != 'gf2_6_axis_ab' && env.STUDY != 'grover_pair_kernel' && env.STUDY != 'grover_local_prefix'
         shell: bash
         run: |
           set -euo pipefail
@@ -214,7 +214,7 @@ jobs:
           cargo build --release --manifest-path benchmarks/mpfr_research/Cargo.toml
           git diff --exit-code -- benchmarks/mpfr_research/Cargo.lock
       - name: Qualify original long CNF and generate focused two-arm config
-        if: env.STUDY != 'legacy' && env.STUDY != 'qpe8_prejoin' && env.STUDY != 'gf2_6_prejoin' && env.STUDY != 'gf2_6_axis_ab' && env.STUDY != 'grover_pair_kernel'
+        if: env.STUDY != 'legacy' && env.STUDY != 'qpe8_prejoin' && env.STUDY != 'gf2_6_prejoin' && env.STUDY != 'gf2_6_axis_ab' && env.STUDY != 'grover_pair_kernel' && env.STUDY != 'grover_local_prefix'
         shell: bash
         run: |
           set -euo pipefail
@@ -232,14 +232,14 @@ jobs:
           # Do not nest `codspeed run` inside the CodSpeed Action.
           config: codspeed.yml
       - name: CodSpeed focused original CNF Simulation
-        if: env.STUDY != 'legacy' && env.STUDY != 'qpe8_prejoin' && env.STUDY != 'gf2_6_prejoin' && env.STUDY != 'gf2_6_axis_ab' && env.STUDY != 'grover_pair_kernel'
+        if: env.STUDY != 'legacy' && env.STUDY != 'qpe8_prejoin' && env.STUDY != 'gf2_6_prejoin' && env.STUDY != 'gf2_6_axis_ab' && env.STUDY != 'grover_pair_kernel' && env.STUDY != 'grover_local_prefix'
         timeout-minutes: ${{ env.STUDY == 'grover5_focus' && 10 || 20 }}
         uses: CodSpeedHQ/action@v5
         with:
           mode: simulation
           config: codspeed-long.generated.yml
       - name: Verify actual simulated output and solver route
-        if: env.STUDY != 'legacy' && env.STUDY != 'qpe8_prejoin' && env.STUDY != 'gf2_6_prejoin' && env.STUDY != 'gf2_6_axis_ab' && env.STUDY != 'grover_pair_kernel'
+        if: env.STUDY != 'legacy' && env.STUDY != 'qpe8_prejoin' && env.STUDY != 'gf2_6_prejoin' && env.STUDY != 'gf2_6_axis_ab' && env.STUDY != 'grover_pair_kernel' && env.STUDY != 'grover_local_prefix'
         shell: bash
         run: python3 benchmarks/mpfr_research/tools/quprs_long_codspeed.py verify
       - name: Checkout pinned pre-pair-mask Simulation baseline
@@ -297,8 +297,8 @@ jobs:
               printf '\n'
             fi
           done
-      - name: Capture bounded original Grover planner pair kernel outside Simulation
-        if: env.STUDY == 'grover_pair_kernel'
+      - name: Freeze original Grover source for bounded stage research
+        if: env.STUDY == 'grover_pair_kernel' || env.STUDY == 'grover_local_prefix'
         shell: bash
         run: |
           set -euo pipefail
@@ -311,6 +311,13 @@ jobs:
             "$case" "$(realpath .upstream/quprs)" "$(realpath "$root")" "$rel"
           cmp "$root/$case.qasm" ".upstream/quprs/$rel"
           printf '%s  %s\n' a9757cd5bd730b6f769d2970e3a16ac66fee7157b55f81208c0a7c2cece0023b "$cnf" | sha256sum -c -
+      - name: Capture bounded original Grover planner pair kernel outside Simulation
+        if: env.STUDY == 'grover_pair_kernel'
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=.research/codspeed-prejoin
+          cnf="$root/extended_mqt_grover6_prejoin_qiskit261-gpmc.cnf"
           bin=benchmarks/mpfr_research/target/release/rawmocs-mpfr-research
           timeout -k 2s 35s prlimit --as=3221225472 -- "$bin" --factor-prejoin pair-snapshot "$cnf" > "$root/pair-snapshot.txt"
           head -n 1 "$root/pair-snapshot.txt"
@@ -345,6 +352,42 @@ jobs:
           done
           cmp "$root/baseline.simulated" "$root/mask.simulated"
           echo PAIR_KERNEL_SIMULATION_PARITY_PASS
+      - name: Measure exact local native subphases and qualify fixed 512-pivot prefix
+        if: env.STUDY == 'grover_local_prefix'
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=.research/codspeed-prejoin
+          cnf="$root/extended_mqt_grover6_prejoin_qiskit261-gpmc.cnf"
+          bin=benchmarks/mpfr_research/target/release/rawmocs-mpfr-research
+          sha256sum "$cnf" "$bin" > "$root/local-prefix.sha256"
+          for trial in 1 2 3; do
+            timeout -k 2s 35s prlimit --as=3221225472 -- "$bin" --factor-prejoin local-profile "$cnf" > "$root/local-full-$trial.stdout" 2> "$root/local-full-$trial.stderr"
+            grep '^LOCAL_PROFILE_NS ' "$root/local-full-$trial.stderr"
+            grep '^LOCAL_PROBE_V1 mode=local-profile eliminated=2986 remaining=59 ' "$root/local-full-$trial.stdout"
+            cmp "$root/local-full-1.stdout" "$root/local-full-$trial.stdout"
+          done
+          timeout -k 2s 3s prlimit --as=3221225472 -- "$bin" --factor-prejoin local-prefix "$cnf" > "$root/local-prefix.native"
+          grep '^LOCAL_PROBE_V1 mode=local-prefix eliminated=512 ' "$root/local-prefix.native"
+          printf '#!/bin/sh\nexec %s --factor-prejoin local-prefix %s > %s/local-prefix.simulated\n' "$bin" "$cnf" "$root" > "$root/local-prefix.sh"
+          chmod +x "$root/local-prefix.sh"
+          printf 'options:\n  max-time: "3s"\nbenchmarks:\n  - name: "original_partial/grover6_variant/local_prefix512"\n    exec: "./%s/local-prefix.sh"\n' "$root" > codspeed-prejoin.generated.yml
+      - name: CodSpeed bounded exact-local prefix Simulation
+        if: env.STUDY == 'grover_local_prefix'
+        timeout-minutes: 5
+        uses: CodSpeedHQ/action@v5
+        with:
+          mode: simulation
+          config: codspeed-prejoin.generated.yml
+      - name: Verify exact-local prefix route and fixed-work structural parity
+        if: env.STUDY == 'grover_local_prefix'
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=.research/codspeed-prejoin
+          sha256sum -c "$root/local-prefix.sha256"
+          cmp "$root/local-prefix.native" "$root/local-prefix.simulated"
+          echo LOCAL_PREFIX_SIMULATION_STRUCTURAL_PARITY_PASS
       - name: Archive exact Weighted CNF source checksums
         if: always()
         uses: actions/upload-artifact@v4

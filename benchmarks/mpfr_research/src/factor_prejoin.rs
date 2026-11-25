@@ -96,6 +96,18 @@ fn local(p:&Problem,raw:&str,d:Instant)->Result<Local,String>{
     local_frontier(p,raw,d,true,true)
 }
 fn local_frontier(p:&Problem,raw:&str,d:Instant,incremental:bool,widen:bool)->Result<Local,String>{
+    local_frontier_probe::<false>(p,raw,d,incremental,widen,None)
+}
+// Native-only phase attribution. Prefix replay is a research diagnostic and
+// must never be accepted as a completed residual or WMC result.
+fn local_frontier_probe<const PROFILE:bool>(p:&Problem,raw:&str,d:Instant,incremental:bool,widen:bool,step_cap:Option<usize>)->Result<Local,String>{
+    let started=if PROFILE{Some(Instant::now())}else{None};
+    let mut phase=started;
+    let mut times=[0u128;6];
+    let tick=|phase:&mut Option<Instant>,slot:&mut u128|{
+        if PROFILE{let now=Instant::now();*slot+=now.duration_since(phase.replace(now).expect("profile clock")).as_nanos();}
+    };
+    let mut steps=0usize;
     if p.clauses.len()>16_000{return Err("source clause cap".into());}
     let mut weights=vec![[one(),one()];p.n];
     for line in raw.lines(){
@@ -127,6 +139,7 @@ fn local_frontier(p:&Problem,raw:&str,d:Instant,incremental:bool,widen:bool)->Re
     for (i,[a,b]) in weights.into_iter().enumerate(){
         insert(&mut fs,&mut scalar,Factor{scope:vec![i+1],values:vec![Some(a),Some(b)]})?;
     }
+    tick(&mut phase,&mut times[0]);
     let mut nodes:Scope=(1..=p.n).collect();
     let mut cost=Cost{peak:initial,..Cost::default()};
     // Stable factor IDs preserve the old vector's survivor/insertion order.
@@ -148,7 +161,9 @@ fn local_frontier(p:&Problem,raw:&str,d:Instant,incremental:bool,widen:bool)->Re
     let mut queue:BTreeSet<_>=nodes.iter().map(|&v|key(v,&owners,&tables)).collect();
     let mut keys:Vec<_>=(0..=p.n).map(|v|if v==0{None}else{Some(key(v,&owners,&tables))}).collect();
     let mut local_width=4;
+    tick(&mut phase,&mut times[1]);
     while !nodes.is_empty(){
+        if step_cap.is_some_and(|cap|steps>=cap){break;}
         deadline(d)?;
         let k=if incremental{*queue.first().ok_or("local queue empty")?}
             else{nodes.iter().map(|&v|key(v,&owners,&tables)).min().ok_or("local pivot")?};
@@ -171,6 +186,7 @@ fn local_frontier(p:&Problem,raw:&str,d:Instant,incremental:bool,widen:bool)->Re
         cost.peak=cost.peak.max(live+2*size);
         cost.width=cost.width.max(out.len());
         if cost.work>LOCAL_WORK||cost.peak>LIVE{return Err("local budget".into());}
+        tick(&mut phase,&mut times[2]);
         let ids=std::mem::take(&mut owners[v]);
         let mut bucket=Vec::with_capacity(ids.len());
         for id in ids{
@@ -181,6 +197,7 @@ fn local_frontier(p:&Problem,raw:&str,d:Instant,incremental:bool,widen:bool)->Re
             }
             bucket.push(f);
         }
+        tick(&mut phase,&mut times[3]);
         let mut vals=Vec::with_capacity(size);
         for m in 0..size{
             let mut pair=[None,None];
@@ -195,6 +212,7 @@ fn local_frontier(p:&Problem,raw:&str,d:Instant,incremental:bool,widen:bool)->Re
             }
             let [a,b]=pair;vals.push(radd(a,b)?);
         }
+        tick(&mut phase,&mut times[4]);
         let f=reduce_axes(Factor{scope:out,values:vals});
         if f.scope.is_empty(){scalar=rscalar(scalar.take(),f.values.into_iter().next().unwrap())?;}
         else{
@@ -210,8 +228,14 @@ fn local_frontier(p:&Problem,raw:&str,d:Instant,incremental:bool,widen:bool)->Re
                 if !queue.insert(k){return Err("local queue duplicate".into());}
             }
         }
+        steps+=1;
+        tick(&mut phase,&mut times[5]);
     }
-    if nodes.len()>RESIDUAL_CAP{return Err("residual variable cap".into());}
+    if PROFILE{
+        tick(&mut phase,&mut times[2]);
+        eprintln!("LOCAL_PROFILE_NS init={} index={} select={} detach={} contract={} reinsert={} steps={} remaining={} work={} peak={}",times[0],times[1],times[2],times[3],times[4],times[5],steps,nodes.len(),cost.work,cost.peak);
+    }
+    if step_cap.is_none()&&nodes.len()>RESIDUAL_CAP{return Err("residual variable cap".into());}
     Ok((tables.into_values().collect(),nodes,scalar,cost))
 }
 fn restrict(fs:&[Factor<R>],scalar:&Cell<R>,cuts:&[usize],m:usize)->Result<(Vec<Factor<R>>,Cell<R>),String>{
@@ -587,6 +611,19 @@ fn pair_scan(raw:&str,use_mask:bool)->Result<String,String>{
 }
 pub(crate) fn run(mut args:impl Iterator<Item=std::ffi::OsString>)->Result<(),String>{
     let first=args.next().and_then(|x|x.into_string().ok()).ok_or("missing precision")?;
+    if matches!(first.as_str(),"local-profile"|"local-prefix"){
+        let file=args.next().ok_or("missing local probe input")?;
+        if args.next().is_some(){return Err("unexpected local probe arguments".into());}
+        if std::fs::metadata(&file).map_err(|e|e.to_string())?.len()>2_097_152{return Err("local probe input cap".into());}
+        let raw=std::fs::read_to_string(file).map_err(|e|e.to_string())?;
+        let p=parse_emitted(&raw,200)?;
+        let d=Instant::now()+Duration::from_secs(30);
+        let (fs,nodes,scalar,cost)=if first=="local-profile"{local_frontier_probe::<true>(&p,&raw,d,true,true,None)?}else{local_frontier_probe::<false>(&p,&raw,d,true,true,Some(512))?};
+        let eliminated=p.n-nodes.len();
+        if first=="local-prefix"&&eliminated!=512{return Err("local prefix length drift".into());}
+        println!("LOCAL_PROBE_V1 mode={first} eliminated={eliminated} remaining={} factors={} cells={} scalar_supported={} width={} work={} peak={}",nodes.len(),fs.len(),fs.iter().map(|f|f.values.len()).sum::<usize>(),scalar.is_some(),cost.width,cost.work,cost.peak);
+        return Ok(());
+    }
     if matches!(first.as_str(),"pair-snapshot"|"pair-baseline"|"pair-mask"){
         let file=args.next().ok_or("missing probe input")?;
         if args.next().is_some(){return Err("unexpected probe arguments".into());}
@@ -652,6 +689,18 @@ mod tests{
         assert_eq!(p.ops.iter().filter(|op|op.pivot.is_some()).count(),n);
         assert_eq!(p.cost.width,1);
         assert!(plan_words::<1>(&fs,&nodes,(Some(0),false),0,d).is_err());
+    }
+    #[test]
+    fn local_probe_preserves_complete_frontier_and_can_stop_early(){
+        let raw="p cnf 6 3\nc t wmc\nc p weight 1 -2 3 0\n1 2 0\n-2 3 0\n4 5 0\n";
+        let p=parse_emitted(raw,200).unwrap();
+        let d=Instant::now()+Duration::from_secs(5);
+        let full=local_frontier(&p,raw,d,true,true).unwrap();
+        assert_eq!(full,local_frontier_probe::<true>(&p,raw,d,true,true,None).unwrap());
+        assert_eq!(full,local_frontier_probe::<false>(&p,raw,d,true,true,Some(6)).unwrap());
+        let prefix=local_frontier_probe::<false>(&p,raw,d,true,true,Some(2)).unwrap();
+        assert_eq!(prefix.1.len(),4);
+        assert!(prefix.3.work<=full.3.work);
     }
     #[test]
     fn bounded_pair_scan_preserves_exact_pair_choice(){

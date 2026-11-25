@@ -241,13 +241,13 @@ jobs:
   original-long-tail-source-locked-screen:
     # One existing workflow, no new workflows/environment/branch. This costly
     # study is limited to the research PR or explicit manual dispatch.
-    if: inputs.suite == 'full' || (github.event_name == 'pull_request' && contains(fromJSON('["run-gpmc-completer-scout","run-mqt-long-holdouts","run-prejoin-unseen-long-scout","run-prejoin-frontier-long-scout","run-mqt-locked-long","run-mqt-residual-followup","run-mqt-certified-long","run-mqt-adaptive-scout","run-qpe-resource-pilot","run-qpe-certified-repeat","run-qpe-independent-prejoin","run-qft-prejoin-pilot","run-prejoin-incremental-grover-pilot","run-prejoin-incremental-grover-repeat","run-prejoin-cross-family-ab","run-prejoin-grover-local-width","run-prejoin-variant-followup","run-prejoin-variant-pilot","run-prejoin-qft-order-profile","run-prejoin-qft-support-profile","run-prejoin-qft-rank-one-profile","run-prejoin-qft-cutset-profile","run-prejoin-wide-repeat","run-prejoin-wide-pilot","run-prejoin-residual-profile","run-prejoin-cutset-spectrum","run-prejoin-qpeinexact-repeat","run-prejoin-unseen-certified-repeat","run-prejoin-frontier-numeric-repeat","run-prejoin-mqt-family-pilot","run-prejoin-recycle-ab","run-prejoin-support-ab","run-prejoin-planner-ab","run-prejoin-long-profile","run-prejoin-long-repeat","run-prejoin-long-scout","run-prejoin-hard-holdouts","run-prejoin-hard-repeat"]'), github.event.label.name) && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/mpfr-exact-residual-arena-reuse-20261118')
+    if: inputs.suite == 'full' || (github.event_name == 'pull_request' && (github.event.label.name == 'run-gpmc-completer-scout' || github.event.label.name == 'run-mqt-long-holdouts' || github.event.label.name == 'run-prejoin-unseen-long-scout' || github.event.label.name == 'run-prejoin-frontier-long-scout' || github.event.label.name == 'run-mqt-locked-long' || github.event.label.name == 'run-mqt-residual-followup' || github.event.label.name == 'run-mqt-certified-long' || github.event.label.name == 'run-mqt-adaptive-scout' || github.event.label.name == 'run-qpe-resource-pilot' || github.event.label.name == 'run-qpe-certified-repeat' || github.event.label.name == 'run-qpe-independent-prejoin' || github.event.label.name == 'run-qft-prejoin-pilot' || github.event.label.name == 'run-prejoin-incremental-grover-pilot' || github.event.label.name == 'run-prejoin-incremental-grover-repeat' || github.event.label.name == 'run-prejoin-cross-family-ab' || github.event.label.name == 'run-prejoin-grover-local-width' || github.event.label.name == 'run-prejoin-variant-followup' || github.event.label.name == 'run-prejoin-variant-pilot' || github.event.label.name == 'run-prejoin-qft-order-profile' || github.event.label.name == 'run-prejoin-qft-support-profile' || github.event.label.name == 'run-prejoin-qft-rank-one-profile' || github.event.label.name == 'run-prejoin-qft-cutset-profile' || github.event.label.name == 'run-prejoin-wide-repeat' || github.event.label.name == 'run-prejoin-wide-pilot' || github.event.label.name == 'run-prejoin-residual-profile' || github.event.label.name == 'run-prejoin-cutset-spectrum' || github.event.label.name == 'run-prejoin-qpeinexact-repeat' || github.event.label.name == 'run-prejoin-unseen-certified-repeat' || github.event.label.name == 'run-prejoin-mqt-family-pilot' || github.event.label.name == 'run-prejoin-recycle-ab' || github.event.label.name == 'run-prejoin-support-ab' || github.event.label.name == 'run-prejoin-planner-ab' || github.event.label.name == 'run-prejoin-long-profile' || github.event.label.name == 'run-prejoin-long-repeat' || github.event.label.name == 'run-prejoin-long-scout' || (github.event.label.name == 'run-prejoin-hard-holdouts' || github.event.label.name == 'run-prejoin-hard-repeat')) && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/mpfr-exact-residual-arena-reuse-20261118')
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ (github.event.label.name == 'run-prejoin-mqt-family-pilot' || github.event.label.name == 'run-qpe-independent-prejoin' || github.event.label.name == 'run-qft-prejoin-pilot' || github.event.label.name == 'run-prejoin-long-scout' || (github.event.label.name == 'run-prejoin-hard-holdouts' || github.event.label.name == 'run-prejoin-hard-repeat')) && 20 || github.event.label.name == 'run-mqt-adaptive-scout' && 60 || 40 }}
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(contains(fromJSON('["run-prejoin-unseen-certified-repeat","run-prejoin-frontier-numeric-repeat","run-prejoin-wide-repeat","run-prejoin-hard-repeat","run-qpe-independent-prejoin","run-mqt-certified-long","run-mqt-locked-long","run-mqt-long-holdouts","run-prejoin-unseen-long-scout","run-prejoin-frontier-long-scout","run-mqt-adaptive-scout","run-qpe-resource-pilot"]'), github.event.label.name) && '[0,1,2,3]' || contains(fromJSON('["run-prejoin-cross-family-ab","run-prejoin-variant-followup","run-qpe-certified-repeat","run-gpmc-completer-scout"]'), github.event.label.name) && '[0,1,2]' || contains(fromJSON('["run-prejoin-incremental-grover-repeat","run-prejoin-variant-pilot","run-prejoin-wide-pilot","run-prejoin-cutset-spectrum","run-prejoin-qpeinexact-repeat","run-prejoin-recycle-ab","run-prejoin-support-ab","run-prejoin-planner-ab","run-prejoin-long-profile","run-prejoin-long-repeat","run-prejoin-long-scout","run-prejoin-hard-holdouts","run-mqt-residual-followup"]'), github.event.label.name) && '[0,1]' || contains(fromJSON('["run-prejoin-residual-profile","run-prejoin-mqt-family-pilot"]'), github.event.label.name) && '[0,1,3]' || '[0]') }}
+        shard: ${{ fromJSON(github.event.label.name == 'run-prejoin-unseen-certified-repeat' && '[0,1,2,3]' || github.event.label.name == 'run-prejoin-cross-family-ab' && '[0,1,2]' || github.event.label.name == 'run-prejoin-incremental-grover-repeat' && '[0,1]' || github.event.label.name == 'run-prejoin-incremental-grover-pilot' && '[0]' || github.event.label.name == 'run-prejoin-grover-local-width' && '[0]' || github.event.label.name == 'run-prejoin-variant-followup' && '[0,1,2]' || github.event.label.name == 'run-prejoin-variant-pilot' && '[0,1]' || github.event.label.name == 'run-prejoin-qft-order-profile' && '[0]' || github.event.label.name == 'run-prejoin-qft-cutset-profile' && '[0]' || github.event.label.name == 'run-prejoin-wide-repeat' && '[0,1,2,3]' || github.event.label.name == 'run-prejoin-wide-pilot' && '[0,1]' || github.event.label.name == 'run-prejoin-residual-profile' && '[0,1,3]' || github.event.label.name == 'run-prejoin-cutset-spectrum' && '[0,1]' || github.event.label.name == 'run-prejoin-qpeinexact-repeat' && '[0,1]' || github.event.label.name == 'run-prejoin-mqt-family-pilot' && '[0,1,3]' || github.event.label.name == 'run-prejoin-recycle-ab' && '[0,1]' || github.event.label.name == 'run-prejoin-support-ab' && '[0,1]' || github.event.label.name == 'run-prejoin-planner-ab' && '[0,1]' || github.event.label.name == 'run-prejoin-long-profile' && '[0,1]' || github.event.label.name == 'run-prejoin-long-repeat' && '[0,1]' || github.event.label.name == 'run-prejoin-long-scout' && '[0,1]' || github.event.label.name == 'run-prejoin-hard-repeat' && '[0,1,2,3]' || github.event.label.name == 'run-prejoin-hard-holdouts' && '[0,1]' || github.event.label.name == 'run-qpe-independent-prejoin' && '[0,1,2,3]' || github.event.label.name == 'run-mqt-certified-long' && '[0,1,2,3]' || github.event.label.name == 'run-mqt-residual-followup' && '[0,1]' || github.event.label.name == 'run-mqt-locked-long' && '[0,1,2,3]' || (github.event.label.name == 'run-mqt-long-holdouts' || github.event.label.name == 'run-prejoin-unseen-long-scout' || github.event.label.name == 'run-prejoin-frontier-long-scout') && '[0,1,2,3]' || github.event.label.name == 'run-qpe-certified-repeat' && '[0,1,2]' || (github.event.label.name == 'run-mqt-adaptive-scout' || github.event.label.name == 'run-qpe-resource-pilot') && '[0,1,2,3]' || github.event.label.name == 'run-gpmc-completer-scout' && '[0,1,2]' || '[0]') }}
     steps:
       - name: Checkout RaWMoCS research-only exporter and runner
         uses: actions/checkout@v4
@@ -435,7 +435,7 @@ jobs:
           cp benchmarks/mpfr_research/Cargo.lock .research/long-tail/planner-ab.Cargo.lock
           sha256sum .research/long-tail/planner-ab.Cargo.lock "$baseline/benchmarks/mpfr_research/target/release/rawmocs-mpfr-research" benchmarks/mpfr_research/target/release/rawmocs-mpfr-research
       - name: Bounded independent exact-local and prejoin interval for original QPE, QFT or hard holdouts
-        if: github.event.label.name == 'run-prejoin-incremental-grover-pilot' || github.event.label.name == 'run-prejoin-incremental-grover-repeat' || github.event.label.name == 'run-prejoin-cross-family-ab' || github.event.label.name == 'run-prejoin-grover-local-width' || github.event.label.name == 'run-prejoin-variant-followup' || github.event.label.name == 'run-prejoin-variant-pilot' || github.event.label.name == 'run-prejoin-qft-order-profile' || github.event.label.name == 'run-prejoin-qft-support-profile' || github.event.label.name == 'run-prejoin-qft-rank-one-profile' || github.event.label.name == 'run-prejoin-qft-cutset-profile' || github.event.label.name == 'run-prejoin-wide-repeat' || github.event.label.name == 'run-prejoin-wide-pilot' || github.event.label.name == 'run-prejoin-residual-profile' || github.event.label.name == 'run-prejoin-cutset-spectrum' || github.event.label.name == 'run-prejoin-qpeinexact-repeat' || github.event.label.name == 'run-prejoin-unseen-certified-repeat' || github.event.label.name == 'run-prejoin-frontier-numeric-repeat' || github.event.label.name == 'run-prejoin-mqt-family-pilot' || github.event.label.name == 'run-prejoin-recycle-ab' || github.event.label.name == 'run-prejoin-support-ab' || github.event.label.name == 'run-prejoin-planner-ab' || github.event.label.name == 'run-prejoin-long-profile' || github.event.label.name == 'run-prejoin-long-repeat' || github.event.label.name == 'run-qpe-independent-prejoin' || github.event.label.name == 'run-qft-prejoin-pilot' || (github.event.label.name == 'run-prejoin-hard-holdouts' || github.event.label.name == 'run-prejoin-hard-repeat')
+        if: github.event.label.name == 'run-prejoin-incremental-grover-pilot' || github.event.label.name == 'run-prejoin-incremental-grover-repeat' || github.event.label.name == 'run-prejoin-cross-family-ab' || github.event.label.name == 'run-prejoin-grover-local-width' || github.event.label.name == 'run-prejoin-variant-followup' || github.event.label.name == 'run-prejoin-variant-pilot' || github.event.label.name == 'run-prejoin-qft-order-profile' || github.event.label.name == 'run-prejoin-qft-support-profile' || github.event.label.name == 'run-prejoin-qft-rank-one-profile' || github.event.label.name == 'run-prejoin-qft-cutset-profile' || github.event.label.name == 'run-prejoin-wide-repeat' || github.event.label.name == 'run-prejoin-wide-pilot' || github.event.label.name == 'run-prejoin-residual-profile' || github.event.label.name == 'run-prejoin-cutset-spectrum' || github.event.label.name == 'run-prejoin-qpeinexact-repeat' || github.event.label.name == 'run-prejoin-unseen-certified-repeat' || github.event.label.name == 'run-prejoin-mqt-family-pilot' || github.event.label.name == 'run-prejoin-recycle-ab' || github.event.label.name == 'run-prejoin-support-ab' || github.event.label.name == 'run-prejoin-planner-ab' || github.event.label.name == 'run-prejoin-long-profile' || github.event.label.name == 'run-prejoin-long-repeat' || github.event.label.name == 'run-qpe-independent-prejoin' || github.event.label.name == 'run-qft-prejoin-pilot' || (github.event.label.name == 'run-prejoin-hard-holdouts' || github.event.label.name == 'run-prejoin-hard-repeat')
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -454,37 +454,23 @@ jobs:
             gh run download 45508706793 --repo "$GITHUB_REPOSITORY" --name original-prejoin-long-scout-0 --dir .research/scout-lock
             expected=$(python3 -c 'import json,pathlib,re; p=list(pathlib.Path(".research/scout-lock").rglob("prejoin-long-scout.json")); assert len(p)==1; r=json.loads(p[0].read_text()); assert r["case"]=="extended_gf2_7_prejoin_scout" and r["status"]=="ONE_MATCHED_PAIR_PASS" and r["source_blob"]=="640d6fe1c8869858d212c74426b85c7e2768096e" and r["cohorts"][0]["bits"]==333 and r["cohorts"][0]["gpmc"]["status"]=="COMPLETED" and all(w["pass"] for w in r["cohorts"][0]["witness"].values()); h=r["source_cnf_sha256"]; assert re.fullmatch("[0-9a-f]{64}",h); print(h)')
             cp "$(find .research/scout-lock -name prejoin-long-scout.json -type f)" .research/long-tail/prior-scout-lock.json
-          elif [[ "${{ github.event.label.name }}" == run-prejoin-unseen-certified-repeat || "${{ github.event.label.name }}" == run-prejoin-frontier-numeric-repeat ]]; then
-            if [[ "${{ github.event.label.name }}" == run-prejoin-frontier-numeric-repeat ]]; then
-              scout_run=45558074188
-              scout_prefix=original-prejoin-frontier-long-scout
-              if (( shard < 2 )); then
-                case=extended_mqt_qpeinexact_22_6befed5d0733
-                scout_shard=0
-              else
-                case=extended_mqt_qpeexact_22_e26adf85ca78
-                scout_shard=2
-              fi
-            else
-              scout_run=45555384197
-              scout_prefix=original-prejoin-unseen-long-scout
+          elif [[ "${{ github.event.label.name }}" == run-prejoin-unseen-certified-repeat ]]; then
             if (( shard < 2 )); then
-              case=extended_mqt_qpeinexact_21_8dc47acf99e8
-              scout_shard=2
-            else
-              case=extended_mqt_qnn_12_6d079756c70f
+              case=extended_mqt_qpeinexact_22_6befed5d0733
               scout_shard=0
-            fi
+            else
+              case=extended_mqt_qpeexact_22_e26adf85ca78
+              scout_shard=2
             fi
             mkdir -p .research/unseen-scout-lock
-            gh run download "$scout_run" --repo "$GITHUB_REPOSITORY" --name "$scout_prefix-$scout_shard" --dir .research/unseen-scout-lock
+            gh run download 45558074188 --repo "$GITHUB_REPOSITORY" --name "original-prejoin-frontier-long-scout-$scout_shard" --dir .research/unseen-scout-lock
             python3 - "$case" <<'PY' > .research/long-tail/prior-scout-source.tsv
           import hashlib,json,pathlib,re,sys
           files=list(pathlib.Path(".research/unseen-scout-lock").rglob("mqt-long-holdouts.json"))
           assert len(files)==1
           r=json.loads(files[0].read_text())
           case=sys.argv[1]
-          assert (r["prejoin_holdout"] or r.get("frontier_holdout")) and r["status"]=="SCREEN_COMPLETE_EXPLORATORY"
+          assert r["frontier_holdout"] and r["status"]=="SCREEN_COMPLETE_EXPLORATORY"
           assert r["source_revisions"]=={"quprs":"0b28736651b3740ed3b201edd2efdef3da541e0d","gpmc":"89bbc89d0de918e7a5385740355df55765039230"}
           assert case in r["qualified_cases"]
           row,=[x for x in r["cases"] if x["case"]==case]
@@ -495,16 +481,11 @@ jobs:
           path=pathlib.PurePosixPath(rel)
           assert path.parts[:2]==("benchmarks","MQTBench") and ".." not in path.parts
           assert path.parent.name in ("Random_Rotation","Random_Pauli","h,ry,rz,cx")
-          assert re.fullmatch(r"(qpeinexact_nativegates_ibm_qiskit_opt0_21|qnn_nativegates_ibm_qiskit_opt0_12|qpeinexact_nativegates_ibm_qiskit_opt0_22|qpeexact_nativegates_ibm_qiskit_opt0_22)\.qasm",path.name)
+          assert re.fullmatch(r"(qpeinexact|qpeexact)_nativegates_ibm_qiskit_opt0_22\.qasm",path.name)
           assert hashlib.sha256(rel.encode()).hexdigest()[:12]==case.rsplit("_",1)[1]
           h=row["cnf_sha256"]; q=row["source_qasm_sha256"]
           assert all(re.fullmatch("[0-9a-f]{64}",v) for v in (h,q))
-          if r.get("frontier_holdout"):
-              expected={"extended_mqt_qpeinexact_22_6befed5d0733":"6fb69626195bee5b89ed3503ae8b1b4801d9267e7bd5ff3684af152afcd885e1","extended_mqt_qpeexact_22_e26adf85ca78":"00313f034134215fa7bd48a8667f2b55f864a13940f9be5cff72ae09231abf25"}
-              assert h==expected[case]
-              pilot,=[p for p in r["pilots"] if p["case"]==case]
-              assert {c["bits"] for c in pilot["cohorts"]}=={100,333}
-              assert all(c["status"]=="NUMERIC_OR_ROUTE_INCONCLUSIVE" for c in pilot["cohorts"])
+          assert h=={"extended_mqt_qpeinexact_22_6befed5d0733":"6fb69626195bee5b89ed3503ae8b1b4801d9267e7bd5ff3684af152afcd885e1","extended_mqt_qpeexact_22_e26adf85ca78":"00313f034134215fa7bd48a8667f2b55f864a13940f9be5cff72ae09231abf25"}[case]
           cnf,=list(files[0].parent.rglob(case+"-gpmc.cnf"))
           src,=list(files[0].parent.rglob(case+".qasm"))
           assert hashlib.sha256(cnf.read_bytes()).hexdigest()==h
@@ -596,7 +577,7 @@ jobs:
             "$case" "$(realpath .upstream/quprs)" "$(realpath .research/long-tail)" "$rel"
           cmp ".research/long-tail/$case.qasm" ".upstream/quprs/$rel"
           printf '%s  %s\n' "$expected" ".research/long-tail/$case-gpmc.cnf" | sha256sum -c -
-          if [[ "${{ github.event.label.name }}" == run-prejoin-unseen-certified-repeat || "${{ github.event.label.name }}" == run-prejoin-frontier-numeric-repeat ]]; then
+          if [[ "${{ github.event.label.name }}" == run-prejoin-unseen-certified-repeat ]]; then
             printf '%s  %s\n' "$qasm_expected" ".research/long-tail/$case.qasm" | sha256sum -c -
             cmp ".research/long-tail/$case-gpmc.cnf" "$(find .research/unseen-scout-lock -name "$case-gpmc.cnf" -type f)"
           fi
@@ -660,7 +641,7 @@ jobs:
             python3 "$oracle" ".research/long-tail/$case-gpmc.cnf" "$expected" \
             > .research/long-tail/prejoin-reference.json 2> .research/long-tail/prejoin.stderr.log; then
             tail -c 4096 .research/long-tail/prejoin.stderr.log
-            if [[ "${{ github.event.label.name }}" != run-prejoin-mqt-family-pilot && "${{ github.event.label.name }}" != run-prejoin-wide-pilot && "${{ github.event.label.name }}" != run-prejoin-wide-repeat && "${{ github.event.label.name }}" != run-prejoin-variant-pilot && "${{ github.event.label.name }}" != run-prejoin-variant-followup && "${{ github.event.label.name }}" != run-prejoin-incremental-grover-pilot && "${{ github.event.label.name }}" != run-prejoin-incremental-grover-repeat && "${{ github.event.label.name }}" != run-prejoin-cross-family-ab && "${{ github.event.label.name }}" != run-prejoin-unseen-certified-repeat && "${{ github.event.label.name }}" != run-prejoin-frontier-numeric-repeat ]]; then exit 1; fi
+            if [[ "${{ github.event.label.name }}" != run-prejoin-mqt-family-pilot && "${{ github.event.label.name }}" != run-prejoin-wide-pilot && "${{ github.event.label.name }}" != run-prejoin-wide-repeat && "${{ github.event.label.name }}" != run-prejoin-variant-pilot && "${{ github.event.label.name }}" != run-prejoin-variant-followup && "${{ github.event.label.name }}" != run-prejoin-incremental-grover-pilot && "${{ github.event.label.name }}" != run-prejoin-incremental-grover-repeat && "${{ github.event.label.name }}" != run-prejoin-cross-family-ab && "${{ github.event.label.name }}" != run-prejoin-unseen-certified-repeat ]]; then exit 1; fi
             mv .research/long-tail/prejoin-reference.json .research/long-tail/prejoin-rejected.json
             fixed_oracle=benchmarks/mpfr_research/tools/original_fixed_interval.py
             if ! /usr/bin/time -v -o .research/long-tail/fixed-reference.resources.log timeout -k 2s 190s prlimit --as=3221225472 -- \
@@ -686,7 +667,7 @@ jobs:
             target=30
             if (( shard == 1 )); then target=100; fi
             flags+=(--repeat-target "$target" --max-residual 256 --planner-baseline .upstream/planner-baseline/benchmarks/mpfr_research/target/release/rawmocs-mpfr-research)
-          elif [[ "${{ github.event.label.name }}" == run-prejoin-unseen-certified-repeat || "${{ github.event.label.name }}" == run-prejoin-frontier-numeric-repeat ]]; then
+          elif [[ "${{ github.event.label.name }}" == run-prejoin-unseen-certified-repeat ]]; then
             target=30
             if (( shard % 2 == 1 )); then target=100; fi
             flags+=(--repeat-target "$target" --max-residual 256)
@@ -849,61 +830,11 @@ jobs:
             --report .research/long-tail/mqt-certified-long.json \
             --native-ab-baseline .upstream/rawmocs-native-ab-baseline/benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
             --shard ${{ matrix.shard }} --locked-long --certified-long | tee .research/long-tail/mqt-certified-long.log
-      - name: Resolve source scout artifact name
-        if: always()
-        id: scout-artifact
-        shell: bash
-        env:
-          LABEL: ${{ github.event.label.name }}
-          SHARD: ${{ matrix.shard }}
-        run: |
-          case "$LABEL" in
-            run-prejoin-frontier-numeric-repeat) name="original-prejoin-frontier-numeric-repeat-$SHARD" ;;
-            run-prejoin-frontier-long-scout) name="original-prejoin-frontier-long-scout-$SHARD" ;;
-            run-prejoin-qft-rank-one-profile) name="original-qft24-rank-one-profile" ;;
-            run-prejoin-qft-support-profile) name="original-qft24-support-work-profile" ;;
-            run-prejoin-unseen-certified-repeat) name="original-prejoin-unseen-certified-repeat-$SHARD" ;;
-            run-prejoin-unseen-long-scout) name="original-prejoin-unseen-long-scout-$SHARD" ;;
-            run-prejoin-cross-family-ab) name="original-prejoin-cross-family-ab-$SHARD" ;;
-            run-prejoin-incremental-grover-repeat) name="original-incremental-grover-repeat-$SHARD" ;;
-            run-prejoin-incremental-grover-pilot) name="original-incremental-grover-pilot" ;;
-            run-prejoin-grover-local-width) name="original-grover6-variant-local-width" ;;
-            run-prejoin-variant-followup) name="original-prejoin-variant-followup-$SHARD" ;;
-            run-prejoin-variant-pilot) name="original-prejoin-variant-pilot-$SHARD" ;;
-            run-prejoin-qft-order-profile) name="original-qft24-graph-order-profile" ;;
-            run-prejoin-qft-cutset-profile) name="original-qft24-extended-cutset-profile" ;;
-            run-prejoin-wide-repeat) name="original-prejoin-wide-repeat-$SHARD" ;;
-            run-prejoin-wide-pilot) name="original-prejoin-wide-pilot-$SHARD" ;;
-            run-prejoin-residual-profile) name="original-prejoin-residual-profile-$SHARD" ;;
-            run-prejoin-cutset-spectrum) name="original-prejoin-cutset-spectrum-$SHARD" ;;
-            run-prejoin-qpeinexact-repeat) name="original-prejoin-qpeinexact-repeat-$SHARD" ;;
-            run-prejoin-mqt-family-pilot) name="original-prejoin-mqt-family-pilot-$SHARD" ;;
-            run-prejoin-recycle-ab) name="original-prejoin-recycle-ab-$SHARD" ;;
-            run-prejoin-support-ab) name="original-prejoin-support-ab-$SHARD" ;;
-            run-prejoin-planner-ab) name="original-prejoin-planner-ab-$SHARD" ;;
-            run-prejoin-long-profile) name="original-prejoin-long-profile-$SHARD" ;;
-            run-prejoin-long-repeat) name="original-prejoin-long-repeat-$SHARD" ;;
-            run-prejoin-long-scout) name="original-prejoin-long-scout-$SHARD" ;;
-            run-prejoin-hard-repeat) name="original-prejoin-hard-repeat-$SHARD" ;;
-            run-prejoin-hard-holdouts) name="original-prejoin-hard-holdout-$SHARD" ;;
-            run-qft-prejoin-pilot) name="original-qft24-prejoin-pilot" ;;
-            run-qpe-independent-prejoin) name="original-qpe-independent-prejoin-$SHARD" ;;
-            run-mqt-certified-long) name="original-mqt-certified-long-$SHARD" ;;
-            run-mqt-residual-followup) name="original-mqt-residual-followup-$SHARD" ;;
-            run-mqt-locked-long) name="original-mqt-locked-long-$SHARD" ;;
-            run-mqt-long-holdouts) name="original-mqt-long-holdouts-$SHARD" ;;
-            run-qpe-certified-repeat) name="original-qpe-certified-repeat-$SHARD" ;;
-            run-qpe-resource-pilot) name="original-qpe-resource-pilot-$SHARD" ;;
-            run-mqt-adaptive-scout) name="original-mqt-adaptive-scout-$SHARD" ;;
-            run-gpmc-completer-scout) name="original-gpmc-completer-scout-$SHARD" ;;
-            *) name='original-rawmocs-gpmc-long-tail-screen' ;;
-          esac
-          printf 'name=%s\n' "$name" >> "$GITHUB_OUTPUT"
       - name: Archive hash-locked 16-source screens before long pilots
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.scout-artifact.outputs.name }}
+          name: ${{ github.event.label.name == 'run-prejoin-frontier-long-scout' && format('original-prejoin-frontier-long-scout-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-qft-rank-one-profile' && 'original-qft24-rank-one-profile' || github.event.label.name == 'run-prejoin-qft-support-profile' && 'original-qft24-support-work-profile' || github.event.label.name == 'run-prejoin-unseen-certified-repeat' && format('original-prejoin-frontier-numeric-repeat-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-unseen-long-scout' && format('original-prejoin-unseen-long-scout-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-cross-family-ab' && format('original-prejoin-cross-family-ab-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-incremental-grover-repeat' && format('original-incremental-grover-repeat-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-incremental-grover-pilot' && 'original-incremental-grover-pilot' || github.event.label.name == 'run-prejoin-grover-local-width' && 'original-grover6-variant-local-width' || github.event.label.name == 'run-prejoin-variant-followup' && format('original-prejoin-variant-followup-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-variant-pilot' && format('original-prejoin-variant-pilot-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-qft-order-profile' && 'original-qft24-graph-order-profile' || github.event.label.name == 'run-prejoin-qft-cutset-profile' && 'original-qft24-extended-cutset-profile' || github.event.label.name == 'run-prejoin-wide-repeat' && format('original-prejoin-wide-repeat-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-wide-pilot' && format('original-prejoin-wide-pilot-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-residual-profile' && format('original-prejoin-residual-profile-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-cutset-spectrum' && format('original-prejoin-cutset-spectrum-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-qpeinexact-repeat' && format('original-prejoin-qpeinexact-repeat-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-mqt-family-pilot' && format('original-prejoin-mqt-family-pilot-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-recycle-ab' && format('original-prejoin-recycle-ab-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-support-ab' && format('original-prejoin-support-ab-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-planner-ab' && format('original-prejoin-planner-ab-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-long-profile' && format('original-prejoin-long-profile-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-long-repeat' && format('original-prejoin-long-repeat-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-long-scout' && format('original-prejoin-long-scout-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-hard-repeat' && format('original-prejoin-hard-repeat-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-hard-holdouts' && format('original-prejoin-hard-holdout-{0}', matrix.shard) || github.event.label.name == 'run-qft-prejoin-pilot' && 'original-qft24-prejoin-pilot' || github.event.label.name == 'run-qpe-independent-prejoin' && format('original-qpe-independent-prejoin-{0}', matrix.shard) || github.event.label.name == 'run-mqt-certified-long' && format('original-mqt-certified-long-{0}', matrix.shard) || github.event.label.name == 'run-mqt-residual-followup' && format('original-mqt-residual-followup-{0}', matrix.shard) || github.event.label.name == 'run-mqt-locked-long' && format('original-mqt-locked-long-{0}', matrix.shard) || github.event.label.name == 'run-mqt-long-holdouts' && format('original-mqt-long-holdouts-{0}', matrix.shard) || github.event.label.name == 'run-qpe-certified-repeat' && format('original-qpe-certified-repeat-{0}', matrix.shard) || github.event.label.name == 'run-qpe-resource-pilot' && format('original-qpe-resource-pilot-{0}', matrix.shard) || github.event.label.name == 'run-mqt-adaptive-scout' && format('original-mqt-adaptive-scout-{0}', matrix.shard) || github.event.label.name == 'run-gpmc-completer-scout' && format('original-gpmc-completer-scout-{0}', matrix.shard) || 'original-rawmocs-gpmc-long-tail-screen' }}
           path: .research/long-tail/
           retention-days: 30
           if-no-files-found: warn

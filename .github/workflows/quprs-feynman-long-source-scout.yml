@@ -415,8 +415,21 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git -C .upstream/planner-baseline rev-parse HEAD)" = 2fbdda903101b3787c83d05316a2fe08133804de
-          cmp benchmarks/mpfr_research/Cargo.lock .upstream/planner-baseline/benchmarks/mpfr_research/Cargo.lock
-          cargo build --locked --release --manifest-path .upstream/planner-baseline/benchmarks/mpfr_research/Cargo.toml
+          baseline=.upstream/planner-baseline
+          cmp "$baseline/benchmarks/mpfr_research/Cargo.toml" benchmarks/mpfr_research/Cargo.toml
+          test -s benchmarks/mpfr_research/Cargo.lock
+          if test -e "$baseline/benchmarks/mpfr_research/Cargo.lock"; then
+            cmp "$baseline/benchmarks/mpfr_research/Cargo.lock" benchmarks/mpfr_research/Cargo.lock
+          else
+            cp benchmarks/mpfr_research/Cargo.lock "$baseline/benchmarks/mpfr_research/Cargo.lock"
+          fi
+          cargo build --locked --release --manifest-path benchmarks/mpfr_research/Cargo.toml
+          cargo build --locked --release --manifest-path "$baseline/benchmarks/mpfr_research/Cargo.toml"
+          cmp "$baseline/benchmarks/mpfr_research/Cargo.lock" benchmarks/mpfr_research/Cargo.lock
+          git -C "$baseline" diff --exit-code -- benchmarks/mpfr_research/Cargo.toml benchmarks/mpfr_research/src
+          mkdir -p .research/long-tail
+          cp benchmarks/mpfr_research/Cargo.lock .research/long-tail/planner-ab.Cargo.lock
+          sha256sum .research/long-tail/planner-ab.Cargo.lock "$baseline/benchmarks/mpfr_research/target/release/rawmocs-mpfr-research" benchmarks/mpfr_research/target/release/rawmocs-mpfr-research
       - name: Bounded independent exact-local and prejoin interval for original QPE, QFT or hard holdouts
         if: github.event.label.name == 'run-prejoin-planner-ab' || github.event.label.name == 'run-prejoin-long-profile' || github.event.label.name == 'run-prejoin-long-repeat' || github.event.label.name == 'run-qpe-independent-prejoin' || github.event.label.name == 'run-qft-prejoin-pilot' || (github.event.label.name == 'run-prejoin-hard-holdouts' || github.event.label.name == 'run-prejoin-hard-repeat')
         shell: bash

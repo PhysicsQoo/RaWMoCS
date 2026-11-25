@@ -13,7 +13,7 @@ const EXACT_BITS:u32=16_384;
 type Scope=BTreeSet<usize>;
 type R=(Rational,Rational);
 type Cell<T>=Option<T>;
-#[derive(Clone)]
+#[derive(Clone,Debug,PartialEq,Eq)]
 struct Factor<T>{scope:Vec<usize>,values:Vec<Cell<T>>}
 #[derive(Default,Debug,Clone,PartialEq,Eq)]
 struct Cost{width:usize,work:usize,peak:usize,joins:usize}
@@ -93,6 +93,9 @@ fn mask(scope:&[usize],out:&[usize],m:usize,pivot:usize,positive:bool)->usize{
 }
 type Local=(Vec<Factor<R>>,Scope,Cell<R>,Cost);
 fn local(p:&Problem,raw:&str,d:Instant)->Result<Local,String>{
+    local_frontier(p,raw,d,true,true)
+}
+fn local_frontier(p:&Problem,raw:&str,d:Instant,incremental:bool,widen:bool)->Result<Local,String>{
     if p.clauses.len()>16_000{return Err("source clause cap".into());}
     let mut weights=vec![[one(),one()];p.n];
     for line in raw.lines(){
@@ -126,26 +129,58 @@ fn local(p:&Problem,raw:&str,d:Instant)->Result<Local,String>{
     }
     let mut nodes:Scope=(1..=p.n).collect();
     let mut cost=Cost{peak:initial,..Cost::default()};
-    // Rebuild incidence for a bounded local frontier. Exact equal axes
-    // can disappear without eliminating their variable (free factor of 2).
+    // Stable factor IDs preserve the old vector's survivor/insertion order.
+    let mut tables:BTreeMap<usize,Factor<R>>=fs.into_iter().enumerate().collect();
+    let mut next=tables.len();
+    let mut owners=vec![Scope::new();p.n+1];
+    let mut live=0usize;
+    for (&id,f) in &tables{
+        live+=f.values.len();
+        for &v in &f.scope{owners[v].insert(id);}
+    }
+    let neighbors=|v:usize,owners:&[Scope],tables:&BTreeMap<usize,Factor<R>>|->Scope{
+        owners[v].iter().flat_map(|id|tables[id].scope.iter().copied()).filter(|&u|u!=v).collect()
+    };
+    let key=|v:usize,owners:&[Scope],tables:&BTreeMap<usize,Factor<R>>|{
+        (neighbors(v,owners,tables).len(),owners[v].len(),usize::MAX-v)
+    };
+    // Exact ordered-set queue: no stale entries, one key per active variable.
+    let mut queue:BTreeSet<_>=nodes.iter().map(|&v|key(v,&owners,&tables)).collect();
+    let mut keys:Vec<_>=(0..=p.n).map(|v|if v==0{None}else{Some(key(v,&owners,&tables))}).collect();
+    let mut local_width=4;
     while !nodes.is_empty(){
         deadline(d)?;
-        let mut incidence:BTreeMap<usize,(Scope,usize)>=nodes.iter().map(|&v|(v,(Scope::new(),0))).collect();
-        for f in &fs{for &v in &f.scope{
-            let (nb,n)=incidence.get_mut(&v).ok_or("local owner")?;
-            nb.extend(f.scope.iter().copied().filter(|&u|u!=v));*n+=1;
-        }}
-        let (&v,(nb,_))=incidence.iter().min_by_key(|(v,(nb,n))|(nb.len(),*n,usize::MAX-**v)).ok_or("local pivot")?;
-        if nb.len()>4{break;}
+        let k=if incremental{*queue.first().ok_or("local queue empty")?}
+            else{nodes.iter().map(|&v|key(v,&owners,&tables)).min().ok_or("local pivot")?};
+        let v=usize::MAX-k.2;
+        let nb=neighbors(v,&owners,&tables);
+        if nb.len()>local_width{
+            // Preserve every previously admitted width-4 route. Widen only
+            // if the old residual cap would otherwise reject the problem.
+            if widen&&local_width==4&&nodes.len()>RESIDUAL_CAP{local_width=6;}
+            if nb.len()>local_width{break;}
+        }
+        if incremental{
+            for u in std::iter::once(v).chain(nb.iter().copied()){
+                if !queue.remove(&keys[u].take().ok_or("local missing key")?){return Err("local queue drift".into());}
+            }
+        }
         let out:Vec<_>=nb.iter().copied().collect();
-        let live=fs.iter().map(|f|f.values.len()).sum::<usize>();
-        let (bucket,rest):(Vec<_>,Vec<_>)=fs.into_iter().partition(|f|f.scope.contains(&v));
-        fs=rest;
         let size=1usize<<out.len();
-        cost.work+=2*size*bucket.len();
+        cost.work+=2*size*owners[v].len();
         cost.peak=cost.peak.max(live+2*size);
         cost.width=cost.width.max(out.len());
         if cost.work>LOCAL_WORK||cost.peak>LIVE{return Err("local budget".into());}
+        let ids=std::mem::take(&mut owners[v]);
+        let mut bucket=Vec::with_capacity(ids.len());
+        for id in ids{
+            let f=tables.remove(&id).ok_or("local factor owner")?;
+            live-=f.values.len();
+            for &u in &f.scope{
+                if u!=v&&!owners[u].remove(&id){return Err("local incidence drift".into());}
+            }
+            bucket.push(f);
+        }
         let mut vals=Vec::with_capacity(size);
         for m in 0..size{
             let mut pair=[None,None];
@@ -160,11 +195,24 @@ fn local(p:&Problem,raw:&str,d:Instant)->Result<Local,String>{
             }
             let [a,b]=pair;vals.push(radd(a,b)?);
         }
-        insert(&mut fs,&mut scalar,Factor{scope:out,values:vals})?;
+        let f=reduce_axes(Factor{scope:out,values:vals});
+        if f.scope.is_empty(){scalar=rscalar(scalar.take(),f.values.into_iter().next().unwrap())?;}
+        else{
+            live+=f.values.len();
+            for &u in &f.scope{owners[u].insert(next);}
+            tables.insert(next,f);next+=1;
+        }
         nodes.remove(&v);
+        if incremental{
+            for u in nb{
+                let k=key(u,&owners,&tables);
+                keys[u]=Some(k);
+                if !queue.insert(k){return Err("local queue duplicate".into());}
+            }
+        }
     }
     if nodes.len()>RESIDUAL_CAP{return Err("residual variable cap".into());}
-    Ok((fs,nodes,scalar,cost))
+    Ok((tables.into_values().collect(),nodes,scalar,cost))
 }
 fn restrict(fs:&[Factor<R>],scalar:&Cell<R>,cuts:&[usize],m:usize)->Result<(Vec<Factor<R>>,Cell<R>),String>{
     let mut out=Vec::new();let mut scalar=scalar.clone();
@@ -544,6 +592,46 @@ mod tests{
         assert!(z.is_some());
         assert_eq!(z,Some((Rational::from(0),Rational::from(0))));
         assert_eq!(rscalar(None,Some(one())).unwrap(),None);
+    }
+    #[test]
+    fn incremental_frontier_matches_full_scan(){
+        // Deterministic weighted fixtures include free axes, duplicate
+        // factors, cancellation and dense residual scopes.
+        for seed in 0..48usize{
+            let n=8;
+            let mut raw=format!("p cnf {n} 7\nc t wmc\n");
+            for v in 1..=n{
+                raw.push_str(&format!("c p weight {v} {} {} 0\n",(v+seed)%5,(v+2*seed)%3));
+            }
+            for j in 0..7{
+                for k in 0..(2+(j+seed)%5){
+                    let v=1+(seed+j+3*k)%n;
+                    let l=if (seed+j+k)%2==0{v as i32}else{-(v as i32)};
+                    raw.push_str(&format!("{l} "));
+                }
+                raw.push_str("0\n");
+            }
+            let p=parse_emitted(&raw,100).unwrap();
+            let d=Instant::now()+Duration::from_secs(5);
+            assert_eq!(local_frontier(&p,&raw,d,false,false).unwrap(),
+                       local_frontier(&p,&raw,d,true,false).unwrap());
+        }
+        // More than 256 variables with degree five, each in a six-variable
+        // clause; the old frontier stops, adaptive width six eliminates.
+        let n=258;
+        let mut raw=format!("p cnf {n} {}\nc t wmc\n",n/6);
+        for j in (1..=n).step_by(6){
+            for v in j..j+6{raw.push_str(&format!("{v} "));}
+            raw.push_str("0\n");
+        }
+        let p=parse_emitted(&raw,100).unwrap();
+        let d=Instant::now()+Duration::from_secs(5);
+        assert!(local_frontier(&p,&raw,d,true,false).is_err());
+        let a=local_frontier(&p,&raw,d,true,true).unwrap();
+        let b=local_frontier(&p,&raw,d,false,true).unwrap();
+        assert_eq!(a,b);
+        assert!(a.1.is_empty());
+        assert_eq!(a.3.width,5);
     }
     #[test]
     fn exact_local_support_and_free_axes(){

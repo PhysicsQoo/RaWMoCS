@@ -498,6 +498,89 @@ def residual_components(factors, nodes):
         parts.append(comp)
     return adjacency,parts
 
+def exact_complex_div(a,b):
+    if a is None:return None
+    d=b[0]*b[0]+b[1]*b[1]
+    if not d:raise ValueError("SPLIT_ZERO_PIVOT")
+    return checked(((a[0]*b[0]+a[1]*b[1])/d,(a[1]*b[0]-a[0]*b[1])/d))
+
+
+def split_rank_one(scope,vals,left):
+    # A supported nonzero pivot determines the unique outer-product
+    # reconstruction up to scaling. Equality includes None vs numeric zero.
+    pivot=next((i for i,x in enumerate(vals) if x is not None and x!=ZERO),None)
+    if pivot is None:return None
+    right=tuple(v for v in scope if v not in left)
+    left=tuple(left)
+    if not left or not right or len(vals)!=(1<<len(scope)):raise ValueError("SPLIT_SHAPE")
+    def embed(i,part):
+        return sum(((i>>k)&1)<<scope.index(v) for k,v in enumerate(part))
+    lm=sum(1<<scope.index(v) for v in left)
+    rm=sum(1<<scope.index(v) for v in right)
+    a=[vals[embed(i,left)|(pivot&rm)] for i in range(1<<len(left))]
+    try:
+        b=[exact_complex_div(vals[embed(j,right)|(pivot&lm)],vals[pivot]) for j in range(1<<len(right))]
+        for i,x in enumerate(a):
+            for j,y in enumerate(b):
+                if mul(x,y)!=vals[embed(i,left)|embed(j,right)]:return None
+    except ValueError as exc:
+        if str(exc)!="LOCAL_EXACT_BITS":raise
+        return None
+    return (left,a),(right,b)
+
+
+def rank_one_profile(raw,expected):
+    # Independent diagnostic only. Limit bipartitions and exact cell work;
+    # never substitute a split into production or change numeric caps.
+    start=monotonic()
+    fs,nodes,scalar,local=local_reduce(raw,expected,start+PLAN_SECONDS,incremental=True)
+    before,_=residual_components(fs,nodes)
+    deadline=monotonic()+15
+    checks=0;accepted=0;tested=0;out=[];examples=[]
+    pending=list(reversed(fs))
+    stop=None
+    while pending:
+        scope,vals=pending.pop()
+        parts=None
+        if len(scope)>=2 and len(scope)<=9 and stop is None:
+            # Enumerate each unordered bipartition once (left includes first).
+            for k in range(1,len(scope)):
+                for tail in combinations(scope[1:],k-1):
+                    if monotonic()>=deadline or checks+len(vals)>1_000_000:
+                        stop="DIAGNOSTIC_BUDGET";break
+                    checks+=len(vals);tested+=1
+                    parts=split_rank_one(scope,vals,(scope[0],)+tail)
+                    if parts is not None:break
+                if parts is not None or stop:break
+        if parts is None:out.append((scope,vals));continue
+        accepted+=1
+        if len(examples)<16:examples.append(dict(scope=scope,parts=[p[0] for p in parts]))
+        pending.extend(reversed(parts))
+    after,_=residual_components(out,nodes)
+    old_edges=sum(map(len,before.values()))//2
+    new_edges=sum(map(len,after.values()))//2
+    old_cells=sum(len(t) for _,t in fs);new_cells=sum(len(t) for _,t in out)
+    result=dict(status="EXACT_RANK_ONE_DIAGNOSTIC_ONLY",source_sha256=expected,local=local,
+        tested_partitions=tested,cell_check_upper_bound=checks,splits=accepted,
+        complete=stop is None,stop=stop,edges_before=old_edges,edges_after=new_edges,
+        factors_before=len(fs),factors_after=len(out),cells_before=old_cells,cells_after=new_cells,
+        examples=examples)
+    if accepted and new_edges<old_edges:
+        # Charge both original and split exact factors while planning.
+        charge=dict(local,retained_cells=old_cells+new_cells,
+                    peak=max(local["peak"],old_cells+new_cells))
+        try:
+            key,branches,counts=choose(out,nodes,scalar,charge,monotonic()+PLAN_SECONDS)
+            result["plan"]=dict(status="STRUCTURALLY_FEASIBLE",work=key[0],peak=key[1],
+                width=key[2],cuts=key[3],counts=counts)
+        except ValueError as exc:
+            if str(exc) not in ("PLAN_DEADLINE","NO_BOUNDED_PREJOIN_PLAN"):raise
+            result["plan"]=dict(status=str(exc))
+    else:result["plan"]=dict(status="NO_GRAPH_EDGE_REDUCTION")
+    result["wall_s"]=monotonic()-start
+    return result
+
+
 def residual_profile(raw, expected):
     """Structural-only inspection beyond the global 64-node admission limit.
     All source/local arithmetic and resource caps remain enforced.
@@ -1006,6 +1089,16 @@ def self_test():
     assert support["root_support"]==[False]
     assert support["early_break_operand_visits"]<=support["dense_operand_visits"]
     assert support_bits([None,ZERO,ONE])==6
+    # Rank-one exact rational reconstruction must preserve supported zero
+    # and unsupported entries, complex phase, and non-separable controls.
+    a=[(Q(2),Q(3)),None];b=[(Q(1),Q(-1)),ZERO]
+    vals=[mul(x,y) for y in b for x in a]
+    split=split_rank_one((1,2),vals,(1,))
+    assert split is not None
+    assert [mul(x,y) for y in split[1][1] for x in split[0][1]]==vals
+    assert split_rank_one((1,2),[ONE,None,None,ONE],(1,)) is None
+    assert split_rank_one((1,2),[ONE,ZERO,None,ONE],(1,)) is None
+    assert split_rank_one((1,2),[ZERO,None,ZERO,None],(1,)) is None
     widths=local_width_profile(raw,h,incremental=True)
     assert widths["status"]=="LOCAL_WIDTH_PROFILE_ONLY"
     assert [r["local_width"] for r in widths["rows"]]==[4,5,6]
@@ -1025,6 +1118,7 @@ if __name__=="__main__":
     mode.add_argument("--graph-order-profile",action="store_true")
     mode.add_argument("--replay-graph-order",action="store_true")
     mode.add_argument("--support-work-profile",action="store_true")
+    mode.add_argument("--rank-one-profile",action="store_true")
     mode.add_argument("--local-width-profile",action="store_true")
     mode.add_argument("--incremental-local-width-profile",action="store_true")
     a=ap.parse_args()
@@ -1034,7 +1128,8 @@ if __name__=="__main__":
         if a.cnf is None or a.sha256 is None:
             ap.error("CNF and SHA256 required")
         raw=a.cnf.read_bytes()
-        result=(local_width_profile(raw,a.sha256,incremental=True) if a.incremental_local_width_profile else
+        result=(rank_one_profile(raw,a.sha256) if a.rank_one_profile else
+                local_width_profile(raw,a.sha256,incremental=True) if a.incremental_local_width_profile else
                 local_width_profile(raw,a.sha256) if a.local_width_profile else
                 replay_graph_order(raw,a.sha256,support_profile=True) if a.support_work_profile else
                 replay_graph_order(raw,a.sha256) if a.replay_graph_order else

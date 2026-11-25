@@ -20,6 +20,18 @@ fallback and executable need independent release acceptance.
 
 ## Admission gates
 
+Candidate `3473429bee9069f4e9538f5dd19a39cc696fe9ba` completed
+[CodSpeed CI 45591456271](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/45591456271):
+original QPE8 200-bit one-second preflight and Simulation output/route
+parity. [CodSpeed run](https://app.codspeed.io/PhysicsQoo/RaWMoCS/runs/6b06b3733af1412b6f9ef627)
+records 85.7 ms GPMC and 37.2 ms RaWMoCS modeled CPU time; both have
+system-call-dominance warnings, so neither is a wall-time estimate.
+Flamegraphs inspected: RaWMoCS factor-prejoin solve 33.5 ms inclusive
+(90.07% of modeled CPU time); rational multiply 17.3 ms inclusive
+(46.42%); GPMC countModels 54.7 ms inclusive (63.75%). No kernel change
+from this short-proxy diagnosis. The exact-head native repeat remains
+separate from the completed native evidence below.
+
 Candidate `a016e606b62dd3b6bfadb1c131f9cea06c8d3808` completed
 [science CI 45588469064](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/45588469064):
 11/11 jobs, 21/21 complete witnessed native pairs with RaWMoCS faster
@@ -108,7 +120,11 @@ acceptance; historical PASS is not a substitute.
   witnessed pairs. No speed floor inferred from past research binaries.
 - [ ] Cross-platform scope and packaging declared only for validated targets.
   Initial executable CI is Linux x86-64; portable reference tests do not
-  imply MPFR executable portability.
+  imply MPFR executable portability. Initial packaging is source-only:
+  deterministic Git archive, SHA256SUMS, clean extracted-tree locked
+  cargo install and installed executable smoke/negative controls on Linux
+  x86-64. No redistributed executable or offline build claim; linked-library
+  license review and other platform executable CI are separate admission.
 - [ ] Release notes disclose resource budgets and unsupported input semantics,
   review all gates at exact candidate SHA, then merge/tag/release.
 

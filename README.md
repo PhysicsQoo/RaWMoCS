@@ -27,8 +27,19 @@ cargo build --locked --release --manifest-path crates/rawmocs-cli/Cargo.toml
 crates/rawmocs-cli/target/release/rawmocs --digits 60 input.cnf
 ```
 
-The release candidate lock must be committed before publication; the initial
-CI may bootstrap it. The four supported digit selectors are 30, 60, 100, 130
+The CLI dependency lock is tracked. For source installation on the
+validated Linux x86-64 target, use:
+
+```sh
+cargo install --locked --path crates/rawmocs-cli
+rawmocs --version
+```
+
+The source-only packaging gate validates installation from an extracted
+Git archive, records SHA256 checksums, and does not redistribute a linked
+binary. It requires a Rust toolchain, native build prerequisites and access
+to the locked dependency sources. Binary packages and other MPFR CLI targets
+are not admitted by the portable reference tests. The four supported digit selectors are 30, 60, 100, 130
 (working precisions 100, 200, 333, 432 bits). These selectors are working
 precision choices, not a certified number of correct decimal digits.
 QuPRS should use guarded precision where required and handle execution

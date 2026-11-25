@@ -109,7 +109,9 @@ def reduce_axes(scope, vals):
     return scope, vals, dropped
 
 
-def local_reduce(raw, expected, deadline, *, diagnostic=False):
+def local_reduce(raw, expected, deadline, *, diagnostic=False, local_width=LOCAL_WIDTH):
+    if local_width!=LOCAL_WIDTH and (not diagnostic or local_width not in (5,6)):
+        raise ValueError("LOCAL_WIDTH_POLICY")
     n, clauses, scopes, weights = parse(raw, expected)
     fs = {}
     inc = {v: set() for v in range(1, n+1)}
@@ -147,7 +149,7 @@ def local_reduce(raw, expected, deadline, *, diagnostic=False):
             raise ValueError("LOCAL_DEADLINE")
         v = min(inc, key=lambda v: (len(neighbors(v)), len(inc[v]), -v))
         scope = tuple(sorted(neighbors(v)))
-        if len(scope) > LOCAL_WIDTH:
+        if len(scope) > local_width:
             break
         ids = sorted(inc[v])
         bucket = [fs[i] for i in ids]
@@ -644,6 +646,64 @@ def graph_order_profile(raw, expected):
     return dict(status="GRAPH_ORDER_PROFILE_ONLY",source_sha256=expected,
         local=local,degree_pool=high,rows=rows,wall_s=monotonic()-start)
 
+def shared_work_profile(branches, local):
+    """Intern exact ordered expression DAGs. No numeric execution or rounding.
+    Exact factor content includes unsupported vs supported zero entries.
+    Only identical ordered operations (including scope/pivot) can be shared.
+    The unique-work bound assumes unlimited reuse; retained cells are not
+    certified live memory, and hashing/cache overhead is not included.
+    """
+    ids={}
+    def intern(key):
+        if key not in ids:ids[key]=len(ids)
+        return ids[key]
+    unique={}
+    repeated_work=0
+    branch_roots=[]
+    for fs,p in branches:
+        tables={i:intern(("input",scope,tuple(vals))) for i,(scope,vals) in enumerate(fs)}
+        for op,owners,dst,out,v in p["ops"]:
+            key=("op",op,tuple(tables[i] for i in owners),out,v)
+            node=intern(key)
+            work=2*(1<<len(out))*(1 if op=="join" else len(owners))
+            repeated_work+=work
+            unique.setdefault(node,(work,1<<len(out),0))
+            w,c,hits=unique[node]
+            if w!=work:raise ValueError("SHARED_WORK_DRIFT")
+            unique[node]=(w,c,hits+1)
+            for i in owners:del tables[i]
+            tables[dst]=node
+        branch_roots.append(tuple(tables.values()))
+    conditioning=len(branches)*local["retained_cells"]+local["work"]
+    unique_work=sum(w for w,_,_ in unique.values())
+    return dict(branches=len(branches),operations=sum(h for _,_,h in unique.values()),
+        unique_operations=len(unique),shared_operations=sum(h>1 for _,_,h in unique.values()),
+        repeated_work=repeated_work+conditioning,ideal_shared_work=unique_work+conditioning,
+        reusable_output_cells=sum(c for _,c,h in unique.values() if h>1),
+        all_unique_output_cells=sum(c for _,c,_ in unique.values()),
+        distinct_branch_roots=len(set(branch_roots)),
+        ideal_within_work_cap=unique_work+conditioning<=MAX_WORK,
+        note="Ideal exact ordered expression reuse; no cache schedule, RSS, numeric or timing certification")
+
+def local_width_profile(raw,expected):
+    """Structural exact local reduction only; same arithmetic/work/live caps."""
+    start=monotonic();rows=[]
+    for width in (4,5,6):
+        t=monotonic()
+        try:
+            fs,nodes,_,local=local_reduce(raw,expected,t+PLAN_SECONDS,
+                diagnostic=True,local_width=width)
+            _,parts=residual_components(fs,nodes)
+            rows.append(dict(local_width=width,status="COMPLETE",local=local,
+                largest_component=max((len(p) for p in parts),default=0),
+                component_count=len(parts),wall_s=monotonic()-t))
+        except ValueError as exc:
+            if str(exc) not in ("LOCAL_DEADLINE","LOCAL_RESOURCE","LOCAL_EXACT_BITS","LOCAL_LIVE"):
+                raise
+            rows.append(dict(local_width=width,status=str(exc),wall_s=monotonic()-t))
+    return dict(status="LOCAL_WIDTH_PROFILE_ONLY",source_sha256=expected,rows=rows,
+                wall_s=monotonic()-start)
+
 def replay_graph_order(raw, expected):
     """Replay a graph-screened candidate on every exact restricted factor set.
     Report aggregate structural caps, not a numeric witness. The graph-only
@@ -665,6 +725,7 @@ def replay_graph_order(raw, expected):
         row=dict(cutset=cuts,order=c["order"],graph_width=c["width"],
             branches=[],work=local["work"],peak=local["peak"],width=0)
         report["candidates"].append(row)
+        planned=[]
         try:
             for values in product((False,True),repeat=len(cuts)):
                 if monotonic()>=deadline:raise ValueError("PLAN_DEADLINE")
@@ -673,6 +734,7 @@ def replay_graph_order(raw, expected):
                 if p is None:
                     row["branches"].append(dict(values=values,status="BRANCH_CAP_REJECTED"))
                     continue
+                planned.append((branch,p))
                 row["branches"].append(dict(values=values,status="FEASIBLE",
                     **{k:p[k] for k in ("work","peak","width","joins")}))
                 row["work"]+=p["work"]+local["retained_cells"]
@@ -682,6 +744,9 @@ def replay_graph_order(raw, expected):
             if str(exc)!="PLAN_DEADLINE":raise
             row["status"]="DEADLINE"
             break
+        if len(planned)==1<<len(cuts):
+            row["sharing"]=shared_work_profile(planned,local)
+            if row["sharing"]["repeated_work"]!=row["work"]:raise ValueError("SHARED_TOTAL_DRIFT")
         if any(b["status"]!="FEASIBLE" for b in row["branches"]):
             row["status"]="BRANCH_CAP_REJECTED"
         elif row["work"]>MAX_WORK or row["peak"]>MAX_LIVE or row["width"]>MAX_WIDTH:
@@ -771,6 +836,17 @@ def self_test():
     for row in replay["candidates"]:
         assert row["status"]=="FEASIBLE"
         assert len(row["branches"])==1<<len(row["cutset"])
+    # Exact identical expressions share; distinct supported-zero/None inputs do not.
+    tiny=[((1,),[ONE,ZERO])]
+    plan_a=plan(tiny,{1},(None,False),2,monotonic()+5)
+    shared=shared_work_profile([(tiny,plan_a),(tiny,plan_a)],dict(work=0,retained_cells=2))
+    assert shared["unique_operations"]==1 and shared["operations"]==2
+    other=[((1,),[ONE,None])]
+    different=shared_work_profile([(tiny,plan_a),(other,plan_a)],dict(work=0,retained_cells=2))
+    assert different["unique_operations"]==2
+    widths=local_width_profile(raw,h)
+    assert widths["status"]=="LOCAL_WIDTH_PROFILE_ONLY"
+    assert [r["local_width"] for r in widths["rows"]]==[4,5,6]
     print("EXACT_PREJOIN_SELF_TEST PASS")
 
 
@@ -786,6 +862,7 @@ if __name__=="__main__":
     mode.add_argument("--extended-cutset-profile",action="store_true")
     mode.add_argument("--graph-order-profile",action="store_true")
     mode.add_argument("--replay-graph-order",action="store_true")
+    mode.add_argument("--local-width-profile",action="store_true")
     a=ap.parse_args()
     if a.self_test:
         self_test()
@@ -793,7 +870,8 @@ if __name__=="__main__":
         if a.cnf is None or a.sha256 is None:
             ap.error("CNF and SHA256 required")
         raw=a.cnf.read_bytes()
-        result=(replay_graph_order(raw,a.sha256) if a.replay_graph_order else
+        result=(local_width_profile(raw,a.sha256) if a.local_width_profile else
+                replay_graph_order(raw,a.sha256) if a.replay_graph_order else
                 graph_order_profile(raw,a.sha256) if a.graph_order_profile else
                 extended_cutset_profile(raw,a.sha256) if a.extended_cutset_profile else
                 residual_profile(raw,a.sha256) if a.residual_profile else

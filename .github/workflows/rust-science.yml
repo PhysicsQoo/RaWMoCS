@@ -186,6 +186,19 @@ jobs:
           python -m pip install numpy sympy symengine 'qiskit==2.6.1' qiskit-qasm3-import psutil
           python -m pip freeze > .release-evidence/quprs-python-dependencies.txt
           PYTHONPATH="$PWD/.quprs-integration/src" python crates/rawmocs-cli/tools/quprs_python_integration.py --bin crates/rawmocs-cli/target/release/rawmocs --out .release-evidence/quprs-python
+      - name: Isolated actual-search kernel OOM and non-OOM signal controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n systemd-run --wait --pipe --collect \
+            --unit="rawmocs-release-oom-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --property="User=$(id -un)" --property="WorkingDirectory=$GITHUB_WORKSPACE" \
+            --property=MemoryAccounting=yes --property=MemoryMax=48M \
+            --property=MemorySwapMax=0 --property=OOMPolicy=continue \
+            --property=RuntimeMaxSec=50s --property=TasksMax=16 \
+            /usr/bin/python3 "$GITHUB_WORKSPACE/crates/rawmocs-cli/tools/oom_admission.py" \
+            --bin "$GITHUB_WORKSPACE/crates/rawmocs-cli/target/release/rawmocs" \
+            --out "$GITHUB_WORKSPACE/.release-evidence/oom"
       - name: Require unchanged tracked release candidate
         run: git diff --exit-code -- crates/rawmocs-cli
       - name: Archive candidate lock and immutable evidence
@@ -196,6 +209,54 @@ jobs:
           path: |
             crates/rawmocs-cli/Cargo.lock
             .release-evidence/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+
+  durable-source-rebuild:
+    name: Regenerate original CNF and independent interval without artifacts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/QuPRS
+          ref: 0b28736651b3740ed3b201edd2efdef3da541e0d
+          path: .quprs-repro
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            crates/rawmocs-cli -> target
+            .quprs-repro/rust -> target
+      - name: Build pinned source encoder and candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C .quprs-repro rev-parse HEAD)" = 0b28736651b3740ed3b201edd2efdef3da541e0d
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgmp-dev libmpfr-dev m4 make gcc pkg-config
+          repro=crates/rawmocs-cli/tools/repro
+          test "$(git hash-object "$repro/quprs_long_tail_source_bridge.rs")" = fc32f4e8b0a2f34386b86e08ddf147469275c245
+          test "$(git hash-object "$repro/original_fixed_interval.py")" = bb7aec29adbbf46421be4ca78d76572a7988252e
+          test "$(git hash-object "$repro/original_exact_prejoin.py")" = 0c43167abfc52b7449076f7f0da4d9298f5a3f32
+          cp "$repro/quprs_long_tail_source_bridge.rs" .quprs-repro/rust/quprs/examples/
+          cargo build --locked --release --no-default-features --manifest-path .quprs-repro/rust/Cargo.toml -p quprs --example quprs_long_tail_source_bridge
+          cargo build --locked --release --manifest-path crates/rawmocs-cli/Cargo.toml
+      - name: Regenerate six source CNFs and verify seven cohorts
+        run: |
+          set -euo pipefail
+          python3 crates/rawmocs-cli/tools/regenerate_release.py --quprs .quprs-repro --exporter .quprs-repro/rust/target/release/examples/quprs_long_tail_source_bridge --bin crates/rawmocs-cli/target/release/rawmocs --out .release-rebuild
+      - name: Archive regeneration evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rawmocs-v010-durable-rebuild
+          path: .release-rebuild/
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 30

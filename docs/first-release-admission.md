@@ -20,6 +20,12 @@ fallback and executable need independent release acceptance.
 
 ## Admission gates
 
+Prior candidate `2123f1327a5be8e5fe1904210621fe75fbb6d945` passed
+[science CI 45585168839](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/45585168839):
+7/7 jobs, 17 CLI tests, deep 600-variable case with 599 observed frames,
+input-open external timeout/cancellation controls, 7 transfer cohorts and
+scoped QuPRS integration. No kernel OOM evidence from that candidate.
+
 Prior candidate `36ed2a568ef21b15657e8789e94bebbea44bdfe2` passed
 [science CI 45584033902](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/45584033902):
 7/7 jobs, 16 CLI tests, 7 source transfer cohorts, 3 scoped QuPRS
@@ -60,7 +66,15 @@ acceptance; historical PASS is not a substitute.
   check formatting and strict lint without changing kernel semantics.
 - [ ] Durable reproducibility: regenerate admitted source and independent
   references from pinned upstream sources, rather than rely permanently on
-  expiring CI artifacts.
+  expiring CI artifacts. QuPRS revision `0b28736651b3740ed3b201edd2efdef3da541e0d`;
+  byte-identical research bridge and two independent oracle files under
+  `crates/rawmocs-cli/tools/repro/` from `379b47242cbd9b4a1e597afc6377cbaf0ac13bce`.
+  Verify source Git blobs, exact CNF SHA256, and seven numeric witnesses;
+  retain historical transfer gate until the new regeneration gate passes.
+- [ ] Kernel OOM admission on isolated Linux cgroup v2 with read-back
+  memory.max=48 MiB, zero swap and memory.events.local oom_kill delta.
+  Require actual solver SIGKILL and empty stdout; negative externally
+  SIGKILLed real solver must not increment oom_kill. No claim for other OS.
 - [ ] QuPRS adapter integration: actual exported CNF, process exit handling,
   numerical guard, SAT/zero/unknown separation, timeout, cancellation and
   resource supervisor. Never convert execution failure to a definitive verdict.

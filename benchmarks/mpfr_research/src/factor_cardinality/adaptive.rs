@@ -314,6 +314,48 @@ fn trail_prefix(p:&Problem,bits:u32,compact:bool,profile:bool)->Result<String,St
     Ok(format!("TRAIL_PREFIX_V1 bits={bits} nodes={} cache_hits={} decompositions={} assignments={} {status}",
         trail.stats.nodes,trail.stats.cache_hits,trail.stats.decompositions,trail.assignments))
 }
+// Diagnostic work budget, deliberately not a new full solver cap. Keep
+// the same reduced CNF, precision and 50k cache capacity across arms.
+fn trail_search_probe(p:&Problem,bits:u32,variant:u8)->Result<String,String>{
+    const NODES:u64=32768;
+    let start=Instant::now();
+    let (reduced,scope,_)=weighted_equivalence::reduce(p,bits);
+    let mut trail=TrailEngine::new(&reduced,bits,50_000,NODES);
+    trail.use_parent_ids=true;
+    trail.use_compact_residual=true;
+    trail.use_prehashed_cache=true;
+    trail.use_fused_compact=true;
+    trail.use_inline_weight_relabel=true;
+    if variant==2{
+        if let Some((scores,size,left,right))=separator_layer(&reduced,&scope){
+            eprintln!("MCC_SEPARATOR_LAYER size={size} left={left} right={right}");
+            trail.primal_scores=Some(scores);
+        }else{return Err("separator unavailable".into());}
+    }
+    if variant==3{
+        // Keep full source-variable keys. The forced-weight prefix is
+        // excluded from post-closure cache values by the existing engine.
+        trail.use_post_unit_cache=true;
+        trail.use_projected_post_key=true;
+    }
+    if variant==4{
+        trail.use_component_local_ve=true;
+        trail.use_forest_dp=true;
+    }
+    let result=trail.count(scope,0);
+    let status=match result{
+        Ok(answer)=>format!("COMPLETE sat={} real={} imag={}",answer.sat,
+            answer.count.re.to_string_radix(10,None),answer.count.im.to_string_radix(10,None)),
+        Err(reason) if reason=="node limit"&&trail.stats.nodes==NODES=>"NODE_PREFIX_ONLY".into(),
+        Err(reason)=>return Err(reason),
+    };
+    eprintln!("MCC_SEARCH_PROBE_NS variant={variant} elapsed={}",start.elapsed().as_nanos());
+    Ok(format!("MCC_SEARCH_PROBE_V1 variant={variant} bits={bits} nodes={} cache_hits={} decompositions={} assignments={} cache_keys={} post_unit_hits={} post_unit_visited={} post_unit_forced={} projected_keys={} reused_keys={} separator_overrides={} component_ve_attempts={} component_ve_completed={} component_ve_products={} forest_attempts={} forest_completed={} {status}",
+        trail.stats.nodes,trail.stats.cache_hits,trail.stats.decompositions,trail.assignments,trail.cache_keys,
+        trail.post_unit_hits,trail.post_unit_visited,trail.post_unit_forced,trail.projected_forced_keys,
+        trail.reused_unforced_keys,trail.primal_overrides,trail.component_ve_attempts,trail.component_ve_completed,
+        trail.component_ve_products,trail.forest_dp_attempts,trail.forest_dp_completed))
+}
 pub(crate) fn run(mut args:impl Iterator<Item=std::ffi::OsString>,hybrid:bool)->Result<(),String>{
     let first=args.next().and_then(|x|x.into_string().ok()).ok_or("missing precision")?;
     let mode=match first.as_str(){
@@ -324,8 +366,9 @@ pub(crate) fn run(mut args:impl Iterator<Item=std::ffi::OsString>,hybrid:bool)->
         _=>None,
     };
     let variant=match first.as_str(){"trail-full-compact"=>1,"trail-full-separator"=>2,_=>0};
-    if (mode.is_some()||variant>0)&&hybrid{return Err("diagnostic requires non-hybrid adaptive".into());}
-    let digits:u32=if mode.is_some()||variant>0{args.next().and_then(|x|x.into_string().ok()).ok_or("missing precision")?}else{first}.parse().map_err(|_|"invalid precision")?;
+    let probe=match first.as_str(){"trail-search-compact"=>1,"trail-search-separator"=>2,"trail-search-postunit"=>3,"trail-search-hybrid"=>4,_=>0};
+    if (mode.is_some()||variant>0||probe>0)&&hybrid{return Err("diagnostic requires non-hybrid adaptive".into());}
+    let digits:u32=if mode.is_some()||variant>0||probe>0{args.next().and_then(|x|x.into_string().ok()).ok_or("missing precision")?}else{first}.parse().map_err(|_|"invalid precision")?;
     let bits=match digits{30=>100,60=>200,100=>333,130=>432,_=>return Err("unsupported precision".into())};
     let file=args.next().ok_or("missing source")?;
     if args.next().is_some(){return Err("unexpected arguments".into());}
@@ -333,6 +376,7 @@ pub(crate) fn run(mut args:impl Iterator<Item=std::ffi::OsString>,hybrid:bool)->
     let raw=std::fs::read_to_string(file).map_err(|e|e.to_string())?;
     let read_ns=t.elapsed().as_nanos();
     let t=Instant::now();let p=parse_emitted(&raw,bits)?;let parse_ns=t.elapsed().as_nanos();
+    if probe>0{println!("{}",trail_search_probe(&p,bits,probe)?);return Ok(());}
     if let Some((compact,profile))=mode{
         println!("{}",trail_prefix(&p,bits,compact,profile)?);
         return Ok(());
@@ -350,6 +394,19 @@ pub(crate) fn run(mut args:impl Iterator<Item=std::ffi::OsString>,hybrid:bool)->
 mod tests{
     use super::*;
     use crate::C;
+    #[test]
+    fn bounded_search_probe_completed_signed_count(){
+        let raw="p cnf 3 2\nc t wmc\nc p weight 1 -0.5 0.25 0\nc p weight -1 0.5 0 0\n1 2 0\n-1 3 0\n";
+        for bits in [100,333]{
+            let p=parse_emitted(raw,bits).unwrap();
+            let expected=trail_search_probe(&p,bits,1).unwrap();
+            let count=expected.split_once("COMPLETE ").unwrap().1;
+            for variant in [3,4]{
+                let got=trail_search_probe(&p,bits,variant).unwrap();
+                assert_eq!(got.split_once("COMPLETE ").unwrap().1,count);
+            }
+        }
+    }
     #[test]
     fn balanced_layer_separates_path_and_preserves_count(){
         let raw="p cnf 9 8\nc t wmc\n1 2 0\n2 3 0\n3 4 0\n4 5 0\n5 6 0\n6 7 0\n7 8 0\n8 9 0\n";

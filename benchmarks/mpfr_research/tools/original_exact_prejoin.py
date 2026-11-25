@@ -288,14 +288,14 @@ def plan(factors, nodes, policy, retained, deadline):
                 retained_extra=extra)
 
 
-def choose(factors, nodes, scalar, local, deadline):
+def choose(factors, nodes, scalar, local, deadline, cut_sizes=(0,1,2)):
     adjacency = {v:set() for v in nodes}
     for s,_ in factors:
         for v in s:
             adjacency[v].update(set(s)-{v})
     high = sorted(nodes,key=lambda v:(-len(adjacency[v]),v))[:12]
     counts = []
-    for cuts in (0,1,2):
+    for cuts in cut_sizes:
         candidates = ([()] if cuts==0 else [(v,) for v in sorted(nodes)] if cuts==1
                       else list(combinations(high,2)))
         best = None
@@ -447,6 +447,34 @@ def solve(raw, expected, seconds=180, profile=False):
     return report
 
 
+def cutset_spectrum(raw, expected):
+    """Bounded independent structural diagnostic only; never a solve verdict."""
+    start = monotonic()
+    factors,nodes,scalar,local = local_reduce(raw,expected,start+PLAN_SECONDS)
+    rows = []
+    for n in (0,1,2):
+        t = monotonic()
+        try:
+            (work,peak,width,pivots),branches,counts = choose(
+                factors,nodes,scalar,local,t+PLAN_SECONDS,cut_sizes=(n,))
+            rows.append(dict(cutset_size=n,status="FEASIBLE",work=work,peak=peak,
+                width=width,pivots=pivots,search=counts,
+                joins=sum(p["joins"] for _,p in branches),wall_s=monotonic()-t))
+        except ValueError as exc:
+            reason = str(exc)
+            if reason not in ("PLAN_DEADLINE","NO_BOUNDED_PREJOIN_PLAN"):
+                raise
+            rows.append(dict(cutset_size=n,status="DEADLINE" if reason=="PLAN_DEADLINE" else "NO_FEASIBLE_PLAN",
+                reason=reason,wall_s=monotonic()-t))
+    first = next((x for x in rows if x["status"]=="FEASIBLE"),None)
+    best = min((x for x in rows if x["status"]=="FEASIBLE"),
+        key=lambda x:(x["work"],x["peak"],x["width"],x["cutset_size"]),default=None)
+    return dict(status="STRUCTURAL_SPECTRUM_ONLY",source_sha256=expected,
+        local=local,rows=rows,first_feasible=first,best_observed=best,
+        all_sizes_complete=all(x["status"]!="DEADLINE" for x in rows),
+        work_ratio=None if first is None or best is None or not best["work"] else first["work"]/best["work"],
+        wall_s=monotonic()-start)
+
 def self_test():
     import random
     from original_fixed_interval import solve as baseline
@@ -490,6 +518,16 @@ def self_test():
                            (b"p cnf 3 0\n",True,8)]:
         r=solve(raw,sha256(raw).hexdigest())
         assert r["sat"]==sat and all(Q(a)==answer for a in r["real"])
+    raw=b"p cnf 6 2\n1 2 3 4 5 6 0\n-1 -2 -3 -4 -5 -6 0\n"
+    h=sha256(raw).hexdigest()
+    ordinary=solve(raw,h,profile=True)
+    spectrum=cutset_spectrum(raw,h)
+    assert spectrum["status"]=="STRUCTURAL_SPECTRUM_ONLY"
+    assert spectrum["all_sizes_complete"]
+    first=spectrum["first_feasible"]
+    assert (first["work"],first["peak"],first["width"])==(ordinary["work"],ordinary["peak"],ordinary["width"])
+    assert spectrum["best_observed"]["work"]<=first["work"]
+    assert [r["cutset_size"] for r in spectrum["rows"]]==[0,1,2]
     print("EXACT_PREJOIN_SELF_TEST PASS")
 
 
@@ -498,11 +536,14 @@ if __name__=="__main__":
     ap.add_argument("cnf",type=Path,nargs="?")
     ap.add_argument("sha256",nargs="?")
     ap.add_argument("--self-test",action="store_true")
-    ap.add_argument("--profile",action="store_true")
+    mode=ap.add_mutually_exclusive_group()
+    mode.add_argument("--profile",action="store_true")
+    mode.add_argument("--cutset-spectrum",action="store_true")
     a=ap.parse_args()
     if a.self_test:
         self_test()
     else:
         if a.cnf is None or a.sha256 is None:
             ap.error("CNF and SHA256 required")
-        print(json.dumps(solve(a.cnf.read_bytes(),a.sha256,profile=a.profile),indent=2))
+        raw=a.cnf.read_bytes()
+        print(json.dumps(cutset_spectrum(raw,a.sha256) if a.cutset_spectrum else solve(raw,a.sha256,profile=a.profile),indent=2))

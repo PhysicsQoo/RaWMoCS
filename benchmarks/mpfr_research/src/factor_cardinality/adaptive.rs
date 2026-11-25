@@ -168,18 +168,93 @@ fn choose(p:&Profile)->Route{
     if p.gates>0&&p.residual==0&&(19..=21).contains(&p.width){return Route::Conditioned;}
     Route::Trail
 }
-fn generic(p:&Problem,bits:u32,hybrid:bool)->Result<(Outcome,u64,u64,u64),String>{
+// One bounded, static balanced BFS-layer separator on the reduced primal
+// graph. Every path from an earlier layer to a later layer crosses this
+// layer. Scores only reorder exact Shannon branches; no assignments dropped.
+fn separator_layer(p:&Problem,scope:&[usize])->Option<(Vec<u16>,usize,usize,usize)>{
+    if p.n>4096 || scope.len()<8 || scope.len()>4096 || p.clauses.len()>20000{return None;}
+    let mut graph=vec![BTreeSet::new();p.n+1];
+    let mut edges=0usize;
+    let active: BTreeSet<_>=scope.iter().copied().collect();
+    if active.len()!=scope.len(){return None;}
+    for c in &p.clauses{
+        if c.len()>32{return None;}
+        let vs:BTreeSet<_>=c.iter().map(|l|l.unsigned_abs() as usize).collect();
+        if vs.iter().any(|v|!active.contains(v)){return None;}
+        let vs:Vec<_>=vs.into_iter().collect();
+        for (i,&v) in vs.iter().enumerate(){
+            for &u in &vs[i+1..]{
+                if graph[v].insert(u){graph[u].insert(v);edges+=1;if edges>100000{return None;}}
+            }
+        }
+    }
+    let bfs=|root:usize|{
+        let mut d=vec![usize::MAX;p.n+1];
+        let mut q=vec![root];d[root]=0;
+        let mut i=0;
+        while i<q.len(){let v=q[i];i+=1;for &u in &graph[v]{
+            if d[u]==usize::MAX{d[u]=d[v]+1;q.push(u);}
+        }}
+        (d,q)
+    };
+    // Root from largest connected component, rather than an isolated
+    // free variable; at most two extra sweeps over that component.
+    let mut seen=vec![false;p.n+1];let mut largest=Vec::new();
+    for &v in scope{
+        if seen[v]{continue;}
+        let (_,q)=bfs(v);for &u in &q{seen[u]=true;}
+        if q.len()>largest.len(){largest=q;}
+    }
+    let first=*largest.first()?;
+    let (d,q)=bfs(first);
+    let far=*q.iter().max_by_key(|&&v|(d[v],std::cmp::Reverse(v)))?;
+    let (d,q)=bfs(far);
+    let max=*q.iter().map(|v|&d[*v]).max()?;
+    let mut sizes=vec![0usize;max+1];
+    for &v in &q{sizes[d[v]]+=1;}
+    let mut left=0;let mut best=None;
+    for (i,&size) in sizes.iter().enumerate(){
+        let right=q.len()-left-size;
+        if left>0&&right>0&&left.max(right)*4<=q.len()*3&&size*4<=q.len(){
+            let key=(size,left.max(right),i,left,right);
+            if best.is_none_or(|b|key<b){best=Some(key);}
+        }
+        left+=size;
+    }
+    let (size,_,layer,left,right)=best?;
+    let mut scores=vec![0u16;p.n+1];
+    for v in q{if d[v]==layer{scores[v]=1;}}
+    Some((scores,size,left,right))
+}
+fn generic(p:&Problem,bits:u32,hybrid:bool,variant:u8)->Result<(Outcome,u64,u64,u64),String>{
     let (reduced,scope,_)=weighted_equivalence::reduce(p,bits);
     let mut trail=TrailEngine::new(&reduced,bits,50_000,1_000_000_000);
     trail.use_inline_weight_relabel=true;
+    if variant>0{
+        trail.use_parent_ids=true;
+        trail.use_compact_residual=true;
+        trail.use_prehashed_cache=true;
+        trail.use_fused_compact=true;
+    }
+    if variant==2{
+        if let Some((scores,size,left,right))=separator_layer(&reduced,&scope){
+            eprintln!("MCC_SEPARATOR_LAYER size={size} left={left} right={right}");
+            trail.primal_scores=Some(scores);
+        }else{eprintln!("MCC_SEPARATOR_LAYER rejected=true");}
+    }
     // Compare generic hybrid components against the same existing
     // search settings, rather than selecting by MQT family.
     trail.use_component_local_ve=hybrid;
     trail.use_forest_dp=hybrid;
-    let answer=trail.count(scope,0)?;
+    let result=trail.count(scope,0);
+    if variant>0{
+        eprintln!("MCC_TRAIL_FULL variant={variant} nodes={} hits={} decompositions={} assignments={} separator_overrides={}",
+            trail.stats.nodes,trail.stats.cache_hits,trail.stats.decompositions,trail.assignments,trail.primal_overrides);
+    }
+    let answer=result?;
     Ok((answer,trail.stats.nodes,trail.stats.cache_hits,trail.stats.decompositions))
 }
-fn solve(p:&Problem,raw:&str,bits:u32,hybrid:bool)->Result<(Outcome,Route,u64,u64,u64),String>{
+fn solve(p:&Problem,raw:&str,bits:u32,hybrid:bool,variant:u8)->Result<(Outcome,Route,u64,u64,u64),String>{
     let t=Instant::now();
     let profile=match profile(p,raw){
         Ok(p)=>p,
@@ -205,7 +280,7 @@ fn solve(p:&Problem,raw:&str,bits:u32,hybrid:bool)->Result<(Outcome,Route,u64,u6
             Err(reason)=>eprintln!("ADAPTIVE_FALLBACK from={} reason={} attempt_ns={}",route.name(),reason,attempt.elapsed().as_nanos()),
         }
     }
-    let (answer,nodes,hits,components)=generic(p,bits,hybrid)?;
+    let (answer,nodes,hits,components)=generic(p,bits,hybrid,variant)?;
     Ok((answer,Route::Trail,nodes,hits,components))
 }
 // Fixed node prefix of the actual adaptive Trail fallback. A node-budget
@@ -248,8 +323,9 @@ pub(crate) fn run(mut args:impl Iterator<Item=std::ffi::OsString>,hybrid:bool)->
         "trail-prefix-compact-profile"=>Some((true,true)),
         _=>None,
     };
-    if mode.is_some()&&hybrid{return Err("prefix requires non-hybrid adaptive".into());}
-    let digits:u32=if mode.is_some(){args.next().and_then(|x|x.into_string().ok()).ok_or("missing precision")?}else{first}.parse().map_err(|_|"invalid precision")?;
+    let variant=match first.as_str(){"trail-full-compact"=>1,"trail-full-separator"=>2,_=>0};
+    if (mode.is_some()||variant>0)&&hybrid{return Err("diagnostic requires non-hybrid adaptive".into());}
+    let digits:u32=if mode.is_some()||variant>0{args.next().and_then(|x|x.into_string().ok()).ok_or("missing precision")?}else{first}.parse().map_err(|_|"invalid precision")?;
     let bits=match digits{30=>100,60=>200,100=>333,130=>432,_=>return Err("unsupported precision".into())};
     let file=args.next().ok_or("missing source")?;
     if args.next().is_some(){return Err("unexpected arguments".into());}
@@ -261,7 +337,7 @@ pub(crate) fn run(mut args:impl Iterator<Item=std::ffi::OsString>,hybrid:bool)->
         println!("{}",trail_prefix(&p,bits,compact,profile)?);
         return Ok(());
     }
-    let t=Instant::now();let (answer,route,nodes,cache_hits,decompositions)=solve(&p,&raw,bits,hybrid)?;
+    let t=Instant::now();let (answer,route,nodes,cache_hits,decompositions)=solve(&p,&raw,bits,hybrid,variant)?;
     let solve_ns=t.elapsed().as_nanos();let t=Instant::now();
     println!("s {}",if answer.sat{"SATISFIABLE"}else{"UNSATISFIABLE"});
     println!("c r mpfr {} {}",answer.count.re.to_string_radix(10,Some(digits as usize+4)),answer.count.im.to_string_radix(10,Some(digits as usize+4)));
@@ -274,6 +350,21 @@ pub(crate) fn run(mut args:impl Iterator<Item=std::ffi::OsString>,hybrid:bool)->
 mod tests{
     use super::*;
     use crate::C;
+    #[test]
+    fn balanced_layer_separates_path_and_preserves_count(){
+        let raw="p cnf 9 8\nc t wmc\n1 2 0\n2 3 0\n3 4 0\n4 5 0\n5 6 0\n6 7 0\n7 8 0\n8 9 0\n";
+        for bits in [100,333]{
+            let p=parse_emitted(raw,bits).unwrap();
+            let (scores,size,left,right)=separator_layer(&p,&(1..=9).collect::<Vec<_>>()).unwrap();
+            assert_eq!((size,left,right),(1,4,4));
+            assert_eq!(scores[5],1);
+            let (a,_,_,_)=generic(&p,bits,false,0).unwrap();
+            for variant in [1,2]{
+                let (b,_,_,_)=generic(&p,bits,false,variant).unwrap();
+                assert_eq!(a.sat,b.sat);assert_eq!(a.count.re,b.count.re);assert_eq!(a.count.im,b.count.im);
+            }
+        }
+    }
     #[test]
     fn adaptive_original_cnf_oracle_and_generic_hybrid(){
         let cases=[
@@ -298,8 +389,8 @@ mod tests{
                     }
                 }
                 for hybrid in [false,true]{
-                    let (got,_,_,_,_)=solve(&p,raw,bits,hybrid).unwrap();
-                    let (trail,_,_,_)=generic(&p,bits,hybrid).unwrap();
+                    let (got,_,_,_,_)=solve(&p,raw,bits,hybrid,0).unwrap();
+                    let (trail,_,_,_)=generic(&p,bits,hybrid,0).unwrap();
                     for out in [got,trail]{
                         assert_eq!(out.sat,expected.sat);
                         assert_eq!(out.count.re,expected.count.re);

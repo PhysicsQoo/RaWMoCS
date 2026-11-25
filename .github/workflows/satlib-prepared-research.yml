@@ -1,15 +1,13 @@
 name: Source-pinned SATLIB Full WMC prepared-input research
 
 on:
-  pull_request:
-    paths:
-      - "crates/rawmocs-core/src/lib.rs"
-      - "benchmarks/rust_core/**"
-      - ".github/workflows/satlib-prepared-research.yml"
   workflow_dispatch:
+  pull_request:
+    types: [labeled]
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: satlib-prepared-${{ github.event.pull_request.number || github.ref }}
@@ -17,6 +15,7 @@ concurrency:
 
 jobs:
   satlib-native:
+    if: github.event_name == 'workflow_dispatch'
     name: Byte-pinned SATLIB exact oracle and native WallTime/lifetime
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -60,3 +59,220 @@ jobs:
           path: satlib-prepared-evidence.tsv
           if-no-files-found: warn
           retention-days: 14
+
+  mcc-real-wmc-scout:
+    name: Official MCC2024 Track 2 bounded real-WMC scout
+    if: github.event_name == 'pull_request' && github.event.label.name == 'run-mcc-real-wmc-scout' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/mpfr-exact-residual-arena-reuse-20261118'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/GPMC
+          ref: 89bbc89d0de918e7a5385740355df55765039230
+          path: .upstream/gpmc
+          submodules: recursive
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/mpfr_research -> target
+      - name: Build unchanged original GPMC and exact research CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C .upstream/gpmc rev-parse HEAD)" = 89bbc89d0de918e7a5385740355df55765039230
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build libgmp-dev libmpfr-dev zlib1g-dev time pkg-config
+          cmake -S .upstream/gpmc -B .upstream/gpmc/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build .upstream/gpmc/build --target gpmc-bin --parallel 2
+          cargo test --release --manifest-path benchmarks/mpfr_research/Cargo.toml
+          cargo build --release --manifest-path benchmarks/mpfr_research/Cargo.toml
+      - name: Download and verify official competition archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .research/mcc2024
+          curl --fail --location --retry 2 --max-time 120 --max-filesize 100000000 \
+            'https://zenodo.org/records/14249068/files/mc2024-track2-wmc_competition.tar?download=1' \
+            -o .research/mcc2024-track2.tar
+          printf '%s  %s\n' 1c7e6279eaf29bf3731cebe07eedf107 .research/mcc2024-track2.tar | md5sum -c -
+          sha256sum .research/mcc2024-track2.tar
+      - name: Admit original decimal-real sources and screen long GPMC cases
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -m py_compile benchmarks/mpfr_research/tools/mcc2024_real_wmc_scout.py
+          python3 benchmarks/mpfr_research/tools/mcc2024_real_wmc_scout.py \
+            --archive .research/mcc2024-track2.tar --gpmc-source .upstream/gpmc \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --out .research/mcc2024 --shard "$SHARD" | tee .research/mcc2024/scout.log
+      - name: Archive original and common input bytes, all trial rows and source rejects
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcc2024-real-wmc-scout-${{ matrix.shard }}
+          path: .research/mcc2024/
+          if-no-files-found: warn
+          retention-days: 30
+
+  mcc-trail-prefix:
+    name: Original MCC random113 bounded Trail research
+    if: github.event_name == 'pull_request' && (github.event.label.name == 'run-mcc-trail-prefix' || github.event.label.name == 'run-mcc-trail-full-pilot' || github.event.label.name == 'run-mcc-trail-search-probe') && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/mpfr-exact-residual-arena-reuse-20261118'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/mpfr_research -> target
+      - name: Build research CLI and run correctness tests
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgmp-dev libmpfr-dev time pkg-config
+          cargo test --release --manifest-path benchmarks/mpfr_research/Cargo.toml
+          cargo build --release --manifest-path benchmarks/mpfr_research/Cargo.toml
+      - name: Lock original MCC source from completed official archive scout
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          root=.research/mcc-prefix
+          mkdir -p "$root"
+          gh run download 45565819264 --repo "$GITHUB_REPOSITORY" --name mcc2024-real-wmc-scout-0 --dir "$root"
+          python3 - "$root" <<'PY'
+          import json,hashlib,pathlib,sys
+          root=pathlib.Path(sys.argv[1])
+          report,=root.rglob("report.json")
+          r=json.loads(report.read_text())
+          assert r["status"]=="SCOUT_COMPLETE"
+          assert r["doi"]=="10.5281/zenodo.14249068" and r["archive_md5"]=="1c7e6279eaf29bf3731cebe07eedf107"
+          row,=[x for x in r["cases"] if x["case"]=="mcc_track2_04"]
+          assert row["status"]=="GPMC_LONG_QUALIFIED" and row["member"].endswith("/mc2024_track2-random_113.cnf.xz")
+          assert len(row["screen"])==2 and all(x["status"]=="COMPLETED" and x["wall_ns"]>=10**10 for x in row["screen"])
+          for suffix,sha in [("original","1b2311006db2341b0524b73f726ff3bcc1b3da419fb9d8b857c914d794613926"),("common","6962cd31484e9bfc3f6c455805c0d3e2066ef903faf435cd7576111a2cc72dc7")]:
+              p,=root.rglob("mcc_track2_04."+suffix+".cnf")
+              raw=p.read_bytes()
+              assert hashlib.sha256(raw).hexdigest()==sha
+              dest=root/(suffix+".cnf");dest.write_bytes(raw)
+          PY
+      - name: Qualify identical fixed 512-node prefixes and native diagnostic stages
+        if: github.event.label.name == 'run-mcc-trail-prefix'
+        run: |
+          set -euo pipefail
+          root=.research/mcc-prefix
+          bin=benchmarks/mpfr_research/target/release/rawmocs-mpfr-research
+          sha256sum "$bin" "$root/common.cnf" "$root/original.cnf" > "$root/locked.sha256"
+          printf 'options:\n  max-time: "3s"\nbenchmarks:\n' > codspeed-mcc.generated.yml
+          for arm in legacy compact; do
+            for trial in 1 2 3; do
+              /usr/bin/time -v -o "$root/$arm-$trial.resources" timeout -k 2s 12s prlimit --as=3221225472 -- "$bin" --adaptive "trail-prefix-$arm-profile" 60 "$root/common.cnf" > "$root/$arm-$trial.stdout" 2> "$root/$arm-$trial.stderr"
+              grep '^TRAIL_PREFIX_PROFILE_NS ' "$root/$arm-$trial.stderr"
+              grep '^TRAIL_PREFIX_V1 bits=200 nodes=512 .* NODE_PREFIX_ONLY$' "$root/$arm-$trial.stdout"
+              cmp "$root/$arm-1.stdout" "$root/$arm-$trial.stdout"
+            done
+            timeout -k 2s 3s prlimit --as=3221225472 -- "$bin" --adaptive "trail-prefix-$arm" 60 "$root/common.cnf" > "$root/$arm.native"
+            cmp "$root/$arm-1.stdout" "$root/$arm.native"
+            printf '#!/bin/sh\nexec %s --adaptive trail-prefix-%s 60 %s/common.cnf > %s/%s.simulated\n' "$bin" "$arm" "$root" "$root" "$arm" > "$root/$arm.sh"
+            chmod +x "$root/$arm.sh"
+            printf '  - name: "original_partial/mcc_random113/trail_prefix512_%s"\n    exec: "./%s/%s.sh"\n' "$arm" "$root" "$arm" >> codspeed-mcc.generated.yml
+          done
+          cmp "$root/legacy.native" "$root/compact.native"
+          echo MCC_TRAIL_PREFIX_COUNTER_PARITY_PASS
+      - name: CodSpeed bounded original Trail prefix Simulation
+        if: github.event.label.name == 'run-mcc-trail-prefix'
+        timeout-minutes: 5
+        uses: CodSpeedHQ/action@v5
+        with:
+          mode: simulation
+          config: codspeed-mcc.generated.yml
+      - name: Verify simulation prefix and unchanged source bytes
+        if: github.event.label.name == 'run-mcc-trail-prefix'
+        run: |
+          set -euo pipefail
+          root=.research/mcc-prefix
+          sha256sum -c "$root/locked.sha256"
+          for arm in legacy compact; do cmp "$root/$arm.native" "$root/$arm.simulated"; done
+          cmp "$root/legacy.simulated" "$root/compact.simulated"
+          echo MCC_TRAIL_PREFIX_SIMULATION_COUNTER_PARITY_PASS
+      - name: Bounded full Trail pilot at equal guarded precision
+        if: github.event.label.name == 'run-mcc-trail-full-pilot'
+        run: |
+          set -euo pipefail
+          PYTHONPATH=benchmarks/mpfr_research/tools python3 - <<'PY'
+          import json,hashlib,pathlib
+          from quprs_long_tail_paired import native,complex_relative_witness,PAIR_S
+          root=pathlib.Path(".research/mcc-prefix")
+          report,=root.rglob("report.json")
+          r=json.loads(report.read_text())
+          row,=[x for x in r["cases"] if x["case"]=="mcc_track2_04"]
+          cnf=root/"common.cnf"
+          bin=pathlib.Path("benchmarks/mpfr_research/target/release/rawmocs-mpfr-research")
+          expected="6962cd31484e9bfc3f6c455805c0d3e2066ef903faf435cd7576111a2cc72dc7"
+          result=dict(status="IN_PROGRESS",source_sha256=expected,reference="historical same-CNF equal-precision GPMC scout, not fresh paired trial",trials=[])
+          def save():
+              (root/"full-pilot.json").write_text(json.dumps(result,indent=2)+"\n")
+          save()
+          for g in row["screen"]:
+              assert g["status"]=="COMPLETED"
+              for route in ("trail-full-compact","trail-full-separator"):
+                  assert hashlib.sha256(cnf.read_bytes()).hexdigest()==expected
+                  trial=native([str(bin.resolve()),"--adaptive",route,str(g["digits"]),str(cnf.resolve())],"candidate",PAIR_S,g["digits"],expected_bits=g["bits"])
+                  out=dict(bits=g["bits"],route=route,result=trial,status="CENSORED")
+                  if trial["status"]=="COMPLETED":
+                      witness=complex_relative_witness(g,trial,g["target"])
+                      out.update(witness=witness,status="EXPLORATORY_AGREEMENT" if witness["pass"] and g["sat"]==trial["sat"] else "NUMERIC_INCONCLUSIVE")
+                  result["trials"].append(out);save()
+                  print("MCC_FULL_PILOT",g["bits"],route,out["status"],trial.get("wall_ns"),trial.get("stderr_tail","")[-900:],flush=True)
+          result["status"]="FULL_PILOT_COMPLETE";save()
+          PY
+      - name: Compare bounded search progress on original MCC source
+        if: github.event.label.name == 'run-mcc-trail-search-probe'
+        run: |
+          set -euo pipefail
+          root=.research/mcc-prefix
+          bin=benchmarks/mpfr_research/target/release/rawmocs-mpfr-research
+          sha256sum "$bin" "$root/common.cnf" "$root/original.cnf" > "$root/search-probe.sha256"
+          for arm in compact separator postunit hybrid; do
+            for trial in 1 2; do
+              rc=0
+              /usr/bin/time -v -o "$root/search-$arm-$trial.resources" timeout -k 2s 25s prlimit --as=3221225472 -- "$bin" --adaptive "trail-search-$arm" 60 "$root/common.cnf" > "$root/search-$arm-$trial.stdout" 2> "$root/search-$arm-$trial.stderr" || rc=$?
+              echo "MCC_SEARCH_PROBE_EXIT arm=$arm trial=$trial rc=$rc"
+              tail -c 2000 "$root/search-$arm-$trial.stderr"
+              cat "$root/search-$arm-$trial.stdout"
+              if (( rc == 0 )); then
+                grep -E '^MCC_SEARCH_PROBE_V1 .*bits=200 .* (NODE_PREFIX_ONLY|COMPLETE sat=)' "$root/search-$arm-$trial.stdout"
+              else
+                printf '%s\n' "$rc" > "$root/search-$arm-$trial.exit"
+              fi
+            done
+            if [[ ! -f "$root/search-$arm-1.exit" && ! -f "$root/search-$arm-2.exit" ]]; then
+              cmp "$root/search-$arm-1.stdout" "$root/search-$arm-2.stdout"
+              echo "MCC_SEARCH_PROBE_REPEAT_PARITY arm=$arm"
+            fi
+          done
+          sha256sum -c "$root/search-probe.sha256"
+      - name: Archive source locked Trail diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.label.name == 'run-mcc-trail-search-probe' && 'mcc2024-random113-trail-search-probe' || github.event.label.name == 'run-mcc-trail-full-pilot' && 'mcc2024-random113-trail-full-pilot' || 'mcc2024-random113-trail-prefix' }}
+          path: |
+            .research/mcc-prefix/
+            codspeed-mcc.generated.yml
+          retention-days: 30
+          if-no-files-found: warn

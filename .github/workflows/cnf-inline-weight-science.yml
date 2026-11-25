@@ -1,12 +1,6 @@
 name: Original weighted-CNF inline weighted component cache correctness
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/cnf-inline-weight-science.yml
-      - benchmarks/mpfr_research/src/main.rs
-      - benchmarks/mpfr_research/src/trail_engine.rs
-      - docs/cnf-inline-weight-research.md
   workflow_dispatch:
 
 permissions:

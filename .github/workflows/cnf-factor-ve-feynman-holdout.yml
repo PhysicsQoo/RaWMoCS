@@ -1,14 +1,6 @@
 name: Same-CNF original Feynman signed-complex factor VE holdout
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/cnf-factor-ve-feynman-holdout.yml
-      - benchmarks/mpfr_research/src/main.rs
-      - benchmarks/mpfr_research/src/trail_engine.rs
-      - benchmarks/mpfr_research/src/factor_variable_elimination.rs
-      - benchmarks/mpfr_research/tools/quprs_cnf_factor_ve_ab.py
-      - docs/factor-variable-elimination-research.md
   workflow_dispatch:
 
 permissions:

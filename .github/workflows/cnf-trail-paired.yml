@@ -1,13 +1,6 @@
 name: Same-CNF GPMC versus Rust reversible trail research
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/cnf-trail-paired.yml
-      - benchmarks/mpfr_research/src/main.rs
-      - benchmarks/mpfr_research/src/trail_engine.rs
-      - benchmarks/mpfr_research/tools/quprs_cnf_trail_ab.py
-      - docs/cnf-trail-research.md
   workflow_dispatch:
 
 permissions:

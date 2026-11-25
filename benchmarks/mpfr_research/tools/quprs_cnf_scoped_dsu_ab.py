@@ -9,6 +9,7 @@ import argparse
 from fractions import Fraction
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
 import re
 import statistics
@@ -62,9 +63,17 @@ def sample(command: list[str], arm: str, digits: int) -> dict:
         try:
             proc = subprocess.run(timed, capture_output=True, text=True, timeout=BUDGET_S + 7)
         except subprocess.TimeoutExpired:
-            return {"arm": arm, "status": "CENSORED_OUTER_TIMEOUT"}
+            # Preserve the source checkout even when a child times out
+            # before it can produce stdout, RSS or an exit code.
+            return {"arm": arm, "status": "CENSORED_OUTER_TIMEOUT",
+                    "source_checkout_sha": os.environ.get("GITHUB_SHA")}
         wall = time.perf_counter_ns() - start
         row = {"arm": arm, "wall_ns": wall, "exit_code": proc.returncode,
+               # The exact code checkout used by this Actions run. The PR
+               # event GITHUB_SHA is the checked-out synthetic merge commit.
+               # Keep it on raw per-arm records so cross-family audits cannot
+               # accidentally combine different source revisions.
+               "source_checkout_sha": os.environ.get("GITHUB_SHA"),
                "status": ("COMPLETED" if proc.returncode == 0 else
                           "CENSORED_TIME" if proc.returncode == 124 else "CENSORED_EXIT")}
         if proc.returncode:
@@ -115,6 +124,27 @@ def sample(command: list[str], arm: str, digits: int) -> dict:
                 ordered = re.search(
                     r"^RESEARCH_MPFR_ORDERED_KEY_FASTPATH enabled=(true|false) "
                     r"probes=(\d+) hits=(\d+)$", proc.stderr, re.M)
+                key_arena = re.search(
+                    r"^RESEARCH_MPFR_KEY_ARENA_REUSE enabled=(true|false) "
+                    r"calls=(\d+) flat_reuses=(\d+) view_reuses=(\d+)$",
+                    proc.stderr, re.M,
+                )
+                scope_stamp = re.search(
+                    r"^RESEARCH_MPFR_SCOPE_STAMP_ADMISSION enabled=(true|false) "
+                    r"probes=(\d+)$", proc.stderr, re.M,
+                )
+                active_bitmap = re.search(
+                    r"^RESEARCH_MPFR_ACTIVE_CLAUSE_BITMAP enabled=(true|false) "
+                    r"key_visits=(\d+)$", proc.stderr, re.M,
+                )
+                literal_mask = re.search(
+                    r"^RESEARCH_MPFR_REVERSIBLE_LITERAL_MASK enabled=(true|false) "
+                    r"key_visits=(\d+) updates=(\d+)$", proc.stderr, re.M,
+                )
+                fused_pre = re.search(
+                    r"^RESEARCH_MPFR_FUSED_PRE_ANALYSIS enabled=(true|false) "
+                    r"clause_scans=(\d+) dsu_merges=(\d+)$", proc.stderr, re.M,
+                )
                 component = re.search(
                     r"^RESEARCH_MPFR_COMPONENT_LOCAL_VE enabled=(true|false) "
                     r"attempts=(\d+) completed=(\d+) capped=(\d+) "
@@ -204,6 +234,20 @@ def sample(command: list[str], arm: str, digits: int) -> dict:
                            ordered_key_enabled=(ordered.group(1) == "true") if ordered else False,
                            ordered_key_probes=int(ordered.group(2)) if ordered else 0,
                            ordered_key_hits=int(ordered.group(3)) if ordered else 0,
+                           key_arena_enabled=(key_arena.group(1) == "true") if key_arena else False,
+                           key_arena_calls=int(key_arena.group(2)) if key_arena else 0,
+                           key_arena_flat_reuses=int(key_arena.group(3)) if key_arena else 0,
+                           key_arena_view_reuses=int(key_arena.group(4)) if key_arena else 0,
+                           scope_stamp_enabled=(scope_stamp.group(1) == "true") if scope_stamp else False,
+                           scope_stamp_probes=int(scope_stamp.group(2)) if scope_stamp else 0,
+                           active_bitmap_enabled=(active_bitmap.group(1) == "true") if active_bitmap else False,
+                           active_bitmap_key_visits=int(active_bitmap.group(2)) if active_bitmap else 0,
+                           literal_mask_enabled=(literal_mask.group(1) == "true") if literal_mask else False,
+                           literal_mask_key_visits=int(literal_mask.group(2)) if literal_mask else 0,
+                           literal_mask_updates=int(literal_mask.group(3)) if literal_mask else 0,
+                           fused_pre_enabled=(fused_pre.group(1) == "true") if fused_pre else False,
+                           fused_pre_clause_scans=int(fused_pre.group(2)) if fused_pre else 0,
+                           fused_pre_dsu_merges=int(fused_pre.group(3)) if fused_pre else 0,
                            precision_bits=fields[8])
                 stage = re.search(
                     r"^RESEARCH_MPFR_TRAIL_STAGE_PROFILE enabled=(true|false) "

@@ -1,13 +1,6 @@
 name: Weighted CNF-only signed equivalence WMC science
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/cnf-equivalence-science.yml
-      - benchmarks/mpfr_research/src/main.rs
-      - benchmarks/mpfr_research/src/weighted_equivalence.rs
-      - benchmarks/rust_core/tools/quprs_cnf_equivalence_ab.py
-      - docs/cnf-equivalence-research.md
   workflow_dispatch:
 
 permissions:

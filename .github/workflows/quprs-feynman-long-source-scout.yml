@@ -2,32 +2,43 @@ name: Original larger Feynman QuPRS CNF bounded source scout
 
 on:
   pull_request:
-    paths:
-      - ".github/workflows/quprs-feynman-long-source-scout.yml"
-      - "benchmarks/rust_core/tools/quprs_long_feynman_reference.rs"
-      - "benchmarks/rust_core/tools/quprs_long_feynman_pilot.py"
-      - "benchmarks/rust_core/tools/quprs_feynman_node_budget_ab.py"
-      - "benchmarks/rust_core/tools/quprs_mpfr_shared_long_ab.py"
-      - "benchmarks/rust_core/tools/quprs_mpfr_indexed_unit_long_ab.py"
-      - "benchmarks/rust_core/tools/quprs_mpfr_csr_unit_long_ab.py"
-      - "benchmarks/rust_core/tools/quprs_mpfr_csr_cache_factorial_long_ab.py"
-      - "benchmarks/rust_core/tools/quprs_mpfr_packed_cache_long_ab.py"
-      - "benchmarks/rust_core/tools/quprs_mpfr_packed_fast_long_ab.py"
-      - "benchmarks/rust_core/tools/quprs_mpfr_packed_factor_ab.py"
-      - "benchmarks/rust_core/tools/quprs_mpfr_frequency_scratch_long_ab.py"
-      - "benchmarks/rust_core/tools/quprs_mpfr_cache_capacity_long_ab.py"
-      - "benchmarks/mpfr_research/src/main.rs"
+    types: [labeled]
   workflow_dispatch:
+    inputs:
+      suite:
+        description: "Focused: one prior-source case; full: explicit nine-job campaign"
+        type: choice
+        required: true
+        default: focused
+        options: [focused, full]
+      case:
+        description: "One case for focused validation"
+        type: choice
+        required: true
+        default: feynman_gf2_6_mult
+        options: [feynman_gf2_6_mult, mqt_qnn_8, mqt_wstate_16, mqt_qwalk_5, feynman_gf2_8_mult, mqt_qnn_12]
+      gf2_kernel:
+        description: "Focused GF2^8 only: MPFR frontier or exact-decimal Taylor ring"
+        type: choice
+        required: true
+        default: frontier
+        options: [frontier, taylor]
+      source_run_id:
+        description: "Focused: existing run with verified source-screen artifact"
+        type: string
+        required: false
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: original-feynman-scout-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   bounded-original-feynman:
+    if: inputs.suite == 'full'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -226,3 +237,924 @@ jobs:
           path: .research/feynman-long/
           if-no-files-found: warn
           retention-days: 30
+
+  original-long-tail-source-locked-screen:
+    # One existing workflow, no new workflows/environment/branch. This costly
+    # study is limited to the research PR or explicit manual dispatch.
+    if: inputs.suite == 'full' || (github.event_name == 'pull_request' && (github.event.label.name == 'run-gpmc-completer-scout' || github.event.label.name == 'run-mqt-long-holdouts' || github.event.label.name == 'run-prejoin-unseen-long-scout' || github.event.label.name == 'run-prejoin-frontier-long-scout' || github.event.label.name == 'run-mqt-locked-long' || github.event.label.name == 'run-mqt-residual-followup' || github.event.label.name == 'run-mqt-certified-long' || github.event.label.name == 'run-mqt-adaptive-scout' || github.event.label.name == 'run-qpe-resource-pilot' || github.event.label.name == 'run-qpe-certified-repeat' || github.event.label.name == 'run-qpe-independent-prejoin' || github.event.label.name == 'run-qft-prejoin-pilot' || github.event.label.name == 'run-prejoin-incremental-grover-pilot' || github.event.label.name == 'run-prejoin-incremental-grover-repeat' || github.event.label.name == 'run-prejoin-cross-family-ab' || github.event.label.name == 'run-prejoin-grover-local-width' || github.event.label.name == 'run-prejoin-variant-followup' || github.event.label.name == 'run-prejoin-variant-pilot' || github.event.label.name == 'run-prejoin-qft-order-profile' || github.event.label.name == 'run-prejoin-qft-support-profile' || github.event.label.name == 'run-prejoin-qft-rank-one-profile' || github.event.label.name == 'run-prejoin-qft-cutset-profile' || github.event.label.name == 'run-prejoin-wide-repeat' || github.event.label.name == 'run-prejoin-wide-pilot' || github.event.label.name == 'run-prejoin-residual-profile' || github.event.label.name == 'run-prejoin-cutset-spectrum' || github.event.label.name == 'run-prejoin-qpeinexact-repeat' || github.event.label.name == 'run-prejoin-unseen-certified-repeat' || github.event.label.name == 'run-prejoin-mqt-family-pilot' || github.event.label.name == 'run-prejoin-recycle-ab' || github.event.label.name == 'run-prejoin-support-ab' || github.event.label.name == 'run-prejoin-planner-ab' || github.event.label.name == 'run-prejoin-long-profile' || github.event.label.name == 'run-prejoin-long-repeat' || github.event.label.name == 'run-prejoin-long-scout' || (github.event.label.name == 'run-prejoin-hard-holdouts' || github.event.label.name == 'run-prejoin-hard-repeat')) && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/mpfr-exact-residual-arena-reuse-20261118')
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ (github.event.label.name == 'run-prejoin-mqt-family-pilot' || github.event.label.name == 'run-qpe-independent-prejoin' || github.event.label.name == 'run-qft-prejoin-pilot' || github.event.label.name == 'run-prejoin-long-scout' || (github.event.label.name == 'run-prejoin-hard-holdouts' || github.event.label.name == 'run-prejoin-hard-repeat')) && 20 || github.event.label.name == 'run-mqt-adaptive-scout' && 60 || 40 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(github.event.label.name == 'run-prejoin-unseen-certified-repeat' && '[0,1,2,3]' || github.event.label.name == 'run-prejoin-cross-family-ab' && '[0,1,2]' || github.event.label.name == 'run-prejoin-incremental-grover-repeat' && '[0,1]' || github.event.label.name == 'run-prejoin-incremental-grover-pilot' && '[0]' || github.event.label.name == 'run-prejoin-grover-local-width' && '[0]' || github.event.label.name == 'run-prejoin-variant-followup' && '[0,1,2]' || github.event.label.name == 'run-prejoin-variant-pilot' && '[0,1]' || github.event.label.name == 'run-prejoin-qft-order-profile' && '[0]' || github.event.label.name == 'run-prejoin-qft-cutset-profile' && '[0]' || github.event.label.name == 'run-prejoin-wide-repeat' && '[0,1,2,3]' || github.event.label.name == 'run-prejoin-wide-pilot' && '[0,1]' || github.event.label.name == 'run-prejoin-residual-profile' && '[0,1,3]' || github.event.label.name == 'run-prejoin-cutset-spectrum' && '[0,1]' || github.event.label.name == 'run-prejoin-qpeinexact-repeat' && '[0,1]' || github.event.label.name == 'run-prejoin-mqt-family-pilot' && '[0,1,3]' || github.event.label.name == 'run-prejoin-recycle-ab' && '[0,1]' || github.event.label.name == 'run-prejoin-support-ab' && '[0,1]' || github.event.label.name == 'run-prejoin-planner-ab' && '[0,1]' || github.event.label.name == 'run-prejoin-long-profile' && '[0,1]' || github.event.label.name == 'run-prejoin-long-repeat' && '[0,1]' || github.event.label.name == 'run-prejoin-long-scout' && '[0,1]' || github.event.label.name == 'run-prejoin-hard-repeat' && '[0,1,2,3]' || github.event.label.name == 'run-prejoin-hard-holdouts' && '[0,1]' || github.event.label.name == 'run-qpe-independent-prejoin' && '[0,1,2,3]' || github.event.label.name == 'run-mqt-certified-long' && '[0,1,2,3]' || github.event.label.name == 'run-mqt-residual-followup' && '[0,1]' || github.event.label.name == 'run-mqt-locked-long' && '[0,1,2,3]' || (github.event.label.name == 'run-mqt-long-holdouts' || github.event.label.name == 'run-prejoin-unseen-long-scout' || github.event.label.name == 'run-prejoin-frontier-long-scout') && '[0,1,2,3]' || github.event.label.name == 'run-qpe-certified-repeat' && '[0,1,2]' || (github.event.label.name == 'run-mqt-adaptive-scout' || github.event.label.name == 'run-qpe-resource-pilot') && '[0,1,2,3]' || github.event.label.name == 'run-gpmc-completer-scout' && '[0,1,2]' || '[0]') }}
+    steps:
+      - name: Checkout RaWMoCS research-only exporter and runner
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Checkout pre-bitmask planner baseline
+        if: github.event.label.name == 'run-prejoin-planner-ab' || github.event.label.name == 'run-prejoin-support-ab' || github.event.label.name == 'run-prejoin-recycle-ab' || github.event.label.name == 'run-prejoin-incremental-grover-repeat' || github.event.label.name == 'run-prejoin-cross-family-ab'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ (github.event.label.name == 'run-prejoin-incremental-grover-repeat' || github.event.label.name == 'run-prejoin-cross-family-ab') && 'd68b37ac85958af3fd36c84db2a86dea14391e2f' || github.event.label.name == 'run-prejoin-recycle-ab' && '6e1d3deb998e0cae186c5751914e6275bc8b37ef' || github.event.label.name == 'run-prejoin-support-ab' && '3a91f438d24793cefe8a63704b1075a7381ca5b0' || '2fbdda903101b3787c83d05316a2fe08133804de' }}
+          path: .upstream/planner-baseline
+          persist-credentials: false
+      - name: Checkout exactly pinned original QuPRS QASM corpus
+        uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/QuPRS
+          ref: 0b28736651b3740ed3b201edd2efdef3da541e0d
+          path: .upstream/quprs
+          persist-credentials: false
+      - name: Checkout exactly pinned original C++ GPMC and submodules
+        uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/GPMC
+          ref: 89bbc89d0de918e7a5385740355df55765039230
+          path: .upstream/gpmc
+          submodules: recursive
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .upstream/quprs/rust -> target
+            benchmarks/mpfr_research -> target
+          key: source-locked-high-cost-cohort
+      - name: Verify source locks and install native GPMC/Rust MPFR libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C .upstream/quprs rev-parse HEAD)" = "0b28736651b3740ed3b201edd2efdef3da541e0d"
+          test "$(git -C .upstream/gpmc rev-parse HEAD)" = "89bbc89d0de918e7a5385740355df55765039230"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build libgmp-dev libmpfr-dev zlib1g-dev time pkg-config
+      - name: Independently compile original QuPRS Feynman and MQT source exporter
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp benchmarks/rust_core/tools/quprs_long_tail_source_bridge.rs \
+            .upstream/quprs/rust/quprs/examples/quprs_long_tail_source_bridge.rs
+          cargo build --locked --release --no-default-features \
+            --manifest-path .upstream/quprs/rust/Cargo.toml \
+            -p quprs --example quprs_long_tail_source_bridge
+      - name: Compile unmodified pinned C++ GPMC
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S .upstream/gpmc -B .upstream/gpmc/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build .upstream/gpmc/build --target gpmc-bin --parallel 2
+      - name: Qualify research MPFR signed-Complex accuracy and compile native Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --release --manifest-path benchmarks/mpfr_research/Cargo.toml
+          cargo build --release --manifest-path benchmarks/mpfr_research/Cargo.toml
+      - name: Original source 16-case GPMC/Rust 30s screens
+        if: inputs.suite == 'full'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .research/long-tail
+          python3 -m py_compile benchmarks/mpfr_research/tools/quprs_long_tail_paired.py
+          python3 benchmarks/mpfr_research/tools/quprs_long_tail_paired.py --self-test
+          python3 benchmarks/mpfr_research/tools/quprs_long_tail_paired.py \
+            --stage screen \
+            --quprs .upstream/quprs \
+            --gpmc-source .upstream/gpmc \
+            --exporter .upstream/quprs/rust/target/release/examples/quprs_long_tail_source_bridge \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --corpus .research/long-tail \
+            --report .research/long-tail/long-tail-source-locked-evidence.json \
+            | tee .research/long-tail/long-tail-scout.log
+      - name: Original source Weighted-safe SCC structural preflight and audit
+        if: inputs.suite == 'full'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile benchmarks/mpfr_research/tools/quprs_long_tail_scc_poc.py
+          python3 benchmarks/mpfr_research/tools/quprs_long_tail_scc_poc.py --self-test
+          python3 benchmarks/mpfr_research/tools/quprs_long_tail_scc_poc.py \
+            --screen-report .research/long-tail/long-tail-source-locked-evidence.json \
+            --corpus .research/long-tail \
+            --report .research/long-tail/scc-source-locked-audit.json
+      - name: GPMC-completer-first original-source long-case discovery and paired probe
+        if: github.event.label.name == 'run-gpmc-completer-scout'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .research/long-tail
+          python3 -m py_compile benchmarks/mpfr_research/tools/quprs_gpmc_completer_scout.py
+          python3 benchmarks/mpfr_research/tools/quprs_gpmc_completer_scout.py \
+            --quprs .upstream/quprs \
+            --gpmc-source .upstream/gpmc \
+            --exporter .upstream/quprs/rust/target/release/examples/quprs_long_tail_source_bridge \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --corpus .research/long-tail \
+            --report .research/long-tail/completer-scout.json \
+            --shard ${{ matrix.shard }} | tee .research/long-tail/completer-scout.log
+      - name: Original MQT cross-family adaptive routing and generic hybrid ablation
+        if: github.event.label.name == 'run-mqt-adaptive-scout'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .research/long-tail
+          python3 -m py_compile benchmarks/mpfr_research/tools/quprs_mqt_adaptive_scout.py
+          python3 benchmarks/mpfr_research/tools/quprs_mqt_adaptive_scout.py \
+            --quprs .upstream/quprs \
+            --gpmc-source .upstream/gpmc \
+            --exporter .upstream/quprs/rust/target/release/examples/quprs_long_tail_source_bridge \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --corpus .research/long-tail \
+            --report .research/long-tail/mqt-adaptive-scout.json \
+            --shard ${{ matrix.shard }} | tee .research/long-tail/mqt-adaptive-scout.log
+      - name: QPE resource-qualified contraction and Graphstate guarded accuracy
+        if: github.event.label.name == 'run-qpe-resource-pilot'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .research/long-tail
+          if [[ "${{ matrix.shard }}" == "3" ]]; then
+            python3 -m venv .research/graphstate-venv
+            source .research/graphstate-venv/bin/activate
+            python3 -m pip install numpy==2.2.6 mpmath==1.3.0
+          fi
+          python3 -m py_compile benchmarks/mpfr_research/tools/quprs_qpe_resource_pilot.py
+          python3 benchmarks/mpfr_research/tools/quprs_qpe_resource_pilot.py \
+            --quprs .upstream/quprs \
+            --gpmc-source .upstream/gpmc \
+            --exporter .upstream/quprs/rust/target/release/examples/quprs_long_tail_source_bridge \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --corpus .research/long-tail \
+            --report .research/long-tail/qpe-resource-pilot.json \
+            --shard ${{ matrix.shard }} | tee .research/long-tail/qpe-resource-pilot.log
+      - name: GPMC-completer-first larger GF2 and QNN prejoin scout
+        if: github.event.label.name == 'run-prejoin-long-scout'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .research/long-tail
+          python3 -m py_compile benchmarks/mpfr_research/tools/quprs_prejoin_long_holdout.py
+          python3 benchmarks/mpfr_research/tools/quprs_prejoin_long_holdout.py \
+            --quprs .upstream/quprs \
+            --gpmc-source .upstream/gpmc \
+            --exporter .upstream/quprs/rust/target/release/examples/quprs_long_tail_source_bridge \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --corpus .research/long-tail \
+            --report .research/long-tail/prejoin-long-scout.json \
+            --shard ${{ matrix.shard }} | tee .research/long-tail/prejoin-long-scout.log
+      - name: Build pinned ordered-set planner baseline
+        if: github.event.label.name == 'run-prejoin-planner-ab' || github.event.label.name == 'run-prejoin-support-ab' || github.event.label.name == 'run-prejoin-recycle-ab' || github.event.label.name == 'run-prejoin-incremental-grover-repeat' || github.event.label.name == 'run-prejoin-cross-family-ab'
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_baseline=2fbdda903101b3787c83d05316a2fe08133804de
+          if [[ "${{ github.event.label.name }}" == run-prejoin-support-ab ]]; then expected_baseline=3a91f438d24793cefe8a63704b1075a7381ca5b0; fi
+          if [[ "${{ github.event.label.name }}" == run-prejoin-recycle-ab ]]; then expected_baseline=6e1d3deb998e0cae186c5751914e6275bc8b37ef; fi
+          if [[ "${{ github.event.label.name }}" == run-prejoin-incremental-grover-repeat || "${{ github.event.label.name }}" == run-prejoin-cross-family-ab ]]; then expected_baseline=d68b37ac85958af3fd36c84db2a86dea14391e2f; fi
+          test "$(git -C .upstream/planner-baseline rev-parse HEAD)" = "$expected_baseline"
+          baseline=.upstream/planner-baseline
+          cmp "$baseline/benchmarks/mpfr_research/Cargo.toml" benchmarks/mpfr_research/Cargo.toml
+          test -s benchmarks/mpfr_research/Cargo.lock
+          if test -e "$baseline/benchmarks/mpfr_research/Cargo.lock"; then
+            cmp "$baseline/benchmarks/mpfr_research/Cargo.lock" benchmarks/mpfr_research/Cargo.lock
+          else
+            cp benchmarks/mpfr_research/Cargo.lock "$baseline/benchmarks/mpfr_research/Cargo.lock"
+          fi
+          cargo build --locked --release --manifest-path benchmarks/mpfr_research/Cargo.toml
+          cargo build --locked --release --manifest-path "$baseline/benchmarks/mpfr_research/Cargo.toml"
+          cmp "$baseline/benchmarks/mpfr_research/Cargo.lock" benchmarks/mpfr_research/Cargo.lock
+          git -C "$baseline" diff --exit-code -- benchmarks/mpfr_research/Cargo.toml benchmarks/mpfr_research/src
+          mkdir -p .research/long-tail
+          cp benchmarks/mpfr_research/Cargo.lock .research/long-tail/planner-ab.Cargo.lock
+          sha256sum .research/long-tail/planner-ab.Cargo.lock "$baseline/benchmarks/mpfr_research/target/release/rawmocs-mpfr-research" benchmarks/mpfr_research/target/release/rawmocs-mpfr-research
+      - name: Bounded independent exact-local and prejoin interval for original QPE, QFT or hard holdouts
+        if: github.event.label.name == 'run-prejoin-incremental-grover-pilot' || github.event.label.name == 'run-prejoin-incremental-grover-repeat' || github.event.label.name == 'run-prejoin-cross-family-ab' || github.event.label.name == 'run-prejoin-grover-local-width' || github.event.label.name == 'run-prejoin-variant-followup' || github.event.label.name == 'run-prejoin-variant-pilot' || github.event.label.name == 'run-prejoin-qft-order-profile' || github.event.label.name == 'run-prejoin-qft-support-profile' || github.event.label.name == 'run-prejoin-qft-rank-one-profile' || github.event.label.name == 'run-prejoin-qft-cutset-profile' || github.event.label.name == 'run-prejoin-wide-repeat' || github.event.label.name == 'run-prejoin-wide-pilot' || github.event.label.name == 'run-prejoin-residual-profile' || github.event.label.name == 'run-prejoin-cutset-spectrum' || github.event.label.name == 'run-prejoin-qpeinexact-repeat' || github.event.label.name == 'run-prejoin-unseen-certified-repeat' || github.event.label.name == 'run-prejoin-mqt-family-pilot' || github.event.label.name == 'run-prejoin-recycle-ab' || github.event.label.name == 'run-prejoin-support-ab' || github.event.label.name == 'run-prejoin-planner-ab' || github.event.label.name == 'run-prejoin-long-profile' || github.event.label.name == 'run-prejoin-long-repeat' || github.event.label.name == 'run-qpe-independent-prejoin' || github.event.label.name == 'run-qft-prejoin-pilot' || (github.event.label.name == 'run-prejoin-hard-holdouts' || github.event.label.name == 'run-prejoin-hard-repeat')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p .research/long-tail
+          oracle=benchmarks/mpfr_research/tools/original_exact_prejoin.py
+          python3 -m py_compile "$oracle"
+          python3 "$oracle" --self-test
+          shard=${{ matrix.shard }}
+          if [[ ( "${{ github.event.label.name }}" == run-prejoin-cross-family-ab && "$shard" == 0 ) || "${{ github.event.label.name }}" == run-prejoin-long-repeat || "${{ github.event.label.name }}" == run-prejoin-long-profile || "${{ github.event.label.name }}" == run-prejoin-planner-ab || "${{ github.event.label.name }}" == run-prejoin-support-ab || "${{ github.event.label.name }}" == run-prejoin-recycle-ab || ( "${{ github.event.label.name }}" == run-prejoin-cutset-spectrum && "$shard" == 0 ) ]]; then
+            case=extended_gf2_7_prejoin_scout
+            rel='benchmarks/Feynman/gf2^7_mult.qasm'
+            # Lock to the completed scout artifact, not a newly generated CNF.
+            mkdir -p .research/scout-lock
+            gh run download 45508706793 --repo "$GITHUB_REPOSITORY" --name original-prejoin-long-scout-0 --dir .research/scout-lock
+            expected=$(python3 -c 'import json,pathlib,re; p=list(pathlib.Path(".research/scout-lock").rglob("prejoin-long-scout.json")); assert len(p)==1; r=json.loads(p[0].read_text()); assert r["case"]=="extended_gf2_7_prejoin_scout" and r["status"]=="ONE_MATCHED_PAIR_PASS" and r["source_blob"]=="640d6fe1c8869858d212c74426b85c7e2768096e" and r["cohorts"][0]["bits"]==333 and r["cohorts"][0]["gpmc"]["status"]=="COMPLETED" and all(w["pass"] for w in r["cohorts"][0]["witness"].values()); h=r["source_cnf_sha256"]; assert re.fullmatch("[0-9a-f]{64}",h); print(h)')
+            cp "$(find .research/scout-lock -name prejoin-long-scout.json -type f)" .research/long-tail/prior-scout-lock.json
+          elif [[ "${{ github.event.label.name }}" == run-prejoin-unseen-certified-repeat ]]; then
+            if (( shard < 2 )); then
+              case=extended_mqt_qpeinexact_22_6befed5d0733
+              scout_shard=0
+            else
+              case=extended_mqt_qpeexact_22_e26adf85ca78
+              scout_shard=2
+            fi
+            mkdir -p .research/unseen-scout-lock
+            gh run download 45558074188 --repo "$GITHUB_REPOSITORY" --name "original-prejoin-frontier-long-scout-$scout_shard" --dir .research/unseen-scout-lock
+            python3 - "$case" <<'PY' > .research/long-tail/prior-scout-source.tsv
+          import hashlib,json,pathlib,re,sys
+          files=list(pathlib.Path(".research/unseen-scout-lock").rglob("mqt-long-holdouts.json"))
+          assert len(files)==1
+          r=json.loads(files[0].read_text())
+          case=sys.argv[1]
+          assert r["frontier_holdout"] and r["status"]=="SCREEN_COMPLETE_EXPLORATORY"
+          assert r["source_revisions"]=={"quprs":"0b28736651b3740ed3b201edd2efdef3da541e0d","gpmc":"89bbc89d0de918e7a5385740355df55765039230"}
+          assert case in r["qualified_cases"]
+          row,=[x for x in r["cases"] if x["case"]==case]
+          assert row["source_status"]=="SOURCE_EXACT" and row["qualified"]
+          assert {x["bits"] for x in row["screen"]}=={100,333}
+          assert len(row["screen"])==2 and all(x["status"]=="COMPLETED" and x["wall_ns"]>=10**10 for x in row["screen"])
+          rel=row["path"]
+          path=pathlib.PurePosixPath(rel)
+          assert path.parts[:2]==("benchmarks","MQTBench") and ".." not in path.parts
+          assert path.parent.name in ("Random_Rotation","Random_Pauli","h,ry,rz,cx")
+          assert re.fullmatch(r"(qpeinexact|qpeexact)_nativegates_ibm_qiskit_opt0_22\.qasm",path.name)
+          assert hashlib.sha256(rel.encode()).hexdigest()[:12]==case.rsplit("_",1)[1]
+          h=row["cnf_sha256"]; q=row["source_qasm_sha256"]
+          assert all(re.fullmatch("[0-9a-f]{64}",v) for v in (h,q))
+          assert h=={"extended_mqt_qpeinexact_22_6befed5d0733":"6fb69626195bee5b89ed3503ae8b1b4801d9267e7bd5ff3684af152afcd885e1","extended_mqt_qpeexact_22_e26adf85ca78":"00313f034134215fa7bd48a8667f2b55f864a13940f9be5cff72ae09231abf25"}[case]
+          cnf,=list(files[0].parent.rglob(case+"-gpmc.cnf"))
+          src,=list(files[0].parent.rglob(case+".qasm"))
+          assert hashlib.sha256(cnf.read_bytes()).hexdigest()==h
+          assert hashlib.sha256(src.read_bytes()).hexdigest()==q
+          assert hashlib.sha256((pathlib.Path(".upstream/quprs")/rel).read_bytes()).hexdigest()==q
+          print(rel,h,q,sep="\t")
+          PY
+            IFS=$'\t' read -r rel expected qasm_expected < .research/long-tail/prior-scout-source.tsv
+            cp "$(find .research/unseen-scout-lock -name mqt-long-holdouts.json -type f)" .research/long-tail/prior-scout-lock.json
+          elif [[ "${{ github.event.label.name }}" == run-prejoin-cross-family-ab ]]; then
+            case "$shard" in
+              1)
+                case=extended_mqt_qpeexact_22_272c5faa938c
+                rel=benchmarks/MQTBench/Random_Rotation/qpeexact_nativegates_ibm_qiskit_opt0_22.qasm
+                expected=801a90e918492afb845162bcefef4ab604cb14421f8a9704f636a982aa5da4d6 ;;
+              2)
+                case=extended_mqt_wstate16_prejoin_family
+                rel=benchmarks/MQTBench/qiskit-2.6.1-opt0/Random_Rotation/wstate_nativegates_ibm_qiskit_opt0_16.qasm
+                expected=600ce6716a69e31e17ffbc571cba581fc58a5b5ed3b7d60227ad41d857374efe ;;
+              *) exit 2 ;;
+            esac
+          elif [[ "${{ github.event.label.name }}" == run-prejoin-hard-holdouts || "${{ github.event.label.name }}" == run-prejoin-hard-repeat ]]; then
+            case_shard=$shard
+            if [[ "${{ github.event.label.name }}" == run-prejoin-hard-repeat ]]; then case_shard=$((shard / 2)); fi
+            if (( case_shard == 0 )); then
+              case=extended_qnn8_prejoin_holdout
+              rel=benchmarks/MQTBench/qnn_nativegates_ibm_qiskit_opt0_8.qasm
+              expected=ee0a944c0cfaae63307369f14c9182d9808b2014a5f9f64881e9aa025121a958
+            else
+              case=extended_gf2_6_prejoin_holdout
+              rel='benchmarks/Feynman/gf2^6_mult.qasm'
+              expected=2b8001227f544bc21a9590f21086747d094d647de04d93c48c27982bc9ba4a2d
+            fi
+          elif [[ "${{ github.event.label.name }}" == run-prejoin-qpeinexact-repeat || "${{ github.event.label.name }}" == run-prejoin-cutset-spectrum ]]; then
+            case=extended_mqt_qpeinexact20_prejoin_family
+            rel=benchmarks/MQTBench/Random_Rotation/qpeinexact_nativegates_ibm_qiskit_opt0_20.qasm
+            expected=8c7c930ee58721bfecd42e368ba2603fb8072bd99aeb94a9636ba3a2e5da6a1e
+          elif [[ "${{ github.event.label.name }}" == run-prejoin-mqt-family-pilot || "${{ github.event.label.name }}" == run-prejoin-residual-profile || "${{ github.event.label.name }}" == run-prejoin-wide-pilot || "${{ github.event.label.name }}" == run-prejoin-wide-repeat ]]; then
+            case_shard=$shard
+            if [[ "${{ github.event.label.name }}" == run-prejoin-wide-repeat ]]; then case_shard=$((shard / 2)); fi
+            case "$case_shard" in
+              0)
+                case=extended_mqt_wstate16_prejoin_family
+                rel=benchmarks/MQTBench/qiskit-2.6.1-opt0/Random_Rotation/wstate_nativegates_ibm_qiskit_opt0_16.qasm
+                expected=600ce6716a69e31e17ffbc571cba581fc58a5b5ed3b7d60227ad41d857374efe ;;
+              1)
+                case=extended_mqt_grover6_prejoin_family
+                rel=benchmarks/MQTBench/Random_Rotation/grover-noancilla_nativegates_ibm_qiskit_opt0_6.qasm
+                expected=08baa5d3fa04df6ec9f69c16593a553f49e18e64f78640973bd98d406fc7b290 ;;
+              2)
+                case=extended_mqt_qpeinexact20_prejoin_family
+                rel=benchmarks/MQTBench/Random_Rotation/qpeinexact_nativegates_ibm_qiskit_opt0_20.qasm
+                expected=8c7c930ee58721bfecd42e368ba2603fb8072bd99aeb94a9636ba3a2e5da6a1e ;;
+              3)
+                case=extended_mqt_qft24_prejoin_family
+                rel=benchmarks/MQTBench/Random_Rotation/qft_nativegates_ibm_qiskit_opt0_24.qasm
+                expected=7c47b2dc52f5331eb2fb5bd3123593c4a095abf229862f5607d4fc6855fecc51 ;;
+              *) exit 2 ;;
+            esac
+          elif [[ "${{ github.event.label.name }}" == run-prejoin-variant-pilot || "${{ github.event.label.name }}" == run-prejoin-variant-followup || "${{ github.event.label.name }}" == run-prejoin-grover-local-width || "${{ github.event.label.name }}" == run-prejoin-incremental-grover-pilot || "${{ github.event.label.name }}" == run-prejoin-incremental-grover-repeat ]]; then
+            variant_shard=$shard
+            if [[ "${{ github.event.label.name }}" == run-prejoin-incremental-grover-repeat ]]; then variant_shard=0; fi
+            if [[ "${{ github.event.label.name }}" == run-prejoin-variant-followup && "$shard" == 2 ]]; then variant_shard=1; fi
+            case "$variant_shard" in
+              0)
+                case=extended_mqt_grover6_prejoin_qiskit261
+                rel=benchmarks/MQTBench/qiskit-2.6.1-opt0/Random_Rotation/grover-noancilla_nativegates_ibm_qiskit_opt0_6.qasm
+                expected=a9757cd5bd730b6f769d2970e3a16ac66fee7157b55f81208c0a7c2cece0023b ;;
+              1)
+                case=extended_mqt_qpeinexact20_prejoin_qiskit261
+                rel=benchmarks/MQTBench/qiskit-2.6.1-opt0/Random_Rotation/qpeinexact_nativegates_ibm_qiskit_opt0_20.qasm
+                expected=ead9ede46abf2f13920e32b0795d9ae80789377d2bef94565ce188abf0a2a6b2 ;;
+              *) exit 2 ;;
+            esac
+          elif [[ "${{ github.event.label.name }}" == run-qft-prejoin-pilot || "${{ github.event.label.name }}" == run-prejoin-qft-cutset-profile || "${{ github.event.label.name }}" == run-prejoin-qft-order-profile || "${{ github.event.label.name }}" == run-prejoin-qft-support-profile || "${{ github.event.label.name }}" == run-prejoin-qft-rank-one-profile ]]; then
+            case=extended_mqt_qft_24_8b50d9b6cdf2
+            rel=benchmarks/MQTBench/Random_Rotation/qft_nativegates_ibm_qiskit_opt0_24.qasm
+            expected=7c47b2dc52f5331eb2fb5bd3123593c4a095abf229862f5607d4fc6855fecc51
+          elif (( shard < 2 )); then
+            case=extended_mqt_qpeexact_21_5e0db86c6ca4
+            rel=benchmarks/MQTBench/Random_Rotation/qpeexact_nativegates_ibm_qiskit_opt0_21.qasm
+            expected=ff9bb2ceca9cd9ee7a61026a6c01498a7f8175df6512df80dc8fed2db848dfb4
+          else
+            case=extended_mqt_qpeexact_22_272c5faa938c
+            rel=benchmarks/MQTBench/Random_Rotation/qpeexact_nativegates_ibm_qiskit_opt0_22.qasm
+            expected=801a90e918492afb845162bcefef4ab604cb14421f8a9704f636a982aa5da4d6
+          fi
+          timeout -k 2s 30s prlimit --as=3221225472 -- .upstream/quprs/rust/target/release/examples/quprs_long_tail_source_bridge \
+            "$case" "$(realpath .upstream/quprs)" "$(realpath .research/long-tail)" "$rel"
+          cmp ".research/long-tail/$case.qasm" ".upstream/quprs/$rel"
+          printf '%s  %s\n' "$expected" ".research/long-tail/$case-gpmc.cnf" | sha256sum -c -
+          if [[ "${{ github.event.label.name }}" == run-prejoin-unseen-certified-repeat ]]; then
+            printf '%s  %s\n' "$qasm_expected" ".research/long-tail/$case.qasm" | sha256sum -c -
+            cmp ".research/long-tail/$case-gpmc.cnf" "$(find .research/unseen-scout-lock -name "$case-gpmc.cnf" -type f)"
+          fi
+          if [[ "${{ github.event.label.name }}" == run-prejoin-grover-local-width ]]; then
+            /usr/bin/time -v -o .research/long-tail/local-width.resources.log timeout -k 2s 135s prlimit --as=3221225472 -- \
+              python3 "$oracle" ".research/long-tail/$case-gpmc.cnf" "$expected" --incremental-local-width-profile \
+              > .research/long-tail/local-width.json 2> .research/long-tail/local-width.stderr.log || { tail -c 4096 .research/long-tail/local-width.stderr.log; exit 1; }
+            cat .research/long-tail/local-width.json
+            exit 0
+          fi
+          if [[ "${{ github.event.label.name }}" == run-prejoin-variant-followup && "$shard" == 0 ]]; then
+            /usr/bin/time -v -o .research/long-tail/residual-profile.resources.log timeout -k 2s 75s prlimit --as=3221225472 -- \
+              python3 "$oracle" ".research/long-tail/$case-gpmc.cnf" "$expected" --residual-profile \
+              > .research/long-tail/residual-profile.json 2> .research/long-tail/residual-profile.stderr.log || { tail -c 4096 .research/long-tail/residual-profile.stderr.log; exit 1; }
+            cat .research/long-tail/residual-profile.json
+            exit 0
+          fi
+          if [[ "${{ github.event.label.name }}" == run-prejoin-qft-rank-one-profile ]]; then
+            /usr/bin/time -v -o .research/long-tail/rank-one-profile.resources.log timeout -k 2s 90s prlimit --as=3221225472 -- \
+              python3 "$oracle" ".research/long-tail/$case-gpmc.cnf" "$expected" --rank-one-profile \
+              > .research/long-tail/rank-one-profile.json 2> .research/long-tail/rank-one-profile.stderr.log || { tail -c 4096 .research/long-tail/rank-one-profile.stderr.log; exit 1; }
+            cat .research/long-tail/rank-one-profile.json
+            exit 0
+          fi
+          if [[ "${{ github.event.label.name }}" == run-prejoin-qft-support-profile ]]; then
+            /usr/bin/time -v -o .research/long-tail/support-profile.resources.log timeout -k 2s 135s prlimit --as=3221225472 -- \
+              python3 "$oracle" ".research/long-tail/$case-gpmc.cnf" "$expected" --support-work-profile \
+              > .research/long-tail/support-profile.json 2> .research/long-tail/support-profile.stderr.log || { tail -c 4096 .research/long-tail/support-profile.stderr.log; exit 1; }
+            cat .research/long-tail/support-profile.json
+            exit 0
+          fi
+          if [[ "${{ github.event.label.name }}" == run-prejoin-qft-order-profile ]]; then
+            /usr/bin/time -v -o .research/long-tail/graph-order.resources.log timeout -k 2s 105s prlimit --as=3221225472 -- \
+              python3 "$oracle" ".research/long-tail/$case-gpmc.cnf" "$expected" --replay-graph-order \
+              > .research/long-tail/graph-order.json 2> .research/long-tail/graph-order.stderr.log || { tail -c 4096 .research/long-tail/graph-order.stderr.log; exit 1; }
+            cat .research/long-tail/graph-order.json
+            exit 0
+          fi
+          if [[ "${{ github.event.label.name }}" == run-prejoin-qft-cutset-profile ]]; then
+            /usr/bin/time -v -o .research/long-tail/extended-cutset.resources.log timeout -k 2s 105s prlimit --as=3221225472 -- \
+              python3 "$oracle" ".research/long-tail/$case-gpmc.cnf" "$expected" --extended-cutset-profile \
+              > .research/long-tail/extended-cutset.json 2> .research/long-tail/extended-cutset.stderr.log || { tail -c 4096 .research/long-tail/extended-cutset.stderr.log; exit 1; }
+            cat .research/long-tail/extended-cutset.json
+            exit 0
+          fi
+          if [[ "${{ github.event.label.name }}" == run-prejoin-residual-profile ]]; then
+            /usr/bin/time -v -o .research/long-tail/residual-profile.resources.log timeout -k 2s 75s prlimit --as=3221225472 -- \
+              python3 "$oracle" ".research/long-tail/$case-gpmc.cnf" "$expected" --residual-profile \
+              > .research/long-tail/residual-profile.json 2> .research/long-tail/residual-profile.stderr.log || { tail -c 4096 .research/long-tail/residual-profile.stderr.log; exit 1; }
+            cat .research/long-tail/residual-profile.json
+            exit 0
+          fi
+          if [[ "${{ github.event.label.name }}" == run-prejoin-cutset-spectrum ]]; then
+            /usr/bin/time -v -o .research/long-tail/cutset-spectrum.resources.log timeout -k 2s 150s prlimit --as=3221225472 -- \
+              python3 "$oracle" ".research/long-tail/$case-gpmc.cnf" "$expected" --cutset-spectrum \
+              > .research/long-tail/cutset-spectrum.json 2> .research/long-tail/cutset-spectrum.stderr.log
+            cat .research/long-tail/cutset-spectrum.json
+            exit 0
+          fi
+          if ! /usr/bin/time -v -o .research/long-tail/prejoin.resources.log timeout -k 2s 190s prlimit --as=3221225472 -- \
+            python3 "$oracle" ".research/long-tail/$case-gpmc.cnf" "$expected" \
+            > .research/long-tail/prejoin-reference.json 2> .research/long-tail/prejoin.stderr.log; then
+            tail -c 4096 .research/long-tail/prejoin.stderr.log
+            if [[ "${{ github.event.label.name }}" != run-prejoin-mqt-family-pilot && "${{ github.event.label.name }}" != run-prejoin-wide-pilot && "${{ github.event.label.name }}" != run-prejoin-wide-repeat && "${{ github.event.label.name }}" != run-prejoin-variant-pilot && "${{ github.event.label.name }}" != run-prejoin-variant-followup && "${{ github.event.label.name }}" != run-prejoin-incremental-grover-pilot && "${{ github.event.label.name }}" != run-prejoin-incremental-grover-repeat && "${{ github.event.label.name }}" != run-prejoin-cross-family-ab && "${{ github.event.label.name }}" != run-prejoin-unseen-certified-repeat ]]; then exit 1; fi
+            mv .research/long-tail/prejoin-reference.json .research/long-tail/prejoin-rejected.json
+            fixed_oracle=benchmarks/mpfr_research/tools/original_fixed_interval.py
+            if ! /usr/bin/time -v -o .research/long-tail/fixed-reference.resources.log timeout -k 2s 190s prlimit --as=3221225472 -- \
+              python3 "$fixed_oracle" ".research/long-tail/$case-gpmc.cnf" "$expected" \
+              > .research/long-tail/fixed-reference.json 2> .research/long-tail/fixed-reference.stderr.log; then
+              tail -c 4096 .research/long-tail/fixed-reference.stderr.log
+              exit 1
+            fi
+            python3 -c 'import json,sys; r=json.load(open(".research/long-tail/fixed-reference.json")); assert r["source_sha256"]==sys.argv[1] and r["bits"]==550 and r["width"]<=19 and r["work"]<=40000000 and r["peak"]<=2000000; r["status"]="INDEPENDENT_FIXED_INTERVAL_COMPLETE"; print(json.dumps(r,indent=2))' "$expected" > .research/long-tail/prejoin-reference.json
+          fi
+          cat .research/long-tail/prejoin-reference.json
+          python3 -c 'import json; r=json.load(open(".research/long-tail/prejoin-reference.json")); assert r["status"] in ("INDEPENDENT_INTERVAL_COMPLETE","INDEPENDENT_FIXED_INTERVAL_COMPLETE") and r["bits"]==550 and r["width"]<=19 and r["work"]<=40000000 and r["peak"]<=2000000'
+          python3 -m py_compile benchmarks/mpfr_research/tools/quprs_prejoin_native_pilot.py
+          flags=()
+          if [[ "${{ github.event.label.name }}" == run-prejoin-cross-family-ab ]]; then
+            if (( shard == 0 )); then
+              flags+=(--repeat-fixed-target 100)
+            else
+              flags+=(--repeat-target 100)
+            fi
+            flags+=(--max-residual 256 --planner-baseline .upstream/planner-baseline/benchmarks/mpfr_research/target/release/rawmocs-mpfr-research)
+          elif [[ "${{ github.event.label.name }}" == run-prejoin-incremental-grover-repeat ]]; then
+            target=30
+            if (( shard == 1 )); then target=100; fi
+            flags+=(--repeat-target "$target" --max-residual 256 --planner-baseline .upstream/planner-baseline/benchmarks/mpfr_research/target/release/rawmocs-mpfr-research)
+          elif [[ "${{ github.event.label.name }}" == run-prejoin-unseen-certified-repeat ]]; then
+            target=30
+            if (( shard % 2 == 1 )); then target=100; fi
+            flags+=(--repeat-target "$target" --max-residual 256)
+          elif [[ "${{ github.event.label.name }}" == run-prejoin-qpeinexact-repeat ]]; then
+            target=30
+            if (( shard == 1 )); then target=100; fi
+            flags+=(--repeat-target "$target")
+          elif [[ "${{ github.event.label.name }}" == run-prejoin-wide-repeat ]]; then
+            target=30
+            if (( shard % 2 == 1 )); then target=100; fi
+            flags+=(--repeat-target "$target" --max-residual 256)
+          elif [[ "${{ github.event.label.name }}" == run-prejoin-variant-followup ]]; then
+            target=30
+            if (( shard == 2 )); then target=100; fi
+            flags+=(--repeat-target "$target" --max-residual 256)
+          elif [[ "${{ github.event.label.name }}" == run-prejoin-wide-pilot || "${{ github.event.label.name }}" == run-prejoin-variant-pilot || "${{ github.event.label.name }}" == run-prejoin-incremental-grover-pilot ]]; then
+            flags+=(--pilot-guarded-target 30 --max-residual 256)
+          elif [[ "${{ github.event.label.name }}" == run-prejoin-mqt-family-pilot ]]; then
+            flags+=(--pilot-guarded-target 30)
+          elif [[ "${{ github.event.label.name }}" == run-qpe-independent-prejoin ]]; then
+            target=30
+            if (( shard % 2 == 1 )); then target=100; fi
+            flags+=(--repeat-target "$target")
+          elif [[ "${{ github.event.label.name }}" == run-prejoin-planner-ab || "${{ github.event.label.name }}" == run-prejoin-support-ab || "${{ github.event.label.name }}" == run-prejoin-recycle-ab ]]; then
+            target=30
+            if (( shard % 2 == 1 )); then target=100; fi
+            flags+=(--repeat-fixed-target "$target" --planner-baseline .upstream/planner-baseline/benchmarks/mpfr_research/target/release/rawmocs-mpfr-research)
+          elif [[ "${{ github.event.label.name }}" == run-prejoin-long-profile ]]; then
+            target=30
+            if (( shard % 2 == 1 )); then target=100; fi
+            flags+=(--profile-fixed-target "$target")
+          elif [[ "${{ github.event.label.name }}" == run-prejoin-hard-repeat || "${{ github.event.label.name }}" == run-prejoin-long-repeat ]]; then
+            target=30
+            if (( shard % 2 == 1 )); then target=100; fi
+            flags+=(--repeat-fixed-target "$target")
+          fi
+          python3 benchmarks/mpfr_research/tools/quprs_prejoin_native_pilot.py "${flags[@]}" \
+            --cnf ".research/long-tail/$case-gpmc.cnf" \
+            --reference .research/long-tail/prejoin-reference.json \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --report .research/long-tail/prejoin-native-pilot.json
+          if [[ "${{ github.event.label.name }}" == run-prejoin-incremental-grover-repeat ]]; then
+            python3 -c 'import json,statistics; r=json.load(open(".research/long-tail/prejoin-native-pilot.json")); print("PREJOIN_REPEAT_PHASE_MEDIANS_NS",[(c["bits"],c["status"],{k:statistics.median(t["rows"]["prejoin"]["phases_ns"][k] for t in c["trials"]) for k in ("local","choose","restrict","execute")} if c["status"]=="SEVEN_MATCHED_PAIRS_PASS" and all("phases_ns" in t["rows"]["prejoin"] for t in c["trials"]) else None) for c in r["cohorts"]])'
+          fi
+      - name: Independent original-CNF QPE interval and seven matched pairs
+        if: github.event.label.name == 'run-qpe-certified-repeat'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .research/long-tail
+          python3 -m py_compile benchmarks/mpfr_research/tools/original_fixed_interval.py benchmarks/mpfr_research/tools/quprs_qpe_resource_pilot.py
+          python3 benchmarks/mpfr_research/tools/original_fixed_interval.py
+          python3 benchmarks/mpfr_research/tools/quprs_qpe_resource_pilot.py \
+            --quprs .upstream/quprs \
+            --gpmc-source .upstream/gpmc \
+            --exporter .upstream/quprs/rust/target/release/examples/quprs_long_tail_source_bridge \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --corpus .research/long-tail \
+            --report .research/long-tail/qpe-certified-repeat.json \
+            --shard ${{ matrix.shard }} --certified-repeat | tee .research/long-tail/qpe-certified-repeat.log
+      - name: Unseen original MQT long-completer holdouts and structure-only adaptive pairs
+        if: github.event.label.name == 'run-mqt-long-holdouts' || github.event.label.name == 'run-prejoin-unseen-long-scout' || github.event.label.name == 'run-prejoin-frontier-long-scout'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .research/long-tail
+          python3 -m py_compile benchmarks/mpfr_research/tools/quprs_gpmc_completer_scout.py
+          flags=(--mqt-holdout)
+          if [[ "${{ github.event.label.name }}" == run-prejoin-unseen-long-scout ]]; then flags=(--prejoin-holdout); fi
+          if [[ "${{ github.event.label.name }}" == run-prejoin-frontier-long-scout ]]; then flags=(--frontier-holdout); fi
+          python3 benchmarks/mpfr_research/tools/quprs_gpmc_completer_scout.py \
+            --quprs .upstream/quprs \
+            --gpmc-source .upstream/gpmc \
+            --exporter .upstream/quprs/rust/target/release/examples/quprs_long_tail_source_bridge \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --corpus .research/long-tail \
+            --report .research/long-tail/mqt-long-holdouts.json \
+            --shard ${{ matrix.shard }} "${flags[@]}" | tee .research/long-tail/mqt-long-holdouts.log
+      - name: Frozen eight original MQT long-completer paired validation
+        if: github.event.label.name == 'run-mqt-locked-long'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .research/long-tail
+          python3 -m py_compile benchmarks/mpfr_research/tools/quprs_gpmc_completer_scout.py
+          python3 benchmarks/mpfr_research/tools/quprs_gpmc_completer_scout.py \
+            --quprs .upstream/quprs \
+            --gpmc-source .upstream/gpmc \
+            --exporter .upstream/quprs/rust/target/release/examples/quprs_long_tail_source_bridge \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --corpus .research/long-tail \
+            --report .research/long-tail/mqt-locked-long.json \
+            --shard ${{ matrix.shard }} --locked-long | tee .research/long-tail/mqt-locked-long.log
+      - name: Original MQT wider residual and bounded large-source followup
+        if: github.event.label.name == 'run-mqt-residual-followup'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .research/long-tail
+          python3 -m py_compile benchmarks/mpfr_research/tools/quprs_gpmc_completer_scout.py
+          python3 benchmarks/mpfr_research/tools/quprs_gpmc_completer_scout.py \
+            --quprs .upstream/quprs \
+            --gpmc-source .upstream/gpmc \
+            --exporter .upstream/quprs/rust/target/release/examples/quprs_long_tail_source_bridge \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --corpus .research/long-tail \
+            --report .research/long-tail/mqt-residual-followup.json \
+            --shard ${{ matrix.shard }} --locked-long --residual-followup | tee .research/long-tail/mqt-residual-followup.log
+      - name: Checkout frozen scratch-only RaWMoCS predecessor for same-run native A/B
+        if: github.event.label.name == 'run-mqt-certified-long'
+        uses: actions/checkout@v4
+        with:
+          ref: ee4bd72142c6939a0ea094c8776108bd524810c7
+          path: .upstream/rawmocs-native-ab-baseline
+          persist-credentials: false
+      - name: Build pinned native A/B baseline with same toolchain and Cargo lock
+        if: github.event.label.name == 'run-mqt-certified-long'
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline=.upstream/rawmocs-native-ab-baseline
+          test "$(git -C "$baseline" rev-parse HEAD)" = ee4bd72142c6939a0ea094c8776108bd524810c7
+          # The isolated research workspace lockfile is generated, not tracked
+          # at the pinned predecessor. Freeze the same resolved graph for both.
+          cmp "$baseline/benchmarks/mpfr_research/Cargo.toml" benchmarks/mpfr_research/Cargo.toml
+          test -s benchmarks/mpfr_research/Cargo.lock
+          if test -e "$baseline/benchmarks/mpfr_research/Cargo.lock"; then
+            cmp "$baseline/benchmarks/mpfr_research/Cargo.lock" benchmarks/mpfr_research/Cargo.lock
+          else
+            cp benchmarks/mpfr_research/Cargo.lock "$baseline/benchmarks/mpfr_research/Cargo.lock"
+          fi
+          cargo build --locked --release --manifest-path benchmarks/mpfr_research/Cargo.toml
+          cargo build --locked --release --manifest-path "$baseline/benchmarks/mpfr_research/Cargo.toml"
+          cmp "$baseline/benchmarks/mpfr_research/Cargo.lock" benchmarks/mpfr_research/Cargo.lock
+          mkdir -p .research/long-tail
+          cp benchmarks/mpfr_research/Cargo.lock .research/long-tail/native-ab.Cargo.lock
+          sha256sum .research/long-tail/native-ab.Cargo.lock
+          git -C "$baseline" diff --exit-code -- benchmarks/mpfr_research/Cargo.toml benchmarks/mpfr_research/src
+          rustc -Vv
+          sha256sum "$baseline/benchmarks/mpfr_research/target/release/rawmocs-mpfr-research" benchmarks/mpfr_research/target/release/rawmocs-mpfr-research
+      - name: Independent interval and seven matched native triples for five original MQT long controls
+        if: github.event.label.name == 'run-mqt-certified-long'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .research/long-tail
+          python3 -m py_compile benchmarks/mpfr_research/tools/quprs_gpmc_completer_scout.py benchmarks/mpfr_research/tools/original_fixed_interval.py
+          python3 benchmarks/mpfr_research/tools/quprs_gpmc_completer_scout.py \
+            --quprs .upstream/quprs \
+            --gpmc-source .upstream/gpmc \
+            --exporter .upstream/quprs/rust/target/release/examples/quprs_long_tail_source_bridge \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --corpus .research/long-tail \
+            --report .research/long-tail/mqt-certified-long.json \
+            --native-ab-baseline .upstream/rawmocs-native-ab-baseline/benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --shard ${{ matrix.shard }} --locked-long --certified-long | tee .research/long-tail/mqt-certified-long.log
+      - name: Archive hash-locked 16-source screens before long pilots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.label.name == 'run-prejoin-frontier-long-scout' && format('original-prejoin-frontier-long-scout-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-qft-rank-one-profile' && 'original-qft24-rank-one-profile' || github.event.label.name == 'run-prejoin-qft-support-profile' && 'original-qft24-support-work-profile' || github.event.label.name == 'run-prejoin-unseen-certified-repeat' && format('original-prejoin-frontier-numeric-repeat-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-unseen-long-scout' && format('original-prejoin-unseen-long-scout-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-cross-family-ab' && format('original-prejoin-cross-family-ab-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-incremental-grover-repeat' && format('original-incremental-grover-repeat-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-incremental-grover-pilot' && 'original-incremental-grover-pilot' || github.event.label.name == 'run-prejoin-grover-local-width' && 'original-grover6-variant-local-width' || github.event.label.name == 'run-prejoin-variant-followup' && format('original-prejoin-variant-followup-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-variant-pilot' && format('original-prejoin-variant-pilot-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-qft-order-profile' && 'original-qft24-graph-order-profile' || github.event.label.name == 'run-prejoin-qft-cutset-profile' && 'original-qft24-extended-cutset-profile' || github.event.label.name == 'run-prejoin-wide-repeat' && format('original-prejoin-wide-repeat-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-wide-pilot' && format('original-prejoin-wide-pilot-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-residual-profile' && format('original-prejoin-residual-profile-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-cutset-spectrum' && format('original-prejoin-cutset-spectrum-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-qpeinexact-repeat' && format('original-prejoin-qpeinexact-repeat-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-mqt-family-pilot' && format('original-prejoin-mqt-family-pilot-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-recycle-ab' && format('original-prejoin-recycle-ab-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-support-ab' && format('original-prejoin-support-ab-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-planner-ab' && format('original-prejoin-planner-ab-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-long-profile' && format('original-prejoin-long-profile-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-long-repeat' && format('original-prejoin-long-repeat-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-long-scout' && format('original-prejoin-long-scout-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-hard-repeat' && format('original-prejoin-hard-repeat-{0}', matrix.shard) || github.event.label.name == 'run-prejoin-hard-holdouts' && format('original-prejoin-hard-holdout-{0}', matrix.shard) || github.event.label.name == 'run-qft-prejoin-pilot' && 'original-qft24-prejoin-pilot' || github.event.label.name == 'run-qpe-independent-prejoin' && format('original-qpe-independent-prejoin-{0}', matrix.shard) || github.event.label.name == 'run-mqt-certified-long' && format('original-mqt-certified-long-{0}', matrix.shard) || github.event.label.name == 'run-mqt-residual-followup' && format('original-mqt-residual-followup-{0}', matrix.shard) || github.event.label.name == 'run-mqt-locked-long' && format('original-mqt-locked-long-{0}', matrix.shard) || github.event.label.name == 'run-mqt-long-holdouts' && format('original-mqt-long-holdouts-{0}', matrix.shard) || github.event.label.name == 'run-qpe-certified-repeat' && format('original-qpe-certified-repeat-{0}', matrix.shard) || github.event.label.name == 'run-qpe-resource-pilot' && format('original-qpe-resource-pilot-{0}', matrix.shard) || github.event.label.name == 'run-mqt-adaptive-scout' && format('original-mqt-adaptive-scout-{0}', matrix.shard) || github.event.label.name == 'run-gpmc-completer-scout' && format('original-gpmc-completer-scout-{0}', matrix.shard) || 'original-rawmocs-gpmc-long-tail-screen' }}
+          path: .research/long-tail/
+          retention-days: 30
+          if-no-files-found: warn
+
+  original-long-tail-source-locked-pilot:
+    # Keep one existing workflow, parallelize the three previously
+    # source-qualified hard cases with independent timeout/artifact.
+    needs: original-long-tail-source-locked-screen
+    if: ${{ !cancelled() && ((inputs.suite == 'full' && needs.original-long-tail-source-locked-screen.result == 'success') || ((((github.event_name == 'pull_request' && (github.event.label.name == 'run-gf2-taylor' || github.event.label.name == 'run-gf2-taylor-cohort' || (github.event.label.name == 'run-ham-taylor-strict' || (github.event.label.name == 'run-ham-affine-plan' || github.event.label.name == 'run-ham-affine-taylor'))) && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/mpfr-exact-residual-arena-reuse-20261118')) || (inputs.suite == 'focused' && inputs.case == 'feynman_gf2_8_mult')) && needs.original-long-tail-source-locked-screen.result == 'skipped')) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        case: ${{ fromJSON(inputs.suite == 'full' && '["mqt_qnn_12","feynman_gf2_8_mult","feynman_ham15_med"]' || ((github.event.label.name == 'run-ham-taylor-strict' || (github.event.label.name == 'run-ham-affine-plan' || github.event.label.name == 'run-ham-affine-taylor')) && '["feynman_ham15_med"]' || github.event.label.name == 'run-gf2-taylor-cohort' && '["feynman_gf2_6_mult","feynman_gf2_8_mult"]' || '["feynman_gf2_8_mult"]')) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ matrix.case == 'feynman_gf2_6_mult' && 65 || 35 }}
+    steps:
+      - name: Checkout RaWMoCS research source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Checkout pinned original QuPRS
+        uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/QuPRS
+          ref: 0b28736651b3740ed3b201edd2efdef3da541e0d
+          path: .upstream/quprs
+          persist-credentials: false
+      - name: Checkout unchanged original GPMC C++
+        uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/GPMC
+          ref: 89bbc89d0de918e7a5385740355df55765039230
+          path: .upstream/gpmc
+          submodules: recursive
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/mpfr_research -> target
+          key: source-locked-high-cost-cohort
+      - name: Require an explicit source artifact in focused pilot mode
+        if: inputs.suite == 'focused'
+        env:
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo "Focused mode requires a numeric source_run_id"; exit 2; }
+      - name: Download unmodified source and CNF screening artifact (full)
+        if: inputs.suite == 'full'
+        uses: actions/download-artifact@v4
+        with:
+          name: original-rawmocs-gpmc-long-tail-screen
+          path: .research/long-tail
+      - name: Reuse selected original source artifact (focused)
+        if: inputs.suite == 'focused' || github.event_name == 'pull_request'
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.source_run_id || '45309819511' }}
+          name: original-rawmocs-gpmc-long-tail-screen
+          path: .research/long-tail
+      - name: Verify source locks and install native MPFR libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C .upstream/quprs rev-parse HEAD)" = "0b28736651b3740ed3b201edd2efdef3da541e0d"
+          test "$(git -C .upstream/gpmc rev-parse HEAD)" = "89bbc89d0de918e7a5385740355df55765039230"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build libgmp-dev libmpfr-dev zlib1g-dev time pkg-config
+      - name: Build original native GPMC C++
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S .upstream/gpmc -B .upstream/gpmc/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build .upstream/gpmc/build --target gpmc-bin --parallel 2
+      - name: Build source-locked RaWMoCS research MPFR solver
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event.label.name }}" == "run-ham-affine-plan" || "${{ github.event.label.name }}" == "run-ham-affine-taylor" ]]; then
+            cargo test --release --manifest-path benchmarks/mpfr_research/Cargo.toml factor_cardinality::affine::tests
+            cargo test --release --manifest-path benchmarks/mpfr_research/Cargo.toml packed_taylor::tests
+          fi
+          cargo build --release --manifest-path benchmarks/mpfr_research/Cargo.toml
+      - name: Time bounded 100/333-bit original-CNF Taylor or baseline pilot
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile benchmarks/mpfr_research/tools/quprs_long_tail_paired.py
+          python3 benchmarks/mpfr_research/tools/quprs_long_tail_paired.py --self-test
+          pilot=()
+          if [[ "${{ github.event.label.name }}" == "run-ham-affine-taylor" ]]; then
+            pilot+=(--ham-affine-taylor)
+          elif [[ "${{ github.event.label.name }}" == "run-ham-affine-plan" ]]; then
+            pilot+=(--ham-affine-plan)
+          elif [[ "${{ github.event.label.name }}" == "run-ham-taylor-strict" ]]; then
+            pilot+=(--ham-taylor-strict)
+          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            pilot+=(--taylor-pilot)
+            if [[ "${{ github.event.label.name }}" == "run-gf2-taylor-cohort" ]]; then pilot+=(--taylor-cohort); fi
+          elif [[ "${{ inputs.suite }}" == "focused" ]]; then
+            if [[ "${{ inputs.gf2_kernel }}" == "taylor" ]]; then pilot+=(--taylor-pilot); else pilot+=(--frontier-pilot); fi
+          fi
+          python3 benchmarks/mpfr_research/tools/quprs_long_tail_paired.py \
+            --stage pilot --pilot-case "${{ matrix.case }}" "${pilot[@]}" \
+            --quprs .upstream/quprs \
+            --gpmc-source .upstream/gpmc \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --corpus .research/long-tail \
+            --report .research/long-tail/long-tail-source-locked-evidence.json \
+            | tee ".research/long-tail/long-tail-pilot-${{ matrix.case }}.log"
+      - name: Save independent case artifact even after timeout or failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: original-rawmocs-gpmc-long-tail-${{ matrix.case }}-pilot
+          path: |
+            .research/long-tail/long-tail-pilot-${{ matrix.case }}.json
+            .research/long-tail/long-tail-pilot-${{ matrix.case }}.log
+          retention-days: 30
+          if-no-files-found: warn
+
+  original-gpmc-complete-rust-timeout-mechanism:
+    # The user-valued long-tail counterexamples: original GPMC completes,
+    # original-CNF Rust research solver exceeds symmetric 30s window.
+    # 7 fresh alternating head-to-head trials per precision; GPMC feature
+    # toggles are separate single-trial exploratory mechanism probes.
+    needs: original-long-tail-source-locked-screen
+    if: ${{ !cancelled() && ((inputs.suite == 'full' && needs.original-long-tail-source-locked-screen.result == 'success') || ((((github.event_name == 'pull_request' && (github.event.label.name == 'run-wstate-definitional' || (github.event.label.name == 'run-qwalk-definitional' || github.event.label.name == 'run-qwalk-guarded')) && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/mpfr-exact-residual-arena-reuse-20261118')) || (inputs.suite == 'focused' && inputs.case != 'feynman_gf2_8_mult' && inputs.case != 'mqt_qnn_12')) && needs.original-long-tail-source-locked-screen.result == 'skipped')) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        case: ${{ fromJSON(inputs.suite == 'full' && '["feynman_gf2_6_mult","mqt_qnn_8","mqt_wstate_16","mqt_qwalk_5"]' || (github.event.label.name == 'run-wstate-definitional' && '["mqt_wstate_16"]' || (github.event.label.name == 'run-qwalk-definitional' || github.event.label.name == 'run-qwalk-guarded') && '["mqt_qwalk_5"]' || format('["{0}"]', inputs.case))) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout RaWMoCS independent mechanism research
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Checkout pinned QuPRS original QASM corpus
+        uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/QuPRS
+          ref: 0b28736651b3740ed3b201edd2efdef3da541e0d
+          path: .upstream/quprs
+          persist-credentials: false
+      - name: Checkout unchanged GPMC native C++ source
+        uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/GPMC
+          ref: 89bbc89d0de918e7a5385740355df55765039230
+          path: .upstream/gpmc
+          submodules: recursive
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/mpfr_research -> target
+          key: source-locked-high-cost-cohort
+      - name: Require an explicit source artifact in focused mode
+        if: inputs.suite == 'focused'
+        env:
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo "Focused mode requires a numeric source_run_id"; exit 2; }
+      - name: Download unchanged original source screening evidence (full)
+        if: inputs.suite == 'full'
+        uses: actions/download-artifact@v4
+        with:
+          name: original-rawmocs-gpmc-long-tail-screen
+          path: .research/long-tail
+      - name: Reuse source-locked artifact from selected run (focused)
+        if: inputs.suite == 'focused' || github.event_name == 'pull_request'
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.source_run_id || '45309819511' }}
+          name: original-rawmocs-gpmc-long-tail-screen
+          path: .research/long-tail
+      - name: Verify original upstream source locks and install MPFR
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C .upstream/quprs rev-parse HEAD)" = "0b28736651b3740ed3b201edd2efdef3da541e0d"
+          test "$(git -C .upstream/gpmc rev-parse HEAD)" = "89bbc89d0de918e7a5385740355df55765039230"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build libgmp-dev libmpfr-dev zlib1g-dev time pkg-config
+      - name: Build pinned unchanged native GPMC
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S .upstream/gpmc -B .upstream/gpmc/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build .upstream/gpmc/build --target gpmc-bin --parallel 2
+      - name: Build same-source original-CNF MPFR Rust research solver
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --release --manifest-path benchmarks/mpfr_research/Cargo.toml factor_indexed_fused::tests
+          if [[ "${{ github.event.label.name }}" == "run-wstate-definitional" || "${{ github.event.label.name }}" == "run-qwalk-definitional" || "${{ github.event.label.name }}" == "run-qwalk-guarded" ]]; then
+            cargo test --release --manifest-path benchmarks/mpfr_research/Cargo.toml factor_cardinality:: 
+          fi
+          cargo build --release --manifest-path benchmarks/mpfr_research/Cargo.toml
+      - name: Same-source seven-trial 100/333-bit GPMC/Rust and GPMC mechanism toggles
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile benchmarks/mpfr_research/tools/quprs_long_tail_mechanism.py
+          python3 benchmarks/mpfr_research/tools/quprs_long_tail_mechanism.py --self-test
+          arms=(--indexed-fused)
+          if [[ "${{ matrix.case }}" == "feynman_gf2_6_mult" ]]; then arms+=(--indexed-conditioned); fi
+          if [[ "${{ inputs.suite }}" == "focused" && "${{ matrix.case }}" == "mqt_wstate_16" ]]; then arms=(--indexed-interned-only); fi
+          if [[ "${{ github.event.label.name }}" == "run-wstate-definitional" || "${{ github.event.label.name }}" == "run-qwalk-definitional" || "${{ github.event.label.name }}" == "run-qwalk-guarded" ]]; then arms=(--definitional-only); fi
+          if [[ "${{ github.event.label.name }}" == "run-qwalk-guarded" ]]; then
+            python3 -m venv .research/qwalk-venv
+            source .research/qwalk-venv/bin/activate
+            python3 -m pip install numpy==2.2.6 mpmath==1.3.0
+            export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+            arms=(--definitional-only --qwalk-guarded)
+          fi
+          python3 benchmarks/mpfr_research/tools/quprs_long_tail_mechanism.py \
+            "${arms[@]}" \
+            --case "${{ matrix.case }}" \
+            --quprs .upstream/quprs \
+            --gpmc-source .upstream/gpmc \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --corpus .research/long-tail \
+            --report ".research/long-tail/long-tail-mechanism-${{ matrix.case }}.json" \
+            | tee ".research/long-tail/long-tail-mechanism-${{ matrix.case }}.log"
+      - name: Save case-specific seven-trial raw and censored evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: original-rawmocs-gpmc-mechanism-${{ matrix.case }}
+          path: |
+            .research/long-tail/long-tail-mechanism-${{ matrix.case }}.json
+            .research/long-tail/long-tail-mechanism-${{ matrix.case }}.log
+          retention-days: 30
+          if-no-files-found: warn
+
+  original-qnn-cardinality-pilot:
+    # Explicit label or manual dispatch only; no costly per-push campaign.
+    if: ${{ (github.event_name == 'pull_request' && github.event.label.name == 'run-qnn-cardinality-native' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/mpfr-exact-residual-arena-reuse-20261118') || (github.event_name == 'workflow_dispatch' && inputs.suite == 'focused' && inputs.case == 'mqt_qnn_12') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      OPENBLAS_NUM_THREADS: '1'
+      OMP_NUM_THREADS: '1'
+      PYTHONHASHSEED: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/QuPRS
+          ref: 0b28736651b3740ed3b201edd2efdef3da541e0d
+          path: .upstream/quprs
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/GPMC
+          ref: 89bbc89d0de918e7a5385740355df55765039230
+          path: .upstream/gpmc
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.source_run_id || '45309819511' }}
+          name: original-rawmocs-gpmc-long-tail-screen
+          path: .research/long-tail
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install explicit research-only Python dependencies and native GPMC libraries
+        run: |
+          python -m pip install numpy==2.2.6 networkx==3.4.2 mpmath==1.3.0
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build libgmp-dev libmpfr-dev zlib1g-dev time pkg-config
+      - name: Build unmodified pinned original GPMC
+        run: |
+          set -euo pipefail
+          test "$(git -C .upstream/gpmc rev-parse HEAD)" = "89bbc89d0de918e7a5385740355df55765039230"
+          cmake -S .upstream/gpmc -B .upstream/gpmc/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build .upstream/gpmc/build --target gpmc-bin --parallel 2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/mpfr_research -> target
+          key: source-locked-high-cost-cohort
+      - name: Qualify native cardinality against exhaustive original-CNF oracle
+        run: |
+          cargo test --release --manifest-path benchmarks/mpfr_research/Cargo.toml factor_cardinality::tests
+          cargo build --release --manifest-path benchmarks/mpfr_research/Cargo.toml
+      - name: Same-run original QNN8 and QNN12 cardinality research pilot
+        run: |
+          set -euo pipefail
+          mkdir -p .research/qnn-cardinality
+          lscpu > .research/qnn-cardinality/cpu.txt
+          python -m pip freeze > .research/qnn-cardinality/python-dependencies.txt
+          git rev-parse HEAD > .research/qnn-cardinality/research-head.txt
+          python -m py_compile benchmarks/mpfr_research/tools/quprs_qnn_cardinality_pilot.py
+          python benchmarks/mpfr_research/tools/quprs_qnn_cardinality_pilot.py \
+            --corpus .research/long-tail \
+            --quprs .upstream/quprs --gpmc-source .upstream/gpmc \
+            --gpmc .upstream/gpmc/build/gpmc \
+            --mpfr benchmarks/mpfr_research/target/release/rawmocs-mpfr-research \
+            --report .research/qnn-cardinality/pilot.json \
+            | tee .research/qnn-cardinality/pilot.log
+      - name: Preserve candidate, interval and censored control results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: original-qnn-cardinality-pilot
+          path: .research/qnn-cardinality/
+          retention-days: 30
+          if-no-files-found: warn

@@ -1,12 +1,6 @@
 name: Original weighted-CNF compact residual key exactness
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/cnf-compact-science.yml
-      - benchmarks/mpfr_research/src/main.rs
-      - benchmarks/mpfr_research/src/trail_engine.rs
-      - docs/cnf-compact-research.md
   workflow_dispatch:
 
 permissions:

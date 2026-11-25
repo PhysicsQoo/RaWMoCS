@@ -1,17 +1,6 @@
 name: Same-CNF MQT original Weighted CNF residual Factor-VE hybrid
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/mqt-residual-ve-four-arm.yml"
-      - "benchmarks/mpfr_research/tools/quprs_mqt_residual_ve_ab.py"
-      - "docs/residual-factor-ve-hybrid-research.md"
-      - "benchmarks/mpfr_research/src/trail_engine.rs"
-      - "benchmarks/mpfr_research/src/factor_variable_elimination.rs"
-      - "benchmarks/mpfr_research/src/separator_pivot.rs"
-      - "benchmarks/rust_core/tools/quprs_mqtbench_original_cnf.rs"
-      - "benchmarks/rust_core/tools/quprs_mqtbench_original_cnf_ab.py"
-      - "benchmarks/mpfr_research/src/main.rs"
   workflow_dispatch:
 
 permissions:

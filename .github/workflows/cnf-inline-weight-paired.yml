@@ -1,13 +1,6 @@
 name: Same-CNF GPMC versus Rust inline weighted component cache research
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/cnf-inline-weight-paired.yml
-      - benchmarks/mpfr_research/src/main.rs
-      - benchmarks/mpfr_research/src/trail_engine.rs
-      - benchmarks/mpfr_research/tools/quprs_cnf_inline_weight_ab.py
-      - docs/cnf-inline-weight-research.md
   workflow_dispatch:
 
 permissions:

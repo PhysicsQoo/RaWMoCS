@@ -22,6 +22,10 @@ mod trail_engine;
 mod separator_pivot;
 mod primal_centroid;
 mod factor_variable_elimination;
+mod factor_indexed_fused;
+mod factor_cardinality;
+mod factor_prejoin;
+mod factor_forest_dp;
 mod factor_add_elimination;
 mod factor_boolean_bdd;
 mod factor_cutset_ve;
@@ -767,12 +771,61 @@ fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
     let first = args.next().ok_or(
-        "usage: rawmocs-mpfr-research [--node-budget=250000|--node-budget=1000000] [--cache-limit=25000|--cache-limit=50000|--cache-limit=100000] [--indexed-unit-prop|--indexed-unit-prop-after-8192|--indexed-unit-prop-csr|--indexed-unit-prop-csr-after-8192] [--shared-residual-key|--packed-residual-key|--packed-residual-key-fast|--packed-residual-key-hash-only|--packed-residual-key-bypass-only] [--fast-assign] [--reuse-frequency-scratch] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
+        "usage: rawmocs-mpfr-research [--node-budget=250000|--node-budget=1000000|--node-budget=1000000000] [--cache-limit=25000|--cache-limit=50000|--cache-limit=100000] [--indexed-unit-prop|--indexed-unit-prop-after-8192|--indexed-unit-prop-csr|--indexed-unit-prop-csr-after-8192] [--shared-residual-key|--packed-residual-key|--packed-residual-key-fast|--packed-residual-key-hash-only|--packed-residual-key-bypass-only] [--fast-assign] [--reuse-frequency-scratch] [--hashbrown-owned|--hashbrown-borrowed] DIGITS FILE"
     )?;
+    if first.to_str() == Some("--factor-prejoin") {
+        return factor_prejoin::run(args);
+    }
+    if matches!(first.to_str(),Some("--adaptive"|"--adaptive-hybrid")) {
+        return factor_cardinality::run_adaptive(args,first.to_str()==Some("--adaptive-hybrid"));
+    }
+    if first.to_str() == Some("--factor-affine-taylor") {
+        return factor_cardinality::run_affine_taylor(args);
+    }
+    if first.to_str() == Some("--factor-affine-plan") {
+        return factor_cardinality::run_affine_plan(args);
+    }
+    if first.to_str() == Some("--factor-taylor-strict") {
+        // Bounded diagnostic: report the actual Taylor admission reason.
+        // Do not silently fall back to an unrelated search kernel.
+        let digits:u32=args.next().and_then(|v|v.into_string().ok())
+            .ok_or("missing precision")?.parse().map_err(|_|"invalid precision")?;
+        let bits=match digits {30=>100,100=>333,_=>return Err("unsupported Taylor precision".into())};
+        let path=args.next().ok_or("missing source")?;
+        if args.next().is_some(){return Err("unexpected arguments".into());}
+        let t=Instant::now();
+        let raw=std::fs::read_to_string(path).map_err(|e|e.to_string())?;
+        let read_ns=t.elapsed().as_nanos();
+        let t=Instant::now();let p=parse_emitted(&raw,bits)?;let parse_ns=t.elapsed().as_nanos();
+        let t=Instant::now();
+        let (answer,stats,trace)=factor_indexed_fused::count_taylor(&p,&raw,bits,digits);
+        let solve_ns=t.elapsed().as_nanos();
+        eprintln!("RESEARCH_MPFR_TAYLOR_STRICT eligible={} capped={} reason={} width={} estimated_work={} estimated_peak={} planned={} count_completed={} completed={} certified={}",
+            stats.eligible,stats.capped,if stats.cap_reason.is_empty(){"none"}else{stats.cap_reason},
+            stats.width,stats.preflight_products_upper,stats.preflight_cells_upper,
+            trace.planned,trace.count_completed,trace.completed,trace.certified);
+        let answer=answer.ok_or_else(||format!("Taylor strict admission: {}",stats.cap_reason))?;
+        if !trace.certified || (answer.sat && (trace.planned==0||trace.planned!=trace.count_completed||trace.planned!=trace.completed)){
+            return Err("Taylor strict incomplete certificate".into());
+        }
+        let t=Instant::now();
+        println!("s {}",if answer.sat {"SATISFIABLE"} else {"UNSATISFIABLE"});
+        println!("c r mpfr {} {}",answer.count.re.to_string_radix(10,Some(digits as usize+4)),answer.count.im.to_string_radix(10,Some(digits as usize+4)));
+        std::io::stdout().flush().map_err(|e|format!("flush: {e}"))?;
+        let output_ns=t.elapsed().as_nanos();
+        eprintln!("RESEARCH_MPFR_PHASE_NS read={read_ns} parse={parse_ns} solve={solve_ns} output={output_ns} nodes=0 cache_hits=0 decompositions=0 digits={digits} bits={bits}");
+        return Ok(());
+    }
+    if matches!(first.to_str(), Some("--factor-cardinality" | "--factor-definitional")) {
+        return factor_cardinality::run(args, first.to_str() == Some("--factor-definitional"));
+    }
     // Explicit finite research-only node limits, untouched default.
+    // The 1B allowance is an opt-in long-tail CI control with independent
+    // full-process timeout and virtual-address caps. Never default-on.
     let node_budget = match first.to_str() {
         Some("--node-budget=250000") => 250_000,
         Some("--node-budget=1000000") => 1_000_000,
+        Some("--node-budget=1000000000") => 1_000_000_000,
         _ => 100_000,
     };
     let algorithm_start = if node_budget != 100_000 {
@@ -886,6 +939,10 @@ fn run() -> Result<(), String> {
     let cache_first = if inline_weight_relabel {
         args.next().ok_or("missing cache policy or precision after --trail-inline-weight-relabel")?
     } else { cache_first };
+    let trail_full_live_clause = cache_first.to_str() == Some("--trail-full-live-clause-fastpath");
+    let cache_first = if trail_full_live_clause {
+        args.next().ok_or("missing mode after --trail-full-live-clause-fastpath")?
+    } else { cache_first };
     let post_unit_cache = cache_first.to_str() == Some("--trail-post-unit-cache");
     let cache_first = if post_unit_cache {
         args.next().ok_or("missing cache policy or precision after --trail-post-unit-cache")?
@@ -918,6 +975,26 @@ fn run() -> Result<(), String> {
     let cache_first = if factor_ve {
         args.next().ok_or("missing mode after --factor-variable-elimination")?
     } else { cache_first };
+    let ve_indexed_fused = cache_first.to_str() == Some("--factor-ve-indexed-fused");
+    let cache_first = if ve_indexed_fused {
+        args.next().ok_or("missing mode after --factor-ve-indexed-fused")?
+    } else { cache_first };
+    let ve_indexed_conditioned = cache_first.to_str() == Some("--factor-ve-indexed-conditioned");
+    let cache_first = if ve_indexed_conditioned {
+        args.next().ok_or("missing mode after --factor-ve-indexed-conditioned")?
+    } else { cache_first };
+    let ve_indexed_interned = cache_first.to_str() == Some("--factor-ve-indexed-interned");
+    let cache_first = if ve_indexed_interned {
+        args.next().ok_or("missing mode after --factor-ve-indexed-interned")?
+    } else { cache_first };
+    let ve_indexed_frontier = cache_first.to_str() == Some("--factor-ve-indexed-frontier");
+    let cache_first = if ve_indexed_frontier {
+        args.next().ok_or("missing mode after --factor-ve-indexed-frontier")?
+    } else { cache_first };
+    let ve_indexed_taylor = cache_first.to_str() == Some("--factor-ve-indexed-taylor");
+    let cache_first = if ve_indexed_taylor {
+        args.next().ok_or("missing mode after --factor-ve-indexed-taylor")?
+    } else { cache_first };
     let scope_probe_320 = cache_first.to_str() == Some("--factor-ve-scope-probe-320");
     let cache_first = if scope_probe_320 {
         args.next().ok_or("missing mode after --factor-ve-scope-probe-320")?
@@ -925,6 +1002,20 @@ fn run() -> Result<(), String> {
     let ve_min_fill = cache_first.to_str() == Some("--factor-ve-minfill-order");
     let cache_first = if ve_min_fill {
         args.next().ok_or("missing mode after --factor-ve-minfill-order")?
+    } else { cache_first };
+    // Increase only the bounded exact factor-bag admission limit from 11
+    // to 14 under an explicit research flag; production remains unchanged.
+    let ve_bag14 = cache_first.to_str() == Some("--factor-ve-bag-probe-14");
+    let cache_first = if ve_bag14 {
+        args.next().ok_or("missing mode after --factor-ve-bag-probe-14")?
+    } else { cache_first };
+    let ve_preflight = cache_first.to_str() == Some("--factor-ve-preflight-cost");
+    let cache_first = if ve_preflight {
+        args.next().ok_or("missing mode after --factor-ve-preflight-cost")?
+    } else { cache_first };
+    let ve_quick_scope = cache_first.to_str() == Some("--factor-ve-quick-scope256");
+    let cache_first = if ve_quick_scope {
+        args.next().ok_or("missing mode after --factor-ve-quick-scope256")?
     } else { cache_first };
     let factor_add = cache_first.to_str() == Some("--factor-add-elimination");
     let cache_first = if factor_add {
@@ -962,6 +1053,30 @@ fn run() -> Result<(), String> {
     let cache_first = if trail_ordered_key_fastpath {
         args.next().ok_or("missing mode after --trail-ordered-key-fastpath")?
     } else { cache_first };
+    let trail_reuse_key_arena = cache_first.to_str() == Some("--trail-reuse-key-arena");
+    let cache_first = if trail_reuse_key_arena {
+        args.next().ok_or("missing mode after --trail-reuse-key-arena")?
+    } else { cache_first };
+    let trail_scope_stamp_admission =
+        cache_first.to_str() == Some("--trail-scope-stamp-admission");
+    let cache_first = if trail_scope_stamp_admission {
+        args.next().ok_or("missing mode after --trail-scope-stamp-admission")?
+    } else { cache_first };
+    let trail_active_clause_bitmap =
+        cache_first.to_str() == Some("--trail-active-clause-bitmap");
+    let cache_first = if trail_active_clause_bitmap {
+        args.next().ok_or("missing mode after --trail-active-clause-bitmap")?
+    } else { cache_first };
+    let trail_reversible_literal_mask =
+        cache_first.to_str() == Some("--trail-reversible-literal-mask");
+    let cache_first = if trail_reversible_literal_mask {
+        args.next().ok_or("missing mode after --trail-reversible-literal-mask")?
+    } else { cache_first };
+    let trail_fused_pre_analysis =
+        cache_first.to_str() == Some("--trail-fused-pre-analysis");
+    let cache_first = if trail_fused_pre_analysis {
+        args.next().ok_or("missing mode after --trail-fused-pre-analysis")?
+    } else { cache_first };
     let component_local_ve = cache_first.to_str() == Some("--trail-component-local-ve");
     let cache_first = if component_local_ve {
         args.next().ok_or("missing mode after --trail-component-local-ve")?
@@ -969,6 +1084,15 @@ fn run() -> Result<(), String> {
     let residual_factor_ve = cache_first.to_str() == Some("--trail-residual-factor-ve");
     let cache_first = if residual_factor_ve {
         args.next().ok_or("missing mode after --trail-residual-factor-ve")?
+    } else { cache_first };
+    // New research-only exact width-one component message passing.
+    let forest_dp = cache_first.to_str() == Some("--trail-forest-dp");
+    let cache_first = if forest_dp {
+        args.next().ok_or("missing mode after --trail-forest-dp")?
+    } else { cache_first };
+    let join_tree = cache_first.to_str() == Some("--trail-bounded-join-tree-ve");
+    let cache_first = if join_tree {
+        args.next().ok_or("missing mode after --trail-bounded-join-tree-ve")?
     } else { cache_first };
     let cache_policy = match cache_first.to_str() {
         Some("--hashbrown-owned") => CachePolicy::HbOwned,
@@ -1021,6 +1145,13 @@ fn run() -> Result<(), String> {
         && trail_fused_compact && weighted_component_cache) {
         return Err("--trail-inline-weight-relabel requires fused weighted-class trail cache".into());
     }
+    if trail_full_live_clause && !(weighted_equivalence && trail_count
+        && trail_parent_ids && trail_compact_residual
+        && trail_prehashed_cache && trail_fused_compact
+        && weighted_component_cache && inline_weight_relabel)
+    {
+        return Err("--trail-full-live-clause-fastpath requires original fused exact weighted Trail".into());
+    }
     if post_unit_cache && !(trail_count && trail_parent_ids
         && trail_compact_residual && trail_prehashed_cache
         && trail_fused_compact && weighted_component_cache && inline_weight_relabel) {
@@ -1031,6 +1162,30 @@ fn run() -> Result<(), String> {
     }
     if fused_post_analysis && !projected_post_key {
         return Err("--trail-fused-post-analysis requires --trail-post-unit-projected".into());
+    }
+    if ve_indexed_taylor && (!ve_indexed_fused || ve_indexed_conditioned || ve_indexed_interned || ve_indexed_frontier) {
+        return Err("--factor-ve-indexed-taylor requires indexed fused without other indexed routes".into());
+    }
+    if ve_indexed_frontier && (!ve_indexed_fused || ve_indexed_conditioned || ve_indexed_interned) {
+        return Err("--factor-ve-indexed-frontier requires indexed fused without other indexed routes".into());
+    }
+    if ve_indexed_interned && (!ve_indexed_fused || ve_indexed_conditioned) {
+        return Err("--factor-ve-indexed-interned requires indexed fused without conditioning".into());
+    }
+    if ve_indexed_conditioned && !ve_indexed_fused {
+        return Err("--factor-ve-indexed-conditioned requires --factor-ve-indexed-fused".into());
+    }
+    if ve_indexed_fused && (!factor_ve || scope_probe_320 || ve_min_fill || ve_bag14 || ve_preflight || ve_quick_scope) {
+        return Err("--factor-ve-indexed-fused requires --factor-variable-elimination without other VE policy flags".into());
+    }
+    if ve_quick_scope && !ve_preflight {
+        return Err("--factor-ve-quick-scope256 requires --factor-ve-preflight-cost".into());
+    }
+    if ve_preflight && !ve_bag14 {
+        return Err("--factor-ve-preflight-cost requires the bounded min-fill bag14 research arm".into());
+    }
+    if ve_bag14 && (!ve_min_fill || !scope_probe_320 || !factor_ve) {
+        return Err("--factor-ve-bag-probe-14 requires --factor-variable-elimination --factor-ve-scope-probe-320 --factor-ve-minfill-order".into());
     }
     if ve_min_fill && (!scope_probe_320 || !factor_ve) {
         return Err("--factor-ve-minfill-order requires --factor-variable-elimination --factor-ve-scope-probe-320".into());
@@ -1074,6 +1229,35 @@ fn run() -> Result<(), String> {
         primal_order || unit_closure_pivot) {
         return Err("--trail-ordered-key-fastpath requires original fused signed-weight Trail without other experimental search arms".into());
     }
+    if trail_reversible_literal_mask
+        && (!trail_reuse_key_arena || trail_scope_stamp_admission
+            || trail_active_clause_bitmap || trail_fused_pre_analysis)
+    {
+        return Err("--trail-reversible-literal-mask requires Arena and excludes Stamp/Bitmap/Fused Pre".into());
+    }
+    if trail_fused_pre_analysis
+        && (!trail_reuse_key_arena
+            || trail_scope_stamp_admission
+            || trail_active_clause_bitmap)
+    {
+        return Err("--trail-fused-pre-analysis requires Arena and forbids simultaneous Stamp/Bitmap".into());
+    }
+    if trail_active_clause_bitmap
+        && (!trail_reuse_key_arena || trail_scope_stamp_admission)
+    {
+        return Err("--trail-active-clause-bitmap requires Arena and forbids simultaneous Scope Stamp".into());
+    }
+    if trail_scope_stamp_admission && !trail_reuse_key_arena {
+        return Err("--trail-scope-stamp-admission requires --trail-reuse-key-arena and current exact weighted Trail scope".into());
+    }
+    if trail_reuse_key_arena && (!weighted_equivalence || !trail_count ||
+        !trail_compact_residual || !trail_fused_compact || !inline_weight_relabel ||
+        post_unit_cache || scoped_component_dsu || component_local_ve ||
+        residual_factor_ve || factor_ve || factor_add || factor_boolean_bdd ||
+        factor_cutset || factor_pair_cutset || root_failed_literal ||
+        articulation_pivot || primal_order || unit_closure_pivot) {
+        return Err("--trail-reuse-key-arena requires original fused weighted Trail without other experimental search arms".into());
+    }
     if trail_stage_profile && (!weighted_equivalence || !trail_count ||
         post_unit_cache || component_local_ve || residual_factor_ve ||
         factor_ve || factor_add || factor_boolean_bdd || factor_cutset ||
@@ -1093,6 +1277,30 @@ fn run() -> Result<(), String> {
         || factor_cutset || factor_pair_cutset || post_unit_cache
         || root_failed_literal || articulation_pivot || primal_order || unit_closure_pivot) {
         return Err("--trail-component-local-ve requires weighted-equivalence + trail-count with unchanged original branch routing".into());
+    }
+    if forest_dp && (!weighted_equivalence || !trail_count ||
+        !trail_parent_ids || !trail_compact_residual || !trail_prehashed_cache ||
+        !trail_fused_compact || !weighted_component_cache || !inline_weight_relabel ||
+        component_local_ve || residual_factor_ve || factor_ve || factor_add ||
+        factor_boolean_bdd || factor_cutset || factor_pair_cutset || root_failed_literal ||
+        post_unit_cache || articulation_pivot || primal_order || unit_closure_pivot ||
+        trail_ordered_key_fastpath || trail_reuse_key_arena ||
+        trail_full_live_clause || trail_scope_stamp_admission ||
+        trail_active_clause_bitmap || trail_reversible_literal_mask ||
+        trail_fused_pre_analysis) {
+        return Err("--trail-forest-dp requires original inline exact weighted Trail without other research branches".into());
+    }
+    if join_tree && (!weighted_equivalence || !trail_count ||
+        !trail_parent_ids || !trail_compact_residual || !trail_prehashed_cache ||
+        !trail_fused_compact || !weighted_component_cache || !inline_weight_relabel ||
+        forest_dp || component_local_ve || residual_factor_ve || factor_ve ||
+        factor_add || factor_boolean_bdd || factor_cutset || factor_pair_cutset ||
+        root_failed_literal || post_unit_cache || articulation_pivot || primal_order ||
+        unit_closure_pivot || trail_ordered_key_fastpath || trail_reuse_key_arena ||
+        trail_full_live_clause || trail_scope_stamp_admission ||
+        trail_active_clause_bitmap || trail_reversible_literal_mask ||
+        trail_fused_pre_analysis) {
+        return Err("--trail-bounded-join-tree-ve requires original inline exact weighted Trail without other research branches".into());
     }
     if residual_factor_ve && (!weighted_equivalence || !trail_count || factor_ve
         || post_unit_cache || articulation_pivot || primal_order || root_failed_literal) {
@@ -1151,7 +1359,38 @@ fn run() -> Result<(), String> {
     let primal_build_ns = td_start.elapsed().as_nanos();
     let ve_start = Instant::now();
     let (ve_candidate, ve_stats) = if factor_ve {
-        if ve_min_fill {
+        if ve_indexed_taylor {
+            let (answer, stats, trace) = factor_indexed_fused::count_taylor(&p,&raw,bits,digits);
+            eprintln!("RESEARCH_MPFR_INDEXED_TAYLOR planned={} count_completed={} completed={} terms={} base_bits={} degree={} model_bits={} arithmetic={} actual_work={} peak_pool={} peak_live={} gc={} certified={}",
+                trace.planned,trace.count_completed,trace.completed,trace.terms,trace.base_bits,trace.degree,
+                trace.model_bits,trace.arithmetic,trace.actual_work,trace.peak_pool,trace.peak_live,trace.gc,trace.certified);
+            (answer,stats)
+        } else if ve_indexed_frontier {
+            let (answer, stats, trace) = factor_indexed_fused::count_frontier(source, &scope, bits);
+            eprintln!("RESEARCH_MPFR_INDEXED_FRONTIER planned={} completed={} pruned={} estimated_work={} estimated_peak={} scc_merges={} arithmetic={} actual_work={} planning_ns={}",
+                trace.planned,trace.completed,trace.pruned,trace.estimated_work,trace.estimated_peak,trace.scc_merges,
+                trace.arithmetic,trace.actual_work,trace.planning_ns);
+            (answer,stats)
+        } else if ve_indexed_interned {
+            let (answer, stats, trace) = factor_indexed_fused::count_interned(source, &scope, bits);
+            eprintln!("RESEARCH_MPFR_INDEXED_INTERNED mul={} add={} nontrivial={} hits={} peak_pool={} gc={} gc_scans={} peak_live={} removed={}",
+                trace.mul,trace.add,trace.nontrivial,trace.hits,trace.peak_pool,trace.gc,trace.gc_scans,trace.peak_live,trace.removed);
+            (answer,stats)
+        } else if ve_indexed_conditioned {
+            let (answer, stats, trace) = factor_indexed_fused::count_conditioned(source, &scope, bits);
+            eprintln!("RESEARCH_MPFR_INDEXED_CONDITION selected={} probes={} branches_completed={} root_work={} root_peak={} chosen_work={} chosen_peak={} planning_ns={}",
+                trace.selected,trace.probes,trace.branches_completed,trace.root_work,trace.root_peak,
+                trace.chosen_work,trace.chosen_peak,trace.planning_ns);
+            (answer,stats)
+        } else if ve_indexed_fused {
+            factor_indexed_fused::count(source, &scope, bits)
+        } else if ve_quick_scope {
+            factor_variable_elimination::count_scope_probe_minfill_bag14_quick_scope(source, &scope, bits)
+        } else if ve_preflight {
+            factor_variable_elimination::count_scope_probe_minfill_bag14_preflight(source, &scope, bits)
+        } else if ve_bag14 {
+            factor_variable_elimination::count_scope_probe_minfill_bag14(source, &scope, bits)
+        } else if ve_min_fill {
             factor_variable_elimination::count_scope_probe_minfill(source, &scope, bits)
         } else if scope_probe_320 {
             factor_variable_elimination::count_scope_probe(source, &scope, bits)
@@ -1208,6 +1447,13 @@ fn run() -> Result<(), String> {
             !minor.capped, minor.treewidth_lower, minor.treewidth_lower + 1,
             minor.contractions, begin.elapsed().as_nanos());
     }
+    eprintln!("RESEARCH_MPFR_FACTOR_VE_BAG_PROBE enabled={} limit={}",
+        ve_bag14, if ve_bag14 { 14 } else { 11 });
+    eprintln!("RESEARCH_MPFR_FACTOR_VE_QUICK_SCOPE enabled={} limit={}",
+        ve_quick_scope, if ve_quick_scope { 256 } else if scope_probe_320 { 320 } else { 256 });
+    eprintln!("RESEARCH_MPFR_FACTOR_VE_PREFLIGHT enabled={} products_upper={} cells_upper={} rejected={}",
+        ve_stats.preflight_enabled, ve_stats.preflight_products_upper, ve_stats.preflight_cells_upper,
+        ve_stats.cap_reason.starts_with("preflight_"));
     eprintln!("RESEARCH_MPFR_FACTOR_VE_ORDER minfill={} predicted_width={} fill_edges={} candidates={} plan_ns={}",
         ve_min_fill, ve_stats.minfill_plan_width, ve_stats.minfill_fill_edges,
         ve_stats.minfill_candidates, ve_stats.minfill_plan_ns);
@@ -1232,8 +1478,16 @@ fn run() -> Result<(), String> {
     engine.indexed_activation_node = indexed_activation_node;
     let mut residual_ve_metrics = (0_u64, 0_u64, 0_u64, 0_u64, 0_usize);
     let mut component_ve_metrics = (0_u64, 0_u64, 0_u64, 0_u64, 0_u64);
+    let mut forest_dp_metrics = (0_u64, 0_u64, 0_u64, 0_u64);
+    let mut join_tree_metrics = (0_u64, 0_u64, 0_u64, 0_u64, 0_u64, 0_usize);
     let mut scoped_dsu_metrics = (0_u64, 0_u64);
     let mut ordered_key_metrics = (0_u64, 0_u64);
+    let mut key_arena_metrics = (0_u64, 0_u64, 0_u64);
+    let mut full_live_key_hits = 0_u64;
+    let mut scope_stamp_probes = 0_u64;
+    let mut active_bitmap_key_visits = 0_u64;
+    let mut literal_mask_metrics = (0_u64, 0_u64);
+    let mut fused_pre_metrics = (0_u64, 0_u64);
     let mut stage_metrics = (0_u128, 0_u128, 0_u128, 0_u128, 0_u128);
     let mut key_subphase_metrics = (0_u128, 0_u128, 0_u128);
     let (answer, solver_stats, trail_profile, primal_scans, primal_overrides) =
@@ -1251,6 +1505,7 @@ fn run() -> Result<(), String> {
         trail.use_weight_class_cache = weighted_component_cache;
         trail.weight_cache_scope_max = weight_cache_scope_max;
         trail.use_inline_weight_relabel = inline_weight_relabel;
+        trail.use_full_live_clause_fastpath = trail_full_live_clause;
         trail.use_post_unit_cache = post_unit_cache;
         trail.use_projected_post_key = projected_post_key;
         trail.use_fused_post_analysis = fused_post_analysis;
@@ -1258,8 +1513,19 @@ fn run() -> Result<(), String> {
         trail.articulation_root_only = articulation_root_only;
         trail.use_residual_factor_ve = residual_factor_ve;
         trail.use_component_local_ve = component_local_ve;
+        trail.use_forest_dp = forest_dp;
+        trail.use_bounded_join_tree_ve = join_tree;
         trail.use_scoped_component_dsu = scoped_component_dsu;
         trail.use_ordered_key_fastpath = trail_ordered_key_fastpath;
+        trail.use_reusable_key_arena = trail_reuse_key_arena;
+        trail.use_scope_stamp_admission = trail_scope_stamp_admission;
+        if trail_active_clause_bitmap {
+            trail.enable_active_clause_bitmap();
+        }
+        if trail_reversible_literal_mask {
+            trail.enable_reversible_literal_mask()?;
+        }
+        trail.use_fused_pre_analysis = trail_fused_pre_analysis;
         trail.stage_profile = trail_stage_profile;
         if let Some(ref profile) = primal_profile {
             if profile.eligible {
@@ -1278,8 +1544,30 @@ fn run() -> Result<(), String> {
             trail.component_ve_capped, trail.component_ve_products,
             trail.component_ve_scans,
         );
+        forest_dp_metrics = (
+            trail.forest_dp_attempts, trail.forest_dp_completed,
+            trail.forest_dp_rejected, trail.forest_dp_scans,
+        );
+        join_tree_metrics = (
+            trail.join_tree_attempts, trail.join_tree_completed,
+            trail.join_tree_capped, trail.join_tree_products,
+            trail.join_tree_scans, trail.join_tree_max_bag,
+        );
         scoped_dsu_metrics = (trail.component_dsu_calls, trail.component_dsu_slots);
         ordered_key_metrics = (trail.ordered_key_probes, trail.ordered_key_hits);
+        key_arena_metrics = (
+            trail.key_arena_calls,
+            trail.key_arena_flat_reuses,
+            trail.key_arena_view_reuses,
+        );
+        full_live_key_hits = trail.full_live_key_hits;
+        scope_stamp_probes = trail.scope_stamp_probes;
+        active_bitmap_key_visits = trail.active_bitmap_key_visits;
+        literal_mask_metrics = (trail.literal_mask_key_visits, trail.literal_mask_updates);
+        fused_pre_metrics = (
+            trail.fused_pre_clause_scans,
+            trail.fused_pre_dsu_merges,
+        );
         stage_metrics = (trail.stage_key_ns, trail.stage_lookup_ns,
                          trail.stage_unit_ns, trail.stage_frequency_ns,
                          trail.stage_components_ns);
@@ -1318,6 +1606,39 @@ fn run() -> Result<(), String> {
         scoped_component_dsu, scoped_dsu_metrics.0, scoped_dsu_metrics.1);
     eprintln!("RESEARCH_MPFR_ORDERED_KEY_FASTPATH enabled={} probes={} hits={}",
         trail_ordered_key_fastpath, ordered_key_metrics.0, ordered_key_metrics.1);
+    eprintln!(
+        "RESEARCH_MPFR_KEY_ARENA_REUSE enabled={} calls={} flat_reuses={} view_reuses={}",
+        trail_reuse_key_arena,
+        key_arena_metrics.0,
+        key_arena_metrics.1,
+        key_arena_metrics.2
+    );
+    eprintln!(
+        "RESEARCH_MPFR_FULL_LIVE_KEY enabled={} hits={}",
+        trail_full_live_clause, full_live_key_hits
+    );
+    eprintln!(
+        "RESEARCH_MPFR_SCOPE_STAMP_ADMISSION enabled={} probes={}",
+        trail_scope_stamp_admission,
+        scope_stamp_probes
+    );
+    eprintln!(
+        "RESEARCH_MPFR_ACTIVE_CLAUSE_BITMAP enabled={} key_visits={}",
+        trail_active_clause_bitmap,
+        active_bitmap_key_visits
+    );
+    eprintln!(
+        "RESEARCH_MPFR_REVERSIBLE_LITERAL_MASK enabled={} key_visits={} updates={}",
+        trail_reversible_literal_mask,
+        literal_mask_metrics.0,
+        literal_mask_metrics.1
+    );
+    eprintln!(
+        "RESEARCH_MPFR_FUSED_PRE_ANALYSIS enabled={} clause_scans={} dsu_merges={}",
+        trail_fused_pre_analysis,
+        fused_pre_metrics.0,
+        fused_pre_metrics.1
+    );
     eprintln!("RESEARCH_MPFR_TRAIL_STAGE_PROFILE enabled={} key_ns={} lookup_ns={} unit_ns={} frequency_ns={} components_ns={}",
         trail_stage_profile, stage_metrics.0, stage_metrics.1,
         stage_metrics.2, stage_metrics.3, stage_metrics.4);
@@ -1327,6 +1648,17 @@ fn run() -> Result<(), String> {
         key_subphase_metrics.0,
         key_subphase_metrics.1,
         key_subphase_metrics.2
+    );
+    eprintln!(
+        "RESEARCH_MPFR_JOIN_TREE_VE enabled={} attempts={} completed={} capped={} products={} scans={} max_bag={}",
+        join_tree, join_tree_metrics.0, join_tree_metrics.1,
+        join_tree_metrics.2, join_tree_metrics.3, join_tree_metrics.4,
+        join_tree_metrics.5
+    );
+    eprintln!(
+        "RESEARCH_MPFR_FOREST_DP enabled={} attempts={} completed={} rejected={} scans={}",
+        forest_dp, forest_dp_metrics.0, forest_dp_metrics.1,
+        forest_dp_metrics.2, forest_dp_metrics.3
     );
     eprintln!("RESEARCH_MPFR_COMPONENT_LOCAL_VE enabled={} attempts={} completed={} capped={} products={} scans={}",
         component_local_ve, component_ve_metrics.0, component_ve_metrics.1,

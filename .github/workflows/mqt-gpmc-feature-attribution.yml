@@ -1,15 +1,6 @@
 name: Original MQT Weighted CNF GPMC preprocessing TD backjump attribution
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/mqt-gpmc-feature-attribution.yml"
-      - "benchmarks/mpfr_research/tools/gpmc_mqt_feature_ablation.py"
-      - "docs/mqt-gpmc-mechanism-attribution.md"
-      - "benchmarks/mpfr_research/src/trail_engine.rs"
-      - "benchmarks/rust_core/tools/quprs_mqtbench_original_cnf.rs"
-      - "benchmarks/rust_core/tools/quprs_mqtbench_original_cnf_ab.py"
-      - "benchmarks/mpfr_research/src/main.rs"
   workflow_dispatch:
 
 permissions:

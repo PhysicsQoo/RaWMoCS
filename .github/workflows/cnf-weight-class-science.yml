@@ -1,12 +1,6 @@
 name: Original weighted-CNF weight-class component cache correctness
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/cnf-weight-class-science.yml
-      - benchmarks/mpfr_research/src/main.rs
-      - benchmarks/mpfr_research/src/trail_engine.rs
-      - docs/cnf-weight-class-cache-research.md
   workflow_dispatch:
 
 permissions:

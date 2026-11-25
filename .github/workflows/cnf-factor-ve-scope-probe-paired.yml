@@ -1,14 +1,6 @@
 name: Same-CNF original Feynman Factor VE scope admission probe
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/cnf-factor-ve-scope-probe-paired.yml
-      - benchmarks/mpfr_research/src/main.rs
-      - benchmarks/mpfr_research/src/trail_engine.rs
-      - benchmarks/mpfr_research/src/factor_variable_elimination.rs
-      - benchmarks/mpfr_research/tools/quprs_cnf_factor_scope_probe_ab.py
-      - docs/factor-ve-scope-probe-research.md
   workflow_dispatch:
 
 permissions:

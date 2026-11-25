@@ -1,12 +1,6 @@
 name: Same-CNF GPMC versus Rust signed literal equivalence research
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/cnf-equivalence-paired.yml
-      - benchmarks/mpfr_research/src/main.rs
-      - benchmarks/rust_core/tools/quprs_cnf_equivalence_ab.py
-      - docs/quprs-cnf-equivalence-research.md
   workflow_dispatch:
 
 permissions:

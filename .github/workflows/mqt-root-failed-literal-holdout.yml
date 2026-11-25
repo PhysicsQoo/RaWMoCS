@@ -1,17 +1,6 @@
 name: Same-CNF MQT Bench exact root failed-literal WMC holdout
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/mqt-root-failed-literal-holdout.yml"
-      - "benchmarks/mpfr_research/tools/quprs_mqt_failed_literal_ab.py"
-      - "docs/root-failed-literal-research.md"
-      - "benchmarks/mpfr_research/src/trail_engine.rs"
-      - "benchmarks/mpfr_research/src/root_failed_literal.rs"
-      - "benchmarks/mpfr_research/src/separator_pivot.rs"
-      - "benchmarks/rust_core/tools/quprs_mqtbench_original_cnf.rs"
-      - "benchmarks/rust_core/tools/quprs_mqtbench_original_cnf_ab.py"
-      - "benchmarks/mpfr_research/src/main.rs"
   workflow_dispatch:
 
 permissions:

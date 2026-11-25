@@ -1,13 +1,6 @@
 name: Same-CNF GPMC versus Rust compact residual key research
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/cnf-compact-paired.yml
-      - benchmarks/mpfr_research/src/main.rs
-      - benchmarks/mpfr_research/src/trail_engine.rs
-      - benchmarks/mpfr_research/tools/quprs_cnf_compact_ab.py
-      - docs/cnf-compact-research.md
   workflow_dispatch:
 
 permissions:

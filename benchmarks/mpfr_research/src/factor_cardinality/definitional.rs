@@ -1,0 +1,582 @@
+//! Research-only fused bucket contraction with exact Boolean support.
+use super::{extract_with_arity, extract_with_limits, weight, var, idx, edge, minfill, Graph, Trace, C, Outcome, Problem};
+use std::collections::{BTreeMap, BTreeSet};
+use std::time::Instant;
+use rug::{Assign, Float};
+
+struct Factor {
+    scope: Vec<usize>,
+    values: Vec<Option<C>>,
+}
+fn truth(l: i32, scope: &[usize], mask: usize) -> bool {
+    ((mask >> scope.binary_search(&var(l)).expect("literal in scope")) & 1 != 0) == (l > 0)
+}
+fn project(scope: &[usize], union: &[usize]) -> Vec<usize> {
+    scope.iter().map(|v|union.binary_search(v).expect("scope subset")).collect()
+}
+fn index(mask: usize, positions: &[usize]) -> usize {
+    positions.iter().enumerate().fold(0, |a,(i,&j)|a|(((mask>>j)&1)<<i))
+}
+fn multiply(a: C, b: &C, bits: u32) -> C {
+    if (a.re==0&&a.im==0)||(b.re==0&&b.im==0) {return C::zero(bits);}
+    if b.re==1&&b.im==0 {return a;}
+    if a.re==1&&a.im==0 {return b.clone();}
+    a.mul(b,bits)
+}
+// Scratch storage is owned by one contraction, never shared between
+// precision cohorts or threads. Assign each incomplete expression to a
+// fixed-precision destination before using it: no fused rounding.
+struct MulScratch {
+    arbr: Float,
+    aibi: Float,
+    arbi: Float,
+    aibr: Float,
+}
+impl MulScratch {
+    fn new(bits: u32) -> Self {
+        Self {
+            arbr: Float::new(bits), aibi: Float::new(bits),
+            arbi: Float::new(bits), aibr: Float::new(bits),
+        }
+    }
+    fn multiply(&mut self, a: &mut C, b: &C) {
+        // Preserve the existing zero and identity shortcuts, including
+        // support semantics (the caller checks None before multiplying).
+        if (a.re==0&&a.im==0)||(b.re==0&&b.im==0) {
+            a.re.assign(0); a.im.assign(0); return;
+        }
+        if b.re==1&&b.im==0 {return;}
+        if a.re==1&&a.im==0 {
+            a.re.assign(&b.re); a.im.assign(&b.im); return;
+        }
+        self.arbr.assign(&a.re * &b.re);
+        self.aibi.assign(&a.im * &b.im);
+        self.arbi.assign(&a.re * &b.im);
+        self.aibr.assign(&a.im * &b.re);
+        // All four products have already been rounded; overwrite only now.
+        a.re.assign(&self.arbr - &self.aibi);
+        a.im.assign(&self.arbi + &self.aibr);
+    }
+}
+// Only one result cell is allocated per supported assignment. The two
+// accumulators are reset before each branch, including after early UNSAT.
+fn merge_branches(left:&mut C,right:&C,left_sat:bool,right_sat:bool)->Option<C>{
+    match (left_sat,right_sat){
+        (true,true)=>{
+            left.re+=&right.re;
+            left.im+=&right.im;
+            Some(left.clone())
+        }
+        (true,false)=>Some(left.clone()),
+        (false,true)=>Some(right.clone()),
+        (false,false)=>None,
+    }
+}
+fn add(a: Option<C>, b: Option<C>, bits: u32) -> Option<C> {
+    match (a,b) {
+        (Some(a),Some(b))=>Some(a.add(&b,bits)),
+        (a,None)|(None,a)=>a,
+    }
+}
+fn insert(factors: &mut Vec<Factor>, graph: &mut Graph, factor: Factor) {
+    for (i,&a) in factor.scope.iter().enumerate() {
+        for &b in &factor.scope[i+1..] {edge(graph,a,b);}
+    }
+    factors.push(factor);
+}
+pub(super) fn count(p: &Problem, bits: u32, trace: &mut Trace) -> Result<Outcome,String> {
+    count_bounded(p,bits,trace,105)
+}
+pub(super) fn count_bounded(p:&Problem,bits:u32,trace:&mut Trace,seconds:u64)->Result<Outcome,String>{
+    count_impl(p,bits,trace,seconds,None)
+}
+pub(super) fn count_planned(p:&Problem,bits:u32,trace:&mut Trace,seconds:u64,order:&[usize])->Result<Outcome,String>{
+    count_impl(p,bits,trace,seconds,Some(order))
+}
+fn count_impl(p:&Problem,bits:u32,trace:&mut Trace,seconds:u64,order:Option<&[usize]>)->Result<Outcome,String>{
+    let deadline=Instant::now()+std::time::Duration::from_secs(seconds);
+    let (factors,graph,scalar)=compile(p,bits,trace,order.is_some())?;
+    contract(factors,graph,scalar,bits,trace,deadline,order)
+}
+type Compiled=(Vec<Factor>,Graph,C);
+fn compile(p:&Problem,bits:u32,trace:&mut Trace,adaptive:bool)->Result<Compiled,String>{
+    let (gates,rep,units,residual)=if adaptive{extract_with_limits(p,4096,16_000,4)?}else{extract_with_arity(p,2048,4)?};
+    let free:BTreeSet<_>=rep.iter().copied().filter(|&l|l!=0&&!units.contains_key(&var(l))).map(var).collect();
+    // Bound all initial factor cells before allocating even a single table.
+    // Standalone keeps the legacy arity; planned execution uses the same
+    // checked source/table limits as the structural profiler.
+    let max_arity=if adaptive{12}else{8};
+    let mut cells=free.len().saturating_mul(2);
+    for (_,a) in &gates{
+        let scope:BTreeSet<_>=a.iter().map(|&l|rep[idx(l)]).filter(|&l|l!=0&&!units.contains_key(&var(l))).map(var).collect();
+        cells=cells.saturating_add(1usize<<scope.len());
+    }
+    for c in &residual{
+        if c.len()>max_arity{return Err("residual clause arity cap".into());}
+        cells=cells.saturating_add(1usize<<c.len());
+    }
+    if cells>2_000_000{return Err("definitional initial cells cap".into());}
+    trace.gates=gates.len();
+    trace.free=free.len();
+    let mut scalar=C::one(bits);
+    let mut unary:BTreeMap<_,_>=free.iter().map(|&v|(v,[C::one(bits),C::one(bits)])).collect();
+    for v in 1..=p.n {
+        let r=rep[2*(v-1)];
+        if r==0 {continue;}
+        if let Some(&x)=units.get(&var(r)) {
+            scalar=multiply(scalar,weight(p,if x==(r>0){v as i32}else{-(v as i32)}),bits);
+        } else {
+            let u=unary.get_mut(&var(r)).ok_or("missing unary owner")?;
+            for (x,value) in u.iter_mut().enumerate() {
+                *value=multiply(value.clone(),weight(p,if (x==1)==(r>0){v as i32}else{-(v as i32)}),bits);
+            }
+        }
+    }
+    let mut graph:Graph=free.iter().map(|&v|(v,BTreeSet::new())).collect();
+    let mut factors=Vec::new();
+    for (o,a) in gates {
+        let b:Vec<_>=a.iter().map(|&l|rep[idx(l)]).collect();
+        if b.contains(&0) {return Err("unowned gate argument".into());}
+        let scope:Vec<_>=b.iter().copied().map(var).filter(|v|!units.contains_key(v)).collect::<BTreeSet<_>>().into_iter().collect();
+        let vals=(0..(1usize<<scope.len())).map(|mask| {
+            let yes=b.iter().all(|&l|units.get(&var(l)).map_or_else(||truth(l,&scope,mask),|&v|v==(l>0)));
+            Some(weight(p,if yes{o}else{-o}).clone())
+        }).collect();
+        insert(&mut factors,&mut graph,Factor{scope,values:vals});
+    }
+    for c in residual {
+        if c.len()>max_arity {return Err("residual clause arity cap".into());}
+        let scope:Vec<_>=c.iter().copied().map(var).collect::<BTreeSet<_>>().into_iter().collect();
+        if scope.iter().any(|v|!free.contains(v)) {return Err("residual ownership".into());}
+        let values=(0..(1usize<<scope.len())).map(|mask| {
+            if c.iter().any(|&l|truth(l,&scope,mask)) {Some(C::one(bits))} else {None}
+        }).collect();
+        insert(&mut factors,&mut graph,Factor{scope,values});
+    }
+    for (v,[a,b]) in unary {
+        factors.push(Factor{scope:vec![v],values:vec![Some(a),Some(b)]});
+    }
+    Ok((factors,graph,scalar))
+}
+fn contract(factors:Vec<Factor>,graph:Graph,scalar:C,bits:u32,trace:&mut Trace,deadline:Instant,order:Option<&[usize]>)->Result<Outcome,String>{
+    contract_impl(factors,graph,scalar,bits,trace,deadline,order,true,true)
+}
+// Retain the previous planned kernel as an exact same-order test control.
+#[allow(clippy::too_many_arguments)]
+fn contract_impl(mut factors:Vec<Factor>,mut graph:Graph,mut scalar:C,bits:u32,trace:&mut Trace,deadline:Instant,order:Option<&[usize]>,reuse_scratch:bool,reuse_branches:bool)->Result<Outcome,String>{
+    let mut scratch=if order.is_some()&&reuse_scratch{Some(MulScratch::new(bits))}else{None};
+    let mut accumulators=if order.is_some()&&reuse_scratch&&reuse_branches{Some((C::one(bits),C::one(bits)))}else{None};
+    let mut pivots=order.into_iter().flatten().copied();
+    if let Some(order)=order{
+        if order.len()!=graph.len()||order.iter().copied().collect::<BTreeSet<_>>()!=graph.keys().copied().collect(){return Err("definitional plan ownership".into());}
+    }
+    while !graph.is_empty() {
+        if Instant::now()>=deadline {return Err("definitional deadline".into());}
+        let v=if order.is_some(){pivots.next().ok_or("conditioned plan incomplete")?}else{*graph.keys().min_by_key(|&&v|minfill(&graph,v)).ok_or("empty graph")?};
+        let nb=graph.remove(&v).ok_or("missing pivot")?;
+        trace.width=trace.width.max(nb.len());
+        if nb.len()>if order.is_some(){20}else{18} {return Err("definitional width cap".into());}
+        let (mut bucket,rest):(Vec<_>,Vec<_>)=factors.into_iter().partition(|f|f.scope.contains(&v));
+        factors=rest;
+        bucket.sort_by_key(|f|f.scope.len());
+        let scope:Vec<_>=nb.iter().copied().collect();
+        let mut union=scope.clone();
+        union.push(v);union.sort_unstable();
+        let size=1usize<<scope.len();
+        let pivot=union.binary_search(&v).map_err(|_|"missing pivot axis")?;
+        let low=(1usize<<pivot)-1;
+        let positions:Vec<_>=bucket.iter().map(|f|project(&f.scope,&union)).collect();
+        let work=size.saturating_mul(2).saturating_mul(bucket.len());
+        trace.work=trace.work.saturating_add(work);
+        if trace.work>60_000_000 {return Err("definitional work cap".into());}
+        let live=factors.iter().map(|f|f.values.len()).sum::<usize>()+bucket.iter().map(|f|f.values.len()).sum::<usize>()+size;
+        if live>2_000_000 {return Err("definitional live cell cap".into());}
+        trace.peak=trace.peak.max(live);
+        let mut values=Vec::with_capacity(size);
+        if order.is_some(){
+            // Binary assignment increments update local indices by XOR of
+            // prefix masks; no per-assignment bit projection. Every branch
+            // still checks Boolean support independently of numerical zero.
+            let mut pivots=Vec::with_capacity(bucket.len());
+            let mut flips=Vec::with_capacity(bucket.len());
+            for f in &bucket{
+                let mut by_bit=vec![0usize;scope.len()];
+                let mut pivot_bit=0;
+                for (i,&x) in f.scope.iter().enumerate(){
+                    if x==v{pivot_bit=1<<i;}else{
+                        by_bit[scope.binary_search(&x).map_err(|_|"definitional scope projection")?]=1<<i;
+                    }
+                }
+                let mut prefix=0;for x in &mut by_bit{prefix^=*x;*x=prefix;}
+                pivots.push(pivot_bit);flips.push(by_bit);
+            }
+            let mut indices=vec![0usize;bucket.len()];
+            for m in 0..size{
+                if m%4096==0&&Instant::now()>=deadline{return Err("definitional deadline".into());}
+                if let (Some((left,right)),Some(s))=(accumulators.as_mut(),scratch.as_mut()){
+                    let mut branch=|positive:bool,product:&mut C|->bool{
+                        product.re.assign(1);
+                        product.im.assign(0);
+                        for (i,f) in bucket.iter().enumerate(){
+                            let Some(x)=f.values[indices[i]|if positive{pivots[i]}else{0}].as_ref() else{return false;};
+                            s.multiply(product,x);
+                        }
+                        true
+                    };
+                    let left_sat=branch(false,left);
+                    let right_sat=branch(true,right);
+                    values.push(merge_branches(left,right,left_sat,right_sat));
+                }else{
+                    // Keep the two prior kernels for exact same-order controls.
+                    let mut branch=|positive:bool|->Option<C>{
+                        let mut product=C::one(bits);
+                        for (i,f) in bucket.iter().enumerate(){
+                            let x=f.values[indices[i]|if positive{pivots[i]}else{0}].as_ref()?;
+                            if let Some(s)=scratch.as_mut(){s.multiply(&mut product,x);}
+                            else{product=multiply(product,x,bits);}
+                        }
+                        Some(product)
+                    };
+                    let left=branch(false);
+                    let right=branch(true);
+                    values.push(add(left,right,bits));
+                }
+                if m+1<size{
+                    let bit=(m+1).trailing_zeros() as usize;
+                    for (i,x) in indices.iter_mut().enumerate(){*x^=flips[i][bit];}
+                }
+            }
+        }else{
+        for m in 0..size {
+            if m%4096==0&&Instant::now()>=deadline {return Err("definitional deadline".into());}
+            let base=(m&low)|((m&!low)<<1);
+            let branch=|mask:usize| -> Option<C> {
+                let mut product=C::one(bits);
+                // None means impossible. Some(0) still carries SAT support.
+                for (f,pos) in bucket.iter().zip(&positions) {
+                    let x=f.values[index(mask,pos)].as_ref()?;
+                    product=multiply(product,x,bits);
+                }
+                Some(product)
+            };
+            values.push(add(branch(base),branch(base|(1<<pivot)),bits));
+        }
+        }
+        factors.push(Factor{scope,values});
+        for &u in &nb {
+            let s=graph.get_mut(&u).ok_or("missing neighbor")?;
+            s.remove(&v);s.extend(nb.iter().filter(|&&x|x!=u).copied());
+        }
+    }
+    for f in factors {
+        if !f.scope.is_empty()||f.values.len()!=1 {return Err("uneliminated factor".into());}
+        match f.values.into_iter().next().flatten() {
+            Some(x)=>scalar=multiply(scalar,&x,bits),
+            None=>return Ok(Outcome::unsat(bits)),
+        }
+    }
+    if !scalar.re.is_finite()||!scalar.im.is_finite() {return Err("nonfinite result".into());}
+    Ok(Outcome{sat:true,count:scalar})
+}
+
+// Planned conditioned leaves may reach width 20 only under the
+// unchanged 60M aggregate lookup and 2M live-cell limits.
+#[derive(Debug)]
+struct SplitPlan{pivot:usize,order:Vec<usize>,work:u64,peak:u64}
+fn split_plan(factors:&[Factor],graph:&Graph,deadline:Instant)->Result<SplitPlan,String>{
+    let mut candidates:Vec<_>=graph.keys().copied().collect();
+    candidates.sort_by_key(|v|(std::cmp::Reverse(factors.iter().filter(|f|f.scope.contains(v)).count()),*v));
+    let mut best:Option<SplitPlan>=None;
+    for pivot in candidates.into_iter().take(16){
+        for (penalty,reverse) in [(0,false),(0,true),(2,false),(2,true),(4,true)]{
+            if Instant::now()>=deadline{return best.ok_or("conditioned planning deadline".into());}
+            let mut g=graph.clone();let old=g.remove(&pivot).ok_or("missing split pivot")?;
+            for u in old{g.get_mut(&u).ok_or("split neighbor")?.remove(&pivot);}
+            let mut scopes:Vec<BTreeSet<usize>>=factors.iter().map(|f|f.scope.iter().copied().filter(|&v|v!=pivot).collect()).collect();
+            let mut live=scopes.iter().map(|s|1u64<<s.len()).sum::<u64>();
+            let mut order=Vec::new();let mut work=0u64;let mut peak=live;
+            while !g.is_empty(){
+                let v=*g.keys().min_by_key(|&&v|{
+                    let (fill,d,_)=minfill(&g,v);
+                    (fill+penalty*d,d,if reverse{usize::MAX-v}else{v})
+                }).ok_or("split empty graph")?;
+                let nb=g.remove(&v).ok_or("split missing pivot")?;
+                if nb.len()>20{break;}
+                let size=1u64<<nb.len();let mut removed=0;let mut incident=0;
+                scopes.retain(|s|{if s.contains(&v){removed+=1u64<<s.len();incident+=1;false}else{true}});
+                work=work.saturating_add(4*size*incident);
+                peak=peak.max(live.saturating_add(size));
+                if work>60_000_000||peak>2_000_000{break;}
+                live=live.saturating_sub(removed);
+                live+=size;scopes.push(nb.clone());
+                order.push(v);
+                for &u in &nb{
+                    let s=g.get_mut(&u).ok_or("split neighbor")?;
+                    s.remove(&v);s.extend(nb.iter().filter(|&&x|x!=u).copied());
+                }
+            }
+            if order.len()+1!=graph.len(){continue;}
+            if best.as_ref().is_none_or(|p|(work,peak,pivot)<(p.work,p.peak,p.pivot)){
+                best=Some(SplitPlan{pivot,order,work,peak});
+            }
+        }
+    }
+    best.ok_or("no conditioned plan within original caps".into())
+}
+fn condition(f:&Factor,v:usize,value:bool)->Factor{
+    if let Ok(axis)=f.scope.binary_search(&v){
+        let mut scope=f.scope.clone();scope.remove(axis);
+        let low=(1usize<<axis)-1;
+        let values=(0..1usize<<scope.len()).map(|m|{
+            let old=(m&low)|((m&!low)<<1)|(usize::from(value)<<axis);
+            f.values[old].clone()
+        }).collect();
+        Factor{scope,values}
+    }else{Factor{scope:f.scope.clone(),values:f.values.clone()}}
+}
+fn split_contract(factors:&[Factor],graph:&Graph,scalar:&C,bits:u32,trace:&mut Trace,deadline:Instant,plan:&SplitPlan)->Result<Outcome,String>{
+    let mut sum=None;
+    for value in [false,true]{
+        let mut graph=graph.clone();
+        let nb=graph.remove(&plan.pivot).ok_or("missing conditioned pivot")?;
+        for u in nb{graph.get_mut(&u).ok_or("missing conditioned neighbor")?.remove(&plan.pivot);}
+        let branch=factors.iter().map(|f|condition(f,plan.pivot,value)).collect();
+        let answer=contract(branch,graph,scalar.clone(),bits,trace,deadline,Some(&plan.order))?;
+        if answer.sat{sum=add(sum,Some(answer.count),bits);}
+    }
+    Ok(sum.map_or_else(||Outcome::unsat(bits),|count|Outcome{sat:true,count}))
+}
+pub(super) fn count_conditioned(p:&Problem,bits:u32,trace:&mut Trace,seconds:u64)->Result<Outcome,String>{
+    let deadline=Instant::now()+std::time::Duration::from_secs(seconds);
+    let (factors,graph,scalar)=compile(p,bits,trace,true)?;
+    let plan=split_plan(&factors,&graph,deadline.min(Instant::now()+std::time::Duration::from_secs(2)))?;
+    eprintln!("DEFINITIONAL_SPLIT_PLAN pivot={} leaves=2 work_upper={} peak_upper={}",plan.pivot,plan.work,plan.peak);
+    let answer=split_contract(&factors,&graph,&scalar,bits,trace,deadline,&plan)?;
+    eprintln!("DEFINITIONAL_SPLIT_COMPLETE leaves=2 work={} peak={} width={}",trace.work,trace.peak,trace.width);
+    Ok(answer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn exact_complex(got:&C,expected:&C){
+        assert_eq!(got.re,expected.re);
+        assert_eq!(got.im,expected.im);
+        assert_eq!(got.re.is_sign_negative(),expected.re.is_sign_negative());
+        assert_eq!(got.im.is_sign_negative(),expected.im.is_sign_negative());
+        assert_eq!(got.re.prec(),expected.re.prec());
+        assert_eq!(got.im.prec(),expected.im.prec());
+    }
+    #[test]
+    fn scratch_multiply_matches_original_rounded_operations(){
+        for bits in [100,333]{
+            let mut s=MulScratch::new(bits);
+            let vals:Vec<_>=[
+                ("0","0"),("-0","0"),("1","0"),("0","1"),("-1","0"),
+                ("-0.123456789012345678901234567890123456789","0.3344556677889900112233445566778899"),
+                ("0.123456789012345678901234567890123456789","-0.3344556677889900112233445566778899"),
+                ("1e-80","-1e80"),("-1e80","1e-80"),("1.000000000000000000000000000001","-1e-40"),
+            ].iter().map(|(a,b)|C::decimal(bits,a,b).unwrap()).collect();
+            for a in &vals{for b in &vals{
+                let expected=multiply(a.clone(),b,bits);
+                let mut got=a.clone();
+                s.multiply(&mut got,b);
+                exact_complex(&got,&expected);
+            }}
+            // Reuse across long sequences, not just freshly initialized scratch.
+            for a in &vals{
+                let mut got=a.clone();let mut expected=a.clone();
+                for b in vals.iter().skip(2).cycle().take(80){
+                    expected=multiply(expected,b,bits);
+                    s.multiply(&mut got,b);
+                    exact_complex(&got,&expected);
+                }
+            }
+        }
+    }
+    #[test]
+    fn scratch_planned_contraction_matches_same_order_control(){
+        for bits in [100,333]{
+            for raw in [
+                "p cnf 5 4\nc t wmc\nc p weight 4 -0.1234567890123456789 0.334455667788990011 0\nc p weight -1 0 0 0\n4 -1 2 0\n-4 1 0\n-4 -2 0\n1 2 3 0\n",
+                "p cnf 3 2\nc t wmc\nc p weight 1 -1 0 0\nc p weight 2 0 0 0\nc p weight -2 0 0 0\n1 2 0\n1 -2 0\n",
+                "p cnf 3 8\nc t wmc\n1 2 3 0\n1 2 -3 0\n1 -2 3 0\n1 -2 -3 0\n-1 2 3 0\n-1 2 -3 0\n-1 -2 3 0\n-1 -2 -3 0\n",
+                "p cnf 3 2\nc t wmc\nc p weight 1 0.3333333333333333333333333333333 -0.2 0\nc p weight -2 1.1 -0.7 0\nc p weight 3 1e-40 1e40 0\n1 -2 0\n2 3 0\n",
+            ]{
+                let p=crate::parse_emitted(raw,bits).unwrap();
+                let (_,g,_)=compile(&p,bits,&mut Trace::default(),true).unwrap();
+                let mut order:Vec<_>=g.keys().copied().collect();
+                for reverse in [false,true]{
+                    if reverse{order.reverse();}
+                    let mut before=Trace::default();
+                    let (f,g,s)=compile(&p,bits,&mut before,true).unwrap();
+                    let expected=contract_impl(f,g,s,bits,&mut before,Instant::now()+std::time::Duration::from_secs(5),Some(&order),false,false).unwrap();
+                    for reuse_branches in [false,true]{
+                        let mut after=Trace::default();
+                        let (f,g,s)=compile(&p,bits,&mut after,true).unwrap();
+                        let got=contract_impl(f,g,s,bits,&mut after,Instant::now()+std::time::Duration::from_secs(5),Some(&order),true,reuse_branches).unwrap();
+                        assert_eq!(got.sat,expected.sat);
+                        exact_complex(&got.count,&expected.count);
+                        assert_eq!((after.width,after.work,after.peak),(before.width,before.work,before.peak));
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn reusable_branch_sum_preserves_support_and_rounding(){
+        for bits in [100,333]{
+            let vals:Vec<_>=[
+                ("0","0"),("-0","-0"),("1","0"),("-1","-0"),
+                ("0.123456789012345678901234567890123456789","-1e-80"),
+                ("-0.123456789012345678901234567890123456789","1e-80"),
+                ("1e80","-1e80"),("1e-80","1e80"),
+            ].iter().map(|(a,b)|C::decimal(bits,a,b).unwrap()).collect();
+            let mut left=C::one(bits);
+            let mut right=C::one(bits);
+            for a in &vals{for b in &vals{
+                for left_sat in [false,true]{for right_sat in [false,true]{
+                    left.re.assign(&a.re);left.im.assign(&a.im);
+                    right.re.assign(&b.re);right.im.assign(&b.im);
+                    let expected=add(left_sat.then(||a.clone()),right_sat.then(||b.clone()),bits);
+                    let got=merge_branches(&mut left,&right,left_sat,right_sat);
+                    match (got,expected){
+                        (Some(g),Some(e))=>exact_complex(&g,&e),
+                        (None,None)=>(),
+                        _=>panic!("support changed"),
+                    }
+                }}
+            }}
+        }
+    }
+    #[test]
+    fn conditioned_partition_preserves_signed_complex_and_support(){
+        for raw in [
+            "p cnf 4 4\nc t wmc\nc p weight 4 -2 3 0\nc p weight -1 0 0 0\n4 -1 2 0\n-4 1 0\n-4 -2 0\n1 2 3 0\n",
+            "p cnf 2 2\nc t wmc\nc p weight 2 0 0 0\nc p weight -2 0 0 0\n1 2 0\n1 -2 0\n",
+            "p cnf 2 4\nc t wmc\n1 2 0\n1 -2 0\n-1 2 0\n-1 -2 0\n",
+        ]{
+            let p=super::super::super::parse_emitted(raw,100).unwrap();
+            let expected=count(&p,100,&mut Trace::default());
+            if let Ok(expected)=expected{
+                let got=count_conditioned(&p,100,&mut Trace::default(),5).unwrap();
+                assert_eq!(got.sat,expected.sat);
+                assert_eq!(got.count.re,expected.count.re);
+                assert_eq!(got.count.im,expected.count.im);
+            }else{
+                assert!(count_conditioned(&p,100,&mut Trace::default(),5).is_err());
+            }
+        }
+    }
+    #[test]
+    fn planned_wide_clause_admission_keeps_boolean_support(){
+        let raw="p cnf 9 1\nc t wmc\nc p weight 1 -1 0 0\n1 2 3 4 5 6 7 8 9 0\n";
+        for bits in [100,333]{
+            let p=crate::parse_emitted(raw,bits).unwrap();
+            assert!(count(&p,bits,&mut Trace::default()).is_err());
+            let order:Vec<_>=(1..=9).collect();
+            let answer=count_planned(&p,bits,&mut Trace::default(),15,&order).unwrap();
+            // All 512 assignments cancel except the excluded all-false one.
+            assert!(answer.sat);assert_eq!(answer.count.re,-1);assert_eq!(answer.count.im,0);
+        }
+    }
+    #[test]
+    fn planned_projection_matches_original_and_rejects_duplicate_pivots(){
+        let raw="p cnf 5 4\nc t wmc\nc p weight 4 -2 3 0\nc p weight -1 0 0 0\n4 -1 2 0\n-4 1 0\n-4 -2 0\n1 2 3 0\n";
+        for bits in [100,333]{
+            let p=crate::parse_emitted(raw,bits).unwrap();
+            let expected=count(&p,bits,&mut Trace::default()).unwrap();
+            for order in [[1,2,3,5],[5,3,1,2],[2,5,1,3]]{
+                let got=count_planned(&p,bits,&mut Trace::default(),15,&order).unwrap();
+                assert_eq!(got.sat,expected.sat);
+                assert_eq!(got.count.re,expected.count.re);
+                assert_eq!(got.count.im,expected.count.im);
+            }
+            assert!(count_planned(&p,bits,&mut Trace::default(),15,&[1,1,3,5]).is_err());
+        }
+    }
+    #[test]
+    fn signed_gate_residual_and_zero_oracle() {
+        for bits in [100,333] {
+            for zero in [false,true] {
+                let raw=format!("p cnf 6 6\nc t wmc\nc p weight 1 {} 0 0\nc p weight -1 {} 0 0\nc p weight 4 -2 3 0\nc p weight -4 2 -1 0\nc p weight 5 1 2 0\n4 1 -2 0\n-4 -1 0\n-4 2 0\n-5 6 0\n5 -6 0\n1 2 3 0\n",if zero{0}else{-1},if zero{0}else{2});
+                let p=super::super::super::parse_emitted(&raw,bits).unwrap();
+                let got=count(&p,bits,&mut Trace::default()).unwrap();
+                let mut expected=Outcome::unsat(bits);
+                for mask in 0..(1usize<<p.n) {
+                    let yes=|l:i32|((mask>>(var(l)-1))&1!=0)==(l>0);
+                    if p.clauses.iter().all(|c|c.iter().copied().any(yes)) {
+                        expected.sat=true;
+                        let mut x=C::one(bits);
+                        for v in 1..=p.n {
+                            let l=v as i32;
+                            x=x.mul(weight(&p,if yes(l){l}else{-l}),bits);
+                        }
+                        expected.count=expected.count.add(&x,bits);
+                    }
+                }
+                assert_eq!(got.sat,expected.sat);
+                assert_eq!(got.count.re,expected.count.re);
+                assert_eq!(got.count.im,expected.count.im);
+            }
+        }
+    }
+    #[test]
+    fn multivariate_signed_definitions_oracle() {
+        // Two independent signed AND outputs of arity 3 and 4,
+        // plus a complemented equivalence and a unit that fixes a gate input.
+        // A free variable retains both weights even if absent from all clauses.
+        for bits in [100,333] {
+            let raw="p cnf 9 12\nc t wmc\nc p weight 5 -2 3 0\nc p weight -5 1 -1 0\nc p weight 6 3 2 0\nc p weight -6 -1 2 0\nc p weight 7 0 0 0\nc p weight -7 2 -3 0\nc p weight 9 1 2 0\nc p weight -9 -3 1 0\n5 -1 2 -3 0\n-5 1 0\n-5 -2 0\n-5 3 0\n-6 1 -2 3 -4 0\n6 -1 0\n6 2 0\n6 -3 0\n6 4 0\n2 7 0\n-2 -7 0\n4 0\n";
+            let p=super::super::super::parse_emitted(raw,bits).unwrap();
+            let mut trace=Trace::default();
+            let got=count(&p,bits,&mut trace).unwrap();
+            assert_eq!(trace.gates,2);
+            let mut expected=Outcome::unsat(bits);
+            for mask in 0..(1usize<<p.n) {
+                let yes=|l:i32|((mask>>(var(l)-1))&1!=0)==(l>0);
+                if p.clauses.iter().all(|c|c.iter().copied().any(yes)) {
+                    expected.sat=true;
+                    let mut x=C::one(bits);
+                    for v in 1..=p.n {
+                        let l=v as i32;
+                        x=x.mul(weight(&p,if yes(l){l}else{-l}),bits);
+                    }
+                    expected.count=expected.count.add(&x,bits);
+                }
+            }
+            assert!(got.sat);
+            assert_eq!(got.sat,expected.sat);
+            assert_eq!(got.count.re,expected.count.re);
+            assert_eq!(got.count.im,expected.count.im);
+        }
+    }
+    #[test]
+    fn incomplete_definition_is_not_extracted() {
+        let raw="p cnf 4 3\nc t wmc\n4 -1 -2 -3 0\n-4 1 0\n-4 2 0\n";
+        let p=super::super::super::parse_emitted(raw,100).unwrap();
+        let mut trace=Trace::default();
+        let got=count(&p,100,&mut trace).unwrap();
+        assert_eq!(trace.gates,0);
+        let expected=(0..16).filter(|&mask| {
+            let yes=|l:i32|((mask>>(var(l)-1))&1!=0)==(l>0);
+            p.clauses.iter().all(|c|c.iter().copied().any(yes))
+        }).count();
+        assert!(got.sat);
+        assert_eq!(got.count.re,expected as u32);
+        assert_eq!(got.count.im,0);
+    }
+    #[test]
+    fn impossible_not_numeric_zero() {
+        let mut raw=String::from("p cnf 3 8\nc t wmc\n");
+        for mask in 0..8 {
+            for v in 1..=3 {
+                raw.push_str(&format!("{} ",if mask&(1<<(v-1))==0{v}else{-v}));
+            }
+            raw.push_str("0\n");
+        }
+        let p=super::super::super::parse_emitted(&raw,100).unwrap();
+        let got=count(&p,100,&mut Trace::default()).unwrap();
+        assert!(!got.sat);
+    }
+}

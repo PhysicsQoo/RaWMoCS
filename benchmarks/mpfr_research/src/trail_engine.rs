@@ -7,14 +7,34 @@
 //!
 //! This is NOT CDCL and does not perform weight-unsafe SAT simplification.
 use crate::{
-    factor_variable_elimination, normalize, separator_pivot, Clause, Outcome, PackedKey, Problem,
-    Stats, C,
+    factor_forest_dp, factor_variable_elimination, normalize, separator_pivot, Clause, Outcome,
+    PackedKey, Problem, Stats, C,
 };
 use hashbrown::{hash_map::RawEntryMut, HashMap};
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeMap, BinaryHeap};
 use std::hash::BuildHasher;
 use std::time::Instant;
+
+#[derive(Clone, Copy)]
+struct ResidualKeyView {
+    cid: usize,
+    start: usize,
+    end: usize,
+}
+
+// Exact signed-literal position masks, updated alongside the existing
+// occurrence-adjacent Trail counters. Each clause's bit order is its
+// original source-sorted literal order. No cache key borrows these words.
+struct ReversibleLiteralMask {
+    words: Vec<u64>,
+    offsets: Vec<usize>,
+    occurrence_positions: Vec<Vec<usize>>,
+}
+
+// Bound retained capacity: no stale child CNF/MPFR state is retained.
+const KEY_ARENA_MAX_LITERALS: usize = 131_072;
+const KEY_ARENA_MAX_VIEWS: usize = 16_384;
 
 pub(crate) struct TrailEngine<'a> {
     problem: &'a Problem,
@@ -58,6 +78,12 @@ pub(crate) struct TrailEngine<'a> {
     pub(crate) source_cache_keys: u64,
     // Opt-in: compact signed residual literals directly in canonical local IDs.
     pub(crate) use_inline_weight_relabel: bool,
+    // Opt-in exact full-source-clause path: live[cid] == source clause length
+    // proves that no literal in a still-unsatisfied clause is assigned.
+    // Reuse its source order without per-literal assigned[] probes.
+    // Other clauses retain the original fused filtering path unchanged.
+    pub(crate) use_full_live_clause_fastpath: bool,
+    pub(crate) full_live_key_hits: u64,
     // Exact weighted residual memo AFTER Boolean unit-closure, opt-in only.
     pub(crate) use_post_unit_cache: bool,
     pub(crate) post_unit_hits: u64,
@@ -78,6 +104,21 @@ pub(crate) struct TrailEngine<'a> {
     // try bounded dense signed-complex WMC on small *whole components*.
     // Other components stay on original Trail and exact component cache.
     pub(crate) use_component_local_ve: bool,
+    // Bounded width-one exact sum-product on source-CNF binary forests.
+    // Enabled only by an explicit research CLI switch.
+    pub(crate) use_forest_dp: bool,
+    // Research-only join-tree VE. No change to original DPLL defaults.
+    pub(crate) use_bounded_join_tree_ve: bool,
+    pub(crate) join_tree_attempts: u64,
+    pub(crate) join_tree_completed: u64,
+    pub(crate) join_tree_capped: u64,
+    pub(crate) join_tree_products: u64,
+    pub(crate) join_tree_scans: u64,
+    pub(crate) join_tree_max_bag: usize,
+    pub(crate) forest_dp_attempts: u64,
+    pub(crate) forest_dp_completed: u64,
+    pub(crate) forest_dp_rejected: u64,
+    pub(crate) forest_dp_scans: u64,
     // Research-only source-exact compact DSU over still-live variables.
     // Unlike the existing n+1 DSU, untouched/assigned source vars are
     // not initialized in every recursive component traversal.
@@ -86,6 +127,37 @@ pub(crate) struct TrailEngine<'a> {
     // are provably already strictly increasing. Duplicates/inversions
     // always execute the exact original sort/dedup path.
     pub(crate) use_ordered_key_fastpath: bool,
+    // Exact opt-in reuse of transient flat literals + clause views only.
+    // Cache-owned canonical PackedKey remains independently allocated.
+    pub(crate) use_reusable_key_arena: bool,
+    // Research-only O(1) membership using the exact current scope stamp
+    // installed by prepare_weighted_scope immediately before key creation.
+    // This never changes variable ordering or signed MPFR weight classes.
+    pub(crate) use_scope_stamp_admission: bool,
+    pub(crate) scope_stamp_probes: u64,
+    // Reversible, source-owned live-clause bitmap: a bit is set exactly
+    // when satisfied[cid] == 0. Never changes original clause or literal
+    // order, weight classes, or cache-key ownership. Opt-in only.
+    active_clause_bits: Option<Vec<u64>>,
+    pub(crate) active_bitmap_key_visits: u64,
+    // Opt-in reversible literal-level incidence index. Unlike the
+    // previously measured no-go active CLAUSE bitmap, this avoids
+    // scanning assigned literals inside surviving wide source clauses.
+    // Additional occurrence updates are always included in WallTime.
+    literal_mask: Option<ReversibleLiteralMask>,
+    pub(crate) literal_mask_key_visits: u64,
+    pub(crate) literal_mask_updates: u64,
+    // Research only: combine the existing post-unit frequency pass
+    // with the exact same DSU unions that components_full would do.
+    // Does not alter the weighted sum-product or branch selection.
+    pub(crate) use_fused_pre_analysis: bool,
+    pub(crate) fused_pre_clause_scans: u64,
+    pub(crate) fused_pre_dsu_merges: u64,
+    key_arena_flat: Vec<i32>,
+    key_arena_views: Vec<ResidualKeyView>,
+    pub(crate) key_arena_calls: u64,
+    pub(crate) key_arena_flat_reuses: u64,
+    pub(crate) key_arena_view_reuses: u64,
     pub(crate) ordered_key_probes: u64,
     pub(crate) ordered_key_hits: u64,
     // Disabled by default: stage timers measure opt-in instrumentation cost,
@@ -190,6 +262,8 @@ impl<'a> TrailEngine<'a> {
             normalized_cache_keys: 0,
             source_cache_keys: 0,
             use_inline_weight_relabel: false,
+            use_full_live_clause_fastpath: false,
+            full_live_key_hits: 0,
             use_post_unit_cache: false,
             post_unit_hits: 0,
             post_unit_visited: 0,
@@ -199,8 +273,36 @@ impl<'a> TrailEngine<'a> {
             use_articulation_pivot: false,
             use_residual_factor_ve: false,
             use_component_local_ve: false,
+            use_forest_dp: false,
+            use_bounded_join_tree_ve: false,
+            join_tree_attempts: 0,
+            join_tree_completed: 0,
+            join_tree_capped: 0,
+            join_tree_products: 0,
+            join_tree_scans: 0,
+            join_tree_max_bag: 0,
+            forest_dp_attempts: 0,
+            forest_dp_completed: 0,
+            forest_dp_rejected: 0,
+            forest_dp_scans: 0,
             use_scoped_component_dsu: false,
             use_ordered_key_fastpath: false,
+            use_reusable_key_arena: false,
+            use_scope_stamp_admission: false,
+            scope_stamp_probes: 0,
+            active_clause_bits: None,
+            active_bitmap_key_visits: 0,
+            literal_mask: None,
+            literal_mask_key_visits: 0,
+            literal_mask_updates: 0,
+            use_fused_pre_analysis: false,
+            fused_pre_clause_scans: 0,
+            fused_pre_dsu_merges: 0,
+            key_arena_flat: Vec::new(),
+            key_arena_views: Vec::new(),
+            key_arena_calls: 0,
+            key_arena_flat_reuses: 0,
+            key_arena_view_reuses: 0,
             ordered_key_probes: 0,
             ordered_key_hits: 0,
             stage_profile: false,
@@ -245,6 +347,68 @@ impl<'a> TrailEngine<'a> {
         }
     }
 
+    /// Opt-in bitmap initialized only at the root, before any assignment.
+    /// The last word is masked to avoid visiting a nonexistent clause ID.
+    pub(crate) fn enable_active_clause_bitmap(&mut self) {
+        assert!(self.trail.is_empty(), "bitmap must start at the root");
+        let n = self.clauses.len();
+        let mut words = vec![u64::MAX; n.div_ceil(64)];
+        if !n.is_multiple_of(64) {
+            if let Some(last) = words.last_mut() {
+                *last = (1_u64 << (n % 64)) - 1;
+            }
+        }
+        self.active_clause_bits = Some(words);
+        self.active_bitmap_key_visits = 0;
+    }
+
+    /// Build the literal-position index once, at the root. An entry exists
+    /// for each original normalized source literal (not a copied cofactor).
+    /// The source-bound cap is a fail-closed resource guard, not a
+    /// correctness-changing heuristic.
+    pub(crate) fn enable_reversible_literal_mask(&mut self) -> Result<(), String> {
+        if !self.trail.is_empty() || self.literal_mask.is_some() {
+            return Err("literal mask must be enabled exactly once at the root".into());
+        }
+        let slots = self.occurrence.len();
+        let literal_count: usize = self.clauses.iter().map(Vec::len).sum();
+        let word_count: usize = self.clauses.iter().map(|c| c.len().div_ceil(64)).sum();
+        if literal_count > 1_000_000 || word_count > 262_144 {
+            return Err("exact literal mask source budget exceeded".into());
+        }
+        let mut positions = vec![Vec::<usize>::new(); slots];
+        let mut offsets = Vec::with_capacity(self.clauses.len() + 1);
+        let mut words = Vec::with_capacity(word_count);
+        for clause in &self.clauses {
+            offsets.push(words.len());
+            for chunk in clause.chunks(64) {
+                let word = if chunk.len() == 64 {
+                    u64::MAX
+                } else {
+                    (1_u64 << chunk.len()) - 1
+                };
+                words.push(word);
+            }
+            for (position, &lit) in clause.iter().enumerate() {
+                positions[slot(lit)].push(position);
+            }
+        }
+        offsets.push(words.len());
+        for slot_id in 0..slots {
+            if positions[slot_id].len() != self.occurrence[slot_id].len() {
+                return Err("literal mask occurrence index length drift".into());
+            }
+        }
+        self.literal_mask = Some(ReversibleLiteralMask {
+            words,
+            offsets,
+            occurrence_positions: positions,
+        });
+        self.literal_mask_key_visits = 0;
+        self.literal_mask_updates = 0;
+        Ok(())
+    }
+
     /// One reversible variable assignment. Even if a clause becomes
     /// contradictory, finish the incidence updates so undo is exact.
     fn apply(&mut self, lit: i32, heap: Option<(&mut BinaryHeap<Reverse<usize>>, u64)>) -> bool {
@@ -253,13 +417,28 @@ impl<'a> TrailEngine<'a> {
         self.assigned[var] = if lit > 0 { 1 } else { -1 };
         self.trail.push(var);
         self.assignments += 1;
-        for &cid in &self.occurrence[slot(lit)] {
+        for (position_in_slot, &cid) in self.occurrence[slot(lit)].iter().enumerate() {
+            if let Some(index) = self.literal_mask.as_mut() {
+                let pos = index.occurrence_positions[slot(lit)][position_in_slot];
+                index.words[index.offsets[cid] + pos / 64] &= !(1_u64 << (pos % 64));
+                self.literal_mask_updates += 1;
+            }
+            if self.satisfied[cid] == 0 {
+                if let Some(words) = self.active_clause_bits.as_mut() {
+                    words[cid / 64] &= !(1_u64 << (cid % 64));
+                }
+            }
             self.satisfied[cid] += 1;
             self.live[cid] -= 1;
         }
         let mut conflict = false;
         let mut heap = heap;
-        for &cid in &self.occurrence[slot(-lit)] {
+        for (position_in_slot, &cid) in self.occurrence[slot(-lit)].iter().enumerate() {
+            if let Some(index) = self.literal_mask.as_mut() {
+                let pos = index.occurrence_positions[slot(-lit)][position_in_slot];
+                index.words[index.offsets[cid] + pos / 64] &= !(1_u64 << (pos % 64));
+                self.literal_mask_updates += 1;
+            }
             self.live[cid] -= 1;
             if self.satisfied[cid] == 0 && self.live[cid] == 0 {
                 conflict = true;
@@ -283,11 +462,26 @@ impl<'a> TrailEngine<'a> {
             } else {
                 -(var as i32)
             };
-            for &cid in &self.occurrence[slot(lit)] {
+            for (position_in_slot, &cid) in self.occurrence[slot(lit)].iter().enumerate() {
+                if let Some(index) = self.literal_mask.as_mut() {
+                    let pos = index.occurrence_positions[slot(lit)][position_in_slot];
+                    index.words[index.offsets[cid] + pos / 64] |= 1_u64 << (pos % 64);
+                    self.literal_mask_updates += 1;
+                }
                 self.satisfied[cid] -= 1;
+                if self.satisfied[cid] == 0 {
+                    if let Some(words) = self.active_clause_bits.as_mut() {
+                        words[cid / 64] |= 1_u64 << (cid % 64);
+                    }
+                }
                 self.live[cid] += 1;
             }
-            for &cid in &self.occurrence[slot(-lit)] {
+            for (position_in_slot, &cid) in self.occurrence[slot(-lit)].iter().enumerate() {
+                if let Some(index) = self.literal_mask.as_mut() {
+                    let pos = index.occurrence_positions[slot(-lit)][position_in_slot];
+                    index.words[index.offsets[cid] + pos / 64] |= 1_u64 << (pos % 64);
+                    self.literal_mask_updates += 1;
+                }
                 self.live[cid] += 1;
             }
             self.assigned[var] = 0;
@@ -371,15 +565,29 @@ impl<'a> TrailEngine<'a> {
         parent_ids: Option<&[usize]>,
         inline_weight_relabel: bool,
     ) -> Option<(Vec<usize>, Vec<i32>)> {
-        #[derive(Clone, Copy)]
-        struct View {
-            cid: usize,
-            start: usize,
-            end: usize,
-        }
         let materialize_started = self.stage_profile.then(Instant::now);
-        let mut flat = Vec::<i32>::new();
-        let mut views = Vec::<View>::new();
+        let mut flat = if self.use_reusable_key_arena {
+            self.key_arena_calls += 1;
+            let arena = std::mem::take(&mut self.key_arena_flat);
+            self.key_arena_flat_reuses += u64::from(arena.capacity() > 0);
+            arena
+        } else {
+            Vec::new()
+        };
+        let mut views = if self.use_reusable_key_arena {
+            let arena = std::mem::take(&mut self.key_arena_views);
+            self.key_arena_view_reuses += u64::from(arena.capacity() > 0);
+            arena
+        } else {
+            Vec::new()
+        };
+        flat.clear();
+        views.clear();
+        // Temporarily move only the fixed-size bitmap out of the solver
+        // while the key visitor mutably borrows other solver fields.
+        // Key construction never applies or undoes assignments.
+        let active_words = self.active_clause_bits.take();
+        let mut bitmap_visits = 0_u64;
         let mut visit = |cid: usize| {
             if self.satisfied[cid] != 0 {
                 return true;
@@ -394,23 +602,96 @@ impl<'a> TrailEngine<'a> {
                 // Read each active source clause at most once and stop
                 // immediately for a clause outside the current scope.
                 let mut first_unassigned = true;
-                for &lit in &self.clauses[cid] {
-                    let variable = lit.unsigned_abs() as usize;
-                    if self.assigned[variable] == 0 {
-                        if first_unassigned {
-                            if scope.binary_search(&variable).is_err() {
-                                return true;
-                            }
-                            first_unassigned = false;
-                        }
-                        if inline_weight_relabel {
-                            // The component scope is pre-indexed. All local
-                            // ordinal IDs are positive and order-preserving,
-                            // so canonical sorting/dedup remains unchanged.
-                            let rank = self.local_variable[variable];
+                if self.use_full_live_clause_fastpath && self.live[cid] == self.clauses[cid].len() {
+                    // The exact reversible live counter is decremented for
+                    // both true and false assignments and restored on undo.
+                    // Since the clause is not satisfied, equality with the
+                    // original length proves every source literal unassigned.
+                    let first = self.clauses[cid]
+                        .first()
+                        .expect("still-live source clause must be nonempty");
+                    if scope
+                        .binary_search(&(first.unsigned_abs() as usize))
+                        .is_err()
+                    {
+                        return true;
+                    }
+                    debug_assert!(self.clauses[cid]
+                        .iter()
+                        .all(|lit| self.assigned[lit.unsigned_abs() as usize] == 0));
+                    first_unassigned = false;
+                    self.full_live_key_hits += 1;
+                    if inline_weight_relabel {
+                        for &lit in &self.clauses[cid] {
+                            let rank = self.local_variable[lit.unsigned_abs() as usize];
                             flat.push(if lit < 0 { -rank } else { rank });
-                        } else {
-                            flat.push(lit);
+                        }
+                    } else {
+                        flat.extend_from_slice(&self.clauses[cid]);
+                    }
+                } else if let Some(index) = self.literal_mask.as_ref() {
+                    // Enumerate only currently unassigned literal positions
+                    // in original source-sorted order, across 64-bit words.
+                    // Every bit is reversible with the existing Trail.
+                    for (block, &word) in index.words[index.offsets[cid]..index.offsets[cid + 1]]
+                        .iter()
+                        .enumerate()
+                    {
+                        let mut pending = word;
+                        while pending != 0 {
+                            let pos = block * 64 + pending.trailing_zeros() as usize;
+                            pending &= pending - 1;
+                            let lit = self.clauses[cid][pos];
+                            let variable = lit.unsigned_abs() as usize;
+                            debug_assert_eq!(self.assigned[variable], 0);
+                            if first_unassigned {
+                                if scope.binary_search(&variable).is_err() {
+                                    return true;
+                                }
+                                first_unassigned = false;
+                            }
+                            if inline_weight_relabel {
+                                let rank = self.local_variable[variable];
+                                flat.push(if lit < 0 { -rank } else { rank });
+                            } else {
+                                flat.push(lit);
+                            }
+                            self.literal_mask_key_visits += 1;
+                        }
+                    }
+                } else {
+                    for &lit in &self.clauses[cid] {
+                        let variable = lit.unsigned_abs() as usize;
+                        if self.assigned[variable] == 0 {
+                            if first_unassigned {
+                                let in_scope =
+                                    if inline_weight_relabel && self.use_scope_stamp_admission {
+                                        self.scope_stamp_probes += 1;
+                                        let stamped =
+                                            self.local_generation[variable] == self.local_epoch;
+                                        debug_assert_eq!(
+                                            stamped,
+                                            scope.binary_search(&variable).is_ok(),
+                                            "exact scope stamp must equal source-sorted membership"
+                                        );
+                                        stamped
+                                    } else {
+                                        scope.binary_search(&variable).is_ok()
+                                    };
+                                if !in_scope {
+                                    return true;
+                                }
+                                first_unassigned = false;
+                            }
+                            if inline_weight_relabel {
+                                // The component scope is pre-indexed. All local
+                                // ordinal IDs are positive and order-preserving,
+                                // so canonical sorting/dedup remains unchanged.
+                                let rank = self.local_variable[variable];
+                                flat.push(if lit < 0 { -rank } else { rank });
+                            } else {
+                                flat.push(lit);
+                            }
                         }
                     }
                 }
@@ -435,25 +716,62 @@ impl<'a> TrailEngine<'a> {
                 }
             }
             debug_assert_eq!(flat.len() - start, self.live[cid]);
-            views.push(View {
+            views.push(ResidualKeyView {
                 cid,
                 start,
                 end: flat.len(),
             });
             true
         };
-        if let Some(parent) = parent_ids.filter(|_| self.use_parent_ids) {
-            for &cid in parent {
-                if !visit(cid) {
-                    return None;
+        let complete = if let Some(parent) = parent_ids.filter(|_| self.use_parent_ids) {
+            // Keep the original parent traversal order; omitted clauses
+            // were already satisfied and originally returned true.
+            parent
+                .iter()
+                .filter(|&&cid| {
+                    active_words
+                        .as_ref()
+                        .is_none_or(|words| words[cid / 64] & (1_u64 << (cid % 64)) != 0)
+                })
+                .all(|&cid| {
+                    bitmap_visits += u64::from(active_words.is_some());
+                    visit(cid)
+                })
+        } else if let Some(words) = active_words.as_ref() {
+            // Visit only unfulfilled source IDs, in exactly ascending ID
+            // order. The last word's unused upper bits are always zero.
+            let mut complete = true;
+            'source: for (word_index, &word) in words.iter().enumerate() {
+                let mut pending = word;
+                while pending != 0 {
+                    let cid = word_index * 64 + pending.trailing_zeros() as usize;
+                    pending &= pending - 1;
+                    bitmap_visits += 1;
+                    if !visit(cid) {
+                        complete = false;
+                        break 'source;
+                    }
                 }
             }
+            complete
         } else {
-            for cid in 0..self.clauses.len() {
-                if !visit(cid) {
-                    return None;
+            (0..self.clauses.len()).all(&mut visit)
+        };
+        drop(visit);
+        self.active_clause_bits = active_words;
+        self.active_bitmap_key_visits += bitmap_visits;
+        if !complete {
+            // A Boolean contradiction never becomes a numeric zero WMC
+            // certificate. Restore transient arena even on failed paths.
+            if self.use_reusable_key_arena {
+                if flat.capacity() <= KEY_ARENA_MAX_LITERALS {
+                    self.key_arena_flat = flat;
+                }
+                if views.capacity() <= KEY_ARENA_MAX_VIEWS {
+                    self.key_arena_views = views;
                 }
             }
+            return None;
         }
         if let Some(start) = materialize_started {
             self.stage_key_materialize_ns += start.elapsed().as_nanos();
@@ -486,13 +804,23 @@ impl<'a> TrailEngine<'a> {
         let pack_started = self.stage_profile.then(Instant::now);
         let mut ids = Vec::with_capacity(views.len());
         let mut literals = Vec::with_capacity(flat.len() + views.len());
-        for view in views {
+        for view in &views {
             ids.push(view.cid);
             literals.extend_from_slice(&flat[view.start..view.end]);
             literals.push(0);
         }
         if let Some(start) = pack_started {
             self.stage_key_pack_ns += start.elapsed().as_nanos();
+        }
+        if self.use_reusable_key_arena {
+            // Never retain an oversized branch arena across later DPLL nodes.
+            // All returned source clause IDs and signed literals are owned.
+            if flat.capacity() <= KEY_ARENA_MAX_LITERALS {
+                self.key_arena_flat = flat;
+            }
+            if views.capacity() <= KEY_ARENA_MAX_VIEWS {
+                self.key_arena_views = views;
+            }
         }
         Some((ids, literals))
     }
@@ -596,6 +924,130 @@ impl<'a> TrailEngine<'a> {
             self.component_ve_capped += 1;
         }
         result
+    }
+
+    /// Count only a complete, proven independently-owned residual scope.
+    /// Never lose outside component literals or forced/free weight factors.
+    fn try_forest_dp(&mut self, part: &[usize], ids: &[usize]) -> Option<Outcome> {
+        if !self.use_forest_dp
+            || self.forest_dp_attempts >= 32
+            || !(8..=512).contains(&part.len())
+            || ids.len() > 2_048
+        {
+            return None;
+        }
+        // Count *every* screened probe against the strict 32-probe cap,
+        // including wide/cross-scope negatives. Dense hard cases must not
+        // repeatedly pay unbounded unsuccessful admission scans.
+        self.forest_dp_attempts += 1;
+        let mut residual = Vec::<Clause>::new();
+        for &cid in ids {
+            if self.satisfied[cid] != 0 {
+                continue;
+            }
+            self.forest_dp_scans += 1;
+            let mut clause = Vec::new();
+            let mut intersects = false;
+            let mut outside = false;
+            for &literal in &self.clauses[cid] {
+                let var = literal.unsigned_abs() as usize;
+                if self.assigned[var] != 0 {
+                    continue;
+                }
+                if part.binary_search(&var).is_ok() {
+                    intersects = true;
+                } else {
+                    outside = true;
+                }
+                clause.push(literal);
+            }
+            if intersects {
+                if outside || clause.is_empty() || clause.len() > 2 {
+                    self.forest_dp_rejected += 1;
+                    return None;
+                }
+                residual.push(clause);
+            }
+        }
+        if residual.is_empty() {
+            self.forest_dp_rejected += 1;
+            return None;
+        }
+        let (outcome, _) =
+            factor_forest_dp::count_clauses(self.problem, part, &residual, self.bits);
+        if outcome.is_some() {
+            self.forest_dp_completed += 1;
+        } else {
+            self.forest_dp_rejected += 1;
+        }
+        outcome
+    }
+
+    /// Opt-in exact sum-product using the already verified bounded
+    /// dense Factor-VE kernel as a post-unit Join-tree bucket message plan.
+    /// Structurally complete scopes only; caps/rejections leave original
+    /// Trail assignment, cache and weight ownership unchanged.
+    fn try_bounded_join_tree(&mut self, part: &[usize], ids: &[usize]) -> Option<Outcome> {
+        if !self.use_bounded_join_tree_ve
+            || self.join_tree_attempts >= 4
+            || !(8..=64).contains(&part.len())
+            || ids.len() > 512
+        {
+            return None;
+        }
+        // Count rejected structural probes, not only successful VE plans.
+        self.join_tree_attempts += 1;
+        let mut residual = Vec::<Clause>::with_capacity(ids.len());
+        for &cid in ids {
+            if self.satisfied[cid] != 0 {
+                continue;
+            }
+            self.join_tree_scans += 1;
+            let mut clause = Vec::new();
+            let mut intersects = false;
+            let mut outside = false;
+            for &literal in &self.clauses[cid] {
+                let var = literal.unsigned_abs() as usize;
+                if self.assigned[var] != 0 {
+                    continue;
+                }
+                if part.binary_search(&var).is_ok() {
+                    intersects = true;
+                } else {
+                    outside = true;
+                }
+                clause.push(literal);
+            }
+            if intersects {
+                if outside || clause.len() > 12 || clause.is_empty() {
+                    self.join_tree_capped += 1;
+                    return None;
+                }
+                residual.push(clause);
+                if residual.len() > 512 {
+                    self.join_tree_capped += 1;
+                    return None;
+                }
+            }
+        }
+        if residual.is_empty() {
+            self.join_tree_capped += 1;
+            return None;
+        }
+        let (answer, metrics) = factor_variable_elimination::count_clauses_bounded_join_tree(
+            self.problem,
+            part,
+            &residual,
+            self.bits,
+        );
+        self.join_tree_products += metrics.products as u64;
+        self.join_tree_max_bag = self.join_tree_max_bag.max(metrics.width);
+        if answer.is_some() {
+            self.join_tree_completed += 1;
+        } else {
+            self.join_tree_capped += 1;
+        }
+        answer
     }
 
     fn components(&mut self, ids: &[usize], active: &[usize]) -> Vec<Vec<usize>> {
@@ -907,13 +1359,44 @@ impl<'a> TrailEngine<'a> {
             frequency.resize(self.problem.n + 1, 0);
         }
         frequency.fill(0);
-        for &cid in &ids {
-            if self.satisfied[cid] != 0 {
-                continue;
+        let mut fused_parents = None;
+        if self.use_fused_pre_analysis {
+            let mut parents = (0..=self.problem.n).collect::<Vec<_>>();
+            for &cid in &ids {
+                if self.satisfied[cid] != 0 {
+                    continue;
+                }
+                self.fused_pre_clause_scans += 1;
+                let mut first = None;
+                for &lit in &self.clauses[cid] {
+                    let var = lit.unsigned_abs() as usize;
+                    if self.assigned[var] == 0 {
+                        frequency[var] += 1;
+                        if let Some(first_var) = first {
+                            // Preserve the exact components_full DSU unions
+                            // in original canonical clause and literal order.
+                            let a = root(&mut parents, first_var);
+                            let b = root(&mut parents, var);
+                            parents[b] = a;
+                            self.fused_pre_dsu_merges += 1;
+                        } else {
+                            first = Some(var);
+                        }
+                    }
+                }
             }
-            for &lit in &self.clauses[cid] {
-                if self.assigned[lit.unsigned_abs() as usize] == 0 {
-                    frequency[lit.unsigned_abs() as usize] += 1;
+            fused_parents = Some(parents);
+        } else {
+            // Keep the original Arena-only frequency hot loop intact.
+            // No candidate-only Option branch is paid by the control.
+            for &cid in &ids {
+                if self.satisfied[cid] != 0 {
+                    continue;
+                }
+                for &lit in &self.clauses[cid] {
+                    if self.assigned[lit.unsigned_abs() as usize] == 0 {
+                        frequency[lit.unsigned_abs() as usize] += 1;
+                    }
                 }
             }
         }
@@ -945,7 +1428,17 @@ impl<'a> TrailEngine<'a> {
             ));
         }
         let components_started = self.stage_profile.then(Instant::now);
-        let pieces = self.components(&ids, &active);
+        let pieces = if let Some(mut parents) = fused_parents {
+            self.component_dsu_calls += 1;
+            self.component_dsu_slots += (self.problem.n + 1) as u64;
+            let mut groups = BTreeMap::<usize, Vec<usize>>::new();
+            for &var in &active {
+                groups.entry(root(&mut parents, var)).or_default().push(var);
+            }
+            groups.into_values().collect()
+        } else {
+            self.components(&ids, &active)
+        };
         if let Some(start) = components_started {
             self.stage_components_ns += start.elapsed().as_nanos();
         }
@@ -953,7 +1446,11 @@ impl<'a> TrailEngine<'a> {
             self.stats.decompositions += 1;
             let mut value = C::one(self.bits);
             for part in pieces {
-                let result = if let Some(exact) = self.try_component_factor_ve(&part, &ids) {
+                let result = if let Some(exact) = self.try_forest_dp(&part, &ids) {
+                    exact
+                } else if let Some(exact) = self.try_bounded_join_tree(&part, &ids) {
+                    exact
+                } else if let Some(exact) = self.try_component_factor_ve(&part, &ids) {
                     exact
                 } else {
                     self.count_relevant(part, depth + 1, Some(&ids))?
@@ -969,6 +1466,26 @@ impl<'a> TrailEngine<'a> {
                 Outcome {
                     sat: true,
                     count: prefix.mul(&value, self.bits),
+                },
+            ));
+        }
+        if let Some(answer) = self.try_forest_dp(&active, &ids) {
+            return Ok(self.save(
+                key,
+                key_hash,
+                Outcome {
+                    sat: answer.sat,
+                    count: prefix.mul(&answer.count, self.bits),
+                },
+            ));
+        }
+        if let Some(answer) = self.try_bounded_join_tree(&active, &ids) {
+            return Ok(self.save(
+                key,
+                key_hash,
+                Outcome {
+                    sat: answer.sat,
+                    count: prefix.mul(&answer.count, self.bits),
                 },
             ));
         }
@@ -1401,7 +1918,11 @@ impl<'a> TrailEngine<'a> {
             self.stats.decompositions += 1;
             let mut value = C::one(self.bits);
             for part in pieces {
-                let result = if let Some(exact) = self.try_component_factor_ve(&part, &ids) {
+                let result = if let Some(exact) = self.try_forest_dp(&part, &ids) {
+                    exact
+                } else if let Some(exact) = self.try_bounded_join_tree(&part, &ids) {
+                    exact
+                } else if let Some(exact) = self.try_component_factor_ve(&part, &ids) {
                     exact
                 } else {
                     self.count_relevant(part, depth + 1, Some(&ids))?
@@ -2797,5 +3318,657 @@ c p weight 1 1 0 0\nc p weight -1 -1 0 0\n\
                 }
             }
         }
+    }
+
+    #[test]
+    fn exact_fully_live_source_clause_shortcut_preserves_keys_and_complex_wmc() {
+        // Includes partial assigned clauses, duplicate projections, signed
+        // imaginary weights, SAT with zero WMC and Boolean UNSAT.
+        let cases = [
+            "p cnf 4 4\nc t wmc\nc p weight 1 0.5 0.25 0\nc p weight -1 -0.25 0.125 0\n1 4 0\n2 3 0\n-1 2 0\n-2 -3 0\n",
+            "p cnf 4 3\nc t wmc\nc p weight 3 -0.125 0.25 0\nc p weight -3 0.5 -0.25 0\n1 2 0\n-1 3 0\n2 4 0\n",
+            "p cnf 3 2\nc t wmc\nc p weight 1 0 0 0\nc p weight -1 0 0 0\n1 2 0\n-2 3 0\n",
+            "p cnf 3 2\nc t wmc\n1 0\n-1 0\n",
+            "p cnf 4 3\nc t wmc\n1 2 0\n-1 2 0\n-1 3 0\n",
+        ];
+        let mut hits = 0_u64;
+        for bits in [100_u32, 333] {
+            for source in cases {
+                let p = parse_emitted(source, bits).unwrap();
+                for capacity in [0_usize, 1, 128] {
+                    for ordered in [false, true] {
+                        let count = |fast: bool| {
+                            let mut t = TrailEngine::new(&p, bits, capacity, 100_000);
+                            t.use_parent_ids = true;
+                            t.use_compact_residual = true;
+                            t.use_prehashed_cache = true;
+                            t.use_fused_compact = true;
+                            t.use_weight_class_cache = true;
+                            t.use_inline_weight_relabel = true;
+                            t.use_ordered_key_fastpath = ordered;
+                            t.use_full_live_clause_fastpath = fast;
+                            let result = t.count((1..=p.n).collect(), 0).unwrap();
+                            (result, t)
+                        };
+                        let (old, original) = count(false);
+                        let (new, candidate) = count(true);
+                        assert_eq!(
+                            (old.sat, &old.count.re, &old.count.im),
+                            (new.sat, &new.count.re, &new.count.im)
+                        );
+                        assert_eq!(
+                            (
+                                original.stats.nodes,
+                                original.stats.cache_hits,
+                                original.stats.decompositions,
+                            ),
+                            (
+                                candidate.stats.nodes,
+                                candidate.stats.cache_hits,
+                                candidate.stats.decompositions,
+                            )
+                        );
+                        assert_eq!(
+                            (original.ordered_key_probes, original.ordered_key_hits),
+                            (candidate.ordered_key_probes, candidate.ordered_key_hits)
+                        );
+                        assert_eq!(original.full_live_key_hits, 0);
+                        assert!(candidate.full_live_key_hits > 0);
+                        assert!(candidate.trail.is_empty());
+                        assert!(candidate.assigned.iter().all(|v| *v == 0));
+                        assert!(candidate
+                            .live
+                            .iter()
+                            .zip(candidate.clauses.iter())
+                            .all(|(l, c)| *l == c.len()));
+                        assert!(candidate.satisfied.iter().all(|v| *v == 0));
+                        hits += candidate.full_live_key_hits;
+                    }
+                }
+            }
+        }
+        assert!(hits > 0);
+    }
+
+    #[test]
+    fn fully_live_clauses_keep_source_exact_key_across_undo() {
+        let p = parse_emitted("p cnf 4 4\nc t wmc\n1 2 0\n-1 3 0\n2 4 0\n-2 3 0\n", 100).unwrap();
+        let mut baseline = TrailEngine::new(&p, 100, 128, 100_000);
+        let mut candidate = TrailEngine::new(&p, 100, 128, 100_000);
+        baseline.use_fused_compact = true;
+        candidate.use_fused_compact = true;
+        candidate.use_full_live_clause_fastpath = true;
+        let all = vec![1, 2, 3, 4];
+        assert_eq!(
+            baseline.canonical_compact(&all, None, false),
+            candidate.canonical_compact(&all, None, false)
+        );
+        assert!(baseline.apply(1, None));
+        assert!(candidate.apply(1, None));
+        let reduced = vec![2, 3, 4];
+        assert_eq!(
+            baseline.canonical_compact(&reduced, None, false),
+            candidate.canonical_compact(&reduced, None, false)
+        );
+        baseline.undo(0);
+        candidate.undo(0);
+        assert_eq!(
+            baseline.canonical_compact(&all, None, false),
+            candidate.canonical_compact(&all, None, false)
+        );
+        assert_eq!(baseline.assigned, candidate.assigned);
+        assert_eq!(baseline.live, candidate.live);
+        assert_eq!(baseline.satisfied, candidate.satisfied);
+        assert!(candidate.full_live_key_hits > 0);
+    }
+
+    #[test]
+    fn bounded_key_arena_reuse_preserves_weighted_wmc_and_branch_topology() {
+        let sources = [
+            "p cnf 4 4\nc t wmc\nc p weight 1 0.5 0.25 0\nc p weight -1 -0.25 0.125 0\n1 4 0\n2 3 0\n-1 2 0\n-2 -3 0\n",
+            "p cnf 3 2\nc t wmc\n1 0\n-1 0\n",
+            "p cnf 3 2\nc t wmc\nc p weight 1 0 0 0\nc p weight -1 0 0 0\n1 2 0\n-2 3 0\n",
+            "p cnf 4 3\nc t wmc\nc p weight 3 -0.125 0.25 0\nc p weight -3 0.5 -0.25 0\n1 2 0\n-1 3 0\n2 4 0\n",
+        ];
+        let mut observed_reuses = 0;
+        for bits in [100_u32, 333] {
+            for source in sources {
+                let p = parse_emitted(source, bits).unwrap();
+                for capacity in [0_usize, 1, 128] {
+                    for ordered in [false, true] {
+                        for profiled in [false, true] {
+                            let run = |reuse: bool| {
+                                let mut t = TrailEngine::new(&p, bits, capacity, 100_000);
+                                t.use_parent_ids = true;
+                                t.use_compact_residual = true;
+                                t.use_prehashed_cache = true;
+                                t.use_fused_compact = true;
+                                t.use_weight_class_cache = true;
+                                t.use_inline_weight_relabel = true;
+                                t.use_reusable_key_arena = reuse;
+                                t.use_ordered_key_fastpath = ordered;
+                                t.stage_profile = profiled;
+                                let value = t.count((1..=p.n).collect(), 0).unwrap();
+                                (value, t)
+                            };
+                            let (control, base) = run(false);
+                            let (candidate, arena) = run(true);
+                            assert_eq!(
+                                (candidate.sat, &candidate.count.re, &candidate.count.im),
+                                (control.sat, &control.count.re, &control.count.im)
+                            );
+                            assert_eq!(
+                                (
+                                    arena.stats.nodes,
+                                    arena.stats.cache_hits,
+                                    arena.stats.decompositions
+                                ),
+                                (
+                                    base.stats.nodes,
+                                    base.stats.cache_hits,
+                                    base.stats.decompositions
+                                )
+                            );
+                            assert_eq!(
+                                (arena.ordered_key_probes, arena.ordered_key_hits),
+                                (base.ordered_key_probes, base.ordered_key_hits)
+                            );
+                            assert_eq!(base.key_arena_calls, 0);
+                            assert_eq!(base.key_arena_flat_reuses, 0);
+                            assert_eq!(base.key_arena_view_reuses, 0);
+                            assert!(arena.key_arena_calls > 0);
+                            assert!(arena.key_arena_flat_reuses <= arena.key_arena_calls);
+                            assert!(arena.key_arena_view_reuses <= arena.key_arena_calls);
+                            assert!(arena.key_arena_flat.capacity() <= KEY_ARENA_MAX_LITERALS);
+                            assert!(arena.key_arena_views.capacity() <= KEY_ARENA_MAX_VIEWS);
+                            if profiled {
+                                assert!(arena.stage_key_materialize_ns > 0);
+                                assert!(
+                                    arena.stage_key_materialize_ns
+                                        + arena.stage_key_order_ns
+                                        + arena.stage_key_pack_ns
+                                        <= arena.stage_key_ns
+                                );
+                            } else {
+                                assert_eq!(
+                                    (
+                                        arena.stage_key_materialize_ns,
+                                        arena.stage_key_order_ns,
+                                        arena.stage_key_pack_ns,
+                                    ),
+                                    (0, 0, 0)
+                                );
+                            }
+                            assert!(arena.trail.is_empty());
+                            assert!(arena.assigned.iter().all(|&value| value == 0));
+                            observed_reuses += arena.key_arena_flat_reuses;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(observed_reuses > 0);
+    }
+
+    #[test]
+    fn bounded_key_arena_preserves_duplicates_inversions_and_rollback() {
+        let src = "p cnf 4 3\nc t wmc\n1 2 0\n2 3 0\n1 4 0\n";
+        for bits in [100_u32, 333] {
+            let p = parse_emitted(src, bits).unwrap();
+            for ordered in [false, true] {
+                let mut control = TrailEngine::new(&p, bits, 128, 100_000);
+                let mut candidate = TrailEngine::new(&p, bits, 128, 100_000);
+                control.use_fused_compact = true;
+                candidate.use_fused_compact = true;
+                control.use_ordered_key_fastpath = ordered;
+                candidate.use_ordered_key_fastpath = ordered;
+                candidate.use_reusable_key_arena = true;
+                let scope = (1..=p.n).collect::<Vec<_>>();
+                for literal in [-1, -3] {
+                    assert_eq!(
+                        control.canonical_compact(&scope, None, false),
+                        candidate.canonical_compact(&scope, None, false)
+                    );
+                    let checkpoint = control.trail.len();
+                    assert_eq!(control.apply(literal, None), candidate.apply(literal, None));
+                    // Verify the *live* reduced key, not only the value
+                    // reconstructed after rolling the Trail back.
+                    assert_eq!(
+                        control.canonical_compact(&scope, None, false),
+                        candidate.canonical_compact(&scope, None, false)
+                    );
+                    control.undo(checkpoint);
+                    candidate.undo(checkpoint);
+                    assert_eq!(
+                        control.canonical_compact(&scope, None, false),
+                        candidate.canonical_compact(&scope, None, false)
+                    );
+                }
+                // Two committed assignments create duplicate reduced
+                // clauses. A second sequence creates a Boolean conflict.
+                // Neither case can poison the reclaimed scratch buffers.
+                for sequence in [[-1, -3], [-1, -2]] {
+                    let checkpoint = control.trail.len();
+                    for literal in sequence {
+                        assert_eq!(control.apply(literal, None), candidate.apply(literal, None));
+                        assert_eq!(
+                            control.canonical_compact(&scope, None, false),
+                            candidate.canonical_compact(&scope, None, false)
+                        );
+                    }
+                    control.undo(checkpoint);
+                    candidate.undo(checkpoint);
+                    assert_eq!(
+                        control.canonical_compact(&scope, None, false),
+                        candidate.canonical_compact(&scope, None, false)
+                    );
+                }
+                assert!(candidate.key_arena_calls > 0);
+                assert!(candidate.key_arena_flat_reuses > 0);
+                assert!(candidate.key_arena_view_reuses > 0);
+                assert!(candidate.trail.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn exact_scope_stamp_matches_binary_search_under_weighted_trail() {
+        let sources = [
+            "p cnf 4 4\nc t wmc\nc p weight 1 0.5 0.25 0\nc p weight -1 -0.25 0.125 0\n1 4 0\n2 3 0\n-1 2 0\n-2 -3 0\n",
+            "p cnf 3 2\nc t wmc\n1 0\n-1 0\n",
+            "p cnf 3 2\nc t wmc\nc p weight 1 0 0 0\nc p weight -1 0 0 0\n1 2 0\n-2 3 0\n",
+            "p cnf 4 3\nc t wmc\nc p weight 3 -0.125 0.25 0\nc p weight -3 0.5 -0.25 0\n1 2 0\n-1 3 0\n2 4 0\n",
+        ];
+        let mut observed = 0_u64;
+        for bits in [100_u32, 333] {
+            for source in sources {
+                let p = parse_emitted(source, bits).unwrap();
+                for capacity in [0_usize, 1, 128] {
+                    let run = |stamped: bool| {
+                        let mut t = TrailEngine::new(&p, bits, capacity, 100_000);
+                        t.use_parent_ids = true;
+                        t.use_compact_residual = true;
+                        t.use_prehashed_cache = true;
+                        t.use_fused_compact = true;
+                        t.use_weight_class_cache = true;
+                        t.use_inline_weight_relabel = true;
+                        t.use_reusable_key_arena = true;
+                        t.use_scope_stamp_admission = stamped;
+                        let result = t.count((1..=p.n).collect(), 0).unwrap();
+                        (result, t)
+                    };
+                    let (baseline, a) = run(false);
+                    let (candidate, b) = run(true);
+                    assert_eq!(
+                        (baseline.sat, &baseline.count.re, &baseline.count.im),
+                        (candidate.sat, &candidate.count.re, &candidate.count.im)
+                    );
+                    assert_eq!(
+                        (a.stats.nodes, a.stats.cache_hits, a.stats.decompositions),
+                        (b.stats.nodes, b.stats.cache_hits, b.stats.decompositions)
+                    );
+                    assert_eq!(a.scope_stamp_probes, 0);
+                    assert!(b.scope_stamp_probes > 0);
+                    assert_eq!(a.key_arena_calls, b.key_arena_calls);
+                    assert_eq!(a.key_arena_flat_reuses, b.key_arena_flat_reuses);
+                    assert_eq!(a.key_arena_view_reuses, b.key_arena_view_reuses);
+                    assert!(b.trail.is_empty());
+                    assert!(b.assigned.iter().all(|&value| value == 0));
+                    observed += b.scope_stamp_probes;
+                }
+            }
+        }
+        assert!(observed > 0);
+    }
+
+    #[test]
+    fn scope_stamp_exact_canonical_bytes_across_components_assignments_and_undo() {
+        let source = "p cnf 5 5\nc t wmc\nc p weight 1 0.5 0.25 0\nc p weight -1 -0.25 0.125 0\n1 2 0\n-1 2 0\n3 4 0\n-3 4 0\n5 0\n";
+        let scopes = [vec![1, 2, 3, 4, 5], vec![1, 2], vec![3, 4], vec![5]];
+        let assignments = [vec![], vec![-1], vec![-1, -2], vec![3]];
+        for bits in [100_u32, 333] {
+            let p = parse_emitted(source, bits).unwrap();
+            for capacity in [0_usize, 128] {
+                let build = |stamp: bool| {
+                    let mut t = TrailEngine::new(&p, bits, capacity, 100_000);
+                    t.use_fused_compact = true;
+                    t.use_weight_class_cache = true;
+                    t.use_inline_weight_relabel = true;
+                    t.use_reusable_key_arena = true;
+                    t.use_scope_stamp_admission = stamp;
+                    t.initialize_weight_classes();
+                    t
+                };
+                let mut control = build(false);
+                let mut candidate = build(true);
+                for assigned in &assignments {
+                    let checkpoint = control.trail.len();
+                    for &literal in assigned {
+                        assert_eq!(control.apply(literal, None), candidate.apply(literal, None));
+                    }
+                    for scope in &scopes {
+                        assert_eq!(
+                            control.prepare_weighted_scope(scope).unwrap(),
+                            candidate.prepare_weighted_scope(scope).unwrap()
+                        );
+                        // Complete, independently owned key bytes and original
+                        // exact source clause IDs must match, including None
+                        // on Boolean conflicts and out-of-component checks.
+                        assert_eq!(
+                            control.canonical_compact(scope, None, true),
+                            candidate.canonical_compact(scope, None, true)
+                        );
+                    }
+                    control.undo(checkpoint);
+                    candidate.undo(checkpoint);
+                    assert_eq!(
+                        control.canonical_compact(&[1, 2, 3, 4, 5], None, false),
+                        candidate.canonical_compact(&[1, 2, 3, 4, 5], None, false)
+                    );
+                }
+                assert!(candidate.scope_stamp_probes > 0);
+                assert_eq!(control.scope_stamp_probes, 0);
+                assert!(control.trail.is_empty());
+                assert!(candidate.trail.is_empty());
+                assert!(candidate.assigned.iter().all(|&value| value == 0));
+            }
+        }
+    }
+
+    #[test]
+    fn reversible_active_clause_bitmap_is_exact_across_multiword_undo() {
+        let mut source = "p cnf 70 70\nc t wmc\n".to_owned();
+        for variable in 1..=70 {
+            source.push_str(&format!("{variable} 0\n"));
+        }
+        for bits in [100_u32, 333] {
+            let p = parse_emitted(&source, bits).unwrap();
+            let mut control = TrailEngine::new(&p, bits, 128, 100_000);
+            let mut bitmap = TrailEngine::new(&p, bits, 128, 100_000);
+            control.use_reusable_key_arena = true;
+            bitmap.use_reusable_key_arena = true;
+            bitmap.enable_active_clause_bitmap();
+            assert_eq!(bitmap.active_clause_bits.as_ref().unwrap().len(), 2);
+            assert_eq!(bitmap.active_clause_bits.as_ref().unwrap()[1], 63);
+            let full = (1..=p.n).collect::<Vec<_>>();
+            let parents = (0..p.clauses.len()).rev().collect::<Vec<_>>();
+            for assignments in [vec![], vec![1], vec![1, 65], vec![-70]] {
+                let checkpoint = control.trail.len();
+                for &lit in &assignments {
+                    assert_eq!(control.apply(lit, None), bitmap.apply(lit, None));
+                }
+                for cid in 0..bitmap.clauses.len() {
+                    let present = bitmap.active_clause_bits.as_ref().unwrap()[cid / 64]
+                        & (1_u64 << (cid % 64))
+                        != 0;
+                    assert_eq!(present, bitmap.satisfied[cid] == 0);
+                }
+                for use_parents in [false, true] {
+                    control.use_parent_ids = use_parents;
+                    bitmap.use_parent_ids = use_parents;
+                    for scope in [&full[..], &[1, 2][..], &[65, 66, 67][..]] {
+                        let candidate_ids = use_parents.then_some(parents.as_slice());
+                        assert_eq!(
+                            control.canonical_compact(scope, candidate_ids, false),
+                            bitmap.canonical_compact(scope, candidate_ids, false)
+                        );
+                    }
+                }
+                control.undo(checkpoint);
+                bitmap.undo(checkpoint);
+                assert_eq!(
+                    control.canonical_compact(&full, None, false),
+                    bitmap.canonical_compact(&full, None, false)
+                );
+            }
+            assert!(bitmap.active_bitmap_key_visits > 0);
+            assert!(bitmap.trail.is_empty());
+            assert!(bitmap.assigned.iter().all(|&value| value == 0));
+        }
+    }
+
+    #[test]
+    fn active_clause_bitmap_preserves_exact_weighted_solve_and_topology() {
+        let sources = [
+            "p cnf 4 4\nc t wmc\nc p weight 1 0.5 0.25 0\nc p weight -1 -0.25 0.125 0\n1 4 0\n2 3 0\n-1 2 0\n-2 -3 0\n",
+            "p cnf 3 2\nc t wmc\n1 0\n-1 0\n",
+            "p cnf 4 3\nc t wmc\nc p weight 3 -0.125 0.25 0\nc p weight -3 0.5 -0.25 0\n1 2 0\n-1 3 0\n2 4 0\n",
+        ];
+        for bits in [100_u32, 333] {
+            for source in sources {
+                let p = parse_emitted(source, bits).unwrap();
+                for capacity in [0_usize, 1, 128] {
+                    let run = |use_bitmap: bool| {
+                        let mut t = TrailEngine::new(&p, bits, capacity, 100_000);
+                        t.use_parent_ids = true;
+                        t.use_compact_residual = true;
+                        t.use_prehashed_cache = true;
+                        t.use_fused_compact = true;
+                        t.use_weight_class_cache = true;
+                        t.use_inline_weight_relabel = true;
+                        t.use_reusable_key_arena = true;
+                        if use_bitmap {
+                            t.enable_active_clause_bitmap();
+                        }
+                        let answer = t.count((1..=p.n).collect(), 0).unwrap();
+                        (answer, t)
+                    };
+                    let (expected, base) = run(false);
+                    let (got, bitmap) = run(true);
+                    assert_eq!(
+                        (expected.sat, &expected.count.re, &expected.count.im),
+                        (got.sat, &got.count.re, &got.count.im)
+                    );
+                    assert_eq!(
+                        (
+                            base.stats.nodes,
+                            base.stats.cache_hits,
+                            base.stats.decompositions
+                        ),
+                        (
+                            bitmap.stats.nodes,
+                            bitmap.stats.cache_hits,
+                            bitmap.stats.decompositions
+                        )
+                    );
+                    assert_eq!(base.active_bitmap_key_visits, 0);
+                    assert!(bitmap.active_bitmap_key_visits > 0);
+                    assert!(bitmap.trail.is_empty());
+                    assert!(bitmap.assigned.iter().all(|&value| value == 0));
+                    for cid in 0..bitmap.clauses.len() {
+                        let present = bitmap.active_clause_bits.as_ref().unwrap()[cid / 64]
+                            & (1_u64 << (cid % 64))
+                            != 0;
+                        assert_eq!(present, bitmap.satisfied[cid] == 0);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reversible_literal_mask_preserves_exact_signed_complex_wmc_and_search() {
+        let sources = [
+            "p cnf 4 4\nc t wmc\nc p weight 1 0.5 0.25 0\nc p weight -1 -0.25 0.125 0\n1 4 0\n2 3 0\n-1 2 0\n-2 -3 0\n",
+            "p cnf 4 3\nc t wmc\nc p weight 3 -0.125 0.25 0\nc p weight -3 0.5 -0.25 0\n1 2 0\n-1 3 0\n2 4 0\n",
+            "p cnf 3 2\nc t wmc\nc p weight 1 0 0 0\nc p weight -1 0 0 0\n1 2 0\n-2 3 0\n",
+        ];
+        for bits in [100_u32, 333] {
+            for source in sources {
+                let p = parse_emitted(source, bits).unwrap();
+                for limit in [0_usize, 1, 128] {
+                    let solve = |enabled: bool| {
+                        let mut t = TrailEngine::new(&p, bits, limit, 100_000);
+                        t.use_parent_ids = true;
+                        t.use_compact_residual = true;
+                        t.use_prehashed_cache = true;
+                        t.use_fused_compact = true;
+                        t.use_weight_class_cache = true;
+                        t.use_inline_weight_relabel = true;
+                        t.use_reusable_key_arena = true;
+                        if enabled {
+                            t.enable_reversible_literal_mask().unwrap();
+                        }
+                        let result = t.count((1..=p.n).collect(), 0).unwrap();
+                        (result, t)
+                    };
+                    let (expected, baseline) = solve(false);
+                    let (actual, index) = solve(true);
+                    assert_eq!(
+                        (expected.sat, &expected.count.re, &expected.count.im),
+                        (actual.sat, &actual.count.re, &actual.count.im)
+                    );
+                    assert_eq!(
+                        (
+                            baseline.stats.nodes,
+                            baseline.stats.cache_hits,
+                            baseline.stats.decompositions,
+                        ),
+                        (
+                            index.stats.nodes,
+                            index.stats.cache_hits,
+                            index.stats.decompositions,
+                        )
+                    );
+                    assert!(index.literal_mask.is_some());
+                    assert!(index.literal_mask_key_visits > 0);
+                    assert!(index.literal_mask_updates > 0);
+                    assert!(index.trail.is_empty());
+                    assert!(index.assigned.iter().all(|&v| v == 0));
+                    for (cid, clause) in index.clauses.iter().enumerate() {
+                        let mask = index.literal_mask.as_ref().unwrap();
+                        let start = mask.offsets[cid];
+                        for pos in 0..clause.len() {
+                            assert!(mask.words[start + pos / 64] & (1_u64 << (pos % 64)) != 0);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reversible_literal_mask_matches_original_keys_across_two_words_and_undo() {
+        let mut source = String::from("p cnf 70 5\nc t wmc\n");
+        for var in 1..=70 {
+            if var != 1 {
+                source.push(' ');
+            }
+            source.push_str(&var.to_string());
+        }
+        source.push_str(" 0\n-1 2 0\n1 -2 0\n-3 4 0\n3 -4 0\n");
+        for bits in [100_u32, 333] {
+            let p = parse_emitted(&source, bits).unwrap();
+            let mut control = TrailEngine::new(&p, bits, 128, 100_000);
+            let mut candidate = TrailEngine::new(&p, bits, 128, 100_000);
+            control.use_fused_compact = true;
+            candidate.use_fused_compact = true;
+            candidate.use_reusable_key_arena = true;
+            candidate.enable_reversible_literal_mask().unwrap();
+            let full = (1..=70).collect::<Vec<_>>();
+            let ids = (0..control.clauses.len()).rev().collect::<Vec<_>>();
+            let wide = candidate
+                .clauses
+                .iter()
+                .position(|clause| clause.len() == 70)
+                .unwrap();
+            let start = candidate.literal_mask.as_ref().unwrap().offsets[wide];
+            assert_eq!(
+                candidate.literal_mask.as_ref().unwrap().words[start],
+                u64::MAX
+            );
+            assert_eq!(
+                candidate.literal_mask.as_ref().unwrap().words[start + 1],
+                63
+            );
+            for scope in [&full[..], &[1_usize, 2, 3, 4][..]] {
+                assert_eq!(
+                    control.canonical_compact(scope, None, false),
+                    candidate.canonical_compact(scope, None, false)
+                );
+            }
+            let checkpoint = control.trail.len();
+            for literal in [-1_i32, -64, -65] {
+                assert_eq!(control.apply(literal, None), candidate.apply(literal, None));
+                for scope in [&full[..], &[1_usize, 2, 3, 4][..]] {
+                    assert_eq!(
+                        control.canonical_compact(scope, None, false),
+                        candidate.canonical_compact(scope, None, false)
+                    );
+                    control.use_parent_ids = true;
+                    candidate.use_parent_ids = true;
+                    assert_eq!(
+                        control.canonical_compact(scope, Some(&ids), false),
+                        candidate.canonical_compact(scope, Some(&ids), false)
+                    );
+                }
+            }
+            control.undo(checkpoint);
+            candidate.undo(checkpoint);
+            assert_eq!(
+                control.canonical_compact(&full, None, false),
+                candidate.canonical_compact(&full, None, false)
+            );
+            assert_eq!(
+                candidate.literal_mask.as_ref().unwrap().words[start],
+                u64::MAX
+            );
+            assert_eq!(
+                candidate.literal_mask.as_ref().unwrap().words[start + 1],
+                63
+            );
+            assert!(candidate.trail.is_empty());
+            assert!(candidate.assigned.iter().all(|&v| v == 0));
+            assert!(candidate.literal_mask_key_visits > 0);
+            assert!(candidate.literal_mask_updates >= 10);
+        }
+    }
+
+    #[test]
+    fn fused_pre_unit_frequency_dsu_matches_exact_separate_source_scans() {
+        let cases = [
+            "p cnf 7 5\nc t wmc\nc p weight 1 0.5 0.25 0\nc p weight -1 0.25 -0.125 0\n1 2 0\n-1 2 0\n3 4 0\n-3 4 0\n5 6 0\n",
+            "p cnf 4 4\nc t wmc\n1 2 0\n-1 3 0\n-3 4 0\n-4 -2 0\n",
+            "p cnf 3 2\nc t wmc\n1 0\n-1 0\n",
+        ];
+        let mut fused_scans = 0_u64;
+        for bits in [100_u32, 333] {
+            for src in cases {
+                let p = parse_emitted(src, bits).unwrap();
+                for capacity in [0_usize, 1, 128] {
+                    let run = |fused: bool| {
+                        let mut t = TrailEngine::new(&p, bits, capacity, 100_000);
+                        t.use_parent_ids = true;
+                        t.use_compact_residual = true;
+                        t.use_prehashed_cache = true;
+                        t.use_fused_compact = true;
+                        t.use_weight_class_cache = true;
+                        t.use_inline_weight_relabel = true;
+                        t.use_reusable_key_arena = true;
+                        t.use_fused_pre_analysis = fused;
+                        let value = t.count((1..=p.n).collect(), 0).unwrap();
+                        (value, t)
+                    };
+                    let (expected, a) = run(false);
+                    let (actual, b) = run(true);
+                    assert_eq!(
+                        (expected.sat, &expected.count.re, &expected.count.im),
+                        (actual.sat, &actual.count.re, &actual.count.im)
+                    );
+                    assert_eq!(
+                        (a.stats.nodes, a.stats.cache_hits, a.stats.decompositions),
+                        (b.stats.nodes, b.stats.cache_hits, b.stats.decompositions)
+                    );
+                    assert_eq!(a.fused_pre_clause_scans, 0);
+                    assert_eq!(a.fused_pre_dsu_merges, 0);
+                    assert_eq!(a.component_dsu_calls, b.component_dsu_calls);
+                    assert_eq!(a.component_dsu_slots, b.component_dsu_slots);
+                    assert!(b.trail.is_empty());
+                    assert!(b.assigned.iter().all(|&x| x == 0));
+                    fused_scans += b.fused_pre_clause_scans;
+                }
+            }
+        }
+        assert!(fused_scans > 0);
     }
 }

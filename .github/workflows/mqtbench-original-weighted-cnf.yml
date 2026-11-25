@@ -1,12 +1,6 @@
 name: MQT Bench original QASM to QuPRS weighted CNF native comparison
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/mqtbench-original-weighted-cnf.yml"
-      - "benchmarks/rust_core/tools/quprs_mqtbench_original_cnf.rs"
-      - "benchmarks/rust_core/tools/quprs_mqtbench_original_cnf_ab.py"
-      - "benchmarks/mpfr_research/src/main.rs"
   workflow_dispatch:
 
 permissions:

@@ -1,17 +1,6 @@
 name: Same-CNF MQT exact signed-complex factor variable elimination holdout
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/mqt-factor-variable-elimination.yml"
-      - "benchmarks/mpfr_research/tools/quprs_mqt_factor_ve_ab.py"
-      - "docs/factor-variable-elimination-research.md"
-      - "benchmarks/mpfr_research/src/trail_engine.rs"
-      - "benchmarks/mpfr_research/src/factor_variable_elimination.rs"
-      - "benchmarks/mpfr_research/src/separator_pivot.rs"
-      - "benchmarks/rust_core/tools/quprs_mqtbench_original_cnf.rs"
-      - "benchmarks/rust_core/tools/quprs_mqtbench_original_cnf_ab.py"
-      - "benchmarks/mpfr_research/src/main.rs"
   workflow_dispatch:
 
 permissions:

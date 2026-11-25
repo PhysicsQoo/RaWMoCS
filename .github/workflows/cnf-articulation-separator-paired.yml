@@ -1,14 +1,6 @@
 name: Same-CNF exact Rust root-only articulation pivot research
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/cnf-articulation-separator-paired.yml
-      - benchmarks/mpfr_research/src/main.rs
-      - benchmarks/mpfr_research/src/trail_engine.rs
-      - benchmarks/mpfr_research/src/separator_pivot.rs
-      - benchmarks/mpfr_research/tools/quprs_cnf_articulation_ab.py
-      - docs/cnf-articulation-separator-research.md
   workflow_dispatch:
 
 permissions:

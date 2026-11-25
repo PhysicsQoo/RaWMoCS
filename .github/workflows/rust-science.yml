@@ -75,3 +75,27 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --workspace
+
+  mpfr-research:
+    name: Consolidated MPFR research correctness
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/mpfr_research -> target
+          key: consolidated-mpfr-science
+      - name: GF2 exact rational witness arithmetic and negative controls
+        run: python3 benchmarks/mpfr_research/tools/gf2_taylor_witness.py
+      - name: Full MPFR correctness suite (including 100/333-bit indexed tests)
+        run: cargo test --manifest-path benchmarks/mpfr_research/Cargo.toml
+      - name: Strict MPFR Clippy
+        run: cargo clippy --manifest-path benchmarks/mpfr_research/Cargo.toml --all-targets -- -D warnings -A clippy::excessive_precision -A clippy::approx_constant -A clippy::manual_hash_one
+      - name: Existing Trail formatting contract
+        run: rustfmt --edition 2021 --check benchmarks/mpfr_research/src/trail_engine.rs

@@ -37,7 +37,7 @@ from quprs_mqtbench_original_cnf_ab import (  # noqa: E402
 )
 from quprs_encoder_validate import parse_cnf  # noqa: E402
 
-ARMS = ("gpmc", "inline_full", "factor_ve")
+ARMS = ("gpmc", "inline_full", "factor_ve", "factor_ve_bag14")
 TRIALS = 7
 EXPECTED_COHORTS = 2 * len(ORIGINAL_MQT)
 ROTATION_WALL_NS = 10_000_000_000
@@ -48,9 +48,57 @@ def preflight() -> None:
         raise SystemExit("DRIFT_IN_GPMC_TO_MPFR_BITS")
     if len(ORIGINAL_MQT) != 7:
         raise SystemExit("DRIFT_IN_PINNED_MQT_HOLDOUT")
-    if ARMS != ("gpmc", "inline_full", "factor_ve"):
+    if ARMS != ("gpmc", "inline_full", "factor_ve", "factor_ve_bag14"):
         raise SystemExit("CHANGED_HOLDOUT_ARMS")
-    print("MQT_FACTOR_VE_PREFLIGHT_OK cases=7 precisions=2 arms=3", flush=True)
+    print("MQT_FACTOR_VE_PREFLIGHT_OK cases=7 precisions=2 arms=4", flush=True)
+
+
+def build_trial_command(args: argparse.Namespace, arm: str, digits: int,
+                        cnf: Path, case: str) -> list[str]:
+    if arm not in ARMS:
+        raise ValueError("UNKNOWN_FACTOR_VE_ARM")
+    command = build_command(args, arm, digits, cnf, case)
+    if arm == "gpmc":
+        return command
+    # Original MQT all Rust arms retain exactly the same 1M-node cap.
+    command.insert(1, "--node-budget=1000000")
+    if arm in ("factor_ve", "factor_ve_bag14"):
+        pos = command.index("--hashbrown-borrowed")
+        extras = ["--factor-variable-elimination"]
+        if arm == "factor_ve_bag14":
+            extras.extend([
+                "--factor-ve-scope-probe-320",
+                "--factor-ve-minfill-order",
+                "--factor-ve-bag-probe-14",
+            ])
+        command[pos:pos] = extras
+    return command
+
+
+def self_test() -> None:
+    preflight()
+    args = argparse.Namespace(gpmc=Path("/original-gpmc"),
+                              mpfr=Path("/original-rust"))
+    path = Path("/original-weighted.cnf")
+    controls = {
+        arm: build_trial_command(args, arm, 30, path, "mqt_qnn_4")
+        for arm in ARMS
+    }
+    for arm, cmd in controls.items():
+        if arm == "gpmc":
+            assert cmd[1:3] == ["-mode=1", "-prec=30"]
+        else:
+            assert cmd.count("--node-budget=1000000") == 1
+            assert cmd.index("--hashbrown-borrowed") < cmd.index("30")
+        expected = arm in ("factor_ve", "factor_ve_bag14")
+        assert ("--factor-variable-elimination" in cmd) is expected
+        for flag in (
+            "--factor-ve-scope-probe-320",
+            "--factor-ve-minfill-order",
+            "--factor-ve-bag-probe-14",
+        ):
+            assert (flag in cmd) is (arm == "factor_ve_bag14")
+    print("ORIGINAL_MQT_FACTOR_VE_BAG14_ARM_PREFLIGHT_PASS", flush=True)
 
 
 def parse_manifest(path: Path) -> dict[str, str]:
@@ -99,6 +147,7 @@ def main() -> None:
     args = ap.parse_args()
     preflight()
     if args.self_test:
+        self_test()
         return
     for name in ("quprs", "gpmc_source", "corpus", "gpmc", "mpfr", "report"):
         if getattr(args, name) is None:
@@ -177,17 +226,7 @@ def main() -> None:
             for trial in range(TRIALS):
                 rotated = ARMS[trial % len(ARMS):] + ARMS[:trial % len(ARMS)]
                 for arm in rotated:
-                    command = build_command(args, arm, digits, cnf, case)
-                    if arm != "gpmc":
-                        # Same MQT precedent: identical 1M node budget in both Rust arms.
-                        command.insert(1, "--node-budget=1000000")
-                        if arm == "factor_ve":
-                            # Flag parsing is strictly ordered; factor VE is
-                            # immediately BEFORE cache mode, after Trail flags.
-                            command.insert(
-                                command.index("--hashbrown-borrowed"),
-                                "--factor-variable-elimination",
-                            )
+                    command = build_trial_command(args, arm, digits, cnf, case)
                     item = sample(command, arm, digits)
                     item["trial"] = trial
                     cohort["records"].append(item)
@@ -217,12 +256,16 @@ def main() -> None:
                 selected = {r["arm"]: r for r in records if r["trial"] == trial}
                 if set(selected) != set(ARMS):
                     raise SystemExit("UNBALANCED_MQT_PAIRED_TRIAL")
-                baseline, rust, root = (selected[arm] for arm in ARMS)
-                if not (baseline["sat"] == rust["sat"] == root["sat"]):
+                baseline, rust, root, bigger = (selected[arm] for arm in ARMS)
+                if len({baseline["sat"], rust["sat"], root["sat"], bigger["sat"]}) != 1:
                     cohort["status"] = "FAILED_BOOLEAN_SAT"
                     save()
                     raise SystemExit("FAILED_BOOLEAN_SAT")
-                for arm, result in (("inline_full", rust), ("factor_ve", root)):
+                for arm, result in (
+                    ("inline_full", rust),
+                    ("factor_ve", root),
+                    ("factor_ve_bag14", bigger),
+                ):
                     witness = complex_relative_witness(baseline, result, digits)
                     if not witness["pass"]:
                         cohort["status"] = "FAILED_SIGNED_COMPLEX_WMC"
@@ -231,15 +274,32 @@ def main() -> None:
                         }
                         save()
                         raise SystemExit("FAILED_SIGNED_COMPLEX_WMC")
-                if root["factor_ve_width"] > 11 or root["factor_ve_products"] > 600000:
-                    cohort["status"] = "FAILED_FACTOR_VE_BUDGET"
-                    save()
-                    raise SystemExit("FAILED_FACTOR_VE_BUDGET")
-                if not root["factor_ve_enabled"]:
-                    cohort["status"] = "FAILED_FACTOR_VE_MISSING"
-                    save()
-                    raise SystemExit("FAILED_FACTOR_VE_MISSING")
+                if (rust["precision_bits"], root["precision_bits"],
+                        bigger["precision_bits"]) != (bits, bits, bits):
+                    raise SystemExit("FAILED_MPFR_PRECISION")
+                if rust["factor_ve_enabled"]:
+                    raise SystemExit("INLINE_ROOT_FACTOR_FLAG_CONTAMINATION")
+                for arm, result, max_bag in (
+                    ("factor_ve", root, 11),
+                    ("factor_ve_bag14", bigger, 14),
+                ):
+                    if not result["factor_ve_enabled"]:
+                        raise SystemExit(f"FAILED_FACTOR_VE_MISSING:{arm}")
+                    if result["factor_ve_completed"] and (
+                        result["factor_ve_width"] > max_bag
+                        or result["factor_ve_products"] > 600000
+                        or result["factor_ve_cells"] > 150000
+                    ):
+                        raise SystemExit(f"FAILED_COMPLETED_UNBOUNDED_FACTOR_VE:{arm}")
+                    if not result["factor_ve_completed"] and not result["factor_ve_capped"]:
+                        raise SystemExit(f"FAILED_UNCLASSIFIED_FACTOR_VE_REJECTION:{arm}")
+                    if not result["factor_ve_completed"] and (
+                        result["stdout_sha256"] != rust["stdout_sha256"]
+                    ):
+                        raise SystemExit(f"FAILED_FALLBACK_COMPLEX_OUTPUT_BYTES:{arm}")
 
+                if bigger["separator_scans"] != 0 or bigger["separator_chosen"] != 0:
+                    raise SystemExit("FAILED_BAG14_PIVOT_CONTROL_CONTAMINATION")
                 if root["separator_scans"] != 0 or root["separator_chosen"] != 0:
                     cohort["status"] = "FAILED_PIVOT_CONTROL_CONTAMINATION"
                     save()
@@ -252,12 +312,16 @@ def main() -> None:
                 # DPLL/cache/component topology. Successful VE has
                 # ZERO DPLL nodes by design; its products are a separate
                 # incomparable unit of work.
-                if not root["factor_ve_completed"] and (
-                    root["nodes"], root["cache_hits"], root["decompositions"]
-                ) != (rust["nodes"], rust["cache_hits"], rust["decompositions"]):
-                    cohort["status"] = "FAILED_NOOP_SEARCH_TOPOLOGY"
-                    save()
-                    raise SystemExit("FAILED_NOOP_SEARCH_TOPOLOGY")
+                for arm, result in (
+                    ("factor_ve", root),
+                    ("factor_ve_bag14", bigger),
+                ):
+                    if not result["factor_ve_completed"] and (
+                        result["nodes"], result["cache_hits"], result["decompositions"]
+                    ) != (rust["nodes"], rust["cache_hits"], rust["decompositions"]):
+                        cohort["status"] = "FAILED_NOOP_SEARCH_TOPOLOGY"
+                        save()
+                        raise SystemExit(f"FAILED_NOOP_SEARCH_TOPOLOGY:{arm}")
             cohort["status"] = "MATCHED_SIGNED_COMPLEX_WMC"
             cohort["stats"] = {arm: group_stats(records, arm) for arm in ARMS}
             report["qualified_cohorts"] += 1
@@ -266,9 +330,11 @@ def main() -> None:
                   f"gpmc_ms={cohort['stats']['gpmc']['p50_wall_ms']:.3f} "
                   f"inline_ms={cohort['stats']['inline_full']['p50_wall_ms']:.3f} "
                   f"factor_ve_ms={cohort['stats']['factor_ve']['p50_wall_ms']:.3f} "
+                  f"bag14_ms={cohort['stats']['factor_ve_bag14']['p50_wall_ms']:.3f} "
                   f"nodes_inline={cohort['stats']['inline_full']['p50_nodes']} "
                   f"ve_products={cohort['stats']['factor_ve']['factor_ve_products']} "
-                  f"ve_complete={cohort['stats']['factor_ve']['factor_ve_completed']} " +
+                  f"ve_complete={cohort['stats']['factor_ve']['factor_ve_completed']} "
+                  f"bag14_complete={cohort['stats']['factor_ve_bag14']['factor_ve_completed']} " +
                   f"ve_width={cohort['stats']['factor_ve']['factor_ve_width']}", flush=True)
 
     report["status"] = (

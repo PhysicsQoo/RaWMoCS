@@ -1,12 +1,6 @@
 name: Original weighted-CNF reversible-trail MPFR correctness
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/cnf-trail-science.yml
-      - benchmarks/mpfr_research/src/main.rs
-      - benchmarks/mpfr_research/src/trail_engine.rs
-      - docs/cnf-trail-research.md
   workflow_dispatch:
 
 permissions:

@@ -1,0 +1,577 @@
+#!/usr/bin/env python3
+"""Original-source, GPMC-completer-first scout. No solver-win-based selection."""
+import argparse
+from hashlib import sha256
+import json
+from pathlib import Path
+import re
+import subprocess
+
+from quprs_long_tail_paired import (
+    QU_PRS_SHA, GPMC_SHA, BITS, AS_BYTES, CNF_MAX_BYTES, EXPORT_S, PAIR_S,
+    native, command, sha, git_sha, parse_cnf, complex_relative_witness,
+)
+
+# Predeclared families, near the previously measured transition region.
+# Only existing tracked files enter; no interpolation or circuit synthesis.
+MQT = (
+    ("qnn", 9, 11), ("wstate", 17, 24), ("qaoa", 12, 16),
+    ("qpeexact", 17, 24), ("qft", 17, 24),
+    ("grover-noancilla", 7, 9), ("qwalk-noancilla", 6, 8),
+    ("vqe", 12, 24), ("qpeinexact", 12, 24),
+)
+FEYNMAN = (("gf2", 7, 9), ("adder", 9, 16), ("qcla_mod", 8, 16),
+           ("barenco_tof", 11, 20))
+MAX_CASES = 12
+SHARDS = 3
+MIN_SECONDS = 10
+
+def candidates(root):
+    paths = subprocess.check_output(
+        ["git", "-C", str(root), "ls-tree", "-r", "--name-only", QU_PRS_SHA,
+         "--", "benchmarks/Feynman", "benchmarks/MQTBench"], text=True).splitlines()
+    groups = []
+    for family, lo, hi in MQT:
+        found = []
+        pattern = re.compile(re.escape(family)+r"_nativegates_ibm_qiskit_opt0_(\d+)\.qasm$")
+        for rel in paths:
+            if not rel.startswith("benchmarks/MQTBench/"):
+                continue
+            m = pattern.fullmatch(Path(rel).name)
+            if m and lo <= int(m[1]) <= hi:
+                found.append((int(m[1]), rel))
+        groups.append(("mqt_"+family.replace("-","_"), sorted(found)))
+    for family, lo, hi in FEYNMAN:
+        found = []
+        pattern = re.compile(r"gf2\^(\d+)_mult\.qasm$" if family=="gf2" else re.escape(family)+r"_(\d+)\.qasm$")
+        for rel in paths:
+            if not rel.startswith("benchmarks/Feynman/"):
+                continue
+            m = pattern.fullmatch(Path(rel).name)
+            if m and lo <= int(m[1]) <= hi and not (family=="gf2" and int(m[1])==8):
+                found.append((int(m[1]), rel))
+        groups.append(("feynman_"+family, sorted(found)))
+    out=[]
+    # Round-robin families, smallest available size first, no timing input.
+    for j in range(2):
+        for family, group in groups:
+            if len(group)>j:
+                size, rel=group[j]
+                variant=re.sub(r"[^a-z0-9]+","_",str(Path(rel).parent).lower()).strip("_")
+                suffix=sha256(rel.encode()).hexdigest()[:12]
+                out.append({"case":f"extended_{family}_{size}_{suffix}", "family":family, "size":size, "variant":variant,"path":rel})
+    if len({r["case"] for r in out})!=len(out):raise ValueError("DUPLICATE_SOURCE_ID")
+    return out[:MAX_CASES]
+
+HOLDOUT_MAX=16
+HOLDOUT_SHARDS=4
+# Existing measurements identify a transition near QPE20 and QNN/Wstate
+# moderate sizes. Sample both perturbed variants and other families.
+# Neither solver's outcome on a new case enters this selection.
+HOLDOUT_TARGETS=(("qpeinexact",20),("qpeexact",22),("wstate",16),
+                 ("qnn",8),("grover-noancilla",6),("qwalk-noancilla",5),
+                 ("qaoa",11),("vqe",16),("qft",24),("graphstate",24),
+                 ("bv",24),("ghz",24))
+
+def select_mqt_holdouts(paths,excluded):
+    from quprs_mqt_adaptive_scout import item
+    groups=[]
+    for family,target in HOLDOUT_TARGETS:
+        pattern=re.compile(re.escape(family)+r"_nativegates_ibm_qiskit_opt0_(\d+)\.qasm$")
+        rows=[]
+        for rel in paths:
+            if rel in excluded or not rel.startswith("benchmarks/MQTBench/"):
+                continue
+            m=pattern.fullmatch(Path(rel).name)
+            if not m or not 4<=int(m[1])<=32:
+                continue
+            # Only original weighted-equivalence perturbation variants.
+            if Path(rel).parent.name not in ("Random_Pauli","Random_Rotation"):
+                continue
+            row=item(rel,"new_long_control_holdout")
+            rows.append(row)
+        rows.sort(key=lambda r:(abs(r["size"]-target),
+                                r["variant"].endswith("Random_Pauli"),
+                                r["size"],r["path"]))
+        groups.append(rows)
+    out=[]
+    for j in range(2):
+        for group in groups:
+            if len(group)>j:
+                out.append(group[j])
+    out=out[:HOLDOUT_MAX]
+    if len({r["path"] for r in out})!=len(out) or len({r["case"] for r in out})!=len(out):
+        raise ValueError("DUPLICATE_HOLDOUT")
+    return out
+
+def mqt_holdouts(root):
+    from quprs_mqt_adaptive_scout import candidates as previous_mqt
+    paths=subprocess.check_output(["git","-C",str(root),"ls-tree","-r","--name-only",QU_PRS_SHA,
+        "--","benchmarks/MQTBench"],text=True).splitlines()
+    excluded={r["path"] for r in candidates(root)+previous_mqt(root)}
+    return select_mqt_holdouts(paths,excluded)
+
+# Second independent discovery cohort. Predeclare near-transition sizes;
+# exclude earlier deterministic manifests, not solver results. One candidate
+# per family and at most eight originals; no synthesized circuit.
+PREJOIN_SCOUT_TARGETS=(("qft",23),("qpeexact",23),("qpeinexact",21),
+                      ("wstate",18),("grover-noancilla",7),("qnn",10),
+                      ("qaoa",12),("qwalk-noancilla",6))
+PREJOIN_SCOUT_MAX=8
+
+def select_prejoin_holdouts(paths,excluded):
+    from quprs_mqt_adaptive_scout import item
+    out=[]
+    for family,target in PREJOIN_SCOUT_TARGETS:
+        pattern=re.compile(re.escape(family)+r"_nativegates_ibm_qiskit_opt0_(\d+)\.qasm$")
+        rows=[]
+        for rel in paths:
+            if rel in excluded or not rel.startswith("benchmarks/MQTBench/"):continue
+            m=pattern.fullmatch(Path(rel).name)
+            if not m or abs(int(m[1])-target)>2:continue
+            if Path(rel).parent.name not in ("Random_Pauli","Random_Rotation"):continue
+            rows.append(item(rel,"independent_prejoin_long_discovery"))
+        if rows:
+            out.append(min(rows,key=lambda r:(abs(r["size"]-target),
+                       r["variant"].endswith("Random_Pauli"),r["size"],r["path"])))
+    if len(out)>PREJOIN_SCOUT_MAX or len({r["path"] for r in out})!=len(out):
+        raise ValueError("DUPLICATE_PREJOIN_HOLDOUT")
+    return out
+
+def prejoin_holdouts(root):
+    from quprs_mqt_adaptive_scout import candidates as previous_mqt, followup_candidates
+    paths=subprocess.check_output(["git","-C",str(root),"ls-tree","-r","--name-only",QU_PRS_SHA,
+        "--","benchmarks/MQTBench"],text=True).splitlines()
+    excluded={r["path"] for r in candidates(root)+previous_mqt(root)+followup_candidates(root)+mqt_holdouts(root)}
+    excluded.update("benchmarks/MQTBench/"+rel for rel,_ in LOCKED_LONG)
+    return select_prejoin_holdouts(paths,excluded)
+
+# Third discovery cohort: focus the untested transition region around
+# qualified 20-22 qubit QPE and the QFT width barrier, including compiler
+# variants. Source selection does not use any new solver result.
+FRONTIER_TARGETS=(("qpeinexact",22),("qft",22),("qpeexact",22),("qnn",12),
+                  ("qpeinexact",23),("qft",24),("qpeexact",23),("wstate",16))
+FRONTIER_MAX=8
+
+def select_frontier_holdouts(paths,excluded):
+    from quprs_mqt_adaptive_scout import item
+    used=set(excluded)
+    out=[]
+    for family,target in FRONTIER_TARGETS:
+        pattern=re.compile(re.escape(family)+r"_nativegates_ibm_qiskit_opt0_(\d+)\.qasm$")
+        rows=[]
+        for rel in paths:
+            if rel in used or not rel.startswith("benchmarks/MQTBench/"):continue
+            m=pattern.fullmatch(Path(rel).name)
+            if not m or abs(int(m[1])-target)>1:continue
+            if Path(rel).parent.name not in ("Random_Pauli","Random_Rotation","h,ry,rz,cx"):continue
+            rows.append(item(rel,"third_frontier_long_discovery"))
+        if rows:
+            row=min(rows,key=lambda r:(abs(r["size"]-target),
+                r["variant"].endswith("h,ry,rz,cx"),r["size"],r["path"]))
+            out.append(row);used.add(row["path"])
+    if len(out)>FRONTIER_MAX or len({r["path"] for r in out})!=len(out):
+        raise ValueError("DUPLICATE_FRONTIER_HOLDOUT")
+    return out
+
+def frontier_holdouts(root):
+    from quprs_mqt_adaptive_scout import candidates as previous_mqt, followup_candidates
+    paths=subprocess.check_output(["git","-C",str(root),"ls-tree","-r","--name-only",QU_PRS_SHA,
+        "--","benchmarks/MQTBench"],text=True).splitlines()
+    excluded={r["path"] for r in candidates(root)+previous_mqt(root)+followup_candidates(root)+mqt_holdouts(root)+prejoin_holdouts(root)}
+    excluded.update("benchmarks/MQTBench/"+rel for rel,_ in LOCKED_LONG)
+    return select_frontier_holdouts(paths,excluded)
+
+def holdout_self_test():
+    pauli="benchmarks/MQTBench/Random_Pauli/qpeexact_nativegates_ibm_qiskit_opt0_22.qasm"
+    rotation=pauli.replace("Random_Pauli","Random_Rotation")
+    wstate="benchmarks/MQTBench/Random_Rotation/wstate_nativegates_ibm_qiskit_opt0_16.qasm"
+    canonical="benchmarks/MQTBench/qpeexact_nativegates_ibm_qiskit_opt0_22.qasm"
+    paths=[pauli,rotation,wstate,canonical]
+    a=select_mqt_holdouts(paths,{pauli})
+    b=select_mqt_holdouts(list(reversed(paths)),{pauli})
+    assert a==b
+    assert {r["path"] for r in a}=={rotation,wstate}
+    qft="benchmarks/MQTBench/Random_Rotation/qft_nativegates_ibm_qiskit_opt0_23.qasm"
+    qft2=qft.replace("_23.qasm","_24.qasm")
+    qpe="benchmarks/MQTBench/Random_Rotation/qpeexact_nativegates_ibm_qiskit_opt0_23.qasm"
+    a=select_prejoin_holdouts([qft,qft2,qpe],{qft})
+    assert a==select_prejoin_holdouts([qpe,qft2,qft],{qft})
+    assert {r["path"] for r in a}=={qft2,qpe}
+    qft3=qft.replace("_23.qasm","_22.qasm")
+    a=select_frontier_holdouts([qft,qft2,qft3,qpe],{qft})
+    assert a==select_frontier_holdouts([qpe,qft3,qft2,qft],{qft})
+    assert {r["path"] for r in a}=={qft2,qft3,qpe}
+    assert not qualified([{"status":"CENSORED_TIME","wall_ns":120*10**9},
+                          {"status":"COMPLETED","wall_ns":20*10**9}])
+    assert qualified([{"status":"COMPLETED","wall_ns":20*10**9},
+                      {"status":"COMPLETED","wall_ns":30*10**9}])
+
+# Frozen original paths and CNF hashes from the preceding control-only
+# holdout screen. All eight eligible controls are included, not only the
+# fastest Rust cases or the top member of each shard.
+LOCKED_LONG=(
+    ("Random_Rotation/qpeexact_nativegates_ibm_qiskit_opt0_22.qasm","801a90e918492afb845162bcefef4ab604cb14421f8a9704f636a982aa5da4d6"),
+    ("Random_Rotation/qpeexact_nativegates_ibm_qiskit_opt0_21.qasm","ff9bb2ceca9cd9ee7a61026a6c01498a7f8175df6512df80dc8fed2db848dfb4"),
+    ("qiskit-2.6.1-opt0/Random_Rotation/wstate_nativegates_ibm_qiskit_opt0_16.qasm","600ce6716a69e31e17ffbc571cba581fc58a5b5ed3b7d60227ad41d857374efe"),
+    ("Random_Rotation/qft_nativegates_ibm_qiskit_opt0_24.qasm","7c47b2dc52f5331eb2fb5bd3123593c4a095abf229862f5607d4fc6855fecc51"),
+    ("Random_Rotation/grover-noancilla_nativegates_ibm_qiskit_opt0_6.qasm","08baa5d3fa04df6ec9f69c16593a553f49e18e64f78640973bd98d406fc7b290"),
+    ("qiskit-2.6.1-opt0/Random_Rotation/grover-noancilla_nativegates_ibm_qiskit_opt0_6.qasm","a9757cd5bd730b6f769d2970e3a16ac66fee7157b55f81208c0a7c2cece0023b"),
+    ("Random_Rotation/qpeinexact_nativegates_ibm_qiskit_opt0_20.qasm","8c7c930ee58721bfecd42e368ba2603fb8072bd99aeb94a9636ba3a2e5da6a1e"),
+    ("qiskit-2.6.1-opt0/Random_Rotation/qpeinexact_nativegates_ibm_qiskit_opt0_20.qasm","ead9ede46abf2f13920e32b0795d9ae80789377d2bef94565ce188abf0a2a6b2"),
+)
+def locked_long(root):
+    from quprs_mqt_adaptive_scout import item
+    out=[]
+    for rel,expected in LOCKED_LONG:
+        rel="benchmarks/MQTBench/"+rel
+        if not (root/rel).is_file():raise ValueError("MISSING_LOCKED_LONG_SOURCE")
+        out.append({**item(rel,"qualified_long_control"),"expected_cnf_sha256":expected})
+    if len({r["case"] for r in out})!=len(out):raise ValueError("DUPLICATE_LOCKED_LONG")
+    return out
+
+def locked_pairs(args,report,persist):
+    from quprs_mqt_adaptive_scout import result_route
+    for item in report["cases"]:
+        if item["source_status"]!="SOURCE_EXACT":continue
+        case=item["case"];cnf=args.corpus/f"{case}-gpmc.cnf"
+        if sha(cnf)!=item["expected_cnf_sha256"]:raise SystemExit("LOCKED_CNF_DRIFT")
+        item["pairs"]=[]
+        for target,bits in BITS.items():
+            # Fixed-working-precision study first. Guarded retries, if
+            # required, are a separate cohort with identical working bits
+            # for both arms, not a relaxed target tolerance.
+            for digits,working_bits in [(target,bits),(target+30,{30:200,100:432}[target])]:
+                cohort={"target_digits":target,"working_digits":digits,"working_bits":working_bits,"trials":[]}
+                item["pairs"].append(cohort)
+                arms=("gpmc","adaptive") if bits==100 else ("adaptive","gpmc")
+                for arm in arms:
+                    if sha(cnf)!=item["expected_cnf_sha256"]:raise SystemExit("LOCKED_CNF_DRIFT")
+                    cmd=[str(args.gpmc.resolve()),"-mode=1",f"-prec={digits}",str(cnf.resolve())] if arm=="gpmc" else [str(args.mpfr.resolve()),"--adaptive",str(digits),str(cnf.resolve())]
+                    r=native(cmd,"gpmc" if arm=="gpmc" else "candidate",PAIR_S,digits,expected_bits=working_bits)
+                    r["arm"]=arm
+                    if arm=="adaptive":r["route"]=result_route(r)
+                    cohort["trials"].append(r);persist()
+                    print("LOCKED_LONG_PAIR",case,target,working_bits,arm,r["status"],r.get("wall_ns"),r.get("route"),flush=True)
+                a,b=(next(r for r in cohort["trials"] if r["arm"]==arm) for arm in ("gpmc","adaptive"))
+                if a["status"]!=b["status"] or a["status"]!="COMPLETED":
+                    cohort["status"]="CENSORED_PAIR";persist();break
+                w=complex_relative_witness(a,b,target)
+                cohort["witness"]=w
+                if w["pass"] and a["sat"]==b["sat"] and b.get("route"):
+                    cohort["status"]="SINGLE_MATCHED_PAIR";cohort["gpmc_over_rust"]=a["wall_ns"]/b["wall_ns"]
+                    persist();break
+                cohort["status"]="NUMERIC_OR_ROUTE_INCONCLUSIVE";persist()
+                if not b.get("route"):break
+            print("LOCKED_LONG_FINAL",case,target,cohort["status"],cohort.get("gpmc_over_rust"),flush=True)
+    report["status"]="LOCKED_LONG_EXPLORATORY_COMPLETE";persist()
+
+# Five long controls have an independently resource-qualified original-CNF plan
+# within the reference oracle's existing width/work/live caps.
+CERTIFIED_LONG_SHA={
+    "8c7c930ee58721bfecd42e368ba2603fb8072bd99aeb94a9636ba3a2e5da6a1e",
+    "ead9ede46abf2f13920e32b0795d9ae80789377d2bef94565ce188abf0a2a6b2",
+    "08baa5d3fa04df6ec9f69c16593a553f49e18e64f78640973bd98d406fc7b290",
+    "600ce6716a69e31e17ffbc571cba581fc58a5b5ed3b7d60227ad41d857374efe",
+    "a9757cd5bd730b6f769d2970e3a16ac66fee7157b55f81208c0a7c2cece0023b",
+}
+# Frozen scratch-only predecessor of branch-accumulator candidate.
+NATIVE_AB_BASELINE_SHA = "ee4bd72142c6939a0ea094c8776108bd524810c7"
+def contraction_signature(row):
+    matches=re.findall(r"^ADAPTIVE_CONTRACTION width=(\d+) work=(\d+) peak=(\d+) planned_width=(\d+) planned_work=(\d+) planned_peak=(\d+)$",row.get("stderr_tail",""),re.M)
+    if len(matches)!=1 or matches[0][:3]!=matches[0][3:]:
+        return None
+    return list(map(int,matches[0]))
+
+def native_ab_order(trial,target):
+    arms=("gpmc","baseline","adaptive")
+    offset=(trial+(target==100))%len(arms)
+    return arms[offset:]+arms[:offset]
+
+def certified_locked_pairs(args,report,persist):
+    import statistics
+    import sys
+    from original_fixed_interval import compare
+    from quprs_mqt_adaptive_scout import result_route
+    report["reference_limits"]={"wall_s":190,"AS_bytes":AS_BYTES,"fixed_bits":550,"width":19,"work":40_000_000,"live_cells":2_000_000}
+    baseline=args.native_ab_baseline
+    if baseline is not None:
+        # Binary path and checkout provenance are pinned, not inferred
+        # from previously collected cross-run WallTime ratios.
+        root=baseline.resolve().parents[4]
+        if git_sha(root)!=NATIVE_AB_BASELINE_SHA:
+            raise SystemExit("NATIVE_AB_BASELINE_REVISION_DRIFT")
+        if sha(root/"benchmarks/mpfr_research/Cargo.lock")!=sha(Path("benchmarks/mpfr_research/Cargo.lock")):
+            raise SystemExit("NATIVE_AB_LOCKFILE_DRIFT")
+        report["native_ab"]={"baseline_commit":NATIVE_AB_BASELINE_SHA,"candidate_commit":git_sha(Path(".")),
+            "baseline_binary_sha256":sha(baseline),"candidate_binary_sha256":sha(args.mpfr),
+            "gpmc_binary_sha256":sha(args.gpmc),"cargo_lock_sha256":sha(Path("benchmarks/mpfr_research/Cargo.lock")),
+            "arms":["gpmc","baseline","adaptive"],"trials":7,"rotation":"three-arm cyclic; offset by precision"}
+        persist()
+    for item in report["cases"]:
+        if item["source_status"]!="SOURCE_EXACT":
+            item["status"]="SOURCE_INCONCLUSIVE";persist();continue
+        case=item["case"];cnf=args.corpus/f"{case}-gpmc.cnf"
+        expected=item["expected_cnf_sha256"]
+        if sha(cnf)!=expected:raise SystemExit("LOCKED_CNF_DRIFT")
+        cmd=["/usr/bin/timeout","-k","2s","190s","prlimit",f"--as={AS_BYTES}","--",
+            sys.executable,str(Path(__file__).with_name("original_fixed_interval.py")),str(cnf.resolve()),expected]
+        try:
+            run=subprocess.run(cmd,capture_output=True,text=True,timeout=197)
+            item["reference_process"]={"exit_code":run.returncode,"stderr_tail":run.stderr[-1500:]}
+            if run.returncode:raise ValueError(f"reference exit {run.returncode}")
+            ref=json.loads(run.stdout)
+            if ref["source_sha256"]!=expected or ref["bits"]!=550:raise ValueError("WITNESS_DRIFT")
+        except (ValueError,OSError,subprocess.TimeoutExpired) as e:
+            item["status"]="INDEPENDENT_WITNESS_INCONCLUSIVE";item["witness_error"]=str(e)
+            persist();print("MQT_CERTIFIED_WITNESS_INCONCLUSIVE",case,str(e),flush=True);continue
+        item["independent_witness"]=ref
+        item["pairs"]=[];persist()
+        print("MQT_CERTIFIED_WITNESS",case,ref["width"],ref["work"],ref["peak"],ref["wall_s"],flush=True)
+        for target,bits in BITS.items():
+            # Both arms use identical working precision. An accuracy failure
+            # can trigger a separate complete guarded cohort; never pool them.
+            for digits,working_bits in [(target,bits),(target+30,{30:200,100:432}[target])]:
+                cohort={"target_digits":target,"working_digits":digits,"working_bits":working_bits,"trials":[]}
+                item["pairs"].append(cohort)
+                for trial in range(7):
+                    arms=(native_ab_order(trial,target) if baseline is not None else
+                          (("gpmc","adaptive") if (trial+(target==100))%2==0 else ("adaptive","gpmc")))
+                    pair=[]
+                    for arm in arms:
+                        if sha(cnf)!=expected:raise SystemExit("LOCKED_CNF_DRIFT")
+                        cmd=([str(args.gpmc.resolve()),"-mode=1",f"-prec={digits}",str(cnf.resolve())]
+                             if arm=="gpmc" else [str((baseline if arm=="baseline" else args.mpfr).resolve()),"--adaptive",str(digits),str(cnf.resolve())])
+                        r=native(cmd,"gpmc" if arm=="gpmc" else "candidate",PAIR_S,digits,expected_bits=working_bits)
+                        r.update(arm=arm,trial=trial)
+                        if r["status"]=="COMPLETED":
+                            r["independent_witness"]=compare(r,ref,target)
+                            r["route_verified"]=arm=="gpmc" or result_route(r)=="definitional"
+                            if baseline is not None and arm!="gpmc":
+                                r["contraction_signature"]=contraction_signature(r)
+                        pair.append(r);cohort["trials"].append(r);persist()
+                        print("MQT_CERTIFIED_PAIR",case,target,working_bits,trial,arm,r["status"],r.get("independent_witness",{}).get("pass"),r.get("wall_ns"),flush=True)
+                    if any(r["status"]!="COMPLETED" for r in pair):
+                        cohort["status"]="CENSORED_PAIR";break
+                    if not all(r.get("route_verified") for r in pair):
+                        cohort["status"]="ROUTE_INCONCLUSIVE";break
+                    if not all(r["independent_witness"]["pass"] for r in pair):
+                        cohort["status"]="ACCURACY_INCONCLUSIVE";break
+                    if baseline is not None:
+                        by_arm={r["arm"]:r for r in pair}
+                        old,new=by_arm["baseline"],by_arm["adaptive"]
+                        if (old.get("contraction_signature") is None or
+                            old["contraction_signature"]!=new.get("contraction_signature") or
+                            any(old[k]!=new[k] for k in ("sat","real","imag"))):
+                            cohort["status"]="NATIVE_AB_ROUTE_OR_OUTPUT_DRIFT";break
+                        if not all(r.get("peak_rss_kib",0)>0 for r in pair):
+                            cohort["status"]="NATIVE_AB_RSS_MISSING";break
+                else:
+                    g=statistics.median(r["wall_ns"] for r in cohort["trials"] if r["arm"]=="gpmc")
+                    t=statistics.median(r["wall_ns"] for r in cohort["trials"] if r["arm"]=="adaptive")
+                    def p90(arm):
+                        samples=sorted(r["wall_ns"] for r in cohort["trials"] if r["arm"]==arm)
+                        assert len(samples)==7
+                        return (samples[5]+0.4*(samples[6]-samples[5]))/1e9
+                    cohort.update(status="CERTIFIED_SEVEN_MATCHED_PAIRS",gpmc_median_s=g/1e9,rust_median_s=t/1e9,gpmc_over_rust=g/t,gpmc_p90_s=p90("gpmc"),rust_p90_s=p90("adaptive"))
+                    if baseline is not None:
+                        old=statistics.median(r["wall_ns"] for r in cohort["trials"] if r["arm"]=="baseline")
+                        paired=[]
+                        for trial in range(7):
+                            rows={r["arm"]:r for r in cohort["trials"] if r["trial"]==trial}
+                            paired.append(rows["baseline"]["wall_ns"]/rows["adaptive"]["wall_ns"])
+                        cohort.update(native_ab_status="CERTIFIED_SEVEN_MATCHED_TRIPLES",
+                            baseline_median_s=old/1e9,baseline_p90_s=p90("baseline"),
+                            baseline_over_candidate=old/t,paired_baseline_over_candidate_median=statistics.median(paired),
+                            gpmc_over_baseline=g/old,paired_baseline_over_candidate=paired,
+                            median_rss_kib={a:statistics.median(r["peak_rss_kib"] for r in cohort["trials"] if r["arm"]==a)
+                                            for a in ("gpmc","baseline","adaptive")})
+                        print("MQT_NATIVE_AB_FINAL",case,target,working_bits,old/1e9,t/1e9,old/t,
+                              statistics.median(paired),cohort["median_rss_kib"],flush=True)
+                persist()
+                print("MQT_CERTIFIED_FINAL",case,target,working_bits,cohort["status"],cohort.get("gpmc_over_rust"),flush=True)
+                if cohort["status"]!="ACCURACY_INCONCLUSIVE":break
+        passed={c["target_digits"] for c in item["pairs"] if c["status"]=="CERTIFIED_SEVEN_MATCHED_PAIRS"}
+        item["status"]="CERTIFIED_COMPLETE" if passed==set(BITS) else "CERTIFIED_INCONCLUSIVE"
+        persist()
+    report["status"]="CERTIFIED_COMPLETE" if all(r.get("status")=="CERTIFIED_COMPLETE" for r in report["cases"]) else "CERTIFIED_INCONCLUSIVE"
+    persist()
+
+def qualified(rows):
+    return (len(rows)==2 and all(r["status"]=="COMPLETED" and r["wall_ns"]>=MIN_SECONDS*10**9 for r in rows))
+
+def rust_command(args,item,cnf,digits):
+    family=item["family"]
+    if family=="mqt_qnn":
+        mode="--factor-cardinality"
+    elif family in ("mqt_wstate","mqt_qwalk_noancilla"):
+        mode="--factor-definitional"
+    elif family=="feynman_gf2":
+        mode="--factor-taylor-strict"
+    else:
+        return command(args,item["case"],cnf,digits,"inline_full"),"inline_full"
+    return [str(args.mpfr.resolve()),mode,str(digits),str(cnf.resolve())],mode
+
+def main():
+    ap=argparse.ArgumentParser()
+    for arg in ("quprs","gpmc-source","exporter","gpmc","mpfr","corpus","report"):
+        ap.add_argument("--"+arg,type=Path,required=True)
+    ap.add_argument("--shard",type=int,choices=range(HOLDOUT_SHARDS),required=True)
+    ap.add_argument("--mqt-holdout",action="store_true")
+    ap.add_argument("--prejoin-holdout",action="store_true")
+    ap.add_argument("--frontier-holdout",action="store_true")
+    ap.add_argument("--locked-long",action="store_true")
+    ap.add_argument("--residual-followup",action="store_true")
+    ap.add_argument("--certified-long",action="store_true")
+    ap.add_argument("--native-ab-baseline",type=Path,
+                    help="Pinned scratch-only research executable; compare on the same runner")
+    args=ap.parse_args()
+    if (args.residual_followup or args.certified_long) and not args.locked_long:ap.error("followup requires locked sources")
+    if args.residual_followup and args.certified_long:ap.error("select one followup")
+    if args.native_ab_baseline is not None and not args.certified_long:ap.error("native A/B requires certified long")
+    if args.native_ab_baseline is not None:
+        if not args.native_ab_baseline.is_file():ap.error("missing baseline executable")
+        for target in BITS:
+            orders=[native_ab_order(t,target) for t in range(7)]
+            assert all(set(o)=={"gpmc","baseline","adaptive"} for o in orders)
+            assert all(2<=sum(o[i]==arm for o in orders)<=3 for i in range(3) for arm in orders[0])
+    if sum((args.locked_long,args.mqt_holdout,args.prejoin_holdout,args.frontier_holdout))>1:ap.error("select one study")
+    holdout_self_test()
+    shards=2 if args.residual_followup else HOLDOUT_SHARDS if args.mqt_holdout or args.locked_long or args.prejoin_holdout or args.frontier_holdout else SHARDS
+    if args.shard>=shards:ap.error("shard outside selected cohort")
+    if git_sha(args.quprs)!=QU_PRS_SHA or git_sha(args.gpmc_source)!=GPMC_SHA:
+        raise SystemExit("SOURCE_LOCK_DRIFT")
+    args.corpus.mkdir(parents=True,exist_ok=True)
+    manifest=locked_long(args.quprs) if args.locked_long else frontier_holdouts(args.quprs) if args.frontier_holdout else prejoin_holdouts(args.quprs) if args.prejoin_holdout else mqt_holdouts(args.quprs) if args.mqt_holdout else candidates(args.quprs)
+    if (args.prejoin_holdout or args.frontier_holdout) and not manifest:raise ValueError("EMPTY_PREJOIN_HOLDOUT")
+    if args.residual_followup:
+        wanted={"600ce6716a69e31e17ffbc571cba581fc58a5b5ed3b7d60227ad41d857374efe","a9757cd5bd730b6f769d2970e3a16ac66fee7157b55f81208c0a7c2cece0023b"}
+        manifest=[r for r in manifest if r["expected_cnf_sha256"] in wanted]
+        if len(manifest)!=2:raise ValueError("MISSING_RESIDUAL_FOLLOWUP")
+    if args.certified_long:
+        manifest=[r for r in manifest if r["expected_cnf_sha256"] in CERTIFIED_LONG_SHA]
+        if len(manifest)!=len(CERTIFIED_LONG_SHA):raise ValueError("MISSING_CERTIFIED_LONG")
+    selected=manifest[args.shard::shards]
+    report={"study":"Original GPMC-completer long-case discovery",
+            "source_revisions":{"quprs":QU_PRS_SHA,"gpmc":GPMC_SHA},
+            "selection":"both 100/333-bit GPMC screens completed >=10s; rank by min GPMC wall; no Rust-dependent selection",
+            "limits":{"wall_s":PAIR_S,"AS_bytes":AS_BYTES,"max_candidates":FRONTIER_MAX if args.frontier_holdout else PREJOIN_SCOUT_MAX if args.prejoin_holdout else HOLDOUT_MAX if args.mqt_holdout else MAX_CASES},
+            "shard":args.shard,"mqt_holdout":args.mqt_holdout,"prejoin_holdout":args.prejoin_holdout,"frontier_holdout":args.frontier_holdout,"locked_long":args.locked_long,"residual_followup":args.residual_followup,"certified_long":args.certified_long,"manifest":manifest,"cases":[],"pilot":None,
+            "status":"IN_PROGRESS","independent_full_wmc_reference":False}
+    def persist():
+        args.report.write_text(json.dumps(report,indent=2)+"\n")
+    persist()
+    for item in selected:
+        case=item["case"]
+        src=args.quprs/item["path"]
+        cnf=args.corpus/f"{case}-gpmc.cnf"
+        copy=args.corpus/f"{case}.qasm"
+        row={**item,"source_qasm_sha256":sha(src),"screen":[]}
+        report["cases"].append(row)
+        row["export"]=native([str(args.exporter.resolve()),case,str(args.quprs.resolve()),str(args.corpus.resolve()),item["path"]],"source",EXPORT_S,None)
+        if row["export"]["status"]!="COMPLETED" or not cnf.is_file() or not copy.is_file():
+            row["source_status"]="CENSORED_EXPORT"
+        elif copy.read_bytes()!=src.read_bytes():
+            raise SystemExit("ORIGINAL_QASM_DRIFT")
+        elif not 0<cnf.stat().st_size<=CNF_MAX_BYTES:
+            row["source_status"]="CENSORED_CNF_SIZE"
+        else:
+            try:
+                parsed=parse_cnf(cnf,"gpmc")
+                row.update(source_status="SOURCE_EXACT",cnf_sha256=sha(cnf),cnf_variables=parsed["variables"],cnf_clauses=len(parsed["clauses"]))
+            except (ValueError,OSError) as e:
+                row.update(source_status="CENSORED_INVALID_CNF",error=str(e)[:300])
+        persist()
+        if args.locked_long:
+            if row["source_status"]=="SOURCE_EXACT" and row["cnf_sha256"]!=item["expected_cnf_sha256"]:raise SystemExit("LOCKED_CNF_DRIFT")
+            continue
+        if row["source_status"]=="SOURCE_EXACT":
+            for digits,bits in BITS.items():
+                result=native(command(args,case,cnf,digits,"gpmc"),"gpmc",PAIR_S,digits)
+                row["screen"].append({"digits":digits,"bits":bits,**result})
+                persist()
+                print("COMPLETER_SCREEN",case,bits,result["status"],result.get("wall_ns"),flush=True)
+                if result["status"]!="COMPLETED":
+                    break
+        row["qualified"]=qualified(row["screen"])
+        persist()
+    if args.certified_long:
+        certified_locked_pairs(args,report,persist)
+        if args.native_ab_baseline is not None and report["status"]!="CERTIFIED_COMPLETE":
+            raise SystemExit("NATIVE_AB_INCONCLUSIVE")
+        return
+    if args.locked_long:
+        locked_pairs(args,report,persist);return
+    eligible=sorted((r for r in report["cases"] if r["qualified"]),
+                    key=lambda r:(-min(x["wall_ns"] for x in r["screen"]),r["case"]))
+    report["qualified_cases"]=[r["case"] for r in eligible]
+    # Frontier study tests every eligible source (at most two per shard),
+    # not merely the longest or the fastest Rust candidate.
+    if args.frontier_holdout:report["pilots"]=[]
+    for item in (eligible if args.frontier_holdout else eligible[:1]):
+        case=item["case"]
+        cnf=args.corpus/f"{case}-gpmc.cnf"
+        if sha(cnf)!=item["cnf_sha256"]:raise SystemExit("CNF_DRIFT")
+        pilot={"case":case,"cohorts":[],"status":"EXPLORATORY_ONE_PAIR_PER_PRECISION"}
+        if args.frontier_holdout:report["pilots"].append(pilot)
+        else:report["pilot"]=pilot
+        for digits,bits in BITS.items():
+            if args.prejoin_holdout or args.frontier_holdout:
+                route="--factor-prejoin"
+                rust=[str(args.mpfr.resolve()),route,str(digits),str(cnf.resolve())]
+            elif args.mqt_holdout:
+                route="--adaptive"
+                rust=[str(args.mpfr.resolve()),route,str(digits),str(cnf.resolve())]
+            else:
+                rust,route=rust_command(args,item,cnf,digits)
+            cohort={"digits":digits,"bits":bits,"route":route,"trials":[]}
+            pilot["cohorts"].append(cohort)
+            arms=("gpmc","rust") if bits==100 else ("rust","gpmc")
+            for arm in arms:
+                cmd=command(args,case,cnf,digits,"gpmc") if arm=="gpmc" else rust
+                r=native(cmd,"gpmc" if arm=="gpmc" else "candidate",PAIR_S,digits)
+                r["arm"]=arm
+                cohort["trials"].append(r)
+                persist()
+                print("COMPLETER_PILOT",case,bits,arm,r["status"],r.get("wall_ns"),flush=True)
+                if args.frontier_holdout and r["status"]!="COMPLETED":
+                    print("FRONTIER_CENSORED",case,bits,arm,r.get("stderr_tail","")[-1200:],flush=True)
+            pair={r["arm"]:r for r in cohort["trials"]}
+            a,b=pair["gpmc"],pair["rust"]
+            if a["status"]==b["status"]=="COMPLETED":
+                witness=complex_relative_witness(a,b,digits)
+                cohort["witness"]=witness
+                route_marker={"--factor-cardinality":"RESEARCH_MPFR_CARDINALITY ",
+                              "--factor-definitional":"RESEARCH_MPFR_DEFINITIONAL ",
+                              "--factor-taylor-strict":"RESEARCH_MPFR_TAYLOR_STRICT "}.get(route)
+                route_ok=route_marker is None or route_marker in b.get("stderr_tail","")
+                if route=="--adaptive":
+                    from quprs_mqt_adaptive_scout import result_route
+                    cohort["selected_route"]=result_route(b)
+                    route_ok=cohort["selected_route"] is not None
+                if route=="--factor-taylor-strict":
+                    route_ok=route_ok and "certified=true" in b.get("stderr_tail","")
+                if route=="--factor-prejoin":
+                    from quprs_prejoin_native_pilot import TRACE
+                    trace=TRACE.findall(b.get("stderr_tail",""))
+                    route_ok=len(trace)==1
+                    if route_ok:
+                        residual,cuts,leaves,width,work,peak,joins,plan_ns=map(int,trace[0])
+                        route_ok=residual<=256 and cuts<=2 and leaves==1<<cuts and width<=19 and work<=40_000_000 and peak<=2_000_000
+                        cohort["prejoin_trace"]=dict(residual=residual,cuts=cuts,leaves=leaves,width=width,work=work,peak=peak,joins=joins,plan_ns=plan_ns)
+                if witness["pass"] and a["sat"]==b["sat"] and route_ok:
+                    cohort["status"]="SINGLE_MATCHED_PAIR"
+                    cohort["gpmc_over_rust"]=a["wall_ns"]/b["wall_ns"]
+                else:
+                    cohort["status"]="NUMERIC_OR_ROUTE_INCONCLUSIVE"
+            else:
+                cohort["status"]="CENSORED_PAIR"
+            if args.frontier_holdout:
+                print("FRONTIER_PAIR_FINAL",case,bits,item["cnf_sha256"],cohort["status"],cohort.get("gpmc_over_rust"),cohort.get("prejoin_trace"),flush=True)
+            persist()
+    report["status"]="SCREEN_COMPLETE_EXPLORATORY"
+    persist()
+    print("COMPLETER_FINAL",args.shard,"manifest",len(manifest),"qualified",report["qualified_cases"],flush=True)
+
+if __name__=="__main__":
+    main()

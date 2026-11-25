@@ -94,3 +94,79 @@ a new optimization.
 Preserve the observed slower MQT cases and censored Grover5 cases, and
 avoid extrapolating from HWB6 or any one GPMC trial. No production
 promotion is authorized by instrumentation alone.
+
+## 2026-11-19 final-head evidence: bounded admission no-go and cache/key bottleneck
+
+Source-locked [Feynman five-arm CI #44454383757](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/44454383757),
+[MQT five-arm CI #44454383856](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/44454383856)
+and [Rust Science #44454383763](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/44454383763)
+all succeeded: **55/55 workflow runs on research commit `1692f902`**.
+Every selected source/precision cohort preserved source-locked original QuPRS
+CNF, unchanged GPMC, exact SAT and signed Complex real/imag WMC and exact
+Trail fallback. Existing independent four-arm reports remain separate from the
+new five-arm reports. The new cheap 256-variable scope refusal is a strictly
+opt-in negative control, not the production Router.
+
+### Paired native cost of structural refusal
+
+All entries below are same-batch seven fresh processes, complete-process
+**p50 WallTime in ms**. Precision is equivalent across original GPMC
+30/100 decimal digits and Rust 100/333 MPFR bits.
+
+| Source / bits | GPMC | Rust Inline | bag14 | cost preflight | quick scope256 |
+|---|---:|---:|---:|---:|---:|
+| HWB6 / 100 | 173.686 | 516.585 | 609.549 | 538.461 | 523.847 |
+| HWB6 / 333 | 192.099 | 544.547 | 681.277 | 572.834 | 555.145 |
+| QNN4 / 100 | 15.588 | 32.757 | 7.624 | 7.398 | 7.276 |
+| QNN4 / 333 | 16.078 | 34.496 | 8.234 | 8.093 | 7.889 |
+| QPEexact8 / 100 | 4.396 | 3.968 | 6.046 | 6.077 | 6.077 |
+| QPEexact8 / 333 | 4.449 | 4.103 | 6.649 | 6.761 | 6.733 |
+
+HWB6 quick-scope control gains 14.1% / 18.5% against the previously
+rejected bag14 arm, but wins **zero of seven** same-trial comparisons against
+original Inline at either precision. The new arm remains about **3x slower
+than unchanged GPMC** and is **NO-GO** as a general optimization. QNN4 and
+Barenco5/ModMult55 retain selected exact Factor-VE benefits, while QPEexact8
+shows additional non-beneficial planning overhead. A selective fast path
+needs a separately demonstrated, source-structural admission rule, not a
+global switch to Factor-VE or merely a cheaper negative admission.
+
+### Independent source-locked native stage and CodSpeed callgraph
+
+[Native Feynman stage attribution #44454383848](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/44454383848):
+for HWB6 100-bit the *profiled* cumulative key stage was **254.237 ms**,
+lookup **28.581 ms**, unit **36.942 ms**, frequency **31.570 ms**, components
+**63.311 ms**. Same-run *unprofiled* Rust Inline complete-process p50 was
+**518.209 ms**, GPMC **175.060 ms**. At 333-bit key stage **257.004 ms**,
+lookup 28.731 ms, components 63.635 ms, unprofiled Inline 545.721 ms
+and GPMC 192.676 ms. These are instrumented stage totals, not an
+exhaustive decomposition of or causal percentage of an uninstrumented run.
+
+The [CodSpeed simulated flamegraph of original HWB6 Inline](https://app.codspeed.io/PhysicsQoo/RaWMoCS/runs/6afe78be6b5fd92a3624a2e9?uri=exec_harness%3A%3Aoriginal_cnf%2Fhwb6%2Frust_equivalence_trail_inline_full_mpfr100&runnerMode=Simulation)
+on the same source-locked research revision reports **4.698 s simulated
+CPU time** including **2.584 s modeled cache-miss cost (55.0%)** and
+**1.508 s instruction cost (32.1%)**; the
+`TrailEngine::canonical_compact::{closure#0}` self-time is **1.227 s
+(26.1%)** and `count_relevant` self-time about **677 ms (14.4%)**,
+whereas `mpfr_mul` self-time is about **93 ms (2.0%)**.
+The [unchanged GPMC simulated counterpart](https://app.codspeed.io/PhysicsQoo/RaWMoCS/runs/6afe78be6b5fd92a3624a2e9?uri=exec_harness%3A%3Aoriginal_cnf%2Fhwb6%2Fgpmc_mpfr100&runnerMode=Simulation)
+is **1.731 s simulated**, with approximately **1.087 s modeled cache cost**.
+**CodSpeed Simulation is not native WallTime**, and its call counts /
+recursive aggregation must not be interpreted as direct per-node counts.
+This is corroborating hotspot evidence, not a new quantitative speed claim.
+
+### Next falsifiable algorithmic experiment
+
+Prior exact ordered-key shortcut and bounded arena reuse are independently
+benchmarked already; do not silently rebrand or re-run these as new algorithms.
+Target **original exact residual-key materialization and cache-locality
+cost** while retaining component identity, deterministic source clause order,
+signed literal polarity, weight-class ownership, collision-safe equality,
+separate SAT and Complex WMC channels, reversible Trail and original
+fallback. Prototype **one opt-in change at a time**, report the read-only
+canonical-key materialization/ordering/packing subphase evidence first, then
+the same original CNF seven-trial full-process p50/p90/RSS against unchanged
+GPMC and Inline with cross-family positive/negative holdouts and capped
+Grover5 controls. Exact cache hits or lower simulated CPU time alone are
+not promotion criteria. No source changes to GPMC or QuPRS, no extra PR
+stack and no production default/Router change.

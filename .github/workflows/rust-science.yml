@@ -12,6 +12,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   core:
@@ -75,3 +76,235 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --workspace
+
+  release-cli:
+    name: First release CLI and source-locked transfer gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/rawmocs-cli -> target
+      - name: Build and test candidate with resolved dependency lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgmp-dev libmpfr-dev m4 make gcc time pkg-config
+          manifest=crates/rawmocs-cli/Cargo.toml
+          test -f crates/rawmocs-cli/Cargo.lock
+          cargo fmt --manifest-path "$manifest" -- --check
+          cargo clippy --locked --manifest-path "$manifest" --all-targets -- -D warnings
+          cargo test --locked --release --manifest-path "$manifest"
+          cargo build --locked --release --manifest-path "$manifest"
+      - name: Exercise executable success, SAT-zero and fail-closed contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .release-evidence
+          bin=crates/rawmocs-cli/target/release/rawmocs
+          "$bin" --version | tee .release-evidence/version.txt
+          grep -Fx 'rawmocs 0.1.0' .release-evidence/version.txt
+          "$bin" --help > .release-evidence/help.txt
+          printf 'p cnf 1 0\nc t wmc\nc p weight 1 -1 0 0\n' > .release-evidence/sat-zero.cnf
+          printf 'p cnf 1 2\nc t wmc\n1 0\n-1 0\n' > .release-evidence/unsat.cnf
+          printf 'p cnf 1 0\nc t pwmc\n' > .release-evidence/unsupported.cnf
+          printf 'p cnf 33 1\nc t wmc\n1 2 3 4 5 6 7 8 9 10 0\n' > .release-evidence/wide-general.cnf
+          for name in sat-zero unsat unsupported wide-general; do
+            rc=0
+            timeout -k 2s 60s prlimit --as=3221225472 -- "$bin" --digits 60 ".release-evidence/$name.cnf" > ".release-evidence/$name.stdout" 2> ".release-evidence/$name.stderr" || rc=$?
+            if [[ "$name" == unsupported ]]; then
+              test "$rc" -eq 3
+              test ! -s ".release-evidence/$name.stdout"
+              grep -F 'RAWMOCS_FAILURE kind=UNSUPPORTED_INPUT' ".release-evidence/$name.stderr"
+            elif [[ "$name" == wide-general ]]; then
+              test "$rc" -eq 0
+              grep -Fx 's SATISFIABLE' ".release-evidence/$name.stdout"
+              grep -F 'RAWMOCS_COMPLETE route=general' ".release-evidence/$name.stderr"
+              python3 -c 'from fractions import Fraction; import sys; x=open(sys.argv[1]).read().splitlines()[1].split(); assert x[:3]==["c","r","mpfr"] and len(x)==5 and Fraction(x[3])==(2**10-1)*2**23 and Fraction(x[4])==0' ".release-evidence/$name.stdout"
+            else
+              test "$rc" -eq 0
+              test "$(wc -l < ".release-evidence/$name.stdout")" -eq 2
+              if [[ "$name" == sat-zero ]]; then
+                grep -Fx 's SATISFIABLE' ".release-evidence/$name.stdout"
+              else
+                grep -Fx 's UNSATISFIABLE' ".release-evidence/$name.stdout"
+              fi
+              python3 -c 'from fractions import Fraction; import sys; x=open(sys.argv[1]).read().splitlines()[1].split(); assert x[:3]==["c","r","mpfr"] and len(x)==5 and Fraction(x[3])==Fraction(x[4])==0' ".release-evidence/$name.stdout"
+            fi
+          done
+          rc=0
+          "$bin" --digits 60 --solver prejoin .release-evidence/wide-general.cnf > .release-evidence/rejected.stdout 2> .release-evidence/rejected.stderr || rc=$?
+          test "$rc" -eq 6
+          test ! -s .release-evidence/rejected.stdout
+          grep -F 'RAWMOCS_FAILURE kind=ROUTE_REJECTED' .release-evidence/rejected.stderr
+          rc=0
+          "$bin" --digits 60 --timeout-ms 0 .release-evidence/wide-general.cnf > .release-evidence/deadline.stdout 2> .release-evidence/deadline.stderr || rc=$?
+          test "$rc" -eq 4
+          test ! -s .release-evidence/deadline.stdout
+          grep -F 'RAWMOCS_FAILURE kind=TIMEOUT' .release-evidence/deadline.stderr
+          "$bin" --digits 60 --timeout-ms 20000 --solver general .release-evidence/wide-general.cnf > .release-evidence/configured.stdout 2> .release-evidence/configured.stderr
+          cmp .release-evidence/wide-general.stdout .release-evidence/configured.stdout
+          printf 'p cnf 4097 0\nc t wmc\n' > .release-evidence/resource.cnf
+          rc=0
+          "$bin" --digits 60 .release-evidence/resource.cnf > .release-evidence/resource.stdout 2> .release-evidence/resource.stderr || rc=$?
+          test "$rc" -eq 5
+          test ! -s .release-evidence/resource.stdout
+          grep -F 'RAWMOCS_FAILURE kind=RESOURCE_LIMIT' .release-evidence/resource.stderr
+          sha256sum "$bin" crates/rawmocs-cli/Cargo.lock | tee .release-evidence/build.sha256
+      - name: Deep general search and external process lifecycle
+        run: |
+          set -euo pipefail
+          python3 crates/rawmocs-cli/tools/general_resources.py --bin crates/rawmocs-cli/target/release/rawmocs --out .release-evidence/general-resources
+      - name: Checkout pinned QuPRS integration source
+        uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/QuPRS
+          ref: b398f07d6845efc23540549ccbfec717c27b1722
+          path: .quprs-integration
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Scoped Python encoder and real solver process conformance
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C .quprs-integration rev-parse HEAD)" = b398f07d6845efc23540549ccbfec717c27b1722
+          python -m pip install numpy sympy symengine 'qiskit==2.6.1' qiskit-qasm3-import psutil
+          python -m pip freeze > .release-evidence/quprs-python-dependencies.txt
+          PYTHONPATH="$PWD/.quprs-integration/src" python crates/rawmocs-cli/tools/quprs_python_integration.py --bin crates/rawmocs-cli/target/release/rawmocs --out .release-evidence/quprs-python
+      - name: Isolated actual-search kernel OOM and non-OOM signal controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n systemd-run --wait --pipe --collect \
+            --unit="rawmocs-release-oom-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --property="User=$(id -un)" --property="WorkingDirectory=$GITHUB_WORKSPACE" \
+            --property=MemoryAccounting=yes --property=MemoryMax=48M \
+            --property=MemorySwapMax=0 --property=OOMPolicy=continue \
+            --property=RuntimeMaxSec=50s --property=TasksMax=16 \
+            /usr/bin/python3 "$GITHUB_WORKSPACE/crates/rawmocs-cli/tools/oom_admission.py" \
+            --bin "$GITHUB_WORKSPACE/crates/rawmocs-cli/target/release/rawmocs" \
+            --out "$GITHUB_WORKSPACE/.release-evidence/oom"
+      - name: Source archive and extracted-tree installation admission
+        run: bash crates/rawmocs-cli/tools/package_source.sh .release-evidence/source-package
+      - name: Require unchanged tracked release candidate
+        run: git diff --exit-code -- crates/rawmocs-cli
+      - name: Archive candidate lock and immutable evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rawmocs-v010-candidate-evidence
+          path: |
+            crates/rawmocs-cli/Cargo.lock
+            .release-evidence/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+
+  durable-source-rebuild:
+    name: Regenerate original CNF and independent interval without artifacts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/QuPRS
+          ref: 0b28736651b3740ed3b201edd2efdef3da541e0d
+          path: .quprs-repro
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            crates/rawmocs-cli -> target
+            .quprs-repro/rust -> target
+      - name: Build pinned source encoder and candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C .quprs-repro rev-parse HEAD)" = 0b28736651b3740ed3b201edd2efdef3da541e0d
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgmp-dev libmpfr-dev m4 make gcc pkg-config
+          repro=crates/rawmocs-cli/tools/repro
+          test "$(git hash-object "$repro/quprs_long_tail_source_bridge.rs")" = fc32f4e8b0a2f34386b86e08ddf147469275c245
+          test "$(git hash-object "$repro/original_fixed_interval.py")" = bb7aec29adbbf46421be4ca78d76572a7988252e
+          test "$(git hash-object "$repro/original_exact_prejoin.py")" = 0c43167abfc52b7449076f7f0da4d9298f5a3f32
+          cp "$repro/quprs_long_tail_source_bridge.rs" .quprs-repro/rust/quprs/examples/
+          cargo build --locked --release --no-default-features --manifest-path .quprs-repro/rust/Cargo.toml -p quprs --example quprs_long_tail_source_bridge
+          cargo build --locked --release --manifest-path crates/rawmocs-cli/Cargo.toml
+      - name: Regenerate six source CNFs and verify seven cohorts
+        run: |
+          set -euo pipefail
+          python3 crates/rawmocs-cli/tools/regenerate_release.py --quprs .quprs-repro --exporter .quprs-repro/rust/target/release/examples/quprs_long_tail_source_bridge --bin crates/rawmocs-cli/target/release/rawmocs --out .release-rebuild
+      - name: Archive regeneration evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rawmocs-v010-durable-rebuild
+          path: .release-rebuild/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+
+  release-native-paired:
+    name: Release matched native GPMC (${{ matrix.case }})
+    needs: durable-source-rebuild
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [qpeinexact22-432, grover6-432, gf2-7-333]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: rawmocs-v010-durable-rebuild
+          path: .release-rebuild
+      - uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/GPMC
+          ref: 89bbc89d0de918e7a5385740355df55765039230
+          path: .gpmc-release
+          submodules: recursive
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/rawmocs-cli -> target
+      - name: Build pinned GPMC and locked release binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C .gpmc-release rev-parse HEAD)" = 89bbc89d0de918e7a5385740355df55765039230
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build libgmp-dev libmpfr-dev zlib1g-dev m4 make gcc time pkg-config
+          cmake -S .gpmc-release -B .gpmc-release/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build .gpmc-release/build --target gpmc-bin --parallel 2
+          cargo build --locked --release --manifest-path crates/rawmocs-cli/Cargo.toml
+      - name: Seven order-rotated same-precision native pairs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 crates/rawmocs-cli/tools/release_native_paired.py --case "${{ matrix.case }}" --corpus .release-rebuild --gpmc-source .gpmc-release --gpmc .gpmc-release/build/gpmc --bin crates/rawmocs-cli/target/release/rawmocs --out ".release-pairs/${{ matrix.case }}"
+      - name: Archive all attempted pairs and censored evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rawmocs-v010-paired-${{ matrix.case }}
+          path: .release-pairs/
+          if-no-files-found: warn
+          retention-days: 30

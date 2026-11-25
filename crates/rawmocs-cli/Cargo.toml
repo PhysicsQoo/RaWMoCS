@@ -1,0 +1,18 @@
+[package]
+name = "rawmocs-cli"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+# Keep the MPFR/GMP executable independent of the portable reference workspace.
+[workspace]
+
+[[bin]]
+name = "rawmocs"
+path = "src/main.rs"
+
+[dependencies]
+rug = { version = "=1.30.0", default-features = false, features = ["integer", "rational", "float", "std"] }
+num-rational = "0.4"
+rawmocs-core = { path = "../rawmocs-core" }

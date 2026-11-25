@@ -2,7 +2,7 @@
 
 Rust-based Algebraic Weighted Model Counting Solver.
 
-RaWMoCS is an experimental Rust library for **full complex WMC** over exact
+The original RaWMoCS reference library implements **full complex WMC** over exact
 Gaussian rational weights. The initial reference engine includes original-CNF
 unit propagation, chronological weighted DPLL, component decomposition, and a
 canonical residual cache.
@@ -10,6 +10,97 @@ canonical residual cache.
 The numerical count and Boolean satisfiability are separate; a satisfiable
 formula can have zero weighted count. All variables have independently defined
 positive and negative literal weights.
+
+## First release candidate: QuPRS weighted CNF executable
+
+The v0.1.0 candidate is an opt-in signed-complex full WMC executable
+for weighted CNF emitted by QuPRS. It selects a factor-prejoin route from
+the CNF structure, with general MPFR DPLL, component decomposition and
+residual caching for ordinary admission failures. It never selects by circuit name or source
+benchmark ID. The reference crate and its API remain unchanged.
+
+Build on Linux x86-64 with Rust, GMP/MPFR build prerequisites and a resolved
+dependency lock:
+
+```sh
+cargo build --locked --release --manifest-path crates/rawmocs-cli/Cargo.toml
+crates/rawmocs-cli/target/release/rawmocs --digits 60 input.cnf
+```
+
+The CLI dependency lock is tracked. For source installation on the
+validated Linux x86-64 target, use:
+
+```sh
+cargo install --locked --path crates/rawmocs-cli
+rawmocs --version
+```
+
+The source-only packaging gate validates installation from an extracted
+Git archive, records SHA256 checksums, and does not redistribute a linked
+binary. It requires a Rust toolchain, native build prerequisites and access
+to the locked dependency sources. Binary packages and other MPFR CLI targets
+are not admitted by the portable reference tests. The four supported digit selectors are 30, 60, 100, 130
+(working precisions 100, 200, 333, 432 bits). These selectors are working
+precision choices, not a certified number of correct decimal digits.
+QuPRS should use guarded precision where required and handle execution
+failure independently from SAT, UNSAT, and numeric zero.
+
+The source format is strict, with a `p cnf N M` header, `c t wmc`,
+optional `c p weight L REAL IMAG 0` records, then one terminated clause
+per line. Omitted literal weights are independently one. The finite
+decimal grammar and source size limits are enforced. Example:
+
+```
+p cnf 1 0
+c t wmc
+c p weight 1 -1 0 0
+```
+
+A complete solve emits exactly a Boolean status and a rounded complex count
+(`c r mpfr REAL IMAG`); SAT with zero is valid. Nonzero exit means no
+count and empty stdout. Stderr reports INVALID_INPUT (2), UNSUPPORTED_INPUT
+(3), TIMEOUT (4), RESOURCE_LIMIT (5), explicit ROUTE_REJECTED (6), or
+INTERNAL_ERROR (7). The supervisor must classify external timeout,
+cancellation and OOM/kill from process evidence; partial stdout is invalid.
+Auto routing uses one solver deadline (45 seconds by default). Set
+`--timeout-ms N` (0 to 86400000; zero expires immediately) after `--digits`.
+Planning uses at most two thirds of the remaining time and 30 seconds.
+The reference diagnostic uses the external process supervisor instead. The general route has no 32-variable admission cutoff;
+it retains the parser's input bounds and optional bounded cache. General
+search uses heap-resident continuation frames rather than a fixed recursive
+depth cap. Frame allocation failure is a resource failure, not a count; The exact-rational reference is an
+explicit small-case diagnostic, not the auto fallback. An external process
+resource supervisor is still required for hard RSS and whole-process time.
+The heap frame guard is not a bound on all allocations.
+
+### Opt-in QuPRS Python adapter
+
+For a QuPRS Python version supporting scoped solver registration (release
+CI pins revision `b398f07d6845efc23540549ccbfec717c27b1722`), add
+`crates/rawmocs-cli/tools` from the source package to your Python import
+path. The adapter does not change QuPRS's default GPMC solver.
+
+```python
+from rawmocs_quprs import registered_rawmocs
+from QuPRS.interface.ps2wmc import run_wmc
+
+with registered_rawmocs("/absolute/path/to/rawmocs", digits=60):
+    count = run_wmc("input.cnf", "rawmocs", timeout=20, preserve_count=True)
+```
+
+This selects a 200-bit working precision and the QuPRS external deadline.
+Linux `prlimit` applies a 3 GiB address-space cap by default; it is not a
+physical RSS limit or kernel OOM classifier. An internal search deadline
+can also be selected with `timeout_ms`. The returned `PrintedCount` is a
+numerical observation, not an equivalence verdict or certified error
+bound; use `RawAdapter.parse_protocol` for the explicit Boolean SAT status.
+Registration is scoped and no failure is converted to a count or silently
+retried with another solver. This is not a built-in QuPRS adapter, Rust FFI
+integration, or default-solver migration.
+
+**Candidate only:** see [release admission](docs/first-release-admission.md).
+No claim of competition-wide performance, projected WMC, exact
+transcendental phase weights, certified rounding or equivalence checking.
 
 ## Scientific baseline
 
@@ -38,7 +129,7 @@ The external A0 integration tests are ignored by default and **fail closed**
 when invoked without their source-pinned fixture directory. CI checks out the
 existing original files and then runs those tests with `QUPRS_A0_DIR`.
 
-This is a research prototype, **not** a production solver or a quantum-circuit
+The exact reference engine remains a research prototype, **not** a production solver or a quantum-circuit
 equivalence checker. The finite node budget and depth limit return an error
 instead of a partial count; the cache uses an entry-count limit, not a memory
 byte limit. OS-level hard RSS caps, wall-clock timeout/cancellation,

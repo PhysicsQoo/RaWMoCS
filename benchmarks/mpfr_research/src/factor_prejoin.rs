@@ -436,7 +436,7 @@ mod tests{
             }).collect();
             numbers.push(C{re:Float::with_val(bits,decimal("0.12345678901234567890123456789").unwrap()),
                 im:Float::with_val(bits,decimal("-1e-80").unwrap())});
-            numbers.push(C{re:Float::with_val(bits,decimal("-0.1234567890123456789").unwrap()),im:Float::new(bits)});
+            numbers.push(C{re:Float::with_val(bits,decimal("-0.1234567890123456789").unwrap()),im:Float::with_val(bits,0)});
             numbers.push(C{re:Float::with_val(bits,decimal("1e80").unwrap()),im:Float::with_val(bits,-0.0)});
             let mut scratch=Scratch::new(bits);
             for a in &numbers{for b in &numbers{

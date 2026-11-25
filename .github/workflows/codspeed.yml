@@ -242,11 +242,11 @@ jobs:
         if: env.STUDY != 'legacy' && env.STUDY != 'qpe8_prejoin' && env.STUDY != 'gf2_6_prejoin' && env.STUDY != 'gf2_6_axis_ab'
         shell: bash
         run: python3 benchmarks/mpfr_research/tools/quprs_long_codspeed.py verify
-      - name: Checkout pinned pre-multiword Simulation baseline
+      - name: Checkout pinned pre-incremental Simulation baseline
         if: env.STUDY == 'gf2_6_axis_ab'
         uses: actions/checkout@v4
         with:
-          ref: 59efbe23e6391e7289b8055dc08a6da16730d184
+          ref: ff0a2cc5cc6b5b79666c34a86f6e5b87eb2301be
           path: .upstream/prejoin-simulation-baseline
           persist-credentials: false
       - name: Build both prejoin arms with identical dependency lock
@@ -255,7 +255,7 @@ jobs:
         run: |
           set -euo pipefail
           base=.upstream/prejoin-simulation-baseline
-          test "$(git -C "$base" rev-parse HEAD)" = 59efbe23e6391e7289b8055dc08a6da16730d184
+          test "$(git -C "$base" rev-parse HEAD)" = ff0a2cc5cc6b5b79666c34a86f6e5b87eb2301be
           cmp "$base/benchmarks/mpfr_research/Cargo.toml" benchmarks/mpfr_research/Cargo.toml
           test -s benchmarks/mpfr_research/Cargo.lock
           if test -e "$base/benchmarks/mpfr_research/Cargo.lock"; then

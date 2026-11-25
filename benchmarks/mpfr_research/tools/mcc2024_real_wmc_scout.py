@@ -86,7 +86,7 @@ def member_bytes(tar,member):
     if not member.isfile() or member.size>CNF_MAX_BYTES:raise ValueError("ARCHIVE_MEMBER_CAP")
     raw=tar.extractfile(member).read(CNF_MAX_BYTES+1)
     if len(raw)>CNF_MAX_BYTES:raise ValueError("ARCHIVE_MEMBER_CAP")
-    streams={".gz":gzip.GzipFile,".xz":lzma.LZMAFile,".bz2":bz2.BZ2File}
+    streams={".gz":lambda f:gzip.GzipFile(fileobj=f),".xz":lzma.LZMAFile,".bz2":bz2.BZ2File}
     suffix=Path(member.name).suffix
     if suffix in streams:
         with streams[suffix](io.BytesIO(raw)) as f:raw=f.read(CNF_MAX_BYTES+1)
@@ -103,7 +103,7 @@ def self_test(a):
     # Synthetic checks test the adapter and both native CLIs only. They
     # are explicitly excluded from the public-source cohort.
     fixtures=[
-        (b"p cnf 2 1\nc t wmc\nc p weight 1 .25 0\nc p weight -1 .75 0\n1 0\n",True,Fraction(1,2)),
+        (b"p cnf 2 1\nc t wmc\nc p weight 1 0.25 0\nc p weight -1 0.75 0\n1 0\n",True,Fraction(1,2)),
         (b"p cnf 1 1\nc t wmc\nc p weight 1 0 0\nc p weight -1 1 0\n1 0\n",True,Fraction(0)),
         (b"p cnf 1 2\nc t wmc\nc p weight 1 0.5 0\nc p weight -1 0.5 0\n1 0\n-1 0\n",False,Fraction(0))]
     for i,(raw,sat,answer) in enumerate(fixtures):
@@ -117,8 +117,8 @@ def self_test(a):
                 assert abs(Fraction(row["real"])-answer)<=Fraction(1,10**target),row
                 assert Fraction(row["imag"])==0,row
     raw=fixtures[0][0]
-    for bad in (raw.replace(b"c p weight -1 .75 0\n",b""),raw.replace(b".25",b"1/4"),
-                raw.replace(b"c t wmc",b"c t pwmc"),raw.replace(b".25",b"-.25")):
+    for bad in (raw.replace(b"c p weight -1 0.75 0\n",b""),raw.replace(b"0.25",b"1/4"),
+                raw.replace(b"c t wmc",b"c t pwmc"),raw.replace(b"0.25",b"-0.25")):
         try:normalize(bad)
         except ValueError:pass
         else:raise AssertionError("ADAPTER_ACCEPTED_UNSUPPORTED_FORMAT")

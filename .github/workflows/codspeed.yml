@@ -22,7 +22,7 @@ on:
       study:
         description: 'Routine only, focused pair, or explicit milestone'
         type: choice
-        options: [routine, grover5_focus, qpe8_prejoin, gf2_6_prejoin, legacy, grover6_large, wstate16]
+        options: [routine, grover5_focus, qpe8_prejoin, gf2_6_prejoin, gf2_6_axis_ab, legacy, grover6_large, wstate16]
         default: routine
       digits:
         type: choice
@@ -126,7 +126,7 @@ jobs:
     # Build/reference overhead is separate from the bounded Simulation step.
     timeout-minutes: ${{ (github.event_name == 'pull_request' || inputs.study == 'grover5_focus' || inputs.study == 'qpe8_prejoin') && 25 || 35 }}
     env:
-      STUDY: ${{ github.event.label.name == 'run-gf2-contraction-codspeed' && 'gf2_6_prejoin' || github.event.label.name == 'run-prejoin-codspeed' && 'qpe8_prejoin' || github.event_name == 'pull_request' && 'grover5_focus' || inputs.study || 'grover5_focus' }}
+      STUDY: ${{ github.event.label.name == 'run-gf2-contraction-codspeed' && 'gf2_6_axis_ab' || github.event.label.name == 'run-prejoin-codspeed' && 'qpe8_prejoin' || github.event_name == 'pull_request' && 'grover5_focus' || inputs.study || 'grover5_focus' }}
       DIGITS: ${{ inputs.digits || '30' }}
     permissions:
       contents: read
@@ -200,7 +200,7 @@ jobs:
           cp benchmarks/rust_core/tools/quprs_long_tail_source_bridge.rs .upstream/quprs/rust/quprs/examples/quprs_long_tail_source_bridge.rs
           cargo build --locked --release --no-default-features --manifest-path .upstream/quprs/rust/Cargo.toml -p quprs --example quprs_long_tail_source_bridge
       - name: Build unchanged original GPMC C++ executable
-        if: env.STUDY != 'gf2_6_prejoin'
+        if: env.STUDY != 'gf2_6_prejoin' && env.STUDY != 'gf2_6_axis_ab'
         shell: bash
         run: |
           set -euo pipefail
@@ -214,7 +214,7 @@ jobs:
           cargo build --release --manifest-path benchmarks/mpfr_research/Cargo.toml
           git diff --exit-code -- benchmarks/mpfr_research/Cargo.lock
       - name: Qualify original long CNF and generate focused two-arm config
-        if: env.STUDY != 'legacy' && env.STUDY != 'qpe8_prejoin' && env.STUDY != 'gf2_6_prejoin'
+        if: env.STUDY != 'legacy' && env.STUDY != 'qpe8_prejoin' && env.STUDY != 'gf2_6_prejoin' && env.STUDY != 'gf2_6_axis_ab'
         shell: bash
         run: |
           set -euo pipefail
@@ -232,35 +232,62 @@ jobs:
           # Do not nest `codspeed run` inside the CodSpeed Action.
           config: codspeed.yml
       - name: CodSpeed focused original CNF Simulation
-        if: env.STUDY != 'legacy' && env.STUDY != 'qpe8_prejoin' && env.STUDY != 'gf2_6_prejoin'
+        if: env.STUDY != 'legacy' && env.STUDY != 'qpe8_prejoin' && env.STUDY != 'gf2_6_prejoin' && env.STUDY != 'gf2_6_axis_ab'
         timeout-minutes: ${{ env.STUDY == 'grover5_focus' && 10 || 20 }}
         uses: CodSpeedHQ/action@v5
         with:
           mode: simulation
           config: codspeed-long.generated.yml
       - name: Verify actual simulated output and solver route
-        if: env.STUDY != 'legacy' && env.STUDY != 'qpe8_prejoin' && env.STUDY != 'gf2_6_prejoin'
+        if: env.STUDY != 'legacy' && env.STUDY != 'qpe8_prejoin' && env.STUDY != 'gf2_6_prejoin' && env.STUDY != 'gf2_6_axis_ab'
         shell: bash
         run: python3 benchmarks/mpfr_research/tools/quprs_long_codspeed.py verify
+      - name: Checkout pinned pre-axis Simulation baseline
+        if: env.STUDY == 'gf2_6_axis_ab'
+        uses: actions/checkout@v4
+        with:
+          ref: 6e1d3deb998e0cae186c5751914e6275bc8b37ef
+          path: .upstream/prejoin-simulation-baseline
+          persist-credentials: false
+      - name: Build both prejoin arms with identical dependency lock
+        if: env.STUDY == 'gf2_6_axis_ab'
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=.upstream/prejoin-simulation-baseline
+          test "$(git -C "$base" rev-parse HEAD)" = 6e1d3deb998e0cae186c5751914e6275bc8b37ef
+          cmp "$base/benchmarks/mpfr_research/Cargo.toml" benchmarks/mpfr_research/Cargo.toml
+          test -s benchmarks/mpfr_research/Cargo.lock
+          if test -e "$base/benchmarks/mpfr_research/Cargo.lock"; then
+            cmp "$base/benchmarks/mpfr_research/Cargo.lock" benchmarks/mpfr_research/Cargo.lock
+          else
+            cp benchmarks/mpfr_research/Cargo.lock "$base/benchmarks/mpfr_research/Cargo.lock"
+          fi
+          cargo build --locked --release --manifest-path benchmarks/mpfr_research/Cargo.toml
+          cargo build --locked --release --manifest-path "$base/benchmarks/mpfr_research/Cargo.toml"
+          cmp "$base/benchmarks/mpfr_research/Cargo.lock" benchmarks/mpfr_research/Cargo.lock
+          git -C "$base" diff --exit-code -- benchmarks/mpfr_research/Cargo.toml benchmarks/mpfr_research/src
+          mkdir -p .research/codspeed-prejoin
+          cp benchmarks/mpfr_research/Cargo.lock .research/codspeed-prejoin/axis-ab.Cargo.lock
       - name: Qualify bounded prejoin native proxy
-        if: env.STUDY == 'qpe8_prejoin' || env.STUDY == 'gf2_6_prejoin'
+        if: env.STUDY == 'qpe8_prejoin' || env.STUDY == 'gf2_6_prejoin' || env.STUDY == 'gf2_6_axis_ab'
         shell: bash
         run: |
           set -euo pipefail
           python3 -m py_compile benchmarks/mpfr_research/tools/quprs_prejoin_codspeed.py
           python3 benchmarks/mpfr_research/tools/quprs_prejoin_codspeed.py prepare
       - name: CodSpeed bounded prejoin proxy Simulation
-        if: env.STUDY == 'qpe8_prejoin' || env.STUDY == 'gf2_6_prejoin'
+        if: env.STUDY == 'qpe8_prejoin' || env.STUDY == 'gf2_6_prejoin' || env.STUDY == 'gf2_6_axis_ab'
         timeout-minutes: 10
         uses: CodSpeedHQ/action@v5
         with:
           mode: simulation
           config: codspeed-prejoin.generated.yml
       - name: Verify actual prejoin proxy outputs and routes
-        if: env.STUDY == 'qpe8_prejoin' || env.STUDY == 'gf2_6_prejoin'
+        if: env.STUDY == 'qpe8_prejoin' || env.STUDY == 'gf2_6_prejoin' || env.STUDY == 'gf2_6_axis_ab'
         run: python3 benchmarks/mpfr_research/tools/quprs_prejoin_codspeed.py verify
       - name: Report bounded prejoin Simulation stderr on failure
-        if: failure() && (env.STUDY == 'qpe8_prejoin' || env.STUDY == 'gf2_6_prejoin')
+        if: failure() && (env.STUDY == 'qpe8_prejoin' || env.STUDY == 'gf2_6_prejoin' || env.STUDY == 'gf2_6_axis_ab')
         shell: bash
         run: |
           for f in .research/codspeed-prejoin/*.stderr; do

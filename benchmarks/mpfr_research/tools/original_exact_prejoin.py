@@ -109,7 +109,7 @@ def reduce_axes(scope, vals):
     return scope, vals, dropped
 
 
-def local_reduce(raw, expected, deadline, *, diagnostic=False, local_width=LOCAL_WIDTH):
+def local_reduce(raw, expected, deadline, *, diagnostic=False, local_width=LOCAL_WIDTH, incremental=False):
     if local_width!=LOCAL_WIDTH and (not diagnostic or local_width not in (5,6)):
         raise ValueError("LOCAL_WIDTH_POLICY")
     n, clauses, scopes, weights = parse(raw, expected)
@@ -144,10 +144,22 @@ def local_reduce(raw, expected, deadline, *, diagnostic=False, local_width=LOCAL
     def neighbors(v):
         return set().union(*(set(fs[i][0]) for i in inc[v]))-{v}
 
+    def key(v):
+        return (len(neighbors(v)), len(inc[v]), -v)
+
+    # Version-free lazy heap: old entries are harmless if their complete
+    # priority equals the current key. Rebuild to cap stale metadata.
+    current = {v:key(v) for v in inc} if incremental else {}
+    h = list(current.values());heapq.heapify(h)
     while inc:
         if monotonic() >= deadline:
             raise ValueError("LOCAL_DEADLINE")
-        v = min(inc, key=lambda v: (len(neighbors(v)), len(inc[v]), -v))
+        if incremental:
+            while h:
+                k=heapq.heappop(h);v=-k[2]
+                if current.get(v)==k:break
+            else:raise ValueError("LOCAL_HEAP_EMPTY")
+        else:v=min(inc,key=key)
         scope = tuple(sorted(neighbors(v)))
         if len(scope) > local_width:
             break
@@ -178,6 +190,14 @@ def local_reduce(raw, expected, deadline, *, diagnostic=False, local_width=LOCAL
                 inc[u].remove(i)
         del inc[v]
         insert(scope, out)
+        if incremental:
+            del current[v]
+            # All removed factors and the replacement have scopes contained
+            # in {v} union scope. No other priority can change.
+            for u in scope:
+                current[u]=key(u);heapq.heappush(h,current[u])
+            if len(h)>4*len(current)+64:
+                h=list(current.values());heapq.heapify(h)
         eliminated += 1
     if not diagnostic and len(inc) > RESIDUAL_CAP:
         raise ValueError("RESIDUAL_CAP")
@@ -685,14 +705,14 @@ def shared_work_profile(branches, local):
         ideal_within_work_cap=unique_work+conditioning<=MAX_WORK,
         note="Ideal exact ordered expression reuse; no cache schedule, RSS, numeric or timing certification")
 
-def local_width_profile(raw,expected):
+def local_width_profile(raw,expected, *, incremental=False):
     """Structural exact local reduction only; same arithmetic/work/live caps."""
     start=monotonic();rows=[]
     for width in (4,5,6):
         t=monotonic()
         try:
             fs,nodes,_,local=local_reduce(raw,expected,t+PLAN_SECONDS,
-                diagnostic=True,local_width=width)
+                diagnostic=True,local_width=width,incremental=incremental)
             _,parts=residual_components(fs,nodes)
             rows.append(dict(local_width=width,status="COMPLETE",local=local,
                 largest_component=max((len(p) for p in parts),default=0),
@@ -701,7 +721,7 @@ def local_width_profile(raw,expected):
             if str(exc) not in ("LOCAL_DEADLINE","LOCAL_RESOURCE","LOCAL_EXACT_BITS","LOCAL_LIVE"):
                 raise
             rows.append(dict(local_width=width,status=str(exc),wall_s=monotonic()-t))
-    return dict(status="LOCAL_WIDTH_PROFILE_ONLY",source_sha256=expected,rows=rows,
+    return dict(status="LOCAL_WIDTH_PROFILE_ONLY",source_sha256=expected,incremental=incremental,rows=rows,
                 wall_s=monotonic()-start)
 
 def replay_graph_order(raw, expected):
@@ -768,6 +788,10 @@ def self_test():
              ''.join(' '.join(map(str,c))+' 0\n' for c in cs)).encode()
         h=sha256(raw).hexdigest()
         got=solve(raw,h)
+        for width in (4,5,6):
+            old=local_reduce(raw,h,monotonic()+5,diagnostic=True,local_width=width)
+            new=local_reduce(raw,h,monotonic()+5,diagnostic=True,local_width=width,incremental=True)
+            assert old==new
         exact=None
         for m in range(1<<n):
             yes=lambda l:bool(m&(1<<(abs(l)-1)))==(l>0)
@@ -844,7 +868,7 @@ def self_test():
     other=[((1,),[ONE,None])]
     different=shared_work_profile([(tiny,plan_a),(other,plan_a)],dict(work=0,retained_cells=2))
     assert different["unique_operations"]==2
-    widths=local_width_profile(raw,h)
+    widths=local_width_profile(raw,h,incremental=True)
     assert widths["status"]=="LOCAL_WIDTH_PROFILE_ONLY"
     assert [r["local_width"] for r in widths["rows"]]==[4,5,6]
     print("EXACT_PREJOIN_SELF_TEST PASS")
@@ -863,6 +887,7 @@ if __name__=="__main__":
     mode.add_argument("--graph-order-profile",action="store_true")
     mode.add_argument("--replay-graph-order",action="store_true")
     mode.add_argument("--local-width-profile",action="store_true")
+    mode.add_argument("--incremental-local-width-profile",action="store_true")
     a=ap.parse_args()
     if a.self_test:
         self_test()
@@ -870,7 +895,8 @@ if __name__=="__main__":
         if a.cnf is None or a.sha256 is None:
             ap.error("CNF and SHA256 required")
         raw=a.cnf.read_bytes()
-        result=(local_width_profile(raw,a.sha256) if a.local_width_profile else
+        result=(local_width_profile(raw,a.sha256,incremental=True) if a.incremental_local_width_profile else
+                local_width_profile(raw,a.sha256) if a.local_width_profile else
                 replay_graph_order(raw,a.sha256) if a.replay_graph_order else
                 graph_order_profile(raw,a.sha256) if a.graph_order_profile else
                 extended_cutset_profile(raw,a.sha256) if a.extended_cutset_profile else

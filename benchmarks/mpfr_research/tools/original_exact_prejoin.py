@@ -200,7 +200,7 @@ def restrict(factors, scalar, pivots, values):
     return result, scalar
 
 
-def plan(factors, nodes, policy, retained, deadline):
+def plan(factors, nodes, policy, retained, deadline, *, fixed_order=None):
     penalty, rev = policy
     g = {v:set() for v in nodes}
     ss = {i:set(s) for i, (s, _) in enumerate(factors)}
@@ -216,7 +216,10 @@ def plan(factors, nodes, policy, retained, deadline):
         f = 0 if penalty is None else sum(b not in g[u] for u,b in combinations(a,2))
         return (d if penalty is None else f+penalty*d, d, -v if rev else v, v)
 
-    h = [score(v) for v in g]
+    if fixed_order is not None and (len(fixed_order)!=len(nodes) or set(fixed_order)!=nodes):
+        raise ValueError("ORDER_COVERAGE")
+    order=iter(fixed_order) if fixed_order is not None else None
+    h = [score(v) for v in g] if order is None else []
     heapq.heapify(h)
     cur = {x[-1]:x for x in h}
     live = sum(1<<len(s) for s in ss.values())
@@ -229,12 +232,15 @@ def plan(factors, nodes, policy, retained, deadline):
     while g:
         if monotonic() >= deadline:
             raise ValueError("PLAN_DEADLINE")
-        while True:
-            x = heapq.heappop(h)
-            v = x[-1]
-            if cur.get(v) == x:
-                break
-        cur.pop(v)
+        if order is not None:
+            v=next(order)
+        else:
+            while True:
+                x = heapq.heappop(h)
+                v = x[-1]
+                if cur.get(v) == x:
+                    break
+            cur.pop(v)
         nb = g.pop(v)
         width = max(width,len(nb))
         if width > MAX_WIDTH:
@@ -280,10 +286,11 @@ def plan(factors, nodes, policy, retained, deadline):
             inc[u].add(idx)
             affected.update(g[u])
         idx += 1
-        for u in affected:
-            x = score(u)
-            cur[u] = x
-            heapq.heappush(h,x)
+        if order is None:
+            for u in affected:
+                x = score(u)
+                cur[u] = x
+                heapq.heappush(h,x)
     return dict(width=width, work=work, peak=peak, joins=joins, policy=policy, ops=ops,
                 retained_extra=extra)
 
@@ -637,6 +644,53 @@ def graph_order_profile(raw, expected):
     return dict(status="GRAPH_ORDER_PROFILE_ONLY",source_sha256=expected,
         local=local,degree_pool=high,rows=rows,wall_s=monotonic()-start)
 
+def replay_graph_order(raw, expected):
+    """Replay a graph-screened candidate on every exact restricted factor set.
+    Report aggregate structural caps, not a numeric witness. The graph-only
+    search and replay have separate deadlines and no solver route changes.
+    """
+    start=monotonic()
+    graph=graph_order_profile(raw,expected)
+    candidates=[r["best_observed"] for r in graph["rows"]
+        if r["best_observed"] is not None and r["best_observed"]["width"]<=MAX_WIDTH]
+    report=dict(status="GRAPH_ORDER_REPLAY_ONLY",source_sha256=expected,graph=graph,candidates=[])
+    if not candidates:
+        report.update(outcome="NO_WIDTH_QUALIFIED_CANDIDATE",wall_s=monotonic()-start)
+        return report
+    deadline=monotonic()+PLAN_SECONDS
+    factors,nodes,scalar,local=local_reduce(raw,expected,deadline)
+    for c in candidates:
+        cuts=c["cutset"]
+        ns=nodes-set(cuts)
+        row=dict(cutset=cuts,order=c["order"],graph_width=c["width"],
+            branches=[],work=local["work"],peak=local["peak"],width=0)
+        report["candidates"].append(row)
+        try:
+            for values in product((False,True),repeat=len(cuts)):
+                if monotonic()>=deadline:raise ValueError("PLAN_DEADLINE")
+                branch,_=restrict(factors,scalar,cuts,values)
+                p=plan(branch,ns,(None,False),local["retained_cells"],deadline,fixed_order=c["order"])
+                if p is None:
+                    row["branches"].append(dict(values=values,status="BRANCH_CAP_REJECTED"))
+                    continue
+                row["branches"].append(dict(values=values,status="FEASIBLE",
+                    **{k:p[k] for k in ("work","peak","width","joins")}))
+                row["work"]+=p["work"]+local["retained_cells"]
+                row["peak"]=max(row["peak"],p["peak"])
+                row["width"]=max(row["width"],p["width"])
+        except ValueError as exc:
+            if str(exc)!="PLAN_DEADLINE":raise
+            row["status"]="DEADLINE"
+            break
+        if any(b["status"]!="FEASIBLE" for b in row["branches"]):
+            row["status"]="BRANCH_CAP_REJECTED"
+        elif row["work"]>MAX_WORK or row["peak"]>MAX_LIVE or row["width"]>MAX_WIDTH:
+            row["status"]="AGGREGATE_CAP_REJECTED"
+        else:row["status"]="FEASIBLE"
+    report["outcome"]="FEASIBLE" if any(c["status"]=="FEASIBLE" for c in report["candidates"]) else "NO_ADMITTED_OBSERVED_CANDIDATE"
+    report["wall_s"]=monotonic()-start
+    return report
+
 def self_test():
     import random
     from original_fixed_interval import solve as baseline
@@ -712,6 +766,11 @@ def self_test():
             assert len(best["order"])+len(best["cutset"])==orders["local"]["residual"]
             assert len(set(best["order"]+best["cutset"]))==orders["local"]["residual"]
             assert best["width"]<=max(0,len(best["order"])-1)
+    replay=replay_graph_order(raw,h)
+    assert replay["outcome"]=="FEASIBLE"
+    for row in replay["candidates"]:
+        assert row["status"]=="FEASIBLE"
+        assert len(row["branches"])==1<<len(row["cutset"])
     print("EXACT_PREJOIN_SELF_TEST PASS")
 
 
@@ -726,6 +785,7 @@ if __name__=="__main__":
     mode.add_argument("--residual-profile",action="store_true")
     mode.add_argument("--extended-cutset-profile",action="store_true")
     mode.add_argument("--graph-order-profile",action="store_true")
+    mode.add_argument("--replay-graph-order",action="store_true")
     a=ap.parse_args()
     if a.self_test:
         self_test()
@@ -733,7 +793,8 @@ if __name__=="__main__":
         if a.cnf is None or a.sha256 is None:
             ap.error("CNF and SHA256 required")
         raw=a.cnf.read_bytes()
-        result=(graph_order_profile(raw,a.sha256) if a.graph_order_profile else
+        result=(replay_graph_order(raw,a.sha256) if a.replay_graph_order else
+                graph_order_profile(raw,a.sha256) if a.graph_order_profile else
                 extended_cutset_profile(raw,a.sha256) if a.extended_cutset_profile else
                 residual_profile(raw,a.sha256) if a.residual_profile else
                 cutset_spectrum(raw,a.sha256) if a.cutset_spectrum else solve(raw,a.sha256,profile=a.profile))

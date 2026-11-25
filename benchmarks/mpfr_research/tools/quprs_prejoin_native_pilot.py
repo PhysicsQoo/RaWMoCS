@@ -27,7 +27,7 @@ def main():
                     help="Explicit research-only wide residual admission; other caps unchanged")
     a=ap.parse_args()
     ab=a.planner_baseline is not None
-    if ab and a.repeat_fixed_target is None:ap.error("planner A/B requires fixed-repeat target")
+    if ab and a.repeat_fixed_target is None and a.repeat_target is None:ap.error("planner A/B requires a fixed or guarded repeat target")
     ref=json.loads(a.reference.read_text())
     expected=ref["source_sha256"]
     if (sha(a.cnf)!=expected or ref["status"] not in ("INDEPENDENT_INTERVAL_COMPLETE","INDEPENDENT_FIXED_INTERVAL_COMPLETE") or ref["bits"]!=550
@@ -117,6 +117,8 @@ def main():
                     if (old["status"]!="COMPLETED" or not old.get("route_pass") or
                         not old["witness"]["pass"] or not old.get("peak_rss_kib",0)>0):
                         cohort["status"]="BASELINE_INCONCLUSIVE";break
+                    if not fixed and any(old[k]!=r[k] for k in ("sat","real","imag")):
+                        cohort["status"]="BASELINE_OUTPUT_DRIFT";break
                     keys=("residual","cuts","leaves","width","work","peak","joins")
                     if any(old["trace"][k]!=r["trace"][k] for k in keys):
                         cohort["status"]="BASELINE_PLAN_SIGNATURE_DRIFT";break

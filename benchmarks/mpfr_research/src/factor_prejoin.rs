@@ -429,8 +429,8 @@ mod tests{
             }}
             for nb in 0..32u64{
                 let mut expected=0;
-                for i in 0..5{for j in i+1..5{
-                    if nb&(1<<i)!=0&&nb&(1<<j)!=0&&graph[i]&(1<<j)==0{expected+=1;}
+                for (i,&neighbors) in graph.iter().enumerate(){for j in i+1..5{
+                    if nb&(1<<i)!=0&&nb&(1<<j)!=0&&neighbors&(1<<j)==0{expected+=1;}
                 }}
                 assert_eq!(fill_count(&graph,nb),expected);
             }

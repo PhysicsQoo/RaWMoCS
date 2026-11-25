@@ -17,6 +17,8 @@ def main():
     repeats.add_argument("--repeat-target",type=int,choices=[30,100])
     repeats.add_argument("--repeat-fixed-target",type=int,choices=[30,100],
                          help="Repeat an already qualified original 100/333-bit cohort without precision drift")
+    repeats.add_argument("--profile-fixed-target",type=int,choices=[30,100],
+                         help="One fixed-precision three-arm diagnostic; preserve censored adaptive results")
     a=ap.parse_args()
     ref=json.loads(a.reference.read_text())
     expected=ref["source_sha256"]
@@ -25,18 +27,19 @@ def main():
         raise ValueError("REFERENCE_DRIFT")
     fixed=a.repeat_fixed_target is not None
     repeat=fixed or a.repeat_target is not None
+    profile=a.profile_fixed_target is not None
     count=7 if repeat else 1
-    targets=([a.repeat_fixed_target if fixed else a.repeat_target] if repeat else [30,100])
+    targets=([a.profile_fixed_target] if profile else [a.repeat_fixed_target if fixed else a.repeat_target] if repeat else [30,100])
     report={"status":"IN_PROGRESS","source_sha256":expected,"reference_sha256":sha(a.reference),
             "gpmc_binary_sha256":sha(a.gpmc),"rust_binary_sha256":sha(a.mpfr),
-            "repeat_count":count,"repeat_precision_policy":"fixed" if fixed else "guarded" if repeat else "pilot","cohorts":[]}
+            "repeat_count":count,"repeat_precision_policy":"fixed-profile" if profile else "fixed" if fixed else "guarded" if repeat else "pilot","cohorts":[]}
     def persist():
         a.report.write_text(json.dumps(report,indent=2)+"\n")
     persist()
     for target in targets:
         guarded=(60,200) if target==30 else (130,432)
         original=(target,100 if target==30 else 333)
-        precisions=([original] if fixed else [guarded] if repeat else [original,guarded])
+        precisions=([original] if fixed or profile else [guarded] if repeat else [original,guarded])
         for digits,bits in precisions:
             cohort={"target_digits":target,"working_digits":digits,"bits":bits,"trials":[]}
             report["cohorts"].append(cohort)
@@ -44,16 +47,24 @@ def main():
             for trial in range(count):
                 rows={}
                 arms=("gpmc","prejoin") if (trial+(target==100))%2==0 else ("prejoin","gpmc")
+                if profile:arms=arms+("adaptive",)
                 cohort["trials"].append({"trial":trial,"order":arms,"rows":rows})
                 for arm in arms:
                     if sha(a.cnf)!=expected or sha(a.reference)!=report["reference_sha256"]:
                         raise ValueError("INPUT_DRIFT")
                     cmd=([str(a.gpmc.resolve()),"-mode=1",f"-prec={digits}",str(a.cnf.resolve())] if arm=="gpmc" else
-                         [str(a.mpfr.resolve()),"--factor-prejoin",str(digits),str(a.cnf.resolve())])
+                         [str(a.mpfr.resolve()),"--adaptive" if arm=="adaptive" else "--factor-prejoin",str(digits),str(a.cnf.resolve())])
                     row=native(cmd,"gpmc" if arm=="gpmc" else "candidate",PAIR_S,digits,expected_bits=bits)
                     if row["status"]=="COMPLETED":
                         row["witness"]=compare(row,ref,target)
+                        if arm=="adaptive":
+                            from quprs_mqt_adaptive_scout import result_route
+                            row["route"]=result_route(row)
                         if arm=="prejoin":
+                            phases=re.findall(r"^PREJOIN_PHASE_NS local=(\d+) choose=(\d+) restrict=(\d+) execute=(\d+)$",row["stderr_tail"],re.M)
+                            if len(phases)==1:
+                                row["phases_ns"]=dict(zip(("local","choose","restrict","execute"),map(int,phases[0])))
+                            if profile and len(phases)!=1:raise ValueError("MISSING_PREJOIN_PHASES")
                             t=TRACE.findall(row["stderr_tail"])
                             if len(t)==1:
                                 residual,cuts,leaves,width,work,peak,joins,plan_ns=map(int,t[0])
@@ -72,6 +83,14 @@ def main():
                     cohort["status"]="ACCURACY_INCONCLUSIVE";break
                 if not all(x.get("peak_rss_kib",0)>0 for x in (g,r)):
                     cohort["status"]="RSS_INCONCLUSIVE";break
+                if profile:
+                    ar=rows["adaptive"]
+                    cohort["adaptive_status"]=ar["status"]
+                    if ar["status"]=="COMPLETED":
+                        if not ar.get("route") or not ar["witness"]["pass"] or not ar.get("peak_rss_kib",0)>0:
+                            cohort["adaptive_status"]="ACCURACY_OR_ROUTE_INCONCLUSIVE"
+                        else:cohort["adaptive_status"]="CERTIFIED_SINGLE_PAIR"
+                    print("PREJOIN_PROFILE",target,bits,r["phases_ns"],"adaptive",cohort["adaptive_status"],ar.get("route"),ar.get("wall_ns"),flush=True)
                 sig=tuple(r["trace"][k] for k in ("residual","cuts","leaves","width","work","peak","joins"))
                 signatures.append(sig)
                 if len(set(signatures))!=1:

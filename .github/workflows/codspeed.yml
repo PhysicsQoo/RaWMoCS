@@ -38,7 +38,7 @@ concurrency:
 
 jobs:
   bench-smoke:
-    if: github.event.action != 'labeled' || github.event.label.name == 'run-long-codspeed' || github.event.label.name == 'run-prejoin-codspeed' || github.event.label.name == 'run-gf2-contraction-codspeed'
+    if: github.event.action != 'labeled' || github.event.label.name == 'run-long-codspeed' || github.event.label.name == 'run-prejoin-codspeed' || github.event.label.name == 'run-gf2-contraction-codspeed' || github.event.label.name == 'run-prejoin-incremental-grover-repeat'
     name: Compile and validate Rust benchmarks (not a timing report)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -121,12 +121,12 @@ jobs:
        (github.event_name == 'pull_request' &&
         github.event.pull_request.head.repo.full_name == github.repository &&
         github.event.action == 'labeled' &&
-        (github.event.label.name == 'run-long-codspeed' || github.event.label.name == 'run-prejoin-codspeed' || github.event.label.name == 'run-gf2-contraction-codspeed')))
+        (github.event.label.name == 'run-long-codspeed' || github.event.label.name == 'run-prejoin-codspeed' || github.event.label.name == 'run-gf2-contraction-codspeed' || github.event.label.name == 'run-prejoin-incremental-grover-repeat')))
     runs-on: ubuntu-24.04
     # Build/reference overhead is separate from the bounded Simulation step.
     timeout-minutes: ${{ (github.event_name == 'pull_request' || inputs.study == 'grover5_focus' || inputs.study == 'qpe8_prejoin') && 25 || 35 }}
     env:
-      STUDY: ${{ github.event.label.name == 'run-gf2-contraction-codspeed' && 'gf2_6_axis_ab' || github.event.label.name == 'run-prejoin-codspeed' && 'qpe8_prejoin' || github.event_name == 'pull_request' && 'grover5_focus' || inputs.study || 'grover5_focus' }}
+      STUDY: ${{ (github.event.label.name == 'run-gf2-contraction-codspeed' || github.event.label.name == 'run-prejoin-incremental-grover-repeat') && 'gf2_6_axis_ab' || github.event.label.name == 'run-prejoin-codspeed' && 'qpe8_prejoin' || github.event_name == 'pull_request' && 'grover5_focus' || inputs.study || 'grover5_focus' }}
       DIGITS: ${{ inputs.digits || '30' }}
     permissions:
       contents: read

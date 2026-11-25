@@ -128,7 +128,7 @@ jobs:
 
   mcc-trail-prefix:
     name: Original MCC random113 bounded Trail research
-    if: github.event_name == 'pull_request' && (github.event.label.name == 'run-mcc-trail-prefix' || github.event.label.name == 'run-mcc-trail-full-pilot') && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/mpfr-exact-residual-arena-reuse-20261118'
+    if: github.event_name == 'pull_request' && (github.event.label.name == 'run-mcc-trail-prefix' || github.event.label.name == 'run-mcc-trail-full-pilot' || github.event.label.name == 'run-mcc-trail-search-probe') && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/mpfr-exact-residual-arena-reuse-20261118'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -240,11 +240,37 @@ jobs:
                   print("MCC_FULL_PILOT",g["bits"],route,out["status"],trial.get("wall_ns"),trial.get("stderr_tail","")[-900:],flush=True)
           result["status"]="FULL_PILOT_COMPLETE";save()
           PY
+      - name: Compare bounded search progress on original MCC source
+        if: github.event.label.name == 'run-mcc-trail-search-probe'
+        run: |
+          set -euo pipefail
+          root=.research/mcc-prefix
+          bin=benchmarks/mpfr_research/target/release/rawmocs-mpfr-research
+          sha256sum "$bin" "$root/common.cnf" "$root/original.cnf" > "$root/search-probe.sha256"
+          for arm in compact separator postunit hybrid; do
+            for trial in 1 2; do
+              rc=0
+              /usr/bin/time -v -o "$root/search-$arm-$trial.resources" timeout -k 2s 25s prlimit --as=3221225472 -- "$bin" --adaptive "trail-search-$arm" 60 "$root/common.cnf" > "$root/search-$arm-$trial.stdout" 2> "$root/search-$arm-$trial.stderr" || rc=$?
+              echo "MCC_SEARCH_PROBE_EXIT arm=$arm trial=$trial rc=$rc"
+              tail -c 2000 "$root/search-$arm-$trial.stderr"
+              cat "$root/search-$arm-$trial.stdout"
+              if (( rc == 0 )); then
+                grep -E '^MCC_SEARCH_PROBE_V1 .*bits=200 .* (NODE_PREFIX_ONLY|COMPLETE sat=)' "$root/search-$arm-$trial.stdout"
+              else
+                printf '%s\n' "$rc" > "$root/search-$arm-$trial.exit"
+              fi
+            done
+            if [[ ! -f "$root/search-$arm-1.exit" && ! -f "$root/search-$arm-2.exit" ]]; then
+              cmp "$root/search-$arm-1.stdout" "$root/search-$arm-2.stdout"
+              echo "MCC_SEARCH_PROBE_REPEAT_PARITY arm=$arm"
+            fi
+          done
+          sha256sum -c "$root/search-probe.sha256"
       - name: Archive source locked Trail diagnostic evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.event.label.name == 'run-mcc-trail-full-pilot' && 'mcc2024-random113-trail-full-pilot' || 'mcc2024-random113-trail-prefix' }}
+          name: ${{ github.event.label.name == 'run-mcc-trail-search-probe' && 'mcc2024-random113-trail-search-probe' || github.event.label.name == 'run-mcc-trail-full-pilot' && 'mcc2024-random113-trail-full-pilot' || 'mcc2024-random113-trail-prefix' }}
           path: |
             .research/mcc-prefix/
             codspeed-mcc.generated.yml

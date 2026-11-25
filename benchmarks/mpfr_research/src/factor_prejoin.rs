@@ -514,8 +514,89 @@ fn solve(p:&Problem,raw:&str,bits:u32)->Result<Outcome,String>{
         _=>Err("nonfinite prejoin".into()),
     }
 }
+// Research-only snapshot of an actual selected zero-cut plan's largest
+// pre-merge bucket. Capture is outside Simulation; replay is a single bounded
+// pair-ranking scan, not a WMC result or a full planner performance claim.
+const PAIR_PROBE_CAP:usize=512;
+fn pair_snapshot(raw:&str)->Result<String,String>{
+    let d=Instant::now()+Duration::from_secs(30);
+    let p=parse_emitted(raw,200)?;
+    let (fs,nodes,scalar,local)=local(&p,raw,d)?;
+    let (cuts,plans,_)=choose(&fs,&nodes,&scalar,&local,d)?;
+    if !cuts.is_empty()||plans.len()!=1{return Err("pair probe requires zero-cut plan".into());}
+    let plan=&plans[0];
+    let mut scopes:BTreeMap<usize,Scope>=fs.iter().enumerate().map(|(i,f)|(i,f.scope.iter().copied().collect())).collect();
+    let mut best:Option<(usize,usize,Vec<Scope>)>=None;
+    let mut start=0;
+    for (end,op) in plan.ops.iter().enumerate(){
+        let Some(pivot)=op.pivot else{continue;};
+        deadline(d)?;
+        let bucket:Vec<Scope>=scopes.values().filter(|s|s.contains(&pivot)).cloned().collect();
+        if best.as_ref().is_none_or(|b|bucket.len()>b.2.len()){
+            best=Some((pivot,op.out.len(),bucket));
+        }
+        for step in &plan.ops[start..=end]{
+            for id in &step.ids{
+                if scopes.remove(id).is_none(){return Err("pair snapshot scope drift".into());}
+            }
+            if scopes.insert(step.dst,step.out.iter().copied().collect()).is_some(){
+                return Err("pair snapshot duplicate ID".into());
+            }
+        }
+        start=end+1;
+    }
+    if start!=plan.ops.len(){return Err("pair snapshot incomplete plan".into());}
+    let (pivot,width,bucket)=best.ok_or("pair snapshot empty")?;
+    if bucket.len()<3{return Err("pair snapshot insufficient fan-in".into());}
+    let count=bucket.len().min(PAIR_PROBE_CAP);
+    let mut out=format!("PAIR_SNAPSHOT_V1 {} {} {} {}\n",pivot,width,bucket.len(),count);
+    for scope in bucket.iter().take(count){
+        if scope.is_empty()||!scope.contains(&pivot){return Err("pair snapshot invalid scope".into());}
+        for v in scope{out.push_str(&format!("{v} "));}
+        out.push('\n');
+    }
+    Ok(out)
+}
+fn pair_scan(raw:&str,use_mask:bool)->Result<String,String>{
+    let mut lines=raw.lines();
+    let head:Vec<_>=lines.next().ok_or("pair header")?.split_whitespace().collect();
+    if head.len()!=5||head[0]!="PAIR_SNAPSHOT_V1"{return Err("pair header".into());}
+    let nums=head[1..].iter().map(|s|s.parse::<usize>().map_err(|_|"pair integer")).collect::<Result<Vec<_>,_>>()?;
+    let (pivot,width,full,count)=(nums[0],nums[1],nums[2],nums[3]);
+    if width>WIDTH||count<3||count!=full.min(PAIR_PROBE_CAP){return Err("pair snapshot cap".into());}
+    let scopes:Vec<Scope>=lines.map(|l|l.split_whitespace().map(|s|s.parse::<usize>().map_err(|_|"pair scope integer")).collect::<Result<Scope,_>>()).collect::<Result<_,_>>()?;
+    if scopes.len()!=count||scopes.iter().any(|s|s.len()>WIDTH+1||!s.contains(&pivot)){return Err("pair scope drift".into());}
+    let vars:Vec<_>=scopes.iter().flatten().copied().collect::<Scope>().into_iter().collect();
+    if vars.len()>64{return Err("pair probe single-word cap".into());}
+    let mut masks=Vec::new();
+    if use_mask{
+        for s in &scopes{
+            let mut m=Mask::<1>::empty();
+            for v in s{m.insert(vars.binary_search(v).map_err(|_|"pair mask index")?);}
+            masks.push(m);
+        }
+    }
+    let mut best=None;
+    let mut sum=0usize;
+    for i in 0..count{for j in i+1..count{
+        let n=if use_mask{masks[i].union_count(masks[j])}else{scopes[i].union(&scopes[j]).count()};
+        sum+=n;
+        if n<width&&best.is_none_or(|k|(n,i,j)<k){best=Some((n,i,j));}
+    }}
+    Ok(format!("PAIR_SCAN_V1 pivot={pivot} width={width} full={full} sampled={count} pairs={} cardinality_sum={sum} best={best:?}",count*(count-1)/2))
+}
 pub(crate) fn run(mut args:impl Iterator<Item=std::ffi::OsString>)->Result<(),String>{
-    let digits:u32=args.next().and_then(|x|x.into_string().ok()).ok_or("missing precision")?.parse().map_err(|_|"invalid precision")?;
+    let first=args.next().and_then(|x|x.into_string().ok()).ok_or("missing precision")?;
+    if matches!(first.as_str(),"pair-snapshot"|"pair-baseline"|"pair-mask"){
+        let file=args.next().ok_or("missing probe input")?;
+        if args.next().is_some(){return Err("unexpected probe arguments".into());}
+        if std::fs::metadata(&file).map_err(|e|e.to_string())?.len()>2_097_152{return Err("pair probe input cap".into());}
+        let raw=std::fs::read_to_string(file).map_err(|e|e.to_string())?;
+        let out=if first=="pair-snapshot"{pair_snapshot(&raw)?}else{pair_scan(&raw,first=="pair-mask")?};
+        print!("{out}");
+        return Ok(());
+    }
+    let digits:u32=first.parse().map_err(|_|"invalid precision")?;
     let bits=match digits{30=>100,60=>200,100=>333,130=>432,_=>return Err("unsupported precision".into())};
     let file=args.next().ok_or("missing source")?;
     if args.next().is_some(){return Err("unexpected arguments".into());}
@@ -571,6 +652,16 @@ mod tests{
         assert_eq!(p.ops.iter().filter(|op|op.pivot.is_some()).count(),n);
         assert_eq!(p.cost.width,1);
         assert!(plan_words::<1>(&fs,&nodes,(Some(0),false),0,d).is_err());
+    }
+    #[test]
+    fn bounded_pair_scan_preserves_exact_pair_choice(){
+        let raw="PAIR_SNAPSHOT_V1 1 4 4 4\n1 2\n1 3\n1 2\n1 3 4\n";
+        let a=pair_scan(raw,false).unwrap();
+        let b=pair_scan(raw,true).unwrap();
+        assert_eq!(a,b);
+        assert!(a.contains("pairs=6"));
+        assert!(a.contains("best=Some((2, 0, 2))"));
+        assert!(pair_scan("PAIR_SNAPSHOT_V1 1 4 4 3\n1 2\n1 3\n1 2\n",true).is_err());
     }
     #[test]
     fn pair_mask_plans_match_ordered_set_reference(){

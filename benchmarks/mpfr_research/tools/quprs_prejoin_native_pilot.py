@@ -117,7 +117,7 @@ def main():
                     if (old["status"]!="COMPLETED" or not old.get("route_pass") or
                         not old["witness"]["pass"] or not old.get("peak_rss_kib",0)>0):
                         cohort["status"]="BASELINE_INCONCLUSIVE";break
-                    if not fixed and any(old[k]!=r[k] for k in ("sat","real","imag")):
+                    if any(old[k]!=r[k] for k in ("sat","real","imag")):
                         cohort["status"]="BASELINE_OUTPUT_DRIFT";break
                     keys=("residual","cuts","leaves","width","work","peak","joins")
                     if any(old["trace"][k]!=r["trace"][k] for k in keys):
@@ -151,7 +151,9 @@ def main():
                         "choose_speedup":statistics.median(old_plan)/statistics.median(new_plan),
                         "native_speedup":statistics.median(old)/statistics.median(r),
                         "native_paired_wins":sum(b<a for a,b in zip(old,r)),
-                        "baseline_rss_kib":statistics.median(values("planner_baseline","peak_rss_kib"))}
+                        "baseline_rss_kib":statistics.median(values("planner_baseline","peak_rss_kib")),
+                        "baseline_local_p50_ms":statistics.median(t["rows"]["planner_baseline"]["phases_ns"]["local"] for t in cohort["trials"])/1e6,
+                        "candidate_local_p50_ms":statistics.median(t["rows"]["prejoin"]["phases_ns"]["local"] for t in cohort["trials"])/1e6}
                     print("PREJOIN_PLANNER_AB_FINAL",target,bits,cohort["planner_ab"],flush=True)
             persist()
             print("PREJOIN_NATIVE_FINAL",target,bits,cohort["status"],

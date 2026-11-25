@@ -109,7 +109,7 @@ def reduce_axes(scope, vals):
     return scope, vals, dropped
 
 
-def local_reduce(raw, expected, deadline):
+def local_reduce(raw, expected, deadline, *, diagnostic=False):
     n, clauses, scopes, weights = parse(raw, expected)
     fs = {}
     inc = {v: set() for v in range(1, n+1)}
@@ -177,7 +177,7 @@ def local_reduce(raw, expected, deadline):
         del inc[v]
         insert(scope, out)
         eliminated += 1
-    if len(inc) > RESIDUAL_CAP:
+    if not diagnostic and len(inc) > RESIDUAL_CAP:
         raise ValueError("RESIDUAL_CAP")
     return list(fs.values()), set(inc), scalar, dict(variables=n, clauses=len(clauses),
         eliminated=eliminated, residual=len(inc), factors=len(fs), dropped_axes=drops,
@@ -447,6 +447,72 @@ def solve(raw, expected, seconds=180, profile=False):
     return report
 
 
+def residual_components(factors, nodes):
+    """Partition primal graph; include isolated variables (free sums)."""
+    adjacency = {v:set() for v in nodes}
+    for scope,_ in factors:
+        for v in scope:
+            adjacency[v].update(set(scope)-{v})
+    unseen=set(nodes)
+    parts=[]
+    while unseen:
+        start=min(unseen)
+        unseen.remove(start)
+        comp={start}
+        stack=[start]
+        while stack:
+            for u in sorted(adjacency[stack.pop()] & unseen):
+                unseen.remove(u)
+                comp.add(u)
+                stack.append(u)
+        parts.append(comp)
+    return adjacency,parts
+
+def residual_profile(raw, expected):
+    """Structural-only inspection beyond the global 64-node admission limit.
+    All source/local arithmetic and resource caps remain enforced.
+    Never execute a contraction or certify a WMC result in this mode.
+    """
+    start=monotonic()
+    factors,nodes,scalar,local=local_reduce(raw,expected,start+PLAN_SECONDS,diagnostic=True)
+    adjacency,parts=residual_components(factors,nodes)
+    rows=[]
+    for comp in sorted(parts,key=lambda x:(-len(x),min(x))):
+        owned=[(s,t) for s,t in factors if s and s[0] in comp]
+        if any(not set(s)<=comp for s,_ in owned):
+            raise ValueError("COMPONENT_OWNERSHIP")
+        rows.append(dict(nodes=len(comp),factors=len(owned),
+            cells=sum(len(t) for _,t in owned),
+            edges=sum(len(adjacency[v]) for v in comp)//2,
+            min_degree=min(len(adjacency[v]) for v in comp),
+            max_degree=max(len(adjacency[v]) for v in comp),
+            within_64=len(comp)<=RESIDUAL_CAP))
+    if sum(r["factors"] for r in rows)!=len(factors) or sum(r["nodes"] for r in rows)!=len(nodes):
+        raise ValueError("COMPONENT_COVERAGE")
+    # All component estimates are sequential; retain source/restricted-table
+    # storage in each independent plan and never claim full solve admission.
+    plans=[]
+    deadline=start+60
+    for idx,comp in enumerate(sorted(parts,key=lambda x:(-len(x),min(x)))):
+        if idx>=16 or monotonic()>=deadline:
+            plans.append(dict(component=idx,status="DIAGNOSTIC_BUDGET"))
+            continue
+        owned=[(s,t) for s,t in factors if s and s[0] in comp]
+        try:
+            (work,peak,width,pivots),_,_=choose(owned,comp,ONE,
+                dict(work=0,peak=0,retained_cells=local["retained_cells"]),
+                min(deadline,monotonic()+10),cut_sizes=(0,))
+            plans.append(dict(component=idx,status="FEASIBLE",work=work,peak=peak,width=width))
+        except ValueError as exc:
+            if str(exc) not in ("PLAN_DEADLINE","NO_BOUNDED_PREJOIN_PLAN"):
+                raise
+            plans.append(dict(component=idx,status=str(exc)))
+    return dict(status="RESIDUAL_PROFILE_ONLY",source_sha256=expected,local=local,
+        component_count=len(parts),largest_component=max((len(p) for p in parts),default=0),
+        all_components_within_64=all(len(p)<=RESIDUAL_CAP for p in parts),
+        scalar_support=scalar is not None,components=rows,zero_cut_plans=plans,
+        wall_s=monotonic()-start)
+
 def cutset_spectrum(raw, expected):
     """Bounded independent structural diagnostic only; never a solve verdict."""
     start = monotonic()
@@ -528,6 +594,12 @@ def self_test():
     assert (first["work"],first["peak"],first["width"])==(ordinary["work"],ordinary["peak"],ordinary["width"])
     assert spectrum["best_observed"]["work"]<=first["work"]
     assert [r["cutset_size"] for r in spectrum["rows"]]==[0,1,2]
+    graph,parts=residual_components([((1,2),[ONE]*4),((3,4),[ONE]*4)],{1,2,3,4,5})
+    assert parts==[{1,2},{3,4},{5}]
+    assert graph[5]==set()
+    profile=residual_profile(raw,h)
+    assert profile["status"]=="RESIDUAL_PROFILE_ONLY"
+    assert sum(c["nodes"] for c in profile["components"])==profile["local"]["residual"]
     print("EXACT_PREJOIN_SELF_TEST PASS")
 
 
@@ -539,6 +611,7 @@ if __name__=="__main__":
     mode=ap.add_mutually_exclusive_group()
     mode.add_argument("--profile",action="store_true")
     mode.add_argument("--cutset-spectrum",action="store_true")
+    mode.add_argument("--residual-profile",action="store_true")
     a=ap.parse_args()
     if a.self_test:
         self_test()
@@ -546,4 +619,6 @@ if __name__=="__main__":
         if a.cnf is None or a.sha256 is None:
             ap.error("CNF and SHA256 required")
         raw=a.cnf.read_bytes()
-        print(json.dumps(cutset_spectrum(raw,a.sha256) if a.cutset_spectrum else solve(raw,a.sha256,profile=a.profile),indent=2))
+        result=(residual_profile(raw,a.sha256) if a.residual_profile else
+                cutset_spectrum(raw,a.sha256) if a.cutset_spectrum else solve(raw,a.sha256,profile=a.profile))
+        print(json.dumps(result,indent=2))

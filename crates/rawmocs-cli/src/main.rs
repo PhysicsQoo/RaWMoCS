@@ -302,7 +302,7 @@ fn solve_until(
 fn failure(reason: &str) -> (&'static str, i32) {
     match reason {
         "general deadline" | "prejoin deadline" | "solver deadline" => ("TIMEOUT", 4),
-        "source bytes cap" | "oversize CNF" | "general stack limit" => ("RESOURCE_LIMIT", 5),
+        "source bytes cap" | "oversize CNF" | "general frame allocation" => ("RESOURCE_LIMIT", 5),
         "unsupported input semantics" => ("UNSUPPORTED_INPUT", 3),
         "source clause cap"
         | "clause width cap"
@@ -546,6 +546,35 @@ mod tests {
                 assert_eq!(a.sat, sat);
                 assert_eq!(a.count.re, real);
                 assert_eq!(a.count.im, imag);
+            }
+        }
+    }
+    #[test]
+    fn iterative_general_exact_oracle_corpus() {
+        use std::fmt::Write as _;
+        let mut seed = 1729_u32;
+        for case in 0..64 {
+            let mut raw = String::from("p cnf 6 9\nc t wmc\n");
+            for v in 1..=6 {
+                writeln!(raw, "c p weight {v} -0.5 0.25 0").unwrap();
+                writeln!(raw, "c p weight -{v} 0.5 -0.125 0").unwrap();
+            }
+            for _ in 0..9 {
+                for _ in 0..3 {
+                    seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                    let v = ((seed >> 16) % 6 + 1) as i32;
+                    let lit = if seed & 0x100 != 0 { v } else { -v };
+                    write!(raw, "{lit} ").unwrap();
+                }
+                raw.push_str("0\n");
+            }
+            for bits in [100, 200, 333, 432] {
+                let p = parse_emitted(&raw, bits).unwrap();
+                let (g, _) = solve(&p, &raw, bits, "general").unwrap();
+                let (r, _) = solve(&p, &raw, bits, "reference").unwrap();
+                assert_eq!(g.sat, r.sat, "case {case}");
+                assert_eq!(g.count.re, r.count.re, "case {case}");
+                assert_eq!(g.count.im, r.count.im, "case {case}");
             }
         }
     }

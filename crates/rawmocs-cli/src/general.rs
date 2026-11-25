@@ -11,6 +11,41 @@ struct Key {
     scope: Vec<usize>,
     clauses: Vec<Clause>,
 }
+type Component = (Vec<usize>, Vec<Clause>);
+
+enum Step {
+    Enter(Vec<Clause>, Vec<usize>),
+    Done(Outcome),
+}
+enum Frame {
+    Yes {
+        key: Key,
+        prefix: C,
+        var: usize,
+        no_clauses: Vec<Clause>,
+        no_scope: Vec<usize>,
+    },
+    No {
+        key: Key,
+        prefix: C,
+        var: usize,
+        yes: Outcome,
+    },
+    Parts {
+        key: Key,
+        prefix: C,
+        value: C,
+        remaining: std::vec::IntoIter<Component>,
+    },
+}
+fn push(stack: &mut Vec<Frame>, frame: Frame) -> Result<(), String> {
+    stack
+        .try_reserve(1)
+        .map_err(|_| "general frame allocation")?;
+    stack.push(frame);
+    Ok(())
+}
+
 struct Engine<'a> {
     p: &'a Problem,
     bits: u32,
@@ -43,7 +78,7 @@ fn root(parent: &mut [usize], mut x: usize) -> usize {
     }
     x
 }
-fn components(clauses: &[Clause], scope: &[usize], n: usize) -> Vec<(Vec<usize>, Vec<Clause>)> {
+fn components(clauses: &[Clause], scope: &[usize], n: usize) -> Vec<Component> {
     let mut parent: Vec<_> = (0..=n).collect();
     for c in clauses {
         let first = c[0].unsigned_abs() as usize;
@@ -94,31 +129,27 @@ impl Engine<'_> {
         }
         Ok(out)
     }
-    fn count(
+    fn enter(
         &mut self,
         clauses: Vec<Clause>,
         scope: Vec<usize>,
-        depth: usize,
-    ) -> Result<Outcome, String> {
+        stack: &mut Vec<Frame>,
+    ) -> Result<Step, String> {
         self.check()?;
-        // Explicit stack resource guard; not a variable-count admission rule.
-        if depth >= 512 {
-            return Err("general stack limit".into());
-        }
         let mut residual = normalize(clauses);
         let key = Key {
             scope: scope.clone(),
             clauses: residual.clone(),
         };
         if let Some(hit) = self.cache.get(&key) {
-            return Ok(hit.clone());
+            return Ok(Step::Done(hit.clone()));
         }
         let mut remaining = scope;
         let mut prefix = C::one(self.bits);
         loop {
             self.check()?;
             if residual.iter().any(Vec::is_empty) {
-                return self.save(key, Outcome::unsat(self.bits));
+                return self.save(key, Outcome::unsat(self.bits)).map(Step::Done);
             }
             let Some(lit) = residual.iter().find(|c| c.len() == 1).map(|c| c[0]) else {
                 break;
@@ -144,50 +175,136 @@ impl Engine<'_> {
             }
         }
         if residual.is_empty() {
-            return self.save(
-                key,
-                Outcome {
-                    sat: true,
-                    count: prefix,
-                },
-            );
+            return self
+                .save(
+                    key,
+                    Outcome {
+                        sat: true,
+                        count: prefix,
+                    },
+                )
+                .map(Step::Done);
         }
-        let parts = components(&residual, &active, self.p.n);
-        if !parts.is_empty() {
-            let mut value = C::one(self.bits);
-            for (scope, clauses) in parts {
-                let part = self.count(clauses, scope, depth + 1)?;
-                if !part.sat {
-                    return self.save(key, Outcome::unsat(self.bits));
-                }
-                value = value.mul(&part.count, self.bits);
-            }
-            return self.save(
-                key,
-                Outcome {
-                    sat: true,
-                    count: prefix.mul(&value, self.bits),
+        let mut parts = components(&residual, &active, self.p.n).into_iter();
+        if let Some((scope, clauses)) = parts.next() {
+            push(
+                stack,
+                Frame::Parts {
+                    key,
+                    prefix,
+                    value: C::one(self.bits),
+                    remaining: parts,
                 },
-            );
+            )?;
+            return Ok(Step::Enter(clauses, scope));
         }
         let v = *active
             .iter()
             .max_by_key(|&&v| frequency[v])
             .ok_or("no active pivot")?;
         let child: Vec<_> = active.into_iter().filter(|&x| x != v).collect();
-        let yes = self.count(assign(&residual, v as i32), child.clone(), depth + 1)?;
-        let no = self.count(assign(&residual, -(v as i32)), child, depth + 1)?;
-        let y = self.weight(v, true).mul(&yes.count, self.bits);
-        let n = self.weight(v, false).mul(&no.count, self.bits);
-        self.save(
-            key,
-            Outcome {
-                sat: yes.sat || no.sat,
-                count: prefix.mul(&y.add(&n, self.bits), self.bits),
+        let yes = assign(&residual, v as i32);
+        let no = assign(&residual, -(v as i32));
+        push(
+            stack,
+            Frame::Yes {
+                key,
+                prefix,
+                var: v,
+                no_clauses: no,
+                no_scope: child.clone(),
             },
-        )
+        )?;
+        Ok(Step::Enter(yes, child))
+    }
+    fn count(&mut self, clauses: Vec<Clause>, scope: Vec<usize>) -> Result<Outcome, String> {
+        // Heap-resident continuations preserve the recursive control's
+        // positive-before-negative and component aggregation order.
+        let mut stack = Vec::new();
+        let mut peak_frames = 0;
+        let mut step = Step::Enter(clauses, scope);
+        loop {
+            self.check()?;
+            peak_frames = peak_frames.max(stack.len());
+            step = match step {
+                Step::Enter(clauses, scope) => self.enter(clauses, scope, &mut stack)?,
+                Step::Done(out) => match stack.pop() {
+                    None => {
+                        eprintln!("RAWMOCS_GENERAL_COMPLETE max_frames={peak_frames}");
+                        return Ok(out);
+                    }
+                    Some(Frame::Yes {
+                        key,
+                        prefix,
+                        var,
+                        no_clauses,
+                        no_scope,
+                    }) => {
+                        push(
+                            &mut stack,
+                            Frame::No {
+                                key,
+                                prefix,
+                                var,
+                                yes: out,
+                            },
+                        )?;
+                        Step::Enter(no_clauses, no_scope)
+                    }
+                    Some(Frame::No {
+                        key,
+                        prefix,
+                        var,
+                        yes,
+                    }) => {
+                        let y = self.weight(var, true).mul(&yes.count, self.bits);
+                        let n = self.weight(var, false).mul(&out.count, self.bits);
+                        Step::Done(self.save(
+                            key,
+                            Outcome {
+                                sat: yes.sat || out.sat,
+                                count: prefix.mul(&y.add(&n, self.bits), self.bits),
+                            },
+                        )?)
+                    }
+                    Some(Frame::Parts {
+                        key,
+                        prefix,
+                        mut value,
+                        mut remaining,
+                    }) => {
+                        if !out.sat {
+                            Step::Done(self.save(key, Outcome::unsat(self.bits))?)
+                        } else {
+                            value = value.mul(&out.count, self.bits);
+                            if let Some((scope, clauses)) = remaining.next() {
+                                push(
+                                    &mut stack,
+                                    Frame::Parts {
+                                        key,
+                                        prefix,
+                                        value,
+                                        remaining,
+                                    },
+                                )?;
+                                Step::Enter(clauses, scope)
+                            } else {
+                                Step::Done(self.save(
+                                    key,
+                                    Outcome {
+                                        sat: true,
+                                        count: prefix.mul(&value, self.bits),
+                                    },
+                                )?)
+                            }
+                        }
+                    }
+                },
+            };
+        }
     }
 }
+
 pub(crate) fn solve(p: &Problem, bits: u32, deadline: Instant) -> Result<Outcome, String> {
     let mut engine = Engine {
         p,
@@ -196,5 +313,5 @@ pub(crate) fn solve(p: &Problem, bits: u32, deadline: Instant) -> Result<Outcome
         cache: HashMap::new(),
         cache_items: 0,
     };
-    engine.count(p.clauses.clone(), (1..=p.n).collect(), 0)
+    engine.count(p.clauses.clone(), (1..=p.n).collect())
 }

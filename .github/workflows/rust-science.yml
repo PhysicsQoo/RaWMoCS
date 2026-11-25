@@ -158,6 +158,10 @@ jobs:
           test ! -s .release-evidence/resource.stdout
           grep -F 'RAWMOCS_FAILURE kind=RESOURCE_LIMIT' .release-evidence/resource.stderr
           sha256sum "$bin" crates/rawmocs-cli/Cargo.lock | tee .release-evidence/build.sha256
+      - name: Deep general search and external process lifecycle
+        run: |
+          set -euo pipefail
+          python3 crates/rawmocs-cli/tools/general_resources.py --bin crates/rawmocs-cli/target/release/rawmocs --out .release-evidence/general-resources
       - name: Transfer previously independently qualified original QuPRS cases
         env:
           GH_TOKEN: ${{ github.token }}

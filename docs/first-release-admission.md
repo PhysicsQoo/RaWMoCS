@@ -20,6 +20,12 @@ fallback and executable need independent release acceptance.
 
 ## Admission gates
 
+Prior candidate `36ed2a568ef21b15657e8789e94bebbea44bdfe2` passed
+[science CI 45584033902](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/45584033902):
+7/7 jobs, 16 CLI tests, 7 source transfer cohorts, 3 scoped QuPRS
+Python encoder cases and 10 controls. Changes below require fresh exact-HEAD
+acceptance; historical PASS is not a substitute.
+
 - [ ] General MPFR DPLL fallback, source-derived chronological baseline,
   independent exact-oracle parity (signed weights, free variables, duplicate
   and tautological clauses, UNSAT and SAT-zero), and a wide valid CNF with
@@ -29,7 +35,14 @@ fallback and executable need independent release acceptance.
   Explicit prejoin-only refusal remains a diagnostic failure.
 - [ ] Distinct execution failure categories and empty stdout; supervisor
   classifies external timeout, cancellation and memory failure separately.
-  Stack/source/resource limits remain explicit, not numeric results.
+  Source/resource limits remain explicit, not numeric results.
+- [ ] Heap-resident search continuations: preserve positive/negative and
+  component aggregation order, check independent exact-oracle corpus at
+  four precisions, and complete a 600-variable weighted wide-clause instance
+  with observed peak above 512 frames and analytical count one.
+- [ ] External lifecycle: real executable blocked on source input,
+  supervisor deadline and explicit cancellation, no numeric output.
+  This is not active-search cancellation latency or kernel OOM evidence.
 - [ ] Configurable shared solver deadline: zero-budget actual CLI failure,
   positive-budget output parity, and analytical larger-CNF family checks
   (component split, signed cancellation, imaginary-only count, UNSAT).

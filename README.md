@@ -55,10 +55,12 @@ Auto routing uses one solver deadline (45 seconds by default). Set
 `--timeout-ms N` (0 to 86400000; zero expires immediately) after `--digits`.
 Planning uses at most two thirds of the remaining time and 30 seconds.
 The reference diagnostic uses the external process supervisor instead. The general route has no 32-variable admission cutoff;
-it retains the parser's input bounds, an explicit stack-depth resource
-guard, and optional bounded cache. The exact-rational reference is an
+it retains the parser's input bounds and optional bounded cache. General
+search uses heap-resident continuation frames rather than a fixed recursive
+depth cap. Frame allocation failure is a resource failure, not a count; The exact-rational reference is an
 explicit small-case diagnostic, not the auto fallback. An external process
 resource supervisor is still required for hard RSS and whole-process time.
+The heap frame guard is not a bound on all allocations.
 
 **Candidate only:** see [release admission](docs/first-release-admission.md).
 No claim of competition-wide performance, projected WMC, exact

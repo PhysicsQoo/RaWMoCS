@@ -352,15 +352,9 @@ fn execute(fs:Vec<Factor<R>>,scalar:Cell<R>,p:&Plan,bits:u32,d:Instant)->Result<
         for m in 0..size{
             if m%4096==0{deadline(d)?;}
             let mut branch=|positive:bool,x:&mut C|{
-                // Reject unsupported assignments before any MPFR arithmetic.
-                // Some(0) remains Boolean support; never prune on numeric zero.
-                let cell=|i:usize|indices[i]|if positive{pivots[i]}else{0};
-                if bucket.iter().enumerate().any(|(i,f)|f.values[cell(i)].is_none()){
-                    return false;
-                }
                 x.re.assign(1);x.im.assign(0);
                 for (i,f) in bucket.iter().enumerate(){
-                    let y=f.values[cell(i)].as_ref().expect("validated support");
+                    let Some(y)=&f.values[indices[i]|if positive{pivots[i]}else{0}] else{return false;};
                     scratch.multiply(x,y);
                 }true
             };

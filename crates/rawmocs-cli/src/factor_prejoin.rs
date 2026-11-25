@@ -1055,14 +1055,29 @@ fn execute(
     }
     Ok(out)
 }
+#[cfg(test)]
 pub(crate) fn solve(p: &Problem, raw: &str, bits: u32) -> Result<Outcome, String> {
+    solve_until(p, raw, bits, Instant::now() + Duration::from_secs(45))
+}
+pub(crate) fn solve_until(
+    p: &Problem,
+    raw: &str,
+    bits: u32,
+    d: Instant,
+) -> Result<Outcome, String> {
     let start = Instant::now();
-    let d = start + Duration::from_secs(45);
-    let pd = start + Duration::from_secs(30);
-    let (fs, nodes, scalar, local) = local(p, raw, pd)?;
+    let pd = d.min(start + Duration::from_secs(30));
+    let planning_error = |e: String| {
+        if e == "prejoin deadline" && Instant::now() < d {
+            "prejoin planning budget".into()
+        } else {
+            e
+        }
+    };
+    let (fs, nodes, scalar, local) = local(p, raw, pd).map_err(planning_error)?;
     let local_ns = start.elapsed().as_nanos();
     let phase = Instant::now();
-    let (cuts, plans, cost) = choose(&fs, &nodes, &scalar, &local, pd)?;
+    let (cuts, plans, cost) = choose(&fs, &nodes, &scalar, &local, pd).map_err(planning_error)?;
     let choose_ns = phase.elapsed().as_nanos();
     let plan_ns = start.elapsed().as_nanos();
     let mut out = None;

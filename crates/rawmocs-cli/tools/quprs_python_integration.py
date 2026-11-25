@@ -175,7 +175,7 @@ def main():
             report["controls"].append(name);save()
         invalid=a.out/"invalid.cnf";invalid.write_text("p cnf 1 0\nc t pwmc\n")
         expect(SolverExecutionError,lambda:run_wmc(str(invalid),"rawmocs",timeout=20,preserve_count=True))
-        report["controls"].append("actual-unsupported-unknown")
+        report["controls"].append("actual-unsupported-input")
     # Fault processes isolate the existing QuPRS transport/lifecycle;
     # not evidence of a real solver numerical result or hard RSS limit.
     for name,body,exc in [

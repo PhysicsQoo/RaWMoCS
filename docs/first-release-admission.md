@@ -2,7 +2,7 @@
 
 ## Scope
 
-The first deliverable is a source-agnostic, bounded full signed-complex
+The first deliverable is a source-agnostic full signed-complex
 weighted CNF executable specialized for QuPRS workloads. Preserve the exact
 reference core and the existing scientific baseline. Do not merge the stacked
 research branch or promote unrelated experiments, competition heuristics or
@@ -20,10 +20,21 @@ fallback and executable need independent release acceptance.
 
 ## Admission gates
 
+- [ ] General MPFR DPLL fallback, source-derived chronological baseline,
+  independent exact-oracle parity (signed weights, free variables, duplicate
+  and tautological clauses, UNSAT and SAT-zero), and a wide valid CNF with
+  more than 32 variables completing through auto routing.
+- [ ] Structural admission refusal selects general MPFR under a shared
+  deadline; internal or numerical failure does not silently reroute.
+  Explicit prejoin-only refusal remains a diagnostic failure.
+- [ ] Distinct execution failure categories and empty stdout; supervisor
+  classifies external timeout, cancellation and memory failure separately.
+  Stack/source/resource limits remain explicit, not numeric results.
+
 - [ ] Existing reference workspace and original QuPRS A0 science checks.
 - [ ] Release executable tests (all copied kernel tests, signed-complex
   independent reference parity, empty scope, malformed input, bounds).
-- [ ] CLI SAT, SAT-zero, UNSAT, UNKNOWN/exit 2, no count on error.
+- [ ] CLI SAT, SAT-zero, UNSAT; typed nonzero failures with empty stdout.
 - [ ] Source-locked seven cohorts / six original cases spanning QPE exact
   and inexact, QNN, Grover, W-state, and Feynman GF2. Verify the original
   independent 550-bit interval receipt and source hashes, same working
@@ -36,7 +47,7 @@ fallback and executable need independent release acceptance.
   expiring CI artifacts.
 - [ ] QuPRS adapter integration: actual exported CNF, process exit handling,
   numerical guard, SAT/zero/unknown separation, timeout, cancellation and
-  resource supervisor. Never convert UNKNOWN to a definitive verdict.
+  resource supervisor. Never convert execution failure to a definitive verdict.
 - [ ] Fresh seven-trial order-rotated matched GPMC comparison at the same
   precision on representative QuPRS long cases, with p50/p90/RSS and
   independent real/imag witness. Bounded Simulation/Flamegraph regression
@@ -44,7 +55,7 @@ fallback and executable need independent release acceptance.
 - [ ] Cross-platform scope and packaging declared only for validated targets.
   Initial executable CI is Linux x86-64; portable reference tests do not
   imply MPFR executable portability.
-- [ ] Release notes disclose bounded fallback and unsupported cases,
+- [ ] Release notes disclose resource budgets and unsupported input semantics,
   review all gates at exact candidate SHA, then merge/tag/release.
 
 No tag or public release is authorized by a partial gate. A successful

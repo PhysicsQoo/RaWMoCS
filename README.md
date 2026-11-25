@@ -13,10 +13,10 @@ positive and negative literal weights.
 
 ## First release candidate: QuPRS weighted CNF executable
 
-The v0.1.0 candidate is an opt-in, bounded signed-complex full WMC executable
+The v0.1.0 candidate is an opt-in signed-complex full WMC executable
 for weighted CNF emitted by QuPRS. It selects a factor-prejoin route from
-the CNF structure, with a small exact-rational reference fallback for
-ordinary admission failures. It never selects by circuit name or source
+the CNF structure, with general MPFR DPLL, component decomposition and
+residual caching for ordinary admission failures. It never selects by circuit name or source
 benchmark ID. The reference crate and its API remain unchanged.
 
 Build on Linux x86-64 with Rust, GMP/MPFR build prerequisites and a resolved
@@ -31,8 +31,8 @@ The release candidate lock must be committed before publication; the initial
 CI may bootstrap it. The four supported digit selectors are 30, 60, 100, 130
 (working precisions 100, 200, 333, 432 bits). These selectors are working
 precision choices, not a certified number of correct decimal digits.
-QuPRS should use guarded precision where required and handle UNKNOWN
-independently from SAT, UNSAT, and numeric zero.
+QuPRS should use guarded precision where required and handle execution
+failure independently from SAT, UNSAT, and numeric zero.
 
 The source format is strict, with a `p cnf N M` header, `c t wmc`,
 optional `c p weight L REAL IMAG 0` records, then one terminated clause
@@ -46,14 +46,17 @@ c p weight 1 -1 0 0
 ```
 
 A complete solve emits exactly a Boolean status and a rounded complex count
-(`c r mpfr REAL IMAG`); SAT with zero is valid. Exit 2 and `s UNKNOWN`
-without a count indicate error/unsupported input or a normal bounded solve
-failure. A supervisor must treat any killed process or nonzero exit as
-unknown, even if output was partially captured. The executable does not
-promise a hard RSS limit or a process-wide timeout internally. Use an external
-resource supervisor. The small reference fallback is limited to 32 variables,
-2048 clauses, weight-bit, cache-payload, depth and node caps.
-Large rejected instances may remain UNKNOWN.
+(`c r mpfr REAL IMAG`); SAT with zero is valid. Nonzero exit means no
+count and empty stdout. Stderr reports INVALID_INPUT (2), UNSUPPORTED_INPUT
+(3), TIMEOUT (4), RESOURCE_LIMIT (5), explicit ROUTE_REJECTED (6), or
+INTERNAL_ERROR (7). The supervisor must classify external timeout,
+cancellation and OOM/kill from process evidence; partial stdout is invalid.
+Auto routing uses one 45-second solver deadline and a 30-second prejoin
+planning budget. The general route has no 32-variable admission cutoff;
+it retains the parser's input bounds, an explicit stack-depth resource
+guard, and optional bounded cache. The exact-rational reference is an
+explicit small-case diagnostic, not the auto fallback. An external process
+resource supervisor is still required for hard RSS and whole-process time.
 
 **Candidate only:** see [release admission](docs/first-release-admission.md).
 No claim of competition-wide performance, projected WMC, exact

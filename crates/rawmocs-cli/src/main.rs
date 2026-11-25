@@ -1,9 +1,10 @@
-//! First release candidate: bounded full signed-complex WMC CLI.
+//! First release candidate: full signed-complex WMC CLI.
 use num_rational::BigRational;
 use rug::Float;
 use std::io::Read;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 mod factor_prejoin;
+mod general;
 
 type Clause = Vec<i32>;
 
@@ -35,14 +36,12 @@ impl C {
         }
         Ok(Self { re: a, im: b })
     }
-    #[cfg(test)]
     fn add(&self, rhs: &Self, bits: u32) -> Self {
         Self {
             re: Float::with_val(bits, &self.re + &rhs.re),
             im: Float::with_val(bits, &self.im + &rhs.im),
         }
     }
-    #[cfg(test)]
     fn mul(&self, rhs: &Self, bits: u32) -> Self {
         // GPMC ComplexMPFR does four separately rounded MPFR products.
         // rug's incomplete products can fuse, so materialize each first.
@@ -57,12 +56,10 @@ impl C {
     }
 }
 #[derive(Clone)]
-#[cfg_attr(not(test), allow(dead_code))]
 struct Weights {
     positive: C,
     negative: C,
 }
-#[cfg_attr(not(test), allow(dead_code))]
 struct Problem {
     n: usize,
     clauses: Vec<Clause>,
@@ -99,8 +96,10 @@ fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
     if n > 4096 || declared > 50_000 {
         return Err("oversize CNF".into());
     }
-    if lines.next().map(str::trim) != Some("c t wmc") {
-        return Err("missing wmc marker".into());
+    match lines.next().map(str::trim) {
+        Some("c t wmc") => {}
+        Some(s) if s.starts_with("c t ") => return Err("unsupported input semantics".into()),
+        _ => return Err("missing wmc marker".into()),
     }
     let mut weights = vec![
         Weights {
@@ -167,9 +166,9 @@ fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
 }
 
 const MAX_SOURCE_BYTES: u64 = 2_000_000;
-const HELP: &str = "rawmocs --digits {30|60|100|130} [--solver auto|prejoin|reference] FILE\n\
+const HELP: &str = "rawmocs --digits {30|60|100|130} [--solver auto|prejoin|general|reference] FILE\n\
 Full signed complex WMC for QuPRS weighted CNF. Output is rounded MPFR, not a certified interval.\n\
-Exit 0: complete SAT and complex count. Exit 2: unknown/error, no count. Use an external process resource supervisor.";
+Exit 0: complete SAT and complex count. Nonzero: classified failure, empty stdout. Use an external process resource supervisor.";
 fn read_source(path: &std::ffi::OsStr) -> Result<String, String> {
     let mut input = Vec::new();
     std::fs::File::open(path)
@@ -255,16 +254,18 @@ fn reference(p: &Problem, raw: &str, bits: u32) -> Result<Outcome, String> {
     })
 }
 fn solve(p: &Problem, raw: &str, bits: u32, mode: &str) -> Result<(Outcome, &'static str), String> {
-    if mode == "reference" || (mode == "auto" && p.n == 0) {
+    let deadline = Instant::now() + Duration::from_secs(45);
+    if mode == "reference" {
         return reference(p, raw, bits).map(|a| (a, "reference"));
+    }
+    if mode == "general" || (mode == "auto" && p.n == 0) {
+        return general::solve(p, bits, deadline).map(|a| (a, "general"));
     }
     if mode != "auto" && mode != "prejoin" {
         return Err("invalid solver".into());
     }
-    match factor_prejoin::solve(p, raw, bits) {
+    match factor_prejoin::solve_until(p, raw, bits, deadline) {
         Ok(a) => Ok((a, "prejoin")),
-        // Only ordinary bounded admission failures permit fallback. A
-        // replay invariant, nonfinite value or deadline never becomes SAT.
         Err(reason)
             if mode == "auto"
                 && matches!(
@@ -277,14 +278,30 @@ fn solve(p: &Problem, raw: &str, bits: u32, mode: &str) -> Result<(Outcome, &'st
                         | "residual variable cap"
                         | "no bounded prejoin plan"
                         | "plan mask cap"
+                        | "prejoin planning budget"
                 ) =>
         {
             eprintln!("RAWMOCS_FALLBACK reason={reason}");
-            reference(p, raw, bits)
-                .map(|a| (a, "reference"))
-                .map_err(|e| format!("prejoin: {reason}; {e}"))
+            general::solve(p, bits, deadline).map(|a| (a, "general"))
         }
         Err(reason) => Err(reason),
+    }
+}
+fn failure(reason: &str) -> (&'static str, i32) {
+    match reason {
+        "general deadline" | "prejoin deadline" => ("TIMEOUT", 4),
+        "source bytes cap" | "oversize CNF" | "general stack limit" => ("RESOURCE_LIMIT", 5),
+        "unsupported input semantics" => ("UNSUPPORTED_INPUT", 3),
+        "source clause cap"
+        | "clause width cap"
+        | "initial cells cap"
+        | "exact local bit cap"
+        | "local budget"
+        | "residual variable cap"
+        | "no bounded prejoin plan"
+        | "plan mask cap"
+        | "prejoin planning budget" => ("ROUTE_REJECTED", 6),
+        _ => ("INTERNAL_ERROR", 7),
     }
 }
 fn run() -> Result<(), String> {
@@ -326,8 +343,23 @@ fn run() -> Result<(), String> {
     if args.next().is_some() {
         return Err("unexpected arguments".into());
     }
-    let raw = read_source(&file)?;
-    let problem = parse_emitted(&raw, bits)?;
+    let raw = read_source(&file).map_err(|e| {
+        if e == "source bytes cap" {
+            e
+        } else {
+            format!("INPUT: {e}")
+        }
+    })?;
+    let problem = parse_emitted(&raw, bits).map_err(|e| {
+        if matches!(e.as_str(), "oversize CNF" | "unsupported input semantics") {
+            e
+        } else {
+            format!("INPUT: {e}")
+        }
+    })?;
+    if !matches!(mode.as_str(), "auto" | "prejoin" | "general" | "reference") {
+        return Err("INPUT: invalid solver".into());
+    }
     let start = Instant::now();
     let (answer, route) = solve(&problem, &raw, bits, &mode)?;
     if !answer.count.re.is_finite() || !answer.count.im.is_finite() {
@@ -356,9 +388,18 @@ fn run() -> Result<(), String> {
 }
 fn main() {
     if let Err(reason) = run() {
-        eprintln!("RAWMOCS_UNKNOWN: {reason}");
-        println!("s UNKNOWN");
-        std::process::exit(2);
+        let (kind, code) = if reason.starts_with("INPUT:")
+            || matches!(
+                reason.as_str(),
+                HELP | "missing digits" | "invalid digits" | "unsupported digits"
+                    | "missing source" | "missing solver" | "unexpected arguments"
+            ) {
+            ("INVALID_INPUT", 2)
+        } else {
+            failure(&reason)
+        };
+        eprintln!("RAWMOCS_FAILURE kind={kind}: {reason}");
+        std::process::exit(code);
     }
 }
 #[cfg(test)]
@@ -387,7 +428,7 @@ mod tests {
         let raw = "p cnf 10 1\nc t wmc\n1 2 3 4 5 6 7 8 9 10 0\n";
         let p = parse_emitted(raw, 200).unwrap();
         let (a, route) = solve(&p, raw, 200, "auto").unwrap();
-        assert_eq!(route, "reference");
+        assert_eq!(route, "general");
         assert!(a.sat);
         assert_eq!(a.count.re, 1023);
         for (raw, sat) in [
@@ -396,10 +437,41 @@ mod tests {
         ] {
             let p = parse_emitted(raw, 200).unwrap();
             let (a, route) = solve(&p, raw, 200, "auto").unwrap();
-            assert_eq!(route, "reference");
+            assert_eq!(route, "general");
             assert_eq!(a.sat, sat);
             assert_eq!(a.count.re, i32::from(sat));
         }
+    }
+    #[test]
+    fn general_large_route_and_exact_oracle() {
+        let raw = "p cnf 33 1\nc t wmc\n1 2 3 4 5 6 7 8 9 10 0\n";
+        let p = parse_emitted(raw, 200).unwrap();
+        let (a, route) = solve(&p, raw, 200, "auto").unwrap();
+        assert_eq!(route, "general");
+        assert!(a.sat);
+        assert_eq!(a.count.re, 8_581_545_984_u64);
+        assert_eq!(a.count.im, 0);
+        for bits in [100, 200, 333, 432] {
+            for raw in [
+                "p cnf 4 2\nc t wmc\nc p weight 1 -0.5 0.25 0\nc p weight -1 0.5 0 0\n1 2 0\n-1 3 0\n",
+                "p cnf 1 0\nc t wmc\nc p weight 1 -1 0 0\n",
+                "p cnf 2 2\nc t wmc\n1 0\n-1 0\n",
+                "p cnf 4 2\nc t wmc\n1 2 0\n3 4 0\n",
+                "p cnf 3 2\nc t wmc\n1 -1 0\n2 2 0\n",
+                "p cnf 0 1\nc t wmc\n0\n",
+            ] {
+                let p = parse_emitted(raw, bits).unwrap();
+                let (g, _) = solve(&p, raw, bits, "general").unwrap();
+                let (r, _) = solve(&p, raw, bits, "reference").unwrap();
+                assert_eq!(g.sat, r.sat);
+                assert_eq!(g.count.re, r.count.re);
+                assert_eq!(g.count.im, r.count.im);
+            }
+        }
+        assert_eq!(
+            general::solve(&p, 200, Instant::now()).err().as_deref(),
+            Some("general deadline")
+        );
     }
     #[test]
     fn strict_parser_rejects_unsupported_semantics() {

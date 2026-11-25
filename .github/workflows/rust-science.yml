@@ -115,13 +115,19 @@ jobs:
           printf 'p cnf 1 0\nc t wmc\nc p weight 1 -1 0 0\n' > .release-evidence/sat-zero.cnf
           printf 'p cnf 1 2\nc t wmc\n1 0\n-1 0\n' > .release-evidence/unsat.cnf
           printf 'p cnf 1 0\nc t pwmc\n' > .release-evidence/unsupported.cnf
-          printf 'p cnf 33 1\nc t wmc\n1 2 3 4 5 6 7 8 9 10 0\n' > .release-evidence/bounded-unknown.cnf
-          for name in sat-zero unsat unsupported bounded-unknown; do
+          printf 'p cnf 33 1\nc t wmc\n1 2 3 4 5 6 7 8 9 10 0\n' > .release-evidence/wide-general.cnf
+          for name in sat-zero unsat unsupported wide-general; do
             rc=0
             timeout -k 2s 60s prlimit --as=3221225472 -- "$bin" --digits 60 ".release-evidence/$name.cnf" > ".release-evidence/$name.stdout" 2> ".release-evidence/$name.stderr" || rc=$?
-            if [[ "$name" == unsupported || "$name" == bounded-unknown ]]; then
-              test "$rc" -eq 2
-              test "$(cat ".release-evidence/$name.stdout")" = 's UNKNOWN'
+            if [[ "$name" == unsupported ]]; then
+              test "$rc" -eq 3
+              test ! -s ".release-evidence/$name.stdout"
+              grep -F 'RAWMOCS_FAILURE kind=UNSUPPORTED_INPUT' ".release-evidence/$name.stderr"
+            elif [[ "$name" == wide-general ]]; then
+              test "$rc" -eq 0
+              grep -Fx 's SATISFIABLE' ".release-evidence/$name.stdout"
+              grep -F 'RAWMOCS_COMPLETE route=general' ".release-evidence/$name.stderr"
+              python3 -c 'from fractions import Fraction; import sys; x=open(sys.argv[1]).read().splitlines()[1].split(); assert x[:3]==["c","r","mpfr"] and len(x)==5 and Fraction(x[3])==(2**10-1)*2**23 and Fraction(x[4])==0' ".release-evidence/$name.stdout"
             else
               test "$rc" -eq 0
               test "$(wc -l < ".release-evidence/$name.stdout")" -eq 2
@@ -133,6 +139,11 @@ jobs:
               python3 -c 'from fractions import Fraction; import sys; x=open(sys.argv[1]).read().splitlines()[1].split(); assert x[:3]==["c","r","mpfr"] and len(x)==5 and Fraction(x[3])==Fraction(x[4])==0' ".release-evidence/$name.stdout"
             fi
           done
+          rc=0
+          "$bin" --digits 60 --solver prejoin .release-evidence/wide-general.cnf > .release-evidence/rejected.stdout 2> .release-evidence/rejected.stderr || rc=$?
+          test "$rc" -eq 6
+          test ! -s .release-evidence/rejected.stdout
+          grep -F 'RAWMOCS_FAILURE kind=ROUTE_REJECTED' .release-evidence/rejected.stderr
           sha256sum "$bin" crates/rawmocs-cli/Cargo.lock | tee .release-evidence/build.sha256
       - name: Transfer previously independently qualified original QuPRS cases
         env:

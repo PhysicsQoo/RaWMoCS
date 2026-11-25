@@ -7,6 +7,7 @@ on:
       - "crates/rawmocs-core/src/**"
       - "crates/rawmocs-core/Cargo.toml"
       - "benchmarks/rust_core/**"
+      - "crates/rawmocs-cli/**"
       - ".github/workflows/codspeed.yml"
   push:
     branches: [main]
@@ -14,6 +15,7 @@ on:
       - "crates/rawmocs-core/src/**"
       - "crates/rawmocs-core/Cargo.toml"
       - "benchmarks/rust_core/**"
+      - "crates/rawmocs-cli/**"
       - ".github/workflows/codspeed.yml"
   workflow_dispatch:
 
@@ -99,3 +101,72 @@ jobs:
         with:
           mode: simulation
           run: cd benchmarks/rust_core && cargo codspeed run --bench solver --bench quprs_direct_cnf
+
+  release-short-simulation:
+    name: Release short original QPE8 Simulation (same precision)
+    if: >-
+      vars.RAWMOCS_CODSPEED_ENABLED == 'true' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/QuPRS
+          ref: 0b28736651b3740ed3b201edd2efdef3da541e0d
+          path: .upstream/quprs
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/GPMC
+          ref: 89bbc89d0de918e7a5385740355df55765039230
+          path: .upstream/gpmc
+          submodules: recursive
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            crates/rawmocs-cli -> target
+            .upstream/quprs/rust -> target
+      - name: Build source-locked encoder and both release executables
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build libgmp-dev libmpfr-dev zlib1g-dev m4 make gcc pkg-config
+          repro=crates/rawmocs-cli/tools/repro
+          test "$(git hash-object "$repro/quprs_long_tail_source_bridge.rs")" = fc32f4e8b0a2f34386b86e08ddf147469275c245
+          test "$(git hash-object "$repro/original_fixed_interval.py")" = bb7aec29adbbf46421be4ca78d76572a7988252e
+          cp "$repro/quprs_long_tail_source_bridge.rs" .upstream/quprs/rust/quprs/examples/
+          cargo build --locked --release --no-default-features --manifest-path .upstream/quprs/rust/Cargo.toml -p quprs --example quprs_long_tail_source_bridge
+          cargo build --locked --release --manifest-path crates/rawmocs-cli/Cargo.toml
+          cmake -S .upstream/gpmc -B .upstream/gpmc/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build .upstream/gpmc/build --target gpmc-bin --parallel 2
+      - name: Qualify short original proxy within one second per arm
+        run: python3 crates/rawmocs-cli/tools/release_simulation.py prepare
+      - name: CodSpeed bounded release Simulation
+        timeout-minutes: 5
+        uses: CodSpeedHQ/action@v5
+        with:
+          mode: simulation
+          config: codspeed-release.generated.yml
+      - name: Verify simulated output, precision and plan signature
+        run: python3 crates/rawmocs-cli/tools/release_simulation.py verify
+      - name: Archive short-proxy qualification
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rawmocs-release-short-simulation
+          path: |
+            .release-simulation/
+            codspeed-release.generated.yml
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30

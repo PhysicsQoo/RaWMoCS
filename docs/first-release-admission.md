@@ -20,6 +20,18 @@ fallback and executable need independent release acceptance.
 
 ## Admission gates
 
+Candidate `a016e606b62dd3b6bfadb1c131f9cea06c8d3808` completed
+[science CI 45588469064](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/45588469064):
+11/11 jobs, 21/21 complete witnessed native pairs with RaWMoCS faster
+in all pairs. GPMC/RaWMoCS p50 seconds: QPE inexact 22 (432 bits)
+79.659689560/3.761025841 (21.18x), Grover 6 (432 bits)
+25.043931268/1.328089750 (18.86x), GF2^7 (333 bits)
+62.124545559/2.382324483 (26.08x). These are case-specific results,
+not a general CNF performance claim. New short Simulation gate uses
+original QPE8 only (200 bits), one-second native preflight per arm,
+five-minute Simulation step and independent witness/output/plan parity.
+Flamegraph inspection and packaging remain required.
+
 Candidate `9c82851baf07154953745b6ce3b2bd9efbe25036` passed
 [science CI 45586377302](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/45586377302):
 8/8 jobs, 17 CLI tests, kernel OOM delta 0 to 1 with non-OOM SIGKILL

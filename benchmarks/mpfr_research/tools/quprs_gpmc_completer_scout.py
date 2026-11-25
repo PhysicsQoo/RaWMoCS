@@ -111,6 +111,41 @@ def mqt_holdouts(root):
     excluded={r["path"] for r in candidates(root)+previous_mqt(root)}
     return select_mqt_holdouts(paths,excluded)
 
+# Second independent discovery cohort. Predeclare near-transition sizes;
+# exclude earlier deterministic manifests, not solver results. One candidate
+# per family and at most eight originals; no synthesized circuit.
+PREJOIN_SCOUT_TARGETS=(("qft",23),("qpeexact",23),("qpeinexact",21),
+                      ("wstate",18),("grover-noancilla",7),("qnn",10),
+                      ("qaoa",12),("qwalk-noancilla",6))
+PREJOIN_SCOUT_MAX=8
+
+def select_prejoin_holdouts(paths,excluded):
+    from quprs_mqt_adaptive_scout import item
+    out=[]
+    for family,target in PREJOIN_SCOUT_TARGETS:
+        pattern=re.compile(re.escape(family)+r"_nativegates_ibm_qiskit_opt0_(\d+)\.qasm$")
+        rows=[]
+        for rel in paths:
+            if rel in excluded or not rel.startswith("benchmarks/MQTBench/"):continue
+            m=pattern.fullmatch(Path(rel).name)
+            if not m or abs(int(m[1])-target)>2:continue
+            if Path(rel).parent.name not in ("Random_Pauli","Random_Rotation"):continue
+            rows.append(item(rel,"independent_prejoin_long_discovery"))
+        if rows:
+            out.append(min(rows,key=lambda r:(abs(r["size"]-target),
+                       r["variant"].endswith("Random_Pauli"),r["size"],r["path"])))
+    if len(out)>PREJOIN_SCOUT_MAX or len({r["path"] for r in out})!=len(out):
+        raise ValueError("DUPLICATE_PREJOIN_HOLDOUT")
+    return out
+
+def prejoin_holdouts(root):
+    from quprs_mqt_adaptive_scout import candidates as previous_mqt, followup_candidates
+    paths=subprocess.check_output(["git","-C",str(root),"ls-tree","-r","--name-only",QU_PRS_SHA,
+        "--","benchmarks/MQTBench"],text=True).splitlines()
+    excluded={r["path"] for r in candidates(root)+previous_mqt(root)+followup_candidates(root)+mqt_holdouts(root)}
+    excluded.update("benchmarks/MQTBench/"+rel for rel,_ in LOCKED_LONG)
+    return select_prejoin_holdouts(paths,excluded)
+
 def holdout_self_test():
     pauli="benchmarks/MQTBench/Random_Pauli/qpeexact_nativegates_ibm_qiskit_opt0_22.qasm"
     rotation=pauli.replace("Random_Pauli","Random_Rotation")
@@ -121,6 +156,12 @@ def holdout_self_test():
     b=select_mqt_holdouts(list(reversed(paths)),{pauli})
     assert a==b
     assert {r["path"] for r in a}=={rotation,wstate}
+    qft="benchmarks/MQTBench/Random_Rotation/qft_nativegates_ibm_qiskit_opt0_23.qasm"
+    qft2=qft.replace("_23.qasm","_24.qasm")
+    qpe="benchmarks/MQTBench/Random_Rotation/qpeexact_nativegates_ibm_qiskit_opt0_23.qasm"
+    a=select_prejoin_holdouts([qft,qft2,qpe],{qft})
+    assert a==select_prejoin_holdouts([qpe,qft2,qft],{qft})
+    assert {r["path"] for r in a}=={qft2,qpe}
     assert not qualified([{"status":"CENSORED_TIME","wall_ns":120*10**9},
                           {"status":"COMPLETED","wall_ns":20*10**9}])
     assert qualified([{"status":"COMPLETED","wall_ns":20*10**9},
@@ -337,6 +378,7 @@ def main():
         ap.add_argument("--"+arg,type=Path,required=True)
     ap.add_argument("--shard",type=int,choices=range(HOLDOUT_SHARDS),required=True)
     ap.add_argument("--mqt-holdout",action="store_true")
+    ap.add_argument("--prejoin-holdout",action="store_true")
     ap.add_argument("--locked-long",action="store_true")
     ap.add_argument("--residual-followup",action="store_true")
     ap.add_argument("--certified-long",action="store_true")
@@ -352,14 +394,15 @@ def main():
             orders=[native_ab_order(t,target) for t in range(7)]
             assert all(set(o)=={"gpmc","baseline","adaptive"} for o in orders)
             assert all(2<=sum(o[i]==arm for o in orders)<=3 for i in range(3) for arm in orders[0])
-    if args.locked_long and args.mqt_holdout:ap.error("select one study")
+    if sum((args.locked_long,args.mqt_holdout,args.prejoin_holdout))>1:ap.error("select one study")
     holdout_self_test()
-    shards=2 if args.residual_followup else HOLDOUT_SHARDS if args.mqt_holdout or args.locked_long else SHARDS
+    shards=2 if args.residual_followup else HOLDOUT_SHARDS if args.mqt_holdout or args.locked_long or args.prejoin_holdout else SHARDS
     if args.shard>=shards:ap.error("shard outside selected cohort")
     if git_sha(args.quprs)!=QU_PRS_SHA or git_sha(args.gpmc_source)!=GPMC_SHA:
         raise SystemExit("SOURCE_LOCK_DRIFT")
     args.corpus.mkdir(parents=True,exist_ok=True)
-    manifest=locked_long(args.quprs) if args.locked_long else mqt_holdouts(args.quprs) if args.mqt_holdout else candidates(args.quprs)
+    manifest=locked_long(args.quprs) if args.locked_long else prejoin_holdouts(args.quprs) if args.prejoin_holdout else mqt_holdouts(args.quprs) if args.mqt_holdout else candidates(args.quprs)
+    if args.prejoin_holdout and not manifest:raise ValueError("EMPTY_PREJOIN_HOLDOUT")
     if args.residual_followup:
         wanted={"600ce6716a69e31e17ffbc571cba581fc58a5b5ed3b7d60227ad41d857374efe","a9757cd5bd730b6f769d2970e3a16ac66fee7157b55f81208c0a7c2cece0023b"}
         manifest=[r for r in manifest if r["expected_cnf_sha256"] in wanted]
@@ -371,8 +414,8 @@ def main():
     report={"study":"Original GPMC-completer long-case discovery",
             "source_revisions":{"quprs":QU_PRS_SHA,"gpmc":GPMC_SHA},
             "selection":"both 100/333-bit GPMC screens completed >=10s; rank by min GPMC wall; no Rust-dependent selection",
-            "limits":{"wall_s":PAIR_S,"AS_bytes":AS_BYTES,"max_candidates":HOLDOUT_MAX if args.mqt_holdout else MAX_CASES},
-            "shard":args.shard,"mqt_holdout":args.mqt_holdout,"locked_long":args.locked_long,"residual_followup":args.residual_followup,"certified_long":args.certified_long,"manifest":manifest,"cases":[],"pilot":None,
+            "limits":{"wall_s":PAIR_S,"AS_bytes":AS_BYTES,"max_candidates":PREJOIN_SCOUT_MAX if args.prejoin_holdout else HOLDOUT_MAX if args.mqt_holdout else MAX_CASES},
+            "shard":args.shard,"mqt_holdout":args.mqt_holdout,"prejoin_holdout":args.prejoin_holdout,"locked_long":args.locked_long,"residual_followup":args.residual_followup,"certified_long":args.certified_long,"manifest":manifest,"cases":[],"pilot":None,
             "status":"IN_PROGRESS","independent_full_wmc_reference":False}
     def persist():
         args.report.write_text(json.dumps(report,indent=2)+"\n")
@@ -430,7 +473,10 @@ def main():
         pilot={"case":case,"cohorts":[],"status":"EXPLORATORY_ONE_PAIR_PER_PRECISION"}
         report["pilot"]=pilot
         for digits,bits in BITS.items():
-            if args.mqt_holdout:
+            if args.prejoin_holdout:
+                route="--factor-prejoin"
+                rust=[str(args.mpfr.resolve()),route,str(digits),str(cnf.resolve())]
+            elif args.mqt_holdout:
                 route="--adaptive"
                 rust=[str(args.mpfr.resolve()),route,str(digits),str(cnf.resolve())]
             else:
@@ -460,6 +506,14 @@ def main():
                     route_ok=cohort["selected_route"] is not None
                 if route=="--factor-taylor-strict":
                     route_ok=route_ok and "certified=true" in b.get("stderr_tail","")
+                if route=="--factor-prejoin":
+                    from quprs_prejoin_native_pilot import TRACE
+                    trace=TRACE.findall(b.get("stderr_tail",""))
+                    route_ok=len(trace)==1
+                    if route_ok:
+                        residual,cuts,leaves,width,work,peak,joins,plan_ns=map(int,trace[0])
+                        route_ok=residual<=256 and cuts<=2 and leaves==1<<cuts and width<=19 and work<=40_000_000 and peak<=2_000_000
+                        cohort["prejoin_trace"]=dict(residual=residual,cuts=cuts,leaves=leaves,width=width,work=work,peak=peak,joins=joins,plan_ns=plan_ns)
                 if witness["pass"] and a["sat"]==b["sat"] and route_ok:
                     cohort["status"]="SINGLE_MATCHED_PAIR"
                     cohort["gpmc_over_rust"]=a["wall_ns"]/b["wall_ns"]

@@ -92,15 +92,34 @@ fn mask(scope:&[usize],out:&[usize],m:usize,pivot:usize,positive:bool)->usize{
     })
 }
 type Local=(Vec<Factor<R>>,Scope,Cell<R>,Cost);
+// Exact multiplicity of each live primal edge; a shared edge disappears
+// only when its last supporting factor is removed.
+type EdgeCounts=Vec<BTreeMap<usize,usize>>;
+fn edge_add(edges:&mut EdgeCounts,scope:&[usize]){
+    for (i,&v) in scope.iter().enumerate(){for &u in &scope[i+1..]{
+        *edges[v].entry(u).or_default()+=1;
+        *edges[u].entry(v).or_default()+=1;
+    }}
+}
+fn edge_remove(edges:&mut EdgeCounts,scope:&[usize])->Result<(),String>{
+    for (i,&v) in scope.iter().enumerate(){for &u in &scope[i+1..]{
+        for (a,b) in [(v,u),(u,v)]{
+            let count=edges[a].get_mut(&b).ok_or("local edge missing")?;
+            *count=count.checked_sub(1).ok_or("local edge underflow")?;
+            if *count==0{edges[a].remove(&b);}
+        }
+    }}
+    Ok(())
+}
 fn local(p:&Problem,raw:&str,d:Instant)->Result<Local,String>{
     local_frontier(p,raw,d,true,true)
 }
 fn local_frontier(p:&Problem,raw:&str,d:Instant,incremental:bool,widen:bool)->Result<Local,String>{
-    local_frontier_probe::<false>(p,raw,d,incremental,widen,None)
+    local_frontier_probe::<false,true>(p,raw,d,incremental,widen,None)
 }
 // Native-only phase attribution. Prefix replay is a research diagnostic and
 // must never be accepted as a completed residual or WMC result.
-fn local_frontier_probe<const PROFILE:bool>(p:&Problem,raw:&str,d:Instant,incremental:bool,widen:bool,step_cap:Option<usize>)->Result<Local,String>{
+fn local_frontier_probe<const PROFILE:bool,const ADJ:bool>(p:&Problem,raw:&str,d:Instant,incremental:bool,widen:bool,step_cap:Option<usize>)->Result<Local,String>{
     let started=if PROFILE{Some(Instant::now())}else{None};
     let mut phase=started;
     let mut times=[0u128;6];
@@ -146,29 +165,33 @@ fn local_frontier_probe<const PROFILE:bool>(p:&Problem,raw:&str,d:Instant,increm
     let mut tables:BTreeMap<usize,Factor<R>>=fs.into_iter().enumerate().collect();
     let mut next=tables.len();
     let mut owners=vec![Scope::new();p.n+1];
+    let mut edges:EdgeCounts=if ADJ{vec![BTreeMap::new();p.n+1]}else{Vec::new()};
     let mut live=0usize;
     for (&id,f) in &tables{
         live+=f.values.len();
         for &v in &f.scope{owners[v].insert(id);}
+        if ADJ{edge_add(&mut edges,&f.scope);}
     }
-    let neighbors=|v:usize,owners:&[Scope],tables:&BTreeMap<usize,Factor<R>>|->Scope{
-        owners[v].iter().flat_map(|id|tables[id].scope.iter().copied()).filter(|&u|u!=v).collect()
+    let neighbors=|v:usize,owners:&[Scope],tables:&BTreeMap<usize,Factor<R>>,edges:&EdgeCounts|->Scope{
+        if ADJ{edges[v].keys().copied().collect()}
+        else{owners[v].iter().flat_map(|id|tables[id].scope.iter().copied()).filter(|&u|u!=v).collect()}
     };
-    let key=|v:usize,owners:&[Scope],tables:&BTreeMap<usize,Factor<R>>|{
-        (neighbors(v,owners,tables).len(),owners[v].len(),usize::MAX-v)
+    let key=|v:usize,owners:&[Scope],tables:&BTreeMap<usize,Factor<R>>,edges:&EdgeCounts|{
+        let degree=if ADJ{edges[v].len()}else{neighbors(v,owners,tables,edges).len()};
+        (degree,owners[v].len(),usize::MAX-v)
     };
     // Exact ordered-set queue: no stale entries, one key per active variable.
-    let mut queue:BTreeSet<_>=nodes.iter().map(|&v|key(v,&owners,&tables)).collect();
-    let mut keys:Vec<_>=(0..=p.n).map(|v|if v==0{None}else{Some(key(v,&owners,&tables))}).collect();
+    let mut queue:BTreeSet<_>=nodes.iter().map(|&v|key(v,&owners,&tables,&edges)).collect();
+    let mut keys:Vec<_>=(0..=p.n).map(|v|if v==0{None}else{Some(key(v,&owners,&tables,&edges))}).collect();
     let mut local_width=4;
     tick(&mut phase,&mut times[1]);
     while !nodes.is_empty(){
         if step_cap.is_some_and(|cap|steps>=cap){break;}
         deadline(d)?;
         let k=if incremental{*queue.first().ok_or("local queue empty")?}
-            else{nodes.iter().map(|&v|key(v,&owners,&tables)).min().ok_or("local pivot")?};
+            else{nodes.iter().map(|&v|key(v,&owners,&tables,&edges)).min().ok_or("local pivot")?};
         let v=usize::MAX-k.2;
-        let nb=neighbors(v,&owners,&tables);
+        let nb=neighbors(v,&owners,&tables,&edges);
         if nb.len()>local_width{
             // Preserve every previously admitted width-4 route. Widen only
             // if the old residual cap would otherwise reject the problem.
@@ -192,11 +215,13 @@ fn local_frontier_probe<const PROFILE:bool>(p:&Problem,raw:&str,d:Instant,increm
         for id in ids{
             let f=tables.remove(&id).ok_or("local factor owner")?;
             live-=f.values.len();
+            if ADJ{edge_remove(&mut edges,&f.scope)?;}
             for &u in &f.scope{
                 if u!=v&&!owners[u].remove(&id){return Err("local incidence drift".into());}
             }
             bucket.push(f);
         }
+        if ADJ&&!edges[v].is_empty(){return Err("local pivot edge drift".into());}
         tick(&mut phase,&mut times[3]);
         let mut vals=Vec::with_capacity(size);
         for m in 0..size{
@@ -218,12 +243,13 @@ fn local_frontier_probe<const PROFILE:bool>(p:&Problem,raw:&str,d:Instant,increm
         else{
             live+=f.values.len();
             for &u in &f.scope{owners[u].insert(next);}
+            if ADJ{edge_add(&mut edges,&f.scope);}
             tables.insert(next,f);next+=1;
         }
         nodes.remove(&v);
         if incremental{
             for u in nb{
-                let k=key(u,&owners,&tables);
+                let k=key(u,&owners,&tables,&edges);
                 keys[u]=Some(k);
                 if !queue.insert(k){return Err("local queue duplicate".into());}
             }
@@ -611,17 +637,34 @@ fn pair_scan(raw:&str,use_mask:bool)->Result<String,String>{
 }
 pub(crate) fn run(mut args:impl Iterator<Item=std::ffi::OsString>)->Result<(),String>{
     let first=args.next().and_then(|x|x.into_string().ok()).ok_or("missing precision")?;
-    if matches!(first.as_str(),"local-profile"|"local-prefix"){
+    if matches!(first.as_str(),"local-profile"|"local-prefix"|"local-prefix-legacy"|"local-compare"){
         let file=args.next().ok_or("missing local probe input")?;
         if args.next().is_some(){return Err("unexpected local probe arguments".into());}
         if std::fs::metadata(&file).map_err(|e|e.to_string())?.len()>2_097_152{return Err("local probe input cap".into());}
         let raw=std::fs::read_to_string(file).map_err(|e|e.to_string())?;
         let p=parse_emitted(&raw,200)?;
         let d=Instant::now()+Duration::from_secs(30);
-        let (fs,nodes,scalar,cost)=if first=="local-profile"{local_frontier_probe::<true>(&p,&raw,d,true,true,None)?}else{local_frontier_probe::<false>(&p,&raw,d,true,true,Some(512))?};
+        let (fs,nodes,scalar,cost)=match first.as_str(){
+            "local-profile"=>local_frontier_probe::<true,true>(&p,&raw,d,true,true,None)?,
+            "local-compare"=>{
+                let a=local_frontier_probe::<true,false>(&p,&raw,d,true,true,None)?;
+                let b=local_frontier_probe::<true,true>(&p,&raw,d,true,true,None)?;
+                if a!=b{return Err("full exact frontier drift".into());}
+                drop(a);
+                let pa=local_frontier_probe::<false,false>(&p,&raw,d,true,true,Some(512))?;
+                let pb=local_frontier_probe::<false,true>(&p,&raw,d,true,true,Some(512))?;
+                if pa!=pb{return Err("exact prefix frontier drift".into());}
+                eprintln!("LOCAL_EXACT_FRONTIER_AND_PREFIX_PARITY_PASS");
+                b
+            }
+            "local-prefix-legacy"=>local_frontier_probe::<false,false>(&p,&raw,d,true,true,Some(512))?,
+            _=>local_frontier_probe::<false,true>(&p,&raw,d,true,true,Some(512))?,
+        };
         let eliminated=p.n-nodes.len();
-        if first=="local-prefix"&&eliminated!=512{return Err("local prefix length drift".into());}
-        println!("LOCAL_PROBE_V1 mode={first} eliminated={eliminated} remaining={} factors={} cells={} scalar_supported={} width={} work={} peak={}",nodes.len(),fs.len(),fs.iter().map(|f|f.values.len()).sum::<usize>(),scalar.is_some(),cost.width,cost.work,cost.peak);
+        let prefix=first.starts_with("local-prefix");
+        if prefix&&eliminated!=512{return Err("local prefix length drift".into());}
+        let mode=if prefix{"local-prefix"}else{first.as_str()};
+        println!("LOCAL_PROBE_V1 mode={mode} eliminated={eliminated} remaining={} factors={} cells={} scalar_supported={} width={} work={} peak={}",nodes.len(),fs.len(),fs.iter().map(|f|f.values.len()).sum::<usize>(),scalar.is_some(),cost.width,cost.work,cost.peak);
         return Ok(());
     }
     if matches!(first.as_str(),"pair-snapshot"|"pair-baseline"|"pair-mask"){
@@ -691,14 +734,28 @@ mod tests{
         assert!(plan_words::<1>(&fs,&nodes,(Some(0),false),0,d).is_err());
     }
     #[test]
+    fn counted_edges_preserve_shared_support(){
+        let mut edges=vec![BTreeMap::new();5];
+        edge_add(&mut edges,&[1,2,3]);
+        edge_add(&mut edges,&[1,2,4]);
+        assert_eq!(edges[1][&2],2);
+        edge_remove(&mut edges,&[1,2,3]).unwrap();
+        assert_eq!(edges[1][&2],1);
+        assert!(!edges[1].contains_key(&3));
+        assert!(edges[3].is_empty());
+        edge_remove(&mut edges,&[1,2,4]).unwrap();
+        assert!(edges.iter().all(BTreeMap::is_empty));
+    }
+    #[test]
     fn local_probe_preserves_complete_frontier_and_can_stop_early(){
         let raw="p cnf 6 3\nc t wmc\nc p weight 1 -2 3 0\n1 2 0\n-2 3 0\n4 5 0\n";
         let p=parse_emitted(raw,200).unwrap();
         let d=Instant::now()+Duration::from_secs(5);
         let full=local_frontier(&p,raw,d,true,true).unwrap();
-        assert_eq!(full,local_frontier_probe::<true>(&p,raw,d,true,true,None).unwrap());
-        assert_eq!(full,local_frontier_probe::<false>(&p,raw,d,true,true,Some(6)).unwrap());
-        let prefix=local_frontier_probe::<false>(&p,raw,d,true,true,Some(2)).unwrap();
+        assert_eq!(full,local_frontier_probe::<true,true>(&p,raw,d,true,true,None).unwrap());
+        assert_eq!(full,local_frontier_probe::<false,false>(&p,raw,d,true,true,None).unwrap());
+        assert_eq!(full,local_frontier_probe::<false,true>(&p,raw,d,true,true,Some(6)).unwrap());
+        let prefix=local_frontier_probe::<false,true>(&p,raw,d,true,true,Some(2)).unwrap();
         assert_eq!(prefix.1.len(),4);
         assert!(prefix.3.work<=full.3.work);
     }

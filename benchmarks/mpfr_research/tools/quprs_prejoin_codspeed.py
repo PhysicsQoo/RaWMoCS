@@ -24,7 +24,8 @@ CASE="extended_qpe8_prejoin_focus"
 ARMS=("gpmc","adaptive","prejoin")
 DIGITS,BITS,TARGET=60,200,30
 LIMIT,REFERENCE_LIMIT=1,45
-GF2=os.environ.get("STUDY")=="gf2_6_prejoin"
+GF2=os.environ.get("STUDY") in ("gf2_6_prejoin","gf2_6_axis_ab")
+AXIS_AB=os.environ.get("STUDY")=="gf2_6_axis_ab"
 BENCHMARK="qpe8_prejoin"
 if GF2:
     REL="benchmarks/Feynman/gf2^6_mult.qasm"
@@ -32,7 +33,7 @@ if GF2:
     BLOB=None
     EXPECTED="2b8001227f544bc21a9590f21086747d094d647de04d93c48c27982bc9ba4a2d"
     CASE="extended_gf2_6_prejoin_holdout"
-    ARMS=("prejoin",)
+    ARMS=("baseline","prejoin") if AXIS_AB else ("prejoin",)
     # Shorter qualified precision to avoid simulation slowdown crossing native deadlines.
     DIGITS,BITS,TARGET=30,100,30
     LIMIT,REFERENCE_LIMIT=1,45
@@ -99,6 +100,10 @@ def prepare():
           "adaptive":[binary,"--adaptive",str(DIGITS),str(cnf)],
           "prejoin":[binary,"--factor-prejoin",str(DIGITS),str(cnf)]}
     report["binary_sha256"]={"rust":sha(Path(binary))}
+    if AXIS_AB:
+        base=Path(".upstream/prejoin-simulation-baseline/benchmarks/mpfr_research/target/release/rawmocs-mpfr-research")
+        cmds["baseline"]=[str(base),"--factor-prejoin",str(DIGITS),str(cnf)]
+        report["binary_sha256"]["baseline"]=sha(base)
     if not GF2:report["binary_sha256"]["gpmc"]=sha(g/"build/gpmc")
     config=["options:",'  max-time: "5s"',"benchmarks:"]
     for arm in ARMS:
@@ -116,6 +121,10 @@ def prepare():
         wrapper.chmod(0o755)
         config.extend([f'  - name: "original_focused/{BENCHMARK}/{arm}_mpfr{BITS}"',f'    exec: "./{wrapper}"'])
         persist()
+    if AXIS_AB:
+        old,new=(report["native"][arm] for arm in ARMS)
+        if any(old[k]!=new[k] for k in ("sat","real","imag","trace")):
+            raise ValueError("NATIVE_AB_OUTPUT_OR_PLAN_DRIFT")
     report["status"]="NATIVE_PREFLIGHT_PASS";persist()
     CONFIG.write_text("\n".join(config)+"\n")
     print("PREJOIN_CODSPEED_PREFLIGHT_PASS",flush=True)

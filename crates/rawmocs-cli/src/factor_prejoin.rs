@@ -977,6 +977,22 @@ fn execute(
     bits: u32,
     d: Instant,
 ) -> Result<Cell<C>, String> {
+    if std::env::var("RAWMOCS_RESEARCH_FACTOR_CLASSES").as_deref() == Ok("1") {
+        execute_impl::<true>(fs, scalar, p, bits, d)
+    } else {
+        execute_impl::<false>(fs, scalar, p, bits, d)
+    }
+}
+
+// Separate the default and opt-in hot loops at compile time. The frozen
+// runtime-dispatch candidate remains an independent benchmark control.
+fn execute_impl<const CLASSIFY: bool>(
+    fs: Vec<Factor<R>>,
+    scalar: Cell<R>,
+    p: &Plan,
+    bits: u32,
+    d: Instant,
+) -> Result<Cell<C>, String> {
     let mut tables: BTreeMap<usize, Factor<C>> = fs
         .into_iter()
         .enumerate()
@@ -1000,7 +1016,6 @@ fn execute(
     // The original replay cost remains unchanged; the pool is extra storage.
     let recycle_cap = 32_768.min(LIVE.saturating_sub(p.cost.peak));
     let mut recycle = Vec::new();
-    let classify = std::env::var("RAWMOCS_RESEARCH_FACTOR_CLASSES").as_deref() == Ok("1");
     let mut classified_cells = 0usize;
     let mut classified_factors = 0usize;
     let mut peak_class_bytes = 0usize;
@@ -1024,7 +1039,7 @@ fn execute(
         if cost.work > WORK || cost.peak > LIVE || cost.width > WIDTH {
             return Err("execution cap".into());
         }
-        let classes = if classify {
+        let classes = if CLASSIFY {
             let lookups = size * if op.pivot.is_some() { 2 } else { 1 };
             let classes = bucket
                 .iter()
@@ -1068,11 +1083,13 @@ fn execute(
                     let Some(y) = &f.values[index] else {
                         return false;
                     };
-                    if let Some(c) = classes.as_ref().and_then(|c| c[i].as_ref()) {
-                        scratch.multiply_classified(x, y, c[index]);
-                    } else {
-                        scratch.multiply(x, y);
+                    if CLASSIFY {
+                        if let Some(c) = classes.as_ref().and_then(|c| c[i].as_ref()) {
+                            scratch.multiply_classified(x, y, c[index]);
+                            continue;
+                        }
                     }
+                    scratch.multiply(x, y);
                 }
                 true
             };
@@ -1120,7 +1137,7 @@ fn execute(
     if cost != p.cost {
         return Err("plan replay drift".into());
     }
-    if classify {
+    if CLASSIFY {
         eprintln!(
             "PREJOIN_RESEARCH_CLASSES factors={classified_factors} cells={classified_cells} peak_bytes={peak_class_bytes}"
         );
@@ -1262,6 +1279,78 @@ fn pair_scan(raw: &str, use_mask: bool) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn static_dispatch_replays_supported_zero_and_absent_cells() {
+        let z = (Rational::from(0), Rational::from(0));
+        let complex = (decimal("-0.125").unwrap(), decimal("0.375").unwrap());
+        let fs = vec![
+            Factor {
+                scope: vec![1],
+                values: vec![Some(z.clone()), Some(complex.clone())],
+            },
+            Factor {
+                scope: vec![1, 2, 3],
+                values: vec![
+                    None,
+                    Some(one()),
+                    Some(complex.clone()),
+                    Some(z),
+                    Some(one()),
+                    None,
+                    Some(complex),
+                    Some(one()),
+                ],
+            },
+        ];
+        // First op reads the two-cell factor eight times: classification
+        // is genuinely admitted. Remaining operations eliminate all axes.
+        let p = Plan {
+            ops: vec![
+                Op {
+                    ids: vec![0, 1],
+                    dst: 2,
+                    out: vec![2, 3],
+                    pivot: Some(1),
+                },
+                Op {
+                    ids: vec![2],
+                    dst: 3,
+                    out: vec![3],
+                    pivot: Some(2),
+                },
+                Op {
+                    ids: vec![3],
+                    dst: 4,
+                    out: vec![],
+                    pivot: Some(3),
+                },
+            ],
+            cost: Cost {
+                width: 2,
+                work: 22,
+                peak: 14,
+                joins: 0,
+            },
+            extra: 0,
+        };
+        let expected = (decimal("-0.25").unwrap(), decimal("0.75").unwrap());
+        for bits in [100, 200, 333, 432] {
+            let d = Instant::now() + Duration::from_secs(5);
+            let off = execute_impl::<false>(fs.clone(), Some(one()), &p, bits, d)
+                .unwrap()
+                .unwrap();
+            let on = execute_impl::<true>(fs.clone(), Some(one()), &p, bits, d)
+                .unwrap()
+                .unwrap();
+            assert_eq!(off.re, on.re);
+            assert_eq!(off.im, on.im);
+            assert_eq!(on.re, Float::with_val(bits, &expected.0));
+            assert_eq!(on.im, Float::with_val(bits, &expected.1));
+            assert_eq!(off.re.is_sign_negative(), on.re.is_sign_negative());
+            assert_eq!(off.im.is_sign_negative(), on.im.is_sign_negative());
+        }
+    }
+
     #[test]
     fn classified_multiply_preserves_values_and_signed_zero() {
         for bits in [100, 200, 333, 432] {

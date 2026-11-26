@@ -207,7 +207,7 @@ jobs:
             --bin "$GITHUB_WORKSPACE/crates/rawmocs-cli/target/release/rawmocs" \
             --out "$GITHUB_WORKSPACE/.release-evidence/oom"
       - name: Source archive and extracted-tree installation admission
-        if: env.SCIENCE_SUITE == 'full'
+        if: env.SCIENCE_SUITE == 'full' || (github.event_name == 'pull_request' && startsWith(github.head_ref, 'release/prepare-'))
         run: bash crates/rawmocs-cli/tools/package_source.sh .release-evidence/source-package
       - name: Require unchanged tracked release candidate
         run: git diff --exit-code -- crates/rawmocs-cli

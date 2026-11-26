@@ -103,6 +103,29 @@ struct Engine<'a> {
     deadline: Instant,
     cache: HashMap<Key, Outcome>,
     cache_items: usize,
+    scratch: Option<Scratch>,
+}
+
+// Scratch is never retained by continuation frames. Only current-scope
+// entries are initialized/read; all residual literals belong to that scope.
+struct Scratch {
+    frequency: Vec<usize>,
+    parent: Vec<usize>,
+}
+impl Scratch {
+    fn new(n: usize) -> Self {
+        Self {
+            frequency: vec![0; n + 1],
+            parent: vec![0; n + 1],
+        }
+    }
+}
+fn count_frequency(clauses: &[Clause], frequency: &mut [usize]) {
+    for clause in clauses {
+        for &lit in clause {
+            frequency[lit.unsigned_abs() as usize] += 1;
+        }
+    }
 }
 fn normalize(mut clauses: Vec<Clause>) -> Vec<Clause> {
     for clause in &mut clauses {
@@ -142,17 +165,27 @@ fn root(parent: &mut [usize], mut x: usize) -> usize {
 }
 fn components(clauses: &mut Vec<Clause>, scope: &[usize], n: usize) -> Vec<Component> {
     let mut parent: Vec<_> = (0..=n).collect();
+    components_with_parent(clauses, scope, &mut parent)
+}
+fn components_with_parent(
+    clauses: &mut Vec<Clause>,
+    scope: &[usize],
+    parent: &mut [usize],
+) -> Vec<Component> {
+    for &v in scope {
+        parent[v] = v;
+    }
     for c in clauses.iter() {
         let first = c[0].unsigned_abs() as usize;
         for &lit in &c[1..] {
-            let a = root(&mut parent, first);
-            let b = root(&mut parent, lit.unsigned_abs() as usize);
+            let a = root(parent, first);
+            let b = root(parent, lit.unsigned_abs() as usize);
             parent[b] = a;
         }
     }
     let mut groups: BTreeMap<usize, (Vec<usize>, Vec<Clause>)> = BTreeMap::new();
     for &v in scope {
-        groups.entry(root(&mut parent, v)).or_default().0.push(v);
+        groups.entry(root(parent, v)).or_default().0.push(v);
     }
     if groups.len() <= 1 {
         return Vec::new();
@@ -160,7 +193,7 @@ fn components(clauses: &mut Vec<Clause>, scope: &[usize], n: usize) -> Vec<Compo
     // Consume the residual only when a split is known to exist. Keep the
     // original representatives, component order and per-component clause order.
     for c in std::mem::take(clauses) {
-        let r = root(&mut parent, c[0].unsigned_abs() as usize);
+        let r = root(parent, c[0].unsigned_abs() as usize);
         groups.entry(r).or_default().1.push(c);
     }
     groups.into_values().collect()
@@ -236,12 +269,19 @@ impl Engine<'_> {
             remaining.retain(|&x| x != v);
             assign_inplace(&mut residual, lit);
         }
-        let mut frequency = vec![0_usize; self.p.n + 1];
-        for clause in &residual {
-            for &lit in clause {
-                frequency[lit.unsigned_abs() as usize] += 1;
+        // Reuse dense global-indexed buffers but reset only the current
+        // scope. This avoids O(global n) allocation/initialization per node.
+        let mut fresh = Vec::new();
+        let frequency = if let Some(scratch) = &mut self.scratch {
+            for &v in &remaining {
+                scratch.frequency[v] = 0;
             }
-        }
+            &mut scratch.frequency
+        } else {
+            fresh.resize(self.p.n + 1, 0);
+            &mut fresh
+        };
+        count_frequency(&residual, frequency);
         let mut active = Vec::new();
         for v in remaining {
             if frequency[v] == 0 {
@@ -262,7 +302,13 @@ impl Engine<'_> {
                 )
                 .map(Step::Done);
         }
-        let mut parts = components(&mut residual, &active, self.p.n).into_iter();
+        let pivot = active.iter().copied().max_by_key(|&v| frequency[v]);
+        let mut parts = if let Some(scratch) = &mut self.scratch {
+            components_with_parent(&mut residual, &active, &mut scratch.parent)
+        } else {
+            components(&mut residual, &active, self.p.n)
+        }
+        .into_iter();
         if let Some((scope, clauses)) = parts.next() {
             push(
                 stack,
@@ -275,10 +321,7 @@ impl Engine<'_> {
             )?;
             return Ok(Step::Enter(clauses, scope));
         }
-        let v = *active
-            .iter()
-            .max_by_key(|&&v| frequency[v])
-            .ok_or("no active pivot")?;
+        let v = pivot.ok_or("no active pivot")?;
         let child: Vec<_> = active.into_iter().filter(|&x| x != v).collect();
         // Queue a compact negative child; donate the owned buffers to the
         // positive child, which is visited immediately.
@@ -386,12 +429,16 @@ impl Engine<'_> {
 }
 
 pub(crate) fn solve(p: &Problem, bits: u32, deadline: Instant) -> Result<Outcome, String> {
+    solve_with_scratch(p, bits, deadline, std::env::var_os("RAWMOCS_RESEARCH_SCOPE_SCRATCH").as_deref() == Some(std::ffi::OsStr::new("1")))
+}
+fn solve_with_scratch(p: &Problem, bits: u32, deadline: Instant, reuse: bool) -> Result<Outcome, String> {
     let mut engine = Engine {
         p,
         bits,
         deadline,
         cache: HashMap::new(),
         cache_items: 0,
+        scratch: reuse.then(|| Scratch::new(p.n)),
     };
     engine.count(p.clauses.clone(), (1..=p.n).collect())
 }
@@ -447,6 +494,26 @@ mod tests {
     }
 
     #[test]
+    fn scope_scratch_ignores_stale_outside_scope() {
+        let mut scratch = Scratch::new(4096);
+        for scope in [vec![1, 2, 3, 4], vec![100, 102, 4095, 4096], vec![2, 3, 102, 4096]] {
+            let mut clauses = vec![vec![scope[0] as i32, scope[1] as i32], vec![-(scope[2] as i32), scope[3] as i32]];
+            let mut reference = clauses.clone();
+            scratch.frequency.fill(91);
+            scratch.parent.fill(4096);
+            for &v in &scope {
+                scratch.frequency[v] = 0;
+            }
+            count_frequency(&clauses, &mut scratch.frequency);
+            assert!(scope.iter().all(|&v| scratch.frequency[v] == 1));
+            assert_eq!(
+                components_with_parent(&mut clauses, &scope, &mut scratch.parent),
+                components(&mut reference, &scope, 4096)
+            );
+        }
+    }
+
+    #[test]
     fn borrowed_key_matches_owned_exactly() {
         let mut map = HashMap::new();
         let scope = vec![1, 2, 3];
@@ -494,7 +561,11 @@ mod tests {
             ] {
                 let p = parse_emitted(raw, bits).unwrap();
                 let deadline = Instant::now() + Duration::from_secs(30);
-                let candidate = solve(&p, bits, deadline).unwrap();
+                let candidate = solve_with_scratch(&p, bits, deadline, true).unwrap();
+                let baseline = solve_with_scratch(&p, bits, deadline, false).unwrap();
+                assert_eq!(baseline.sat, candidate.sat);
+                assert_eq!(baseline.count.re, candidate.count.re);
+                assert_eq!(baseline.count.im, candidate.count.im);
                 let exact = crate::reference(&p, raw, bits).unwrap();
                 assert_eq!(exact.sat, candidate.sat);
                 assert_eq!(exact.count.re, candidate.count.re);

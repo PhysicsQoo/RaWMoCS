@@ -37,6 +37,22 @@ class ReleaseScienceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             verify_run(req, run, jobs, "science")
 
+    def test_explicit_release_push_full_gate(self):
+        req, run, jobs = fixture()
+        run["event"] = "push"
+        run["head_commit"] = {"message": "Prepare next release [release-science]"}
+        verify_run(req, run, jobs, "science")
+
+    def test_explicit_release_push_fast_still_rejected(self):
+        req, run, jobs = fixture()
+        run["event"] = "push"
+        run["head_commit"] = {"message": "Prepare next release [release-science]"}
+        for j in jobs["jobs"]:
+            if j["name"].startswith("Release matched native GPMC ("):
+                j["conclusion"] = "skipped"
+        with self.assertRaises(ValueError):
+            verify_run(req, run, jobs, "science")
+
     def test_manual_fast_not_release_admission(self):
         req, run, jobs = fixture()
         for j in jobs["jobs"]:

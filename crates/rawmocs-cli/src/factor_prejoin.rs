@@ -1022,6 +1022,22 @@ fn recycle_copy(pool: &mut Vec<C>, x: &C) -> C {
         x.clone()
     }
 }
+// The dead pool owns independent same-precision allocations. Transfer the
+// accumulator into the output and reuse the dead value as scratch. The next
+// branch overwrites both components before reading them. Empty pool retains
+// exactly the previous clone path; no precision or operation-order changes.
+fn recycle_result(pool: &mut Vec<C>, x: &mut C, move_result: bool) -> C {
+    if move_result {
+        if let Some(mut y) = pool.pop() {
+            debug_assert_eq!(y.re.prec(), x.re.prec());
+            debug_assert_eq!(y.im.prec(), x.im.prec());
+            std::mem::swap(&mut y, x);
+            return y;
+        }
+        return x.clone();
+    }
+    recycle_copy(pool, x)
+}
 fn cadd(a: Cell<C>, b: Cell<C>) -> Cell<C> {
     match (a, b) {
         (Some(mut a), Some(b)) => {
@@ -1062,6 +1078,7 @@ fn execute(
     // The original replay cost remains unchanged; the pool is extra storage.
     let recycle_cap = 32_768.min(LIVE.saturating_sub(p.cost.peak));
     let mut recycle = Vec::new();
+    let move_result = std::env::var("RAWMOCS_RESEARCH_RECYCLE_MOVE").as_deref() == Ok("1");
     let (mut left, mut right) = (C::one(bits), C::one(bits));
     for op in &p.ops {
         deadline(d)?;
@@ -1122,10 +1139,10 @@ fn execute(
                 (true, true) => {
                     left.re += &right.re;
                     left.im += &right.im;
-                    Some(recycle_copy(&mut recycle, &left))
+                    Some(recycle_result(&mut recycle, &mut left, move_result))
                 }
-                (true, false) => Some(recycle_copy(&mut recycle, &left)),
-                (false, true) => Some(recycle_copy(&mut recycle, &right)),
+                (true, false) => Some(recycle_result(&mut recycle, &mut left, move_result)),
+                (false, true) => Some(recycle_result(&mut recycle, &mut right, move_result)),
                 _ => None,
             });
             if m + 1 < size {
@@ -1319,6 +1336,48 @@ mod tests {
                 assert_eq!(y.im.prec(), bits);
                 assert_eq!(y.re.is_sign_negative(), x.re.is_sign_negative());
                 assert_eq!(y.im.is_sign_negative(), x.im.is_sign_negative());
+            }
+            assert!(pool.is_empty());
+        }
+    }
+    #[test]
+    fn recycle_move_preserves_precision_values_sign_and_independence() {
+        for bits in [100, 200, 333, 432] {
+            let mut pool = vec![C::one(bits), C::one(bits)];
+            for mut x in [
+                C {
+                    re: Float::with_val(bits, -0.0),
+                    im: Float::with_val(bits, 0),
+                },
+                C {
+                    re: Float::with_val(bits, decimal("0.12345678901234567890123456789").unwrap()),
+                    im: Float::with_val(bits, decimal("-1e-80").unwrap()),
+                },
+                C {
+                    re: Float::with_val(bits, 0),
+                    im: Float::with_val(bits, -0.0),
+                },
+                C::one(bits),
+            ] {
+                let reference = x.clone();
+                let previous_len = pool.len();
+                let y = recycle_result(&mut pool, &mut x, true);
+                assert_eq!(pool.len(), previous_len.saturating_sub(1));
+                assert_eq!(y.re, reference.re);
+                assert_eq!(y.im, reference.im);
+                assert_eq!(y.re.prec(), bits);
+                assert_eq!(y.im.prec(), bits);
+                assert_eq!(x.re.prec(), bits);
+                assert_eq!(x.im.prec(), bits);
+                assert_eq!(y.re.is_sign_negative(), reference.re.is_sign_negative());
+                assert_eq!(y.im.is_sign_negative(), reference.im.is_sign_negative());
+                // The original accumulator is immediately reset and reused.
+                x.re.assign(1);
+                x.im.assign(0);
+                assert_eq!(y.re, reference.re);
+                assert_eq!(y.im, reference.im);
+                assert_eq!(y.re.is_sign_negative(), reference.re.is_sign_negative());
+                assert_eq!(y.im.is_sign_negative(), reference.im.is_sign_negative());
             }
             assert!(pool.is_empty());
         }

@@ -313,7 +313,7 @@ fn reversible_index_random_nested_rollback() {
             source.push(c);
         }
         let source = normalize(source);
-        let mut state = TrailIndex::with_mode(source.clone(), 12, case % 2 == 0, (case / 2) % 2 == 0);
+        let mut state = TrailIndex::with_mode(source.clone(), 12, (case / 4) % 2 == 0, (case / 8) % 2 == 0);
         for _ in 0..12 {
             let parent = state.checkpoint();
             let before = state.residual();
@@ -591,9 +591,12 @@ fn frontier_transition_fixed_work() {
         assert!(closed.clauses.is_empty());
         closed.forced
     }).collect();
-    // Balanced cyclic and reverse orders. Four pairs of factors,
+    // Balanced cyclic and reverse orders. Four combinations of factors,
     // plus per-branch rebuild as an end-to-end diagnostic control.
-    let orders = [[0,1,2,3,4],[4,3,2,1,0],[2,3,4,0,1],[1,0,4,3,2]];
+    let orders = [
+        [0,1,2,3,4], [1,2,3,4,0], [2,3,4,0,1], [3,4,0,1,2], [4,0,1,2,3],
+        [4,3,2,1,0], [0,4,3,2,1], [1,0,4,3,2], [2,1,0,4,3], [3,2,1,0,4],
+    ];
     for (trial,order) in orders.into_iter().enumerate() {
         for mode in order {
             let dense = mode == 2 || mode == 4;

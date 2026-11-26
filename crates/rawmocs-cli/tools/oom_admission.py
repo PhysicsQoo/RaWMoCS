@@ -73,11 +73,22 @@ def main():
             proc.communicate(timeout=5)
         fifo.unlink()
 
-    # Deliberately deep legal CNF, not a synthetic allocator or fault binary.
-    # Many retained residual frames consume real solver memory.
+    # A single wide clause no longer forces OOM after residual donation and
+    # bounded cache-key admission. Use a legal connected, all-positive
+    # circulant CNF instead. Positive branching cannot create a unit clause
+    # and removes only a small fraction of clauses per pivot; queued negative
+    # residuals retain real search memory. No allocator or injected fault.
     n = 4096
+    offsets = (17, 31, 67, 127, 251, 509, 1021, 2039)
+    clauses = [
+        f"{i + 1} {(i + 1) % n + 1} {(i + d) % n + 1} 0\n"
+        for i in range(n)
+        for d in offsets
+    ]
     cnf = out / "oom-search.cnf"
-    cnf.write_text(f"p cnf {n} 1\nc t wmc\n" + " ".join(map(str, range(1, n + 1))) + " 0\n")
+    cnf.write_text(f"p cnf {n} {len(clauses)}\nc t wmc\n" + "".join(clauses))
+    assert len(clauses) == 32768 and cnf.stat().st_size < 2_000_000
+    del clauses
     before = events()
     proc = subprocess.Popen([str(binary), "--digits", "60", "--solver", "general",
                              "--timeout-ms", "30000", str(cnf)],
@@ -96,7 +107,9 @@ def main():
     (out / "oom.stderr").write_bytes(stderr)
     receipt["controls"].append({"case": "actual_general_search_oom", "returncode": proc.returncode,
                                 "before": before, "after": after, "stdout_bytes": len(stdout),
-                                "source_sha256": hashlib.sha256(cnf.read_bytes()).hexdigest()})
+                                "source_sha256": hashlib.sha256(cnf.read_bytes()).hexdigest(),
+                                "variables": n, "clauses": n * len(offsets),
+                                "source_bytes": cnf.stat().st_size})
     save()
     assert proc.returncode == -signal.SIGKILL and not stdout, (proc.returncode, stderr[-500:])
     assert after["oom_kill"] > before["oom_kill"], (before, after)

@@ -1928,8 +1928,7 @@ fn scoped_canonical_reuse_randomized() {
         for bits in [100,200,333,432] {
             let p = parse_emitted(&raw,bits).unwrap();
             let baseline = super::solve(&p,bits,deadline).unwrap();
-            let mut engine=ScopedTrail::new(&p,bits,deadline);
-            engine.policy=3;
+            let exact=dyadic.then(||crate::reference(&p,&raw,bits).unwrap());
             for mode in 0..4 {
                 let mut trial=ScopedTrail::new(&p,bits,deadline);
                 trial.policy=if case%2==0 {3} else {4};
@@ -1937,19 +1936,13 @@ fn scoped_canonical_reuse_randomized() {
                 trial.reuse_residual=mode&2!=0;
                 let actual=trial.fresh(p.clauses.clone(),(1..=p.n).collect(),0).unwrap();
                 same_outcome(&actual,&baseline);
-                if dyadic {same_outcome(&actual,&crate::reference(&p,&raw,bits).unwrap());}
-                engine=trial;
+                if let Some(exact)=exact.as_ref() {same_outcome(&actual,exact);}
+                totals.nodes+=trial.stats.nodes;
+                totals.hits+=trial.stats.hits;
+                totals.splits+=trial.stats.splits;
+                totals.branches+=trial.stats.branches;
+                totals.free+=trial.stats.free;
             }
-            let actual=baseline.clone();
-            // Small dyadic counts are exactly representable at every
-            // selected precision. Non-dyadic tests require exact
-            // production MPFR operation-order parity instead.
-            if dyadic { same_outcome(&actual,&crate::reference(&p,&raw,bits).unwrap()); }
-            totals.nodes += engine.stats.nodes;
-            totals.hits += engine.stats.hits;
-            totals.splits += engine.stats.splits;
-            totals.branches += engine.stats.branches;
-            totals.free += engine.stats.free;
         }
     }
     assert!(totals.hits>0 && totals.splits>0 && totals.branches>0 && totals.free>0);

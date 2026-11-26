@@ -133,6 +133,7 @@ struct TrailIndex {
     clauses: Vec<Clause>,
     occurrence: Vec<Vec<usize>>,
     assigned: Vec<i8>,
+    local_scope: Option<Vec<usize>>,
     live: Vec<usize>,
     satisfied: Vec<usize>,
     trail: Vec<i32>,
@@ -165,9 +166,48 @@ impl TrailIndex {
         let m = clauses.len();
         let active = Frontier::new(m, dense);
         Self {
-            clauses, occurrence, assigned: vec![0; n + 1], live,
+            clauses, occurrence, assigned: vec![0; n + 1], local_scope: None, live,
             satisfied: vec![0; m], trail: Vec::new(), active, transitions, units, conflicts, touches: 0, rank_scratch: None, maintain_source_units: true, fuse_ranked_updates: false,
         }
+    }
+
+    // Build the final ranked-only layout directly. Global literal IDs
+    // remain in every clause, key, pivot and weight lookup. Only incidence
+    // and assignment storage may use a compact per-component ID space.
+    fn ranked_direct(clauses: Vec<Clause>, n: usize, scope: &[usize], compact: bool) -> Self {
+        debug_assert!(scope.windows(2).all(|w| w[0] < w[1]));
+        let local_scope = compact.then(|| scope.to_vec());
+        let size = if compact { scope.len() } else { n };
+        let mut occurrence = vec![Vec::new(); 2*size];
+        let live: Vec<_> = clauses.iter().map(Vec::len).collect();
+        let conflicts = live.iter().enumerate().filter_map(|(i,&k)| (k==0).then_some(i)).collect();
+        for (i,c) in clauses.iter().enumerate() {
+            for &lit in c {
+                let v = lit.unsigned_abs() as usize;
+                let slot = if compact {
+                    2*scope.binary_search(&v).expect("component scope") + usize::from(lit<0)
+                } else { occurrence_slot(lit) };
+                occurrence[slot].push(i);
+            }
+        }
+        let m = clauses.len();
+        Self {
+            clauses, occurrence, assigned: vec![0;size+1], local_scope, live,
+            satisfied:vec![0;m], trail:Vec::new(), active:Frontier::bitmap(m),
+            transitions:true, units:BTreeSet::new(), conflicts,touches:0,
+            rank_scratch:Some(RankScratch::new(m)),maintain_source_units:false,
+            fuse_ranked_updates:true,
+        }
+    }
+    fn variable_index(&self,v:usize)->usize {
+        match &self.local_scope {
+            Some(scope)=>scope.binary_search(&v).expect("component variable")+1,
+            None=>v,
+        }
+    }
+    fn value(&self,v:usize)->i8 { self.assigned[self.variable_index(v)] }
+    fn slot(&self,lit:i32)->usize {
+        2*(self.variable_index(lit.unsigned_abs() as usize)-1)+usize::from(lit<0)
     }
 
     // Ranked closure has its own queue in canonical rank order. It
@@ -228,13 +268,13 @@ impl TrailIndex {
     // Emit newly live units in the same negative-incidence order as
     // the separate ranked scan. Finish every update on conflict.
     fn apply_with_units(&mut self, lit: i32, mut on_unit: impl FnMut(usize)) -> bool {
-        let v = lit.unsigned_abs() as usize;
+        let v = self.variable_index(lit.unsigned_abs() as usize);
         assert_eq!(self.assigned[v], 0);
         self.assigned[v] = if lit > 0 { 1 } else { -1 };
         self.trail.push(lit);
         // Complete every incidence update even on conflict. This makes
         // rollback exact without depending on a partially updated clause.
-        let pos = occurrence_slot(lit);
+        let pos = self.slot(lit);
         for k in 0..self.occurrence[pos].len() {
             let cid = self.occurrence[pos][k];
             let before = self.class(cid);
@@ -244,7 +284,7 @@ impl TrailIndex {
             self.refresh(cid, before);
             self.touches += 1;
         }
-        let neg = occurrence_slot(-lit);
+        let neg = self.slot(-lit);
         for k in 0..self.occurrence[neg].len() {
             let cid = self.occurrence[neg][k];
             let before = self.class(cid);
@@ -262,7 +302,7 @@ impl TrailIndex {
         assert!(checkpoint <= self.trail.len());
         while self.trail.len() > checkpoint {
             let lit = self.trail.pop().unwrap();
-            let pos = occurrence_slot(lit);
+            let pos = self.slot(lit);
             for k in 0..self.occurrence[pos].len() {
                 let cid = self.occurrence[pos][k];
             let before = self.class(cid);
@@ -272,7 +312,7 @@ impl TrailIndex {
                 self.refresh(cid, before);
                 self.touches += 1;
             }
-            let neg = occurrence_slot(-lit);
+            let neg = self.slot(-lit);
             for k in 0..self.occurrence[neg].len() {
                 let cid = self.occurrence[neg][k];
             let before = self.class(cid);
@@ -280,7 +320,8 @@ impl TrailIndex {
                 self.refresh(cid, before);
                 self.touches += 1;
             }
-            self.assigned[lit.unsigned_abs() as usize] = 0;
+            let v = self.variable_index(lit.unsigned_abs() as usize);
+            self.assigned[v] = 0;
         }
     }
 
@@ -293,14 +334,14 @@ impl TrailIndex {
             if Instant::now() >= deadline { return Err("deadline"); }
             if !self.conflicts.is_empty() { return Ok(None); }
             let Some(&cid) = self.units.first() else { return Ok(Some(forced)); };
-            let lit = *self.clauses[cid].iter().find(|&&l| self.assigned[l.unsigned_abs() as usize] == 0).expect("live unit");
+            let lit = *self.clauses[cid].iter().find(|&&l| self.value(l.unsigned_abs() as usize) == 0).expect("live unit");
             if !self.apply(lit) { return Ok(None); }
             forced.push(lit);
         }
     }
 
     fn cmp_reduced(&self, a: usize, b: usize) -> Ordering {
-        let live = |lit: &&i32| self.assigned[lit.unsigned_abs() as usize] == 0;
+        let live = |lit: &&i32| self.value(lit.unsigned_abs() as usize) == 0;
         self.clauses[a].iter().filter(live).cmp(self.clauses[b].iter().filter(live))
     }
 
@@ -319,7 +360,7 @@ impl TrailIndex {
     fn materialized_boundary(&self) -> (Vec<usize>, Vec<Clause>) {
         let mut entries: Vec<_> = self.active.ids().into_iter().map(|cid| {
             let clause: Clause = self.clauses[cid].iter().copied()
-                .filter(|l| self.assigned[l.unsigned_abs() as usize] == 0).collect();
+                .filter(|l| self.value(l.unsigned_abs() as usize) == 0).collect();
             (clause, cid)
         }).collect();
         entries.sort_unstable();
@@ -330,7 +371,7 @@ impl TrailIndex {
 
     fn materialize_ids(&self, ids: &[usize]) -> Vec<Clause> {
         ids.iter().copied().filter(|&cid| self.satisfied[cid] == 0)
-            .map(|cid| self.clauses[cid].iter().copied().filter(|l| self.assigned[l.unsigned_abs() as usize] == 0).collect()).collect()
+            .map(|cid| self.clauses[cid].iter().copied().filter(|l| self.value(l.unsigned_abs() as usize) == 0).collect()).collect()
     }
 
     // Re-rank current reduced clauses once, including duplicate collapse.
@@ -360,7 +401,7 @@ impl TrailIndex {
             if Instant::now() >= deadline { return Err("deadline"); }
             let cid = ids[i];
             if self.satisfied[cid] != 0 || self.live[cid] != 1 { continue; }
-            let lit = *self.clauses[cid].iter().find(|&&l| self.assigned[l.unsigned_abs() as usize] == 0).expect("live unit");
+            let lit = *self.clauses[cid].iter().find(|&&l| self.value(l.unsigned_abs() as usize) == 0).expect("live unit");
             if self.fuse_ranked_updates {
                 if !self.apply_with_units(lit, |j| {
                     let r = if let Some(s) = scratch.as_ref() { s.get(j) } else { rank[j] };
@@ -368,7 +409,7 @@ impl TrailIndex {
                 }) { return Ok(None); }
             } else {
                 if !self.apply(lit) { return Ok(None); }
-                for &j in &self.occurrence[occurrence_slot(-lit)] {
+                for &j in &self.occurrence[self.slot(-lit)] {
                     let r = if let Some(s) = scratch.as_ref() { s.get(j) } else { rank[j] };
                     if r != usize::MAX && self.satisfied[j] == 0 && self.live[j] == 1 {
                         units.push(Reverse(r));
@@ -382,16 +423,16 @@ impl TrailIndex {
 
     fn residual(&self) -> Vec<Clause> {
         self.clauses.iter().enumerate().filter(|(cid, _)| self.satisfied[*cid] == 0)
-            .map(|(_, c)| c.iter().copied().filter(|l| self.assigned[l.unsigned_abs() as usize] == 0).collect()).collect()
+            .map(|(_, c)| c.iter().copied().filter(|l| self.value(l.unsigned_abs() as usize) == 0).collect()).collect()
     }
 
     fn verify(&self) {
         let mut units = BTreeSet::new();
         let mut conflicts = BTreeSet::new();
         for (i, c) in self.clauses.iter().enumerate() {
-            let live = c.iter().filter(|l| self.assigned[l.unsigned_abs() as usize] == 0).count();
+            let live = c.iter().filter(|l| self.value(l.unsigned_abs() as usize) == 0).count();
             let sat = c.iter().filter(|&&l| {
-                self.assigned[l.unsigned_abs() as usize] == if l > 0 { 1 } else { -1 }
+                self.value(l.unsigned_abs() as usize) == if l > 0 { 1 } else { -1 }
             }).count();
             assert_eq!((self.live[i], self.satisfied[i]), (live, sat));
             if sat == 0 && live == 1 { units.insert(i); }
@@ -1192,6 +1233,13 @@ struct TrailStats {
     branches: usize,
     free: usize,
 }
+#[derive(Default)]
+struct PhaseProfile {
+    init_ns:u128, boundary_ns:u128, cache_ns:u128, closure_ns:u128,
+    residual_ns:u128, slots:usize, source_clauses:usize,
+}
+fn stamp(enabled:bool)->Option<Instant> { enabled.then(Instant::now) }
+fn elapsed(start:Option<Instant>)->u128 { start.map_or(0,|t|t.elapsed().as_nanos()) }
 struct ScopedTrail<'a> {
     p: &'a Problem,
     bits: u32,
@@ -1205,12 +1253,13 @@ struct ScopedTrail<'a> {
     frequency: Vec<usize>,
     parent: Vec<usize>,
     bypasses: usize,
+    profile: Option<PhaseProfile>,
 }
 impl<'a> ScopedTrail<'a> {
     fn new(p: &'a Problem, bits: u32, deadline: Instant) -> Self {
         Self { p, bits, deadline, cache: HashMap::new(), items: 0,
             stats: TrailStats::default(), max_nodes: 100_000, trace: None, policy: 0,
-            frequency: Vec::new(), parent: Vec::new(), bypasses: 0 }
+            frequency: Vec::new(), parent: Vec::new(), bypasses: 0, profile: None }
     }
     fn check(&self) -> Result<(), String> {
         if Instant::now() >= self.deadline { return Err("research deadline".into()); }
@@ -1260,11 +1309,23 @@ impl<'a> ScopedTrail<'a> {
             self.bypasses += 1;
             return out;
         }
-        let mut state = TrailIndex::with_mode(normalize(clauses),self.p.n,false,true);
-        state.active = Frontier::bitmap(state.clauses.len());
-        state.rank_scratch = Some(RankScratch::new(state.clauses.len()));
-        state.ranked_only(true);
-        state.fuse_ranked_updates = true;
+        let timer=stamp(self.profile.is_some());
+        let normalized=normalize(clauses);
+        let mut state=if self.policy>=3 {
+            TrailIndex::ranked_direct(normalized,self.p.n,&scope,self.policy==4)
+        } else {
+            let mut state=TrailIndex::with_mode(normalized,self.p.n,false,true);
+            state.active=Frontier::bitmap(state.clauses.len());
+            state.rank_scratch=Some(RankScratch::new(state.clauses.len()));
+            state.ranked_only(true);
+            state.fuse_ranked_updates=true;
+            state
+        };
+        if let Some(p)=&mut self.profile {
+            p.init_ns+=elapsed(timer);
+            p.slots+=state.occurrence.len();
+            p.source_clauses+=state.clauses.len();
+        }
         self.stats.indexes += 1;
         self.node(&mut state,scope,depth)
     }
@@ -1290,18 +1351,26 @@ impl<'a> ScopedTrail<'a> {
         if depth > 96 { return Err("research depth limit".into()); }
         if self.stats.nodes >= self.max_nodes { return Err("research node limit".into()); }
         self.stats.nodes += 1;
+        let timer=stamp(self.profile.is_some());
         let (ids,clauses) = state.materialized_boundary();
+        if let Some(p)=&mut self.profile {p.boundary_ns+=elapsed(timer);}
         if let Some(t) = &mut self.trace { t.enter(&scope, &clauses); }
+        let timer=stamp(self.profile.is_some());
         let query = KeyQuery { scope: &scope, clauses: &clauses };
         let view: &dyn KeyView = &query;
         if let Some(hit) = self.cache.get(view) {
+            if let Some(p)=&mut self.profile {p.cache_ns+=elapsed(timer);}
             self.stats.hits += 1;
             if let Some(t) = &mut self.trace { t.hits += 1; }
             return Ok(hit.clone());
         }
         let key = cache_can_admit(self.cache.len(),self.items,key_items(&scope,&clauses))
             .then(|| Key { scope: scope.clone(), clauses });
-        let Some(forced) = state.ranked_closure(&ids,self.deadline)? else {
+        if let Some(p)=&mut self.profile {p.cache_ns+=elapsed(timer);}
+        let timer=stamp(self.profile.is_some());
+        let closed=state.ranked_closure(&ids,self.deadline)?;
+        if let Some(p)=&mut self.profile {p.closure_ns+=elapsed(timer);}
+        let Some(forced) = closed else {
             return self.save(key,Outcome::unsat(self.bits));
         };
         let mut prefix = C::one(self.bits);
@@ -1311,7 +1380,9 @@ impl<'a> ScopedTrail<'a> {
         }
         // Preserve the post-closure order and multiplicity; only the
         // next node's canonical boundary sorts and deduplicates.
+        let timer=stamp(self.profile.is_some());
         let mut residual = state.materialize_ids(&ids);
+        if let Some(p)=&mut self.profile {p.residual_ns+=elapsed(timer);}
         let mut temporary = Vec::new();
         let frequency = if self.policy == 0 {
             temporary.resize(self.p.n+1,0);
@@ -1326,7 +1397,7 @@ impl<'a> ScopedTrail<'a> {
         }
         let mut active = Vec::new();
         for v in scope {
-            if state.assigned[v] != 0 { continue; }
+            if state.value(v) != 0 { continue; }
             if frequency[v] == 0 {
                 self.stats.free += 1;
                 if let Some(t) = &mut self.trace { t.free += 1; }
@@ -1638,6 +1709,137 @@ fn scoped_adaptive_complete_ablation() {
                 let real=out.count.re.to_string_radix(10,Some(digits+4));
                 let imag=out.count.im.to_string_radix(10,Some(digits+4));
                 println!("ADAPTIVE_FULL_FINAL case={name} digits={digits} trial={trial} mode={mode} wall_ns={wall_ns} sat={sat} real={real} imag={imag}");
+            }
+        }
+    }
+}
+
+#[test]
+fn scoped_direct_and_compact_random_parity() {
+    let mut seed=0x3902a231_u32;
+    let mut next=||{seed=seed.wrapping_mul(1664525).wrapping_add(1013904223);seed>>8};
+    let deadline=Instant::now()+Duration::from_secs(60);
+    for case in 0..256 {
+        // Widely spaced IDs, signed literals and free variables.
+        let vars=[1,3,6,9,13,17,21,24];
+        let mut cs=Vec::new();
+        for _ in 0..(next()%15) {
+            let mut c=Vec::new();
+            for _ in 0..(if case%8==0 {next()%5} else {2+next()%3}) {
+                let v=vars[next() as usize%vars.len()];
+                c.push(if next()%2==0 {v} else {-v});
+            }
+            cs.push(c);
+        }
+        let mut raw=format!("p cnf 24 {}\nc t wmc\n",cs.len());
+        for v in vars {
+            for lit in [v,-v] {
+                let w=["0.13 0.27","-0.29 0.31","0 0","1 0","-1 0"];
+                raw.push_str(&format!("c p weight {lit} {} 0\n",w[next() as usize%w.len()]));
+            }
+        }
+        for c in cs {for lit in c {raw.push_str(&format!("{lit} "));} raw.push_str("0\n");}
+        for bits in [100,200,333,432] {
+            let p=crate::parse_emitted(&raw,bits).unwrap();
+            let base=super::solve(&p,bits,deadline).unwrap();
+            for policy in [3,4] {
+                let mut e=ScopedTrail::new(&p,bits,deadline);
+                e.policy=policy;
+                same_outcome(&base,&e.fresh(p.clauses.clone(),(1..=p.n).collect(),0).unwrap());
+            }
+        }
+    }
+}
+#[test]
+fn compact_noncontiguous_component_rollback() {
+    let src=normalize(vec![vec![-101,205],vec![101,205],vec![-205,999]]);
+    let scope=[101,205,999];
+    let mut st=TrailIndex::ranked_direct(src.clone(),999,&scope,true);
+    assert_eq!(st.occurrence.len(),6);
+    for lit in [101,-101] {
+        assert!(st.apply(lit));
+        let (ids,key)=st.materialized_boundary();
+        let expected=scan(key).unwrap();
+        let actual=st.ranked_closure(&ids,Instant::now()+Duration::from_secs(2)).unwrap().unwrap();
+        assert_eq!(actual,expected.1);
+        assert_eq!(st.materialize_ids(&ids),expected.0);
+        st.verify();
+        st.rollback(0);
+        st.verify();
+        assert_eq!(st.residual(),src);
+    }
+}
+
+fn local_allocation_run(p:&Problem,bits:u32,mode:u8,trace:bool,budget:usize)
+    -> (Result<Outcome,String>,Option<super::WorkTrace>,usize,usize,usize) {
+    if mode==0 {return adaptive_ablation_run(p,bits,0,trace,budget);}
+    let mut e=ScopedTrail::new(p,bits,Instant::now()+Duration::from_secs(12));
+    e.policy=match mode {1=>1,2=>3,3=>4,_=>unreachable!()};
+    e.max_nodes=budget;
+    e.trace=trace.then(super::WorkTrace::default);
+    // Profile only the separate traced pass, never timed passes.
+    e.profile=trace.then(PhaseProfile::default);
+    let out=e.fresh(p.clauses.clone(),(1..=p.n).collect(),0);
+    if let Some(q)=&e.profile {
+        println!("LOCAL_PHASE mode={mode} init_ns={} boundary_ns={} cache_ns={} closure_ns={} residual_ns={} slots={} source_clauses={}",q.init_ns,q.boundary_ns,q.cache_ns,q.closure_ns,q.residual_ns,q.slots,q.source_clauses);
+    }
+    (out,e.trace,e.stats.nodes,e.stats.indexes,e.bypasses)
+}
+
+#[test]
+#[ignore = "research-only direct and local allocation comparison"]
+fn scoped_local_complete_ablation() {
+    let digits:usize=std::env::var("RAWMOCS_TEST_DIGITS").unwrap().parse().unwrap();
+    let bits=match digits {30=>100,130=>432,_=>panic!("unsupported cohort")};
+    let original=std::fs::read_to_string(std::env::var("RAWMOCS_TEST_ORIGINAL").unwrap()).unwrap();
+    let mut chain="p cnf 8192 8206\nc t wmc\nc p weight 1 -0.5 0.25 0\nc p weight 8192 0.25 -0.125 0\n".to_owned();
+    for v in 2..=9 {chain.push_str(&format!("1 {v} 0\n-1 {v} 0\n"));}
+    for v in 2..8192 {chain.push_str(&format!("-{v} {} 0\n",v+1));}
+    let mut split="p cnf 4096 2048\nc t wmc\n".to_owned();
+    for v in 1..=4096 {split.push_str(&format!("c p weight -{v} 0 0 0\n"));}
+    for v in (1..=4096).step_by(2) {split.push_str(&format!("{v} {} 0\n",v+1));}
+    for (name,raw) in [("chain8192",chain),("split4096",split),("vqe8",original)] {
+        let p=crate::parse_large(std::io::Cursor::new(raw.as_bytes()),bits,Instant::now()+Duration::from_secs(12)).unwrap();
+        // Explicit bounded scout: derive the candidate budget from
+        // the completed baseline, never remove the recursion cap.
+        let (base,trace,nodes,_,_)=local_allocation_run(&p,bits,0,true,1_000_000);
+        let base=base.unwrap();
+        let trace=trace.unwrap().summary();
+        assert_eq!(nodes,trace.1);
+        let budget=nodes;
+        let mut admitted=[true,false,false,false];
+        println!("LOCAL_TRACE case={name} digits={digits} mode=0 status=COMPLETE fingerprint={:016x} nodes={nodes} hits={} splits={} branches={} free={} indexes=0 bypasses=0 budget={budget}",trace.0,trace.2,trace.3,trace.4,trace.5);
+        println!("LOCAL_PHASE_CASE case={name} digits={digits}");
+        for mode in 1..=3 {
+            let (out,tr,n,idx,by)=local_allocation_run(&p,bits,mode,true,budget);
+            match out {
+                Ok(out)=>{
+                    same_outcome(&base,&out);
+                    assert_eq!(tr.unwrap().summary(),trace,"trace mismatch {name} mode={mode}");
+                    assert_eq!(n,nodes);
+                    admitted[mode as usize]=true;
+                    println!("LOCAL_TRACE case={name} digits={digits} mode={mode} status=COMPLETE fingerprint={:016x} nodes={n} hits={} splits={} branches={} free={} indexes={idx} bypasses={by} budget={budget}",trace.0,trace.2,trace.3,trace.4,trace.5);
+                }
+                Err(err)=>{
+                    assert!(err.contains("deadline")||err.contains("limit"),"{err}");
+                    println!("LOCAL_TRACE case={name} digits={digits} mode={mode} status=CENSORED nodes={n} indexes={idx} bypasses={by} budget={budget} reason={}",err.replace(' ',"_"));
+                }
+            }
+        }
+        // All four modes have equal position exposure when admitted.
+        for (trial,order) in [[0,1,2,3],[3,2,1,0],[1,2,3,0],[0,3,2,1],[2,3,0,1],[1,0,3,2],[3,0,1,2],[2,1,0,3]].into_iter().enumerate() {
+            for mode in order {
+                if !admitted[mode as usize] {continue;}
+                let start=Instant::now();
+                let (out,_,n,_,_)=local_allocation_run(&p,bits,mode,false,budget);
+                let wall_ns=start.elapsed().as_nanos();
+                let out=out.unwrap();
+                assert_eq!(n,nodes);
+                same_outcome(&base,&out);
+                let sat=if out.sat {"SATISFIABLE"} else {"UNSATISFIABLE"};
+                let real=out.count.re.to_string_radix(10,Some(digits+4));
+                let imag=out.count.im.to_string_radix(10,Some(digits+4));
+                println!("LOCAL_FULL_FINAL case={name} digits={digits} trial={trial} mode={mode} wall_ns={wall_ns} sat={sat} real={real} imag={imag}");
             }
         }
     }

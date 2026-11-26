@@ -1,10 +1,10 @@
 {
-  "version": "0.1.0",
-  "revision": "1fe90fa989ed78a506d7f248b35d5b999fa4817c",
-  "science_run": 45604473577,
-  "codspeed_run": 45604472259,
-  "artifact_id": 15017113075,
-  "artifact_digest": "sha256:c23dd605cac57696624ecb3dcc28288fe1500df8d8bf12aa08f04a01ac6bdaa3",
-  "source_sha256": "894fb335084dc32ff39fd12bcf1c03d4ef1266c36204540f8d2017ab6e2ad870",
-  "notes": "releases/v0.1.0.md"
+  "version": "0.1.1",
+  "revision": "b3d02b2720c2fae5231c0ed5cf44950164a5780d",
+  "science_run": 45777355938,
+  "codspeed_run": 45777355934,
+  "artifact_id": 15096457942,
+  "artifact_digest": "sha256:3533761ba814b96059b1e682d65eacf3a9bcc56f1ef0d86804d08dc9602232fe",
+  "source_sha256": "4d048543f609cf80490a05442c5bbb0876a9a4409f5537378c450780d1315d37",
+  "notes": "releases/v0.1.1.md"
 }

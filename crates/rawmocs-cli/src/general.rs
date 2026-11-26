@@ -4,7 +4,8 @@
 //! assign, split_components). Preserve chronological order and exact cache equality.
 use crate::{Clause, Outcome, Problem, C};
 use std::borrow::Borrow;
-use std::collections::{BTreeMap, HashMap};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BinaryHeap, HashMap};
 use std::hash::{Hash, Hasher};
 use std::time::Instant;
 
@@ -103,6 +104,21 @@ struct Engine<'a> {
     deadline: Instant,
     cache: HashMap<Key, Outcome>,
     cache_items: usize,
+    root_indexed: bool,
+    stats: Stats,
+}
+#[derive(Default)]
+struct Stats {
+    nodes: u64,
+    units: u64,
+    scan_clause_visits: u64,
+    branches: u64,
+    splits: u64,
+    hits: u64,
+    root_index_attempts: u64,
+    root_index_units: u64,
+    root_index_touches: u64,
+    root_closed: bool,
 }
 fn normalize(mut clauses: Vec<Clause>) -> Vec<Clause> {
     for clause in &mut clauses {
@@ -132,6 +148,95 @@ fn assign_inplace(clauses: &mut Vec<Clause>, lit: i32) {
         }
     });
 }
+struct Closure {
+    clauses: Vec<Clause>,
+    forced: Vec<i32>,
+    touches: usize,
+}
+
+fn occurrence_slot(lit: i32) -> usize {
+    2 * (lit.unsigned_abs() as usize - 1) + usize::from(lit < 0)
+}
+
+fn indexed_units(
+    clauses: Vec<Clause>,
+    n: usize,
+    deadline: Instant,
+) -> Result<Option<Closure>, String> {
+    let check = || {
+        if Instant::now() >= deadline {
+            Err("general deadline".to_owned())
+        } else {
+            Ok(())
+        }
+    };
+    check()?;
+    let mut occurrences = vec![Vec::<usize>::new(); 2 * n];
+    let mut lengths = Vec::with_capacity(clauses.len());
+    let mut units = BinaryHeap::new();
+    for (i, clause) in clauses.iter().enumerate() {
+        check()?;
+        if clause.is_empty() {
+            return Ok(None);
+        }
+        lengths.push(clause.len());
+        if clause.len() == 1 {
+            units.push(Reverse(i));
+        }
+        for &lit in clause {
+            occurrences[occurrence_slot(lit)].push(i);
+        }
+    }
+    let mut values = vec![0i8; n + 1];
+    let mut forced = Vec::new();
+    let mut touches = 0usize;
+    // usize::MAX denotes a satisfied clause; zero is an immediate conflict.
+    while let Some(Reverse(i)) = units.pop() {
+        check()?;
+        if lengths[i] != 1 {
+            continue;
+        }
+        let lit = clauses[i]
+            .iter()
+            .copied()
+            .find(|l| values[l.unsigned_abs() as usize] == 0)
+            .ok_or("indexed unit invariant")?;
+        let v = lit.unsigned_abs() as usize;
+        values[v] = if lit > 0 { 1 } else { -1 };
+        forced.push(lit);
+        for &j in &occurrences[occurrence_slot(lit)] {
+            touches += 1;
+            lengths[j] = usize::MAX;
+        }
+        for &j in &occurrences[occurrence_slot(-lit)] {
+            touches += 1;
+            if lengths[j] == usize::MAX {
+                continue;
+            }
+            lengths[j] -= 1;
+            if lengths[j] == 0 {
+                return Ok(None);
+            }
+            if lengths[j] == 1 {
+                units.push(Reverse(j));
+            }
+        }
+    }
+    let mut residual = Vec::new();
+    for (i, mut clause) in clauses.into_iter().enumerate() {
+        check()?;
+        if lengths[i] != usize::MAX {
+            clause.retain(|l| values[l.unsigned_abs() as usize] == 0);
+            residual.push(clause);
+        }
+    }
+    Ok(Some(Closure {
+        clauses: residual,
+        forced,
+        touches,
+    }))
+}
+
 fn root(parent: &mut [usize], mut x: usize) -> usize {
     while parent[x] != x {
         let p = parent[x];
@@ -201,6 +306,8 @@ impl Engine<'_> {
         stack: &mut Vec<Frame>,
     ) -> Result<Step, String> {
         self.check()?;
+        self.stats.nodes += 1;
+        let root_node = self.stats.nodes == 1;
         let mut residual = normalize(clauses);
         let query = KeyQuery {
             scope: &scope,
@@ -208,6 +315,7 @@ impl Engine<'_> {
         };
         let view: &dyn KeyView = &query;
         if let Some(hit) = self.cache.get(view) {
+            self.stats.hits += 1;
             return Ok(Step::Done(hit.clone()));
         }
         // Without eviction, both admission counters are monotone.
@@ -223,6 +331,7 @@ impl Engine<'_> {
         });
         let mut remaining = scope;
         let mut prefix = C::one(self.bits);
+        let mut scanned = 0;
         loop {
             self.check()?;
             if residual.iter().any(Vec::is_empty) {
@@ -231,10 +340,37 @@ impl Engine<'_> {
             let Some(lit) = residual.iter().find(|c| c.len() == 1).map(|c| c[0]) else {
                 break;
             };
+            // Restrict the index to the first root closure, after two
+            // witnessed scan units. No descendant index build.
+            if root_node && self.root_indexed && scanned >= 2 && residual.len() >= 4096 {
+                self.stats.root_index_attempts += 1;
+                let Some(closed) = indexed_units(residual, self.p.n, self.deadline)? else {
+                    self.stats.root_closed = true;
+                    return self.save(key, Outcome::unsat(self.bits)).map(Step::Done);
+                };
+                self.stats.root_index_units += closed.forced.len() as u64;
+                self.stats.root_index_touches += closed.touches as u64;
+                let mut assigned = vec![false; self.p.n + 1];
+                for lit in closed.forced {
+                    self.check()?;
+                    let v = lit.unsigned_abs() as usize;
+                    prefix = prefix.mul(self.weight(v, lit > 0), self.bits);
+                    assigned[v] = true;
+                }
+                remaining.retain(|&v| !assigned[v]);
+                residual = closed.clauses;
+                break;
+            }
+            scanned += 1;
+            self.stats.units += 1;
+            self.stats.scan_clause_visits += residual.len() as u64;
             let v = lit.unsigned_abs() as usize;
             prefix = prefix.mul(self.weight(v, lit > 0), self.bits);
             remaining.retain(|&x| x != v);
             assign_inplace(&mut residual, lit);
+        }
+        if root_node {
+            self.stats.root_closed = true;
         }
         let mut frequency = vec![0_usize; self.p.n + 1];
         for clause in &residual {
@@ -264,6 +400,7 @@ impl Engine<'_> {
         }
         let mut parts = components(&mut residual, &active, self.p.n).into_iter();
         if let Some((scope, clauses)) = parts.next() {
+            self.stats.splits += 1;
             push(
                 stack,
                 Frame::Parts {
@@ -282,6 +419,7 @@ impl Engine<'_> {
         let child: Vec<_> = active.into_iter().filter(|&x| x != v).collect();
         // Queue a compact negative child; donate the owned buffers to the
         // positive child, which is visited immediately.
+        self.stats.branches += 1;
         let no = assign(&residual, -(v as i32));
         assign_inplace(&mut residual, v as i32);
         let yes = residual;
@@ -386,14 +524,24 @@ impl Engine<'_> {
 }
 
 pub(crate) fn solve(p: &Problem, bits: u32, deadline: Instant) -> Result<Outcome, String> {
+    solve_research(p, bits, deadline, false, false)
+}
+pub(crate) fn solve_research(p: &Problem, bits: u32, deadline: Instant, indexed: bool, report: bool) -> Result<Outcome, String> {
     let mut engine = Engine {
         p,
         bits,
         deadline,
         cache: HashMap::new(),
         cache_items: 0,
+        root_indexed: indexed,
+        stats: Stats::default(),
     };
-    engine.count(p.clauses.clone(), (1..=p.n).collect())
+    let result = engine.count(p.clauses.clone(), (1..=p.n).collect());
+    if report {
+        let s = &engine.stats;
+        eprintln!("RAWMOCS_ROOT_STATS nodes={} units={} scan_clause_visits={} branches={} splits={} hits={} root_index_attempts={} root_index_units={} root_index_touches={} root_closed={}", s.nodes,s.units,s.scan_clause_visits,s.branches,s.splits,s.hits,s.root_index_attempts,s.root_index_units,s.root_index_touches,s.root_closed);
+    }
+    result
 }
 
 #[cfg(test)]
@@ -401,6 +549,28 @@ mod tests {
     use super::*;
     use crate::parse_emitted;
     use std::time::Duration;
+
+    #[test]
+    fn indexed_root_matches_scan_on_long_weighted_closure() {
+        let mut raw = "p cnf 4096 4096\nc t wmc\nc p weight 1 -0.5 0.25 0\nc p weight 4096 0.25 -0.125 0\n1 0\n".to_owned();
+        for v in 1..4096 {
+            raw.push_str(&format!("-{v} {} 0\n", v+1));
+        }
+        // The initial 4096 clauses shrink below the threshold after two
+        // assignments, so test the kernel independently as well.
+        for bits in [100, 200, 333, 432] {
+            let p = parse_emitted(&raw,bits).unwrap();
+            let deadline = Instant::now()+Duration::from_secs(30);
+            let a = solve_research(&p,bits,deadline,false,false).unwrap();
+            let b = solve_research(&p,bits,deadline,true,false).unwrap();
+            assert_eq!(a.sat,b.sat);
+            assert_eq!(a.count.re,b.count.re);
+            assert_eq!(a.count.im,b.count.im);
+            let closed = indexed_units(normalize(p.clauses.clone()),p.n,deadline).unwrap().unwrap();
+            assert_eq!(closed.forced,(1..=4096).collect::<Vec<i32>>());
+            assert!(closed.clauses.is_empty());
+        }
+    }
 
     #[test]
     fn stable_compaction_matches_copying_assignment() {

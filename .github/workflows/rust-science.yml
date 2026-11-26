@@ -5,10 +5,20 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      suite:
+        description: 'fast: replay witnessed counts; full: regenerate, package and matched native triples'
+        type: choice
+        options: [fast, full]
+        default: full
+        required: true
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name == 'workflow_dispatch' && inputs.suite || 'fast' }}
   cancel-in-progress: true
+
+env:
+  SCIENCE_SUITE: ${{ github.event_name == 'workflow_dispatch' && inputs.suite == 'full' && 'full' || 'fast' }}
 
 permissions:
   contents: read
@@ -26,6 +36,8 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      - name: Verify release gate rejects incomplete science receipts
+        run: python3 scripts/test_release_source.py
 
   a0-science:
     runs-on: ubuntu-latest
@@ -110,7 +122,8 @@ jobs:
           mkdir -p .release-evidence
           bin=crates/rawmocs-cli/target/release/rawmocs
           "$bin" --version | tee .release-evidence/version.txt
-          grep -Fx 'rawmocs 0.1.0' .release-evidence/version.txt
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("crates/rawmocs-cli/Cargo.toml","rb"))["package"]["version"])')
+          grep -Fx "rawmocs $version" .release-evidence/version.txt
           "$bin" --help > .release-evidence/help.txt
           printf 'p cnf 1 0\nc t wmc\nc p weight 1 -1 0 0\n' > .release-evidence/sat-zero.cnf
           printf 'p cnf 1 2\nc t wmc\n1 0\n-1 0\n' > .release-evidence/unsat.cnf
@@ -194,6 +207,7 @@ jobs:
             --bin "$GITHUB_WORKSPACE/crates/rawmocs-cli/target/release/rawmocs" \
             --out "$GITHUB_WORKSPACE/.release-evidence/oom"
       - name: Source archive and extracted-tree installation admission
+        if: env.SCIENCE_SUITE == 'full'
         run: bash crates/rawmocs-cli/tools/package_source.sh .release-evidence/source-package
       - name: Require unchanged tracked release candidate
         run: git diff --exit-code -- crates/rawmocs-cli
@@ -210,14 +224,36 @@ jobs:
           retention-days: 30
 
   durable-source-rebuild:
-    name: Regenerate original CNF and independent interval without artifacts
+    name: ${{ github.event_name == 'workflow_dispatch' && inputs.suite == 'full' && 'Regenerate original CNF and independent interval without artifacts' || 'Replay seven source-locked independent witnesses' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Retrieve immutable previously regenerated corpus (fast only)
+        id: corpus
+        if: env.SCIENCE_SUITE == 'fast'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .fast-witness
+          zip="$RUNNER_TEMP/rawmocs-corpus.zip"
+          endpoint="repos/PhysicsQoo/RaWMoCS/actions/artifacts/15084476883/zip"
+          if gh api "$endpoint" > "$zip"; then
+            echo '6ad6683a489057deffb6537c60600e13e38e0586f1dc4e40aa87a4e1da1c8e72  '"$zip" | sha256sum -c -
+            unzip -q "$zip" -d .release-rebuild
+            printf '%s\n' 'mode=PINNED_REPLAY' 'source_run=45748202558' 'source_revision=6fffa964fdfb2ba6dfe8f3a2144471a26721b885' 'artifact_id=15084476883' 'zip_sha256=6ad6683a489057deffb6537c60600e13e38e0586f1dc4e40aa87a4e1da1c8e72' > .fast-witness/provenance.txt
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            rm -f "$zip"
+            echo "mode=INDEPENDENT_REBUILD_ARTIFACT_UNAVAILABLE" > .fast-witness/provenance.txt
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@v4
+        if: env.SCIENCE_SUITE == 'full' || steps.corpus.outputs.available != 'true'
         with:
           repository: PhysicsQoo/QuPRS
           ref: 0b28736651b3740ed3b201edd2efdef3da541e0d
@@ -226,29 +262,44 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: |
-            crates/rawmocs-cli -> target
-            .quprs-repro/rust -> target
-      - name: Build pinned source encoder and candidate
+          workspaces: crates/rawmocs-cli -> target
+          shared-key: witness-candidate
+      - uses: Swatinem/rust-cache@v2
+        if: env.SCIENCE_SUITE == 'full' || steps.corpus.outputs.available != 'true'
+        with:
+          workspaces: .quprs-repro/rust -> target
+          shared-key: witness-encoder
+      - name: Build fresh locked candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgmp-dev libmpfr-dev m4 make gcc pkg-config
+          cargo build --locked --release --manifest-path crates/rawmocs-cli/Cargo.toml
+      - name: Build pinned source encoder
+        if: env.SCIENCE_SUITE == 'full' || steps.corpus.outputs.available != 'true'
         shell: bash
         run: |
           set -euo pipefail
           test "$(git -C .quprs-repro rev-parse HEAD)" = 0b28736651b3740ed3b201edd2efdef3da541e0d
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libgmp-dev libmpfr-dev m4 make gcc pkg-config
           repro=crates/rawmocs-cli/tools/repro
           test "$(git hash-object "$repro/quprs_long_tail_source_bridge.rs")" = fc32f4e8b0a2f34386b86e08ddf147469275c245
           test "$(git hash-object "$repro/original_fixed_interval.py")" = bb7aec29adbbf46421be4ca78d76572a7988252e
           test "$(git hash-object "$repro/original_exact_prejoin.py")" = 0c43167abfc52b7449076f7f0da4d9298f5a3f32
           cp "$repro/quprs_long_tail_source_bridge.rs" .quprs-repro/rust/quprs/examples/
           cargo build --locked --release --no-default-features --manifest-path .quprs-repro/rust/Cargo.toml -p quprs --example quprs_long_tail_source_bridge
-          cargo build --locked --release --manifest-path crates/rawmocs-cli/Cargo.toml
       - name: Regenerate six source CNFs and verify seven cohorts
+        if: env.SCIENCE_SUITE == 'full' || steps.corpus.outputs.available != 'true'
         run: |
           set -euo pipefail
           python3 crates/rawmocs-cli/tools/regenerate_release.py --quprs .quprs-repro --exporter .quprs-repro/rust/target/release/examples/quprs_long_tail_source_bridge --bin crates/rawmocs-cli/target/release/rawmocs --out .release-rebuild
+      - name: Replay pinned source-locked seven-cohort witness
+        if: env.SCIENCE_SUITE == 'fast' && steps.corpus.outputs.available == 'true'
+        run: |
+          set -euo pipefail
+          python3 crates/rawmocs-cli/tools/replay_release.py --corpus .release-rebuild --bin crates/rawmocs-cli/target/release/rawmocs --out .fast-witness
       - name: Archive regeneration evidence
-        if: always()
+        if: always() && env.SCIENCE_SUITE == 'full'
         uses: actions/upload-artifact@v4
         with:
           name: rawmocs-v010-durable-rebuild
@@ -256,8 +307,20 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 30
+      - name: Archive fast regression provenance and receipts
+        if: always() && env.SCIENCE_SUITE == 'fast'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rawmocs-fast-witness-replay
+          path: |
+            .fast-witness/
+            .release-rebuild/regeneration.json
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
 
   release-native-paired:
+    if: github.event_name == 'workflow_dispatch' && inputs.suite == 'full'
     name: Release matched native GPMC (${{ matrix.case }})
     needs: durable-source-rebuild
     runs-on: ubuntu-24.04

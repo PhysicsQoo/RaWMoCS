@@ -78,16 +78,37 @@ impl Outcome {
         }
     }
 }
+#[cfg(test)]
 fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
-    if raw.is_empty() || raw.len() > 2_000_000 {
+    parse_emitted_bounded(raw, bits, DEFAULT_SOURCE_BYTES, None)
+}
+
+fn input_deadline(deadline: Option<Instant>) -> Result<(), String> {
+    if deadline.is_some_and(|d| Instant::now() >= d) {
+        return Err("input deadline".into());
+    }
+    Ok(())
+}
+
+fn parse_emitted_bounded(
+    raw: &str,
+    bits: u32,
+    max_bytes: u64,
+    deadline: Option<Instant>,
+) -> Result<Problem, String> {
+    input_deadline(deadline)?;
+    if raw.len() as u64 > max_bytes {
+        return Err("source bytes cap".into());
+    }
+    if raw.is_empty() {
         return Err("invalid source bytes".into());
     }
     let mut lines = raw.lines().filter(|s| !s.trim().is_empty());
-    let header: Vec<_> = lines
-        .next()
-        .ok_or("missing header")?
-        .split_whitespace()
-        .collect();
+    let header_line = lines.next().ok_or("missing header")?;
+    if header_line.len() > MAX_LINE_BYTES {
+        return Err("source line cap".into());
+    }
+    let header: Vec<_> = header_line.split_whitespace().take(5).collect();
     if header.len() != 4 || header[0] != "p" || header[1] != "cnf" {
         return Err("bad p cnf header".into());
     }
@@ -111,7 +132,12 @@ fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
     let mut assigned = vec![[false; 2]; n];
     let mut clauses = Vec::with_capacity(declared);
     let mut clause_started = false;
+    let mut literals = 0usize;
     for line in lines {
+        input_deadline(deadline)?;
+        if line.len() > MAX_LINE_BYTES {
+            return Err("source line cap".into());
+        }
         let f: Vec<_> = line.split_whitespace().collect();
         if f.first() == Some(&"c") {
             if clause_started || f.len() != 7 || f[1..3] != ["p", "weight"] || f[6] != "0" {
@@ -141,6 +167,10 @@ fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
             if f.last() != Some(&"0") {
                 return Err("unterminated clause".into());
             }
+            literals += f.len() - 1;
+            if literals > MAX_LITERAL_ITEMS {
+                return Err("source literal cap".into());
+            }
             let mut clause = Vec::with_capacity(f.len() - 1);
             for token in &f[..f.len() - 1] {
                 let lit: i32 = token.parse().map_err(|_| "invalid clause")?;
@@ -155,6 +185,7 @@ fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
             }
         }
     }
+    input_deadline(deadline)?;
     if clauses.len() != declared {
         return Err("missing clauses".into());
     }
@@ -165,21 +196,50 @@ fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
     })
 }
 
-const MAX_SOURCE_BYTES: u64 = 2_000_000;
-const HELP: &str = "rawmocs --digits {30|60|100|130} [--solver auto|prejoin|general|reference] [--timeout-ms N] FILE\n\
+// Keep the release default; a larger source requires an explicit caller opt-in.
+// These are input-admission limits, not an expanded solver or memory guarantee.
+const DEFAULT_SOURCE_BYTES: u64 = 2_000_000;
+const HARD_SOURCE_BYTES: u64 = 16_000_000;
+const MAX_LINE_BYTES: usize = DEFAULT_SOURCE_BYTES as usize;
+const MAX_LITERAL_ITEMS: usize = 2_000_000;
+const HELP: &str = "rawmocs --digits {30|60|100|130} [--solver auto|prejoin|general|reference] [--timeout-ms N] [--max-source-bytes N] FILE\n\
 Full signed complex WMC for QuPRS weighted CNF. Output is rounded MPFR, not a certified interval.\n\
+Source bytes default 2000000; explicit 1..16000000. Other admission and solver caps remain bounded.\n\
+Timeout includes input admission (except reference); external supervision is required for blocking I/O.\n\
 Exit 0: complete SAT and complex count. Nonzero: classified failure, empty stdout. Use an external process resource supervisor.";
-fn read_source(path: &std::ffi::OsStr) -> Result<String, String> {
+fn read_bounded_source(
+    reader: impl Read,
+    max_bytes: u64,
+    deadline: Option<Instant>,
+) -> Result<String, String> {
     let mut input = Vec::new();
-    std::fs::File::open(path)
-        .map_err(|e| e.to_string())?
-        .take(MAX_SOURCE_BYTES + 1)
-        .read_to_end(&mut input)
-        .map_err(|e| e.to_string())?;
-    if input.len() as u64 > MAX_SOURCE_BYTES {
-        return Err("source bytes cap".into());
+    let mut reader = reader.take(max_bytes + 1);
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        input_deadline(deadline)?;
+        let n = match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e.to_string()),
+        };
+        input.extend_from_slice(&buf[..n]);
+        if input.len() as u64 > max_bytes {
+            return Err("source bytes cap".into());
+        }
     }
+    input_deadline(deadline)?;
     String::from_utf8(input).map_err(|e| e.to_string())
+}
+
+fn read_source(
+    path: &std::ffi::OsStr,
+    max_bytes: u64,
+    deadline: Option<Instant>,
+) -> Result<String, String> {
+    input_deadline(deadline)?;
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    read_bounded_source(file, max_bytes, deadline)
 }
 fn to_big(r: &rug::Rational) -> Result<BigRational, String> {
     r.to_string()
@@ -301,8 +361,14 @@ fn solve_until(
 }
 fn failure(reason: &str) -> (&'static str, i32) {
     match reason {
-        "general deadline" | "prejoin deadline" | "solver deadline" => ("TIMEOUT", 4),
-        "source bytes cap" | "oversize CNF" | "general frame allocation" => ("RESOURCE_LIMIT", 5),
+        "general deadline" | "prejoin deadline" | "solver deadline" | "input deadline" => {
+            ("TIMEOUT", 4)
+        }
+        "source bytes cap"
+        | "source line cap"
+        | "source literal cap"
+        | "oversize CNF"
+        | "general frame allocation" => ("RESOURCE_LIMIT", 5),
         "unsupported input semantics" => ("UNSUPPORTED_INPUT", 3),
         "source clause cap"
         | "clause width cap"
@@ -346,6 +412,7 @@ fn run() -> Result<(), String> {
     let mut file = args.next().ok_or("missing source")?;
     let mut mode = "auto".to_owned();
     let mut timeout_ms = None;
+    let mut source_bytes = None;
     let mut mode_seen = false;
     loop {
         if file == "--solver" && !mode_seen {
@@ -362,6 +429,14 @@ fn run() -> Result<(), String> {
                 .filter(|&ms| ms <= 86_400_000)
                 .ok_or("INPUT: invalid timeout-ms (expected 0..86400000)")?;
             timeout_ms = Some(ms);
+        } else if file == "--max-source-bytes" && source_bytes.is_none() {
+            let cap = args
+                .next()
+                .and_then(|x| x.into_string().ok())
+                .and_then(|x| x.parse::<u64>().ok())
+                .filter(|&n| (1..=HARD_SOURCE_BYTES).contains(&n))
+                .ok_or("INPUT: invalid max-source-bytes (expected 1..16000000)")?;
+            source_bytes = Some(cap);
         } else {
             break;
         }
@@ -373,25 +448,44 @@ fn run() -> Result<(), String> {
     if mode == "reference" && timeout_ms.is_some() {
         return Err("INPUT: reference uses external timeout only".into());
     }
-    let raw = read_source(&file).map_err(|e| {
-        if e == "source bytes cap" {
-            e
-        } else {
-            format!("INPUT: {e}")
-        }
-    })?;
-    let problem = parse_emitted(&raw, bits).map_err(|e| {
-        if matches!(e.as_str(), "oversize CNF" | "unsupported input semantics") {
-            e
-        } else {
-            format!("INPUT: {e}")
-        }
-    })?;
     if !matches!(mode.as_str(), "auto" | "prejoin" | "general" | "reference") {
         return Err("INPUT: invalid solver".into());
     }
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms.unwrap_or(45_000));
+    let parse_deadline = (mode != "reference").then_some(deadline);
+    let max_bytes = source_bytes.unwrap_or(DEFAULT_SOURCE_BYTES);
+    let raw = read_source(&file, max_bytes, parse_deadline).map_err(|e| {
+        if matches!(e.as_str(), "source bytes cap" | "input deadline") {
+            e
+        } else {
+            format!("INPUT: {e}")
+        }
+    })?;
+    let problem = parse_emitted_bounded(&raw, bits, max_bytes, parse_deadline).map_err(|e| {
+        if matches!(
+            e.as_str(),
+            "source bytes cap"
+                | "source line cap"
+                | "source literal cap"
+                | "oversize CNF"
+                | "unsupported input semantics"
+                | "input deadline"
+        ) {
+            e
+        } else {
+            format!("INPUT: {e}")
+        }
+    })?;
+    if source_bytes.is_some() {
+        eprintln!(
+            "RAWMOCS_SOURCE_ADMITTED bytes={} vars={} clauses={} literals={} cap={max_bytes}",
+            raw.len(),
+            problem.n,
+            problem.clauses.len(),
+            problem.clauses.iter().map(Vec::len).sum::<usize>()
+        );
+    }
     let start = Instant::now();
-    let deadline = start + Duration::from_millis(timeout_ms.unwrap_or(45_000));
     let (answer, route) = solve_until(&problem, &raw, bits, &mode, deadline)?;
     if mode != "reference" && Instant::now() >= deadline {
         return Err("solver deadline".into());
@@ -443,6 +537,60 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bounded_source_read_and_parse_agree_at_boundary() {
+        let raw = "p cnf 1 1\nc t wmc\n1 0\n";
+        let size = raw.len() as u64;
+        for cap in [size - 1, size, size + 1] {
+            let read = read_bounded_source(raw.as_bytes(), cap, None);
+            let parse = parse_emitted_bounded(raw, 100, cap, None);
+            assert_eq!(read.is_ok(), cap >= size);
+            assert_eq!(parse.is_ok(), cap >= size);
+            if cap < size {
+                assert_eq!(read.err().as_deref(), Some("source bytes cap"));
+                assert_eq!(parse.err().as_deref(), Some("source bytes cap"));
+            }
+        }
+        assert!(read_bounded_source(&[0xff][..], 1, None).is_err());
+        assert!(parse_emitted_bounded("p cnf 1 1\nc t wmc\n1", 100, 100, None).is_err());
+        let expired = Some(Instant::now());
+        assert_eq!(
+            read_bounded_source(raw.as_bytes(), size, expired).err().as_deref(),
+            Some("input deadline")
+        );
+        assert_eq!(
+            parse_emitted_bounded(raw, 100, size, expired).err().as_deref(),
+            Some("input deadline")
+        );
+    }
+
+    #[test]
+    fn extended_source_preserves_signed_complex_and_sat_zero_semantics() {
+        for (small, sat, re, im) in [
+            ("p cnf 1 1\nc t wmc\nc p weight 1 -0.5 0.25 0\n1 0\n", true, -0.5, 0.25),
+            ("p cnf 1 0\nc t wmc\nc p weight 1 -1 0 0\n", true, 0.0, 0.0),
+            ("p cnf 1 2\nc t wmc\n1 0\n-1 0\n", false, 0.0, 0.0),
+        ] {
+            let mut raw = small.to_owned();
+            // Valid whitespace padding deliberately crosses the former byte cap.
+            raw.push_str(&" \n".repeat(DEFAULT_SOURCE_BYTES as usize / 2));
+            assert!(raw.len() as u64 > DEFAULT_SOURCE_BYTES);
+            for bits in [100, 200, 333, 432] {
+                assert_eq!(
+                    parse_emitted(&raw, bits).err().as_deref(),
+                    Some("source bytes cap")
+                );
+                let p = parse_emitted_bounded(&raw, bits, HARD_SOURCE_BYTES, None).unwrap();
+                for mode in ["general", "prejoin", "reference"] {
+                    let (out, _) = solve(&p, &raw, bits, mode).unwrap();
+                    assert_eq!(out.sat, sat);
+                    assert_eq!(out.count.re, re);
+                    assert_eq!(out.count.im, im);
+                }
+            }
+        }
+    }
+
     #[test]
     fn exact_reference_and_prejoin_agree() {
         for bits in [100, 200, 333, 432] {

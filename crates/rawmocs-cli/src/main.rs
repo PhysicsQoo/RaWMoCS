@@ -298,7 +298,7 @@ fn parse_records<'a>(
 }
 
 const MAX_SOURCE_BYTES: u64 = 2_000_000;
-const HELP: &str = "rawmocs --digits {30|60|100|130} [--solver auto|prejoin|general|general-separator|reference] [--timeout-ms N] [--large-general] FILE\n\
+const HELP: &str = "rawmocs --digits {30|60|100|130} [--solver auto|auto-separator|prejoin|general|general-separator|reference] [--timeout-ms N] [--large-general] FILE\n\
 Full signed complex WMC for QuPRS weighted CNF. Output is rounded MPFR, not a certified interval.\n\
 Exit 0: complete SAT and complex count. Nonzero: classified failure, empty stdout. Use an external process resource supervisor.";
 fn read_source(path: &std::ffi::OsStr) -> Result<String, String> {
@@ -402,19 +402,21 @@ fn solve_until(
     if mode == "reference" {
         return reference(p, raw, bits).map(|a| (a, "reference"));
     }
-    if mode == "general-separator" {
+    let separator = mode == "auto-separator";
+    let auto = mode == "auto" || separator;
+    if mode == "general-separator" || (separator && p.n == 0) {
         return general::solve_separator(p, bits, deadline).map(|a| (a, "general-separator"));
     }
     if mode == "general" || (mode == "auto" && p.n == 0) {
         return general::solve(p, bits, deadline).map(|a| (a, "general"));
     }
-    if mode != "auto" && mode != "prejoin" {
+    if !auto && mode != "prejoin" {
         return Err("invalid solver".into());
     }
     match factor_prejoin::solve_until(p, raw, bits, deadline) {
         Ok(a) => Ok((a, "prejoin")),
         Err(reason)
-            if mode == "auto"
+            if auto
                 && matches!(
                     reason.as_str(),
                     "source clause cap"
@@ -429,7 +431,11 @@ fn solve_until(
                 ) =>
         {
             eprintln!("RAWMOCS_FALLBACK reason={reason}");
-            general::solve(p, bits, deadline).map(|a| (a, "general"))
+            if separator {
+                general::solve_separator(p, bits, deadline).map(|a| (a, "general-separator"))
+            } else {
+                general::solve(p, bits, deadline).map(|a| (a, "general"))
+            }
         }
         Err(reason) => Err(reason),
     }
@@ -554,7 +560,7 @@ fn run() -> Result<(), String> {
             format!("INPUT: {e}")
         }
     })?;
-    if !matches!(mode.as_str(), "auto" | "prejoin" | "general" | "general-separator" | "reference") {
+    if !matches!(mode.as_str(), "auto" | "auto-separator" | "prejoin" | "general" | "general-separator" | "reference") {
         return Err("INPUT: invalid solver".into());
     }
     if large_general {
@@ -768,6 +774,25 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn auto_separator_preserves_prejoin_and_fallback_contract() {
+        for (raw, expected_route) in [
+            ("p cnf 2 1\nc t wmc\n1 2 0\n", "prejoin"),
+            ("p cnf 10 1\nc t wmc\n1 2 3 4 5 6 7 8 9 10 0\n", "general-separator"),
+            ("p cnf 0 0\nc t wmc\n", "general-separator"),
+        ] {
+            for bits in [100, 200, 333, 432] {
+                let p = parse_emitted(raw, bits).unwrap();
+                let (a, route) = solve(&p, raw, bits, "auto-separator").unwrap();
+                let (b, _) = solve(&p, raw, bits, "auto").unwrap();
+                assert_eq!(route, expected_route);
+                assert_eq!(a.sat, b.sat);
+                assert_eq!(a.count.re, b.count.re);
+                assert_eq!(a.count.im, b.count.im);
+            }
+        }
+    }
+
     #[test]
     fn auto_general_on_wide_clause_and_empty_scope() {
         let raw = "p cnf 10 1\nc t wmc\n1 2 3 4 5 6 7 8 9 10 0\n";

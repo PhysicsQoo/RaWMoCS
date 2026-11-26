@@ -946,6 +946,60 @@ fn recycle_copy(pool: &mut Vec<C>, x: &C) -> C {
         x.clone()
     }
 }
+// Diagnostic only: quantify allocation pressure at the existing bucket
+// lifetime boundary without changing ownership or the reuse policy.
+#[derive(Default)]
+struct PoolProfile {
+    ops: usize,
+    slots: usize,
+    hits: usize,
+    misses: usize,
+    dead_supported: usize,
+    harvested: usize,
+    peak_pool: usize,
+    saturated_ops: usize,
+    overlap_upper: usize,
+    max_op_misses: usize,
+}
+
+impl PoolProfile {
+    fn copy<const PROFILE: bool>(&mut self, pool: &mut Vec<C>, x: &C) -> C {
+        if PROFILE {
+            if pool.is_empty() {
+                self.misses += 1;
+            } else {
+                self.hits += 1;
+            }
+        }
+        recycle_copy(pool, x)
+    }
+
+    fn finish_op(&mut self, slots: usize, misses: usize, dead: usize,
+                 harvested: usize, pool_len: usize, cap: usize) {
+        self.ops += 1;
+        self.slots += slots;
+        self.dead_supported += dead;
+        self.harvested += harvested;
+        self.peak_pool = self.peak_pool.max(pool_len);
+        self.saturated_ops += usize::from(pool_len == cap);
+        // Optimistic only: the dead cells may still be read before the
+        // output that misses, and no lifetime/last-use proof exists yet.
+        self.overlap_upper += misses.min(dead);
+        self.max_op_misses = self.max_op_misses.max(misses);
+    }
+
+    fn emit(&self, cap: usize, remaining: usize) {
+        eprintln!(
+            "PREJOIN_RESEARCH_POOL ops={} slots={} hits={} misses={} absent={} dead_supported={} harvested={} unharvested={} peak_pool={} cap={} remaining={} saturated_ops={} overlap_upper={} max_op_misses={}",
+            self.ops, self.slots, self.hits, self.misses,
+            self.slots - self.hits - self.misses, self.dead_supported,
+            self.harvested, self.dead_supported - self.harvested,
+            self.peak_pool, cap, remaining, self.saturated_ops,
+            self.overlap_upper, self.max_op_misses,
+        );
+    }
+}
+
 fn cadd(a: Cell<C>, b: Cell<C>) -> Cell<C> {
     match (a, b) {
         (Some(mut a), Some(b)) => {
@@ -966,7 +1020,11 @@ fn execute(
     // Admission candidate: exercise the measured direct kernel by default.
     // Keep an explicit same-binary reference arm until the science gate passes.
     if std::env::var("RAWMOCS_RESEARCH_DIRECT_BINARY").as_deref() != Ok("0") {
-        execute_impl::<true>(fs, scalar, p, bits, d)
+        if std::env::var("RAWMOCS_RESEARCH_POOL_PROFILE").as_deref() == Ok("1") {
+            execute_profile_impl::<true, true>(fs, scalar, p, bits, d)
+        } else {
+            execute_impl::<true>(fs, scalar, p, bits, d)
+        }
     } else {
         execute_impl::<false>(fs, scalar, p, bits, d)
     }
@@ -979,6 +1037,17 @@ fn execute_impl<const BINARY: bool>(
     bits: u32,
     d: Instant,
 ) -> Result<Cell<C>, String> {
+    execute_profile_impl::<BINARY, false>(fs, scalar, p, bits, d)
+}
+
+fn execute_profile_impl<const BINARY: bool, const PROFILE: bool>(
+    fs: Vec<Factor<R>>,
+    scalar: Cell<R>,
+    p: &Plan,
+    bits: u32,
+    d: Instant,
+) -> Result<Cell<C>, String> {
+    let mut profile = PoolProfile::default();
     let mut tables: BTreeMap<usize, Factor<C>> = fs
         .into_iter()
         .enumerate()
@@ -1050,6 +1119,7 @@ fn execute_impl<const BINARY: bool>(
                 binary_join_visits += size;
             }
         }
+        let misses_before = profile.misses;
         let mut values = Vec::with_capacity(size);
         for m in 0..size {
             if m % 4096 == 0 {
@@ -1078,10 +1148,10 @@ fn execute_impl<const BINARY: bool>(
                 (true, true) => {
                     left.re += &right.re;
                     left.im += &right.im;
-                    Some(recycle_copy(&mut recycle, &left))
+                    Some(profile.copy::<PROFILE>(&mut recycle, &left))
                 }
-                (true, false) => Some(recycle_copy(&mut recycle, &left)),
-                (false, true) => Some(recycle_copy(&mut recycle, &right)),
+                (true, false) => Some(profile.copy::<PROFILE>(&mut recycle, &left)),
+                (false, true) => Some(profile.copy::<PROFILE>(&mut recycle, &right)),
                 _ => None,
             });
             if m + 1 < size {
@@ -1092,6 +1162,18 @@ fn execute_impl<const BINARY: bool>(
             }
         }
         live = live + size - bucket.iter().map(|f| f.values.len()).sum::<usize>();
+        // Count dead support only in the diagnostic; normal execution
+        // retains its bounded early stop when the pool is full.
+        let before_harvest = recycle.len();
+        let mut dead = 0usize;
+        if PROFILE {
+            for f in &bucket {
+                for chunk in f.values.chunks(4096) {
+                    deadline(d)?;
+                    dead += chunk.iter().filter(|x| x.is_some()).count();
+                }
+            }
+        }
         // No references to consumed factors survive the operation.
         // Do not scan an entire dead table once the bounded pool is full.
         for f in bucket {
@@ -1104,6 +1186,12 @@ fn execute_impl<const BINARY: bool>(
                     break;
                 }
             }
+        }
+        if PROFILE {
+            profile.finish_op(
+                size, profile.misses - misses_before, dead,
+                recycle.len() - before_harvest, recycle.len(), recycle_cap,
+            );
         }
         tables.insert(
             op.dst,
@@ -1120,6 +1208,16 @@ fn execute_impl<const BINARY: bool>(
         eprintln!(
             "PREJOIN_RESEARCH_BINARY ops={binary_ops} visits={binary_visits} join_visits={binary_join_visits}"
         );
+    }
+    if PROFILE {
+        if profile.hits + recycle.len() != profile.harvested
+            || profile.harvested > profile.dead_supported
+            || profile.hits + profile.misses > profile.slots
+            || profile.peak_pool > recycle_cap
+        {
+            return Err("pool profile accounting drift".into());
+        }
+        profile.emit(recycle_cap, recycle.len());
     }
     let mut out = mpfr(scalar, bits);
     for f in tables.into_values() {
@@ -1259,6 +1357,31 @@ fn pair_scan(raw: &str, use_mask: bool) -> Result<String, String> {
 mod tests {
     use super::*;
     #[test]
+    fn pool_profile_distinguishes_fresh_copy_and_recycled_cell() {
+        for bits in [100, 200, 333, 432] {
+            let mut profile = PoolProfile::default();
+            let mut pool = Vec::new();
+            let x = C::one(bits);
+            let fresh = profile.copy::<true>(&mut pool, &x);
+            assert_eq!(profile.misses, 1);
+            assert_eq!(profile.hits, 0);
+            pool.push(fresh);
+            profile.finish_op(2, 1, 2, 1, 1, 1);
+            let reused = profile.copy::<true>(&mut pool, &x);
+            assert_eq!(reused.re, x.re);
+            assert_eq!(reused.im, x.im);
+            profile.finish_op(1, 0, 0, 0, 0, 1);
+            assert_eq!(profile.hits, 1);
+            assert_eq!(profile.harvested, profile.hits + pool.len());
+            assert_eq!(profile.slots, 3);
+            assert_eq!(profile.dead_supported, 2);
+            assert_eq!(profile.peak_pool, 1);
+            assert_eq!(profile.overlap_upper, 1);
+            assert_eq!(profile.saturated_ops, 1);
+        }
+    }
+
+    #[test]
     fn direct_binary_matches_ordered_products_and_support() {
         for bits in [100, 200, 333, 432] {
             let mut values = vec![None];
@@ -1365,6 +1488,11 @@ mod tests {
                 let on = execute_impl::<true>(fs.clone(), Some(one()), &plan, bits, d)
                     .unwrap()
                     .unwrap();
+                let profiled = execute_profile_impl::<true, true>(fs.clone(), Some(one()), &plan, bits, d)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(profiled.re, on.re);
+                assert_eq!(profiled.im, on.im);
                 assert_eq!(off.re, on.re);
                 assert_eq!(off.im, on.im);
                 assert_eq!(on.re, Float::with_val(bits, -0.25));

@@ -155,11 +155,11 @@ fn reversible_index_random_nested_rollback() {
     let mut seed = 0x12345678_u32;
     let mut next = || { seed = seed.wrapping_mul(1664525).wrapping_add(1013904223); seed >> 8 };
     let deadline = Instant::now() + Duration::from_secs(30);
-    for _ in 0..2048 {
+    for case in 0..2048 {
         let mut source = Vec::new();
         for _ in 0..18 {
             let mut c = Vec::new();
-            for _ in 0..(next() % 5) {
+            for _ in 0..(if case % 4 == 0 { next() % 5 } else { 2 + next() % 3 }) {
                 let v = (next() % 12 + 1) as i32;
                 c.push(if next() % 2 == 0 { v } else { -v });
             }
@@ -216,6 +216,36 @@ fn reversible_index_deadline_and_conflict_restore() {
 }
 
 #[test]
+fn reversible_index_complex_weight_order() {
+    use crate::{parse_emitted, C};
+    let raw = "p cnf 5 4\nc t wmc\nc p weight 1 0.13 -0.27 0\nc p weight 2 -0.29 0.31 0\nc p weight 3 0.37 0.41 0\nc p weight -4 -0.43 0.47 0\n1 0\n-1 2 0\n-2 3 0\n-3 -4 0\n";
+    let deadline = Instant::now() + Duration::from_secs(2);
+    for bits in [100, 200, 333, 432] {
+        let p = parse_emitted(raw, bits).unwrap();
+        let source = normalize(p.clauses.clone());
+        let expected = scan(source.clone()).unwrap();
+        let mut state = TrailIndex::new(source.clone(), p.n);
+        let forced = state.propagate(deadline).unwrap().unwrap();
+        assert_eq!(forced, expected.1);
+        let product = |seq: &[i32]| {
+            let mut count = C::one(bits);
+            for &lit in seq {
+                let w = &p.weights[lit.unsigned_abs() as usize - 1];
+                count = count.mul(if lit > 0 { &w.positive } else { &w.negative }, bits);
+            }
+            count
+        };
+        let a = product(&forced);
+        let b = product(&expected.1);
+        assert_eq!(a.re, b.re);
+        assert_eq!(a.im, b.im);
+        state.rollback(0);
+        state.verify();
+        assert_eq!(state.residual(), source);
+    }
+}
+
+#[test]
 #[ignore = "research-only fixed-work native diagnostic"]
 fn reversible_index_fixed_work() {
     let n = 8192_i32;
@@ -230,14 +260,20 @@ fn reversible_index_fixed_work() {
     let clauses = normalize(clauses);
     let deadline = Instant::now() + Duration::from_secs(60);
     let rounds = 32;
+    let expected: Vec<_> = [1, -1].iter().map(|&lit| {
+        let mut copy = clauses.clone();
+        assign_inplace(&mut copy, lit);
+        let closed = indexed_units(copy, n as usize, deadline).unwrap().unwrap();
+        assert!(closed.clauses.is_empty());
+        closed.forced
+    }).collect();
     let mut expected_forced = 0;
     for (trial, reuse) in [false, true, true, false].into_iter().enumerate() {
         let start = Instant::now();
         let mut state = reuse.then(|| TrailIndex::new(clauses.clone(), n as usize));
         let mut forced_count = 0;
         for _ in 0..rounds {
-            for lit in [1, -1] {
-                let mut copy = Vec::new();
+            for (arm, lit) in [1, -1].into_iter().enumerate() {
                 let forced = if let Some(state) = state.as_mut() {
                     assert!(state.apply(lit));
                     let forced = state.propagate(deadline).unwrap().unwrap();
@@ -246,12 +282,13 @@ fn reversible_index_fixed_work() {
                     state.rollback(0);
                     forced
                 } else {
-                    copy.clone_from(&clauses);
+                    let mut copy = clauses.clone();
                     assign_inplace(&mut copy, lit);
                     let closed = indexed_units(copy, n as usize, deadline).unwrap().unwrap();
                     assert!(closed.clauses.is_empty());
                     closed.forced
                 };
+                assert_eq!(forced, expected[arm]);
                 assert_eq!(forced.len(), (n - 1) as usize);
                 assert!(forced.iter().all(|&v| v > 1));
                 forced_count += forced.len();

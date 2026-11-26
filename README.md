@@ -11,9 +11,9 @@ The numerical count and Boolean satisfiability are separate; a satisfiable
 formula can have zero weighted count. All variables have independently defined
 positive and negative literal weights.
 
-## First release candidate: QuPRS weighted CNF executable
+## QuPRS weighted CNF executable
 
-The v0.1.0 candidate is an opt-in signed-complex full WMC executable
+RaWMoCS provides an opt-in signed-complex full WMC executable
 for weighted CNF emitted by QuPRS. It selects a factor-prejoin route from
 the CNF structure, with general MPFR DPLL, component decomposition and
 residual caching for ordinary admission failures. It never selects by circuit name or source
@@ -120,7 +120,7 @@ Registration is scoped and no failure is converted to a count or silently
 retried with another solver. This is not a built-in QuPRS adapter, Rust FFI
 integration, or default-solver migration.
 
-**Candidate only:** see [release admission](docs/first-release-admission.md).
+See [release admission](docs/first-release-admission.md) for the source release evidence and limits.
 No claim of competition-wide performance, projected WMC, exact
 transcendental phase weights, certified rounding or equivalence checking.
 

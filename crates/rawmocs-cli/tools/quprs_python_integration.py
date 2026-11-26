@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 import shlex
 import subprocess
+import tomllib
 
 import symengine as se
 import sympy as sp
@@ -84,10 +85,15 @@ def main():
     a=ap.parse_args()
     a.out.mkdir(parents=True,exist_ok=True)
     binary=a.bin.resolve()
-    assert subprocess.check_output([str(binary),"--version"],text=True,timeout=5).strip()=="rawmocs 0.1.0"
+    manifest=Path(__file__).resolve().parents[1]/"Cargo.toml"
+    with manifest.open("rb") as source:
+        expected_version=tomllib.load(source)["package"]["version"]
+    actual_version=subprocess.check_output([str(binary),"--version"],text=True,timeout=5).strip()
+    assert actual_version==f"rawmocs {expected_version}", (actual_version,expected_version)
     wrapper=executable(a.out/"supervised-rawmocs",
         "exec prlimit --as=3221225472 -- "+shlex.quote(str(binary))+' "$@"')
-    report={"status":"IN_PROGRESS","binary_sha256":hashlib.sha256(binary.read_bytes()).hexdigest(),
+    report={"status":"IN_PROGRESS","version":expected_version,"binary_version":actual_version,
+            "binary_sha256":hashlib.sha256(binary.read_bytes()).hexdigest(),
             "quprs_revision":"b398f07d6845efc23540549ccbfec717c27b1722","cases":[],"controls":[]}
     def save():
         (a.out/"integration.json").write_text(json.dumps(report,indent=2)+"\n")

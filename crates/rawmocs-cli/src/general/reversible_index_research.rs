@@ -43,7 +43,6 @@ impl TrailIndex {
     }
 
     fn refresh(&mut self, cid: usize) {
-        if self.satisfied[cid] == 0 { self.active.insert(cid); } else { self.active.remove(&cid); }
         if self.satisfied[cid] == 0 && self.live[cid] == 1 {
             self.units.insert(cid);
         } else {
@@ -70,6 +69,7 @@ impl TrailIndex {
             let cid = self.occurrence[pos][k];
             self.live[cid] -= 1;
             self.satisfied[cid] += 1;
+            if self.satisfied[cid] == 1 { self.active.remove(&cid); }
             self.refresh(cid);
             self.touches += 1;
         }
@@ -92,6 +92,7 @@ impl TrailIndex {
                 let cid = self.occurrence[pos][k];
                 self.live[cid] += 1;
                 self.satisfied[cid] -= 1;
+                if self.satisfied[cid] == 0 { self.active.insert(cid); }
                 self.refresh(cid);
                 self.touches += 1;
             }

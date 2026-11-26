@@ -281,10 +281,17 @@ jobs:
           path: .gpmc-release
           submodules: recursive
           persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ef8d1ee606bed672ee9be62d189a2b3fbcc905a0
+          path: .rawmocs-reference
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: crates/rawmocs-cli -> target
+          workspaces: |
+            crates/rawmocs-cli -> target
+            .rawmocs-reference/crates/rawmocs-cli -> target
       - name: Build pinned GPMC and locked release binary
         shell: bash
         run: |
@@ -295,11 +302,13 @@ jobs:
           cmake -S .gpmc-release -B .gpmc-release/build -G Ninja -DCMAKE_BUILD_TYPE=Release
           cmake --build .gpmc-release/build --target gpmc-bin --parallel 2
           cargo build --locked --release --manifest-path crates/rawmocs-cli/Cargo.toml
-      - name: Seven order-rotated same-precision native pairs
+          test "$(git -C .rawmocs-reference rev-parse HEAD)" = ef8d1ee606bed672ee9be62d189a2b3fbcc905a0
+          cargo build --locked --release --manifest-path .rawmocs-reference/crates/rawmocs-cli/Cargo.toml
+      - name: Seven order-rotated same-precision native triples
         shell: bash
         run: |
           set -euo pipefail
-          python3 crates/rawmocs-cli/tools/release_native_paired.py --case "${{ matrix.case }}" --corpus .release-rebuild --gpmc-source .gpmc-release --gpmc .gpmc-release/build/gpmc --bin crates/rawmocs-cli/target/release/rawmocs --out ".release-pairs/${{ matrix.case }}"
+          python3 crates/rawmocs-cli/tools/release_native_paired.py --case "${{ matrix.case }}" --corpus .release-rebuild --gpmc-source .gpmc-release --gpmc .gpmc-release/build/gpmc --bin crates/rawmocs-cli/target/release/rawmocs --baseline .rawmocs-reference/crates/rawmocs-cli/target/release/rawmocs --out ".release-pairs/${{ matrix.case }}"
       - name: Archive all attempted pairs and censored evidence
         if: always()
         uses: actions/upload-artifact@v4

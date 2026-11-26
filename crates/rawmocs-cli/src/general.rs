@@ -105,6 +105,8 @@ struct Engine<'a> {
     cache: HashMap<Key, Outcome>,
     cache_items: usize,
     large: bool,
+    frequency: Vec<usize>,
+    parent: Vec<usize>,
 }
 fn normalize(mut clauses: Vec<Clause>) -> Vec<Clause> {
     for clause in &mut clauses {
@@ -226,19 +228,25 @@ fn root(parent: &mut [usize], mut x: usize) -> usize {
     }
     x
 }
-fn components(clauses: &mut Vec<Clause>, scope: &[usize], n: usize) -> Vec<Component> {
-    let mut parent: Vec<_> = (0..=n).collect();
+fn components_with_parent(
+    clauses: &mut Vec<Clause>,
+    scope: &[usize],
+    parent: &mut [usize],
+) -> Vec<Component> {
+    for &v in scope {
+        parent[v] = v;
+    }
     for c in clauses.iter() {
         let first = c[0].unsigned_abs() as usize;
         for &lit in &c[1..] {
-            let a = root(&mut parent, first);
-            let b = root(&mut parent, lit.unsigned_abs() as usize);
+            let a = root(parent, first);
+            let b = root(parent, lit.unsigned_abs() as usize);
             parent[b] = a;
         }
     }
     let mut groups: BTreeMap<usize, (Vec<usize>, Vec<Clause>)> = BTreeMap::new();
     for &v in scope {
-        groups.entry(root(&mut parent, v)).or_default().0.push(v);
+        groups.entry(root(parent, v)).or_default().0.push(v);
     }
     if groups.len() <= 1 {
         return Vec::new();
@@ -246,7 +254,7 @@ fn components(clauses: &mut Vec<Clause>, scope: &[usize], n: usize) -> Vec<Compo
     // Consume the residual only when a split is known to exist. Keep the
     // original representatives, component order and per-component clause order.
     for c in std::mem::take(clauses) {
-        let r = root(&mut parent, c[0].unsigned_abs() as usize);
+        let r = root(parent, c[0].unsigned_abs() as usize);
         groups.entry(r).or_default().1.push(c);
     }
     groups.into_values().collect()
@@ -341,15 +349,19 @@ impl Engine<'_> {
             remaining.retain(|&x| x != v);
             assign_inplace(&mut residual, lit);
         }
-        let mut frequency = vec![0_usize; self.p.n + 1];
+        // Every residual literal belongs to remaining. The scratch arrays
+        // never escape enter into a continuation frame. Reset only live scope.
+        for &v in &remaining {
+            self.frequency[v] = 0;
+        }
         for clause in &residual {
             for &lit in clause {
-                frequency[lit.unsigned_abs() as usize] += 1;
+                self.frequency[lit.unsigned_abs() as usize] += 1;
             }
         }
         let mut active = Vec::new();
         for v in remaining {
-            if frequency[v] == 0 {
+            if self.frequency[v] == 0 {
                 let w = &self.p.weights[v - 1];
                 prefix = prefix.mul(&w.positive.add(&w.negative, self.bits), self.bits);
             } else {
@@ -367,7 +379,8 @@ impl Engine<'_> {
                 )
                 .map(Step::Done);
         }
-        let mut parts = components(&mut residual, &active, self.p.n).into_iter();
+        let mut parts =
+            components_with_parent(&mut residual, &active, &mut self.parent).into_iter();
         if let Some((scope, clauses)) = parts.next() {
             push(
                 stack,
@@ -382,7 +395,7 @@ impl Engine<'_> {
         }
         let v = *active
             .iter()
-            .max_by_key(|&&v| frequency[v])
+            .max_by_key(|&&v| self.frequency[v])
             .ok_or("no active pivot")?;
         let child: Vec<_> = active.into_iter().filter(|&x| x != v).collect();
         // Queue a compact negative child; donate the owned buffers to the
@@ -506,8 +519,15 @@ fn solve_mode(p: &Problem, bits: u32, deadline: Instant, large: bool) -> Result<
         cache: HashMap::new(),
         cache_items: 0,
         large,
+        frequency: vec![0; p.n + 1],
+        parent: vec![0; p.n + 1],
     };
     engine.count(p.clauses.clone(), (1..=p.n).collect())
+}
+
+#[cfg(test)]
+fn components(clauses: &mut Vec<Clause>, scope: &[usize], n: usize) -> Vec<Component> {
+    components_with_parent(clauses, scope, &mut vec![0; n + 1])
 }
 
 #[cfg(test)]
@@ -619,6 +639,27 @@ mod tests {
                 assign_inplace(&mut candidate, lit);
                 assert_eq!(candidate, assign(&clauses, lit));
             }
+        }
+    }
+
+    #[test]
+    fn reused_parent_ignores_stale_entries_across_scopes() {
+        let mut parent = vec![4096; 4097];
+        for scope in [
+            vec![1, 2, 3, 4],
+            vec![100, 102, 4095, 4096],
+            vec![2, 3, 102, 4096],
+        ] {
+            let mut clauses = vec![
+                vec![scope[0] as i32, scope[1] as i32],
+                vec![-(scope[2] as i32), scope[3] as i32],
+            ];
+            let mut reference = clauses.clone();
+            assert_eq!(
+                components_with_parent(&mut clauses, &scope, &mut parent),
+                components(&mut reference, &scope, 4096)
+            );
+            assert!(clauses.is_empty());
         }
     }
 

@@ -771,3 +771,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod reversible_index_research;

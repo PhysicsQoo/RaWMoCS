@@ -107,6 +107,8 @@ struct Engine<'a> {
     large: bool,
     frequency: Vec<usize>,
     parent: Vec<usize>,
+    packed: Option<PackedIndex>,
+    index_calls: u64,
 }
 fn normalize(mut clauses: Vec<Clause>) -> Vec<Clause> {
     for clause in &mut clauses {
@@ -194,6 +196,117 @@ fn indexed_units(
             lengths[j] = usize::MAX;
         }
         for &j in &occurrences[occurrence_slot(-lit)] {
+            if lengths[j] == usize::MAX {
+                continue;
+            }
+            lengths[j] -= 1;
+            if lengths[j] == 0 {
+                return Ok(None);
+            }
+            if lengths[j] == 1 {
+                units.push(Reverse(j));
+            }
+        }
+    }
+    let mut residual = Vec::new();
+    for (i, mut clause) in clauses.into_iter().enumerate() {
+        check()?;
+        if lengths[i] != usize::MAX {
+            clause.retain(|l| values[l.unsigned_abs() as usize] == 0);
+            residual.push(clause);
+        }
+    }
+    Ok(Some(Closure {
+        clauses: residual,
+        forced,
+    }))
+}
+
+// Flat CSR storage is rebuilt for each closure but reuses its backing
+// allocations. Clause IDs are local to that closure, not persistent IDs.
+#[derive(Default)]
+struct PackedIndex {
+    offsets: Vec<usize>,
+    cursor: Vec<usize>,
+    ids: Vec<u32>,
+    lengths: Vec<usize>,
+    units: BinaryHeap<Reverse<usize>>,
+    values: Vec<i8>,
+}
+
+fn packed_units(
+    clauses: Vec<Clause>,
+    n: usize,
+    deadline: Instant,
+    scratch: &mut PackedIndex,
+) -> Result<Option<Closure>, String> {
+    let check = || {
+        if Instant::now() >= deadline {
+            Err("general deadline".to_owned())
+        } else {
+            Ok(())
+        }
+    };
+    check()?;
+    let PackedIndex {
+        offsets, cursor, ids, lengths, units, values,
+    } = scratch;
+    offsets.resize(2 * n + 1, 0);
+    offsets.fill(0);
+    lengths.clear();
+    units.clear();
+    values.resize(n + 1, 0);
+    values.fill(0);
+    for (i, clause) in clauses.iter().enumerate() {
+        check()?;
+        if clause.is_empty() {
+            return Ok(None);
+        }
+        lengths.push(clause.len());
+        if clause.len() == 1 {
+            units.push(Reverse(i));
+        }
+        for &lit in clause {
+            offsets[occurrence_slot(lit) + 1] += 1;
+        }
+    }
+    for slot in 1..offsets.len() {
+        offsets[slot] += offsets[slot - 1];
+    }
+    cursor.clear();
+    cursor.extend_from_slice(&offsets[..2 * n]);
+    ids.resize(offsets[2 * n], 0);
+    for (i, clause) in clauses.iter().enumerate() {
+        check()?;
+        let id = u32::try_from(i).map_err(|_| "indexed clause ID overflow")?;
+        for &lit in clause {
+            let slot = occurrence_slot(lit);
+            ids[cursor[slot]] = id;
+            cursor[slot] += 1;
+        }
+    }
+    let mut forced = Vec::new();
+    // usize::MAX denotes a satisfied clause; zero is an immediate conflict.
+    while let Some(Reverse(i)) = units.pop() {
+        check()?;
+        if lengths[i] != 1 {
+            continue;
+        }
+        let lit = clauses[i]
+            .iter()
+            .copied()
+            .find(|l| values[l.unsigned_abs() as usize] == 0)
+            .ok_or("indexed unit invariant")?;
+        let v = lit.unsigned_abs() as usize;
+        values[v] = if lit > 0 { 1 } else { -1 };
+        forced.push(lit);
+        let positive = occurrence_slot(lit);
+        for &id in &ids[offsets[positive]..offsets[positive + 1]] {
+            lengths[id as usize] = usize::MAX;
+        }
+        let negative = occurrence_slot(-lit);
+        for &id in &ids[offsets[negative]..offsets[negative + 1]] {
+            let j = id as usize;
             if lengths[j] == usize::MAX {
                 continue;
             }
@@ -329,7 +442,12 @@ impl Engine<'_> {
             // Only the explicit large-input route uses the index. A third
             // live unit and substantial residual amortize construction.
             if self.large && scanned >= 2 && residual.len() >= 4096 {
-                let Some(closed) = indexed_units(residual, self.p.n, self.deadline)? else {
+                self.index_calls += 1;
+                let closed = match &mut self.packed {
+                    Some(scratch) => packed_units(residual, self.p.n, self.deadline, scratch),
+                    None => indexed_units(residual, self.p.n, self.deadline),
+                }?;
+                let Some(closed) = closed else {
                     return self.save(key, Outcome::unsat(self.bits)).map(Step::Done);
                 };
                 let mut assigned = vec![false; self.p.n + 1];
@@ -531,9 +649,15 @@ fn solve_mode(
         large,
         frequency: vec![0; p.n + 1],
         parent: vec![0; p.n + 1],
+        packed: (large && std::env::var("RAWMOCS_RESEARCH_PACKED_INDEX").as_deref() == Ok("1")).then(PackedIndex::default),
+        index_calls: 0,
     };
     let clauses = root.unwrap_or_else(|| p.clauses.clone());
-    engine.count(clauses, (1..=p.n).collect())
+    let result = engine.count(clauses, (1..=p.n).collect());
+    if large {
+        eprintln!("RAWMOCS_PACKED_INDEX enabled={} calls={}", engine.packed.is_some(), engine.index_calls);
+    }
+    result
 }
 
 #[cfg(test)]
@@ -569,9 +693,31 @@ mod tests {
     }
 
     #[test]
+    fn packed_index_reuses_storage_without_stale_clause_ids() {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut scratch = PackedIndex::default();
+        for (start, end, conflict) in [
+            (1, 8192, false), (500, 505, true), (3, 200, false),
+            (9000, 16384, false), (1, 5, false),
+        ] {
+            let mut clauses = vec![vec![start]];
+            for v in start..end {
+                clauses.push(vec![-v, v + 1]);
+                if v + 2 <= end { clauses.push(vec![v, v + 2]); }
+            }
+            if conflict { clauses.push(vec![-end]); }
+            let clauses = normalize(clauses);
+            let a = indexed_units(clauses.clone(), 16384, deadline).unwrap();
+            let b = packed_units(clauses, 16384, deadline, &mut scratch).unwrap();
+            assert_eq!(a.map(|x| (x.clauses, x.forced)), b.map(|x| (x.clauses, x.forced)));
+        }
+    }
+
+    #[test]
     fn ordered_index_matches_scan_on_normalized_residuals() {
         let mut seed = 1731_u32;
         let deadline = Instant::now() + Duration::from_secs(30);
+        let mut packed = PackedIndex::default();
         for _ in 0..2048 {
             let mut clauses = Vec::new();
             for _ in 0..16 {
@@ -587,6 +733,7 @@ mod tests {
             }
             let mut scan = normalize(clauses);
             let indexed = indexed_units(scan.clone(), 8, deadline).unwrap();
+            let compact = packed_units(scan.clone(), 8, deadline, &mut packed).unwrap();
             let mut forced = Vec::new();
             let expected = loop {
                 if scan.iter().any(Vec::is_empty) {
@@ -600,6 +747,7 @@ mod tests {
                 }
             };
             assert_eq!(indexed.map(|c| (c.clauses, c.forced)), expected);
+            assert_eq!(compact.map(|c| (c.clauses, c.forced)), expected);
         }
     }
 

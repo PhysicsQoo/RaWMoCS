@@ -55,6 +55,7 @@ struct Engine<'a> {
     cache_items: usize,
     adaptive: bool,
     inplace_scan: bool,
+    inplace_branch: bool,
     stats: Stats,
 }
 
@@ -100,6 +101,13 @@ fn assign_inplace(clauses: &mut Vec<Clause>, lit: i32) {
             true
         }
     });
+}
+// The positive child is consumed first; keep the queued negative child
+// compact, and donate the owned residual buffers only to the positive child.
+fn branch_inplace(mut clauses: Vec<Clause>, lit: i32) -> (Vec<Clause>, Vec<Clause>) {
+    let no = assign(&clauses, -lit);
+    assign_inplace(&mut clauses, lit);
+    (clauses, no)
 }
 // A normalized clause's index never changes relative to any surviving clause.
 // Selecting the smallest live unit index reproduces the old scan order, so
@@ -362,8 +370,11 @@ impl Engine<'_> {
             .ok_or("no active pivot")?;
         let child: Vec<_> = active.into_iter().filter(|&x| x != v).collect();
         self.stats.branches += 1;
-        let yes = assign(&residual, v as i32);
-        let no = assign(&residual, -(v as i32));
+        let (yes, no) = if self.inplace_branch {
+            branch_inplace(residual, v as i32)
+        } else {
+            (assign(&residual, v as i32), assign(&residual, -(v as i32)))
+        };
         push(
             stack,
             Frame::Yes {
@@ -468,7 +479,8 @@ pub(crate) fn solve(p: &Problem, bits: u32, deadline: Instant) -> Result<Outcome
     let adaptive = std::env::var("RAWMOCS_RESEARCH_DESCENDANT_UNITS").as_deref() == Ok("1");
     let report = std::env::var("RAWMOCS_RESEARCH_GENERAL_STATS").as_deref() == Ok("1");
     let inplace_scan = std::env::var("RAWMOCS_RESEARCH_INPLACE_SCAN").as_deref() == Ok("1");
-    solve_with_options(p, bits, deadline, adaptive, inplace_scan, report)
+    let inplace_branch = std::env::var("RAWMOCS_RESEARCH_INPLACE_BRANCH").as_deref() == Ok("1");
+    solve_with_options(p, bits, deadline, adaptive, inplace_scan, inplace_branch, report)
 }
 
 #[cfg(test)]
@@ -479,7 +491,7 @@ fn solve_with_adaptive(
     adaptive: bool,
     report: bool,
 ) -> Result<Outcome, String> {
-    solve_with_options(p, bits, deadline, adaptive, false, report)
+    solve_with_options(p, bits, deadline, adaptive, false, false, report)
 }
 
 fn solve_with_options(
@@ -488,6 +500,7 @@ fn solve_with_options(
     deadline: Instant,
     adaptive: bool,
     inplace_scan: bool,
+    inplace_branch: bool,
     report: bool,
 ) -> Result<Outcome, String> {
     let mut engine = Engine {
@@ -498,6 +511,7 @@ fn solve_with_options(
         cache_items: 0,
         adaptive,
         inplace_scan,
+        inplace_branch,
         stats: Stats::default(),
     };
     let result = engine.count(p.clauses.clone(), (1..=p.n).collect());
@@ -555,6 +569,9 @@ mod tests {
                 let mut compact = clauses.clone();
                 assign_inplace(&mut compact, lit);
                 assert_eq!(compact, assign(&clauses, lit));
+                let (yes, no) = branch_inplace(clauses.clone(), lit);
+                assert_eq!(yes, assign(&clauses, lit));
+                assert_eq!(no, assign(&clauses, -lit));
             }
             let expected = scan_units(clauses.clone());
             let actual = indexed_units(clauses, 6, deadline)
@@ -586,10 +603,16 @@ mod tests {
             let deadline = Instant::now() + Duration::from_secs(30);
             let old = solve_with_adaptive(&p, bits, deadline, false, false).unwrap();
             let new = solve_with_adaptive(&p, bits, deadline, true, false).unwrap();
-            let compact = solve_with_options(&p, bits, deadline, false, true, false).unwrap();
+            let compact = solve_with_options(&p, bits, deadline, false, true, false, false).unwrap();
             assert_eq!(old.sat, compact.sat);
             assert_eq!(old.count.re, compact.count.re);
             assert_eq!(old.count.im, compact.count.im);
+            let donated = solve_with_options(&p, bits, deadline, false, true, true, false).unwrap();
+            assert_eq!(old.sat, donated.sat);
+            assert_eq!(old.count.re, donated.count.re);
+            assert_eq!(old.count.im, donated.count.im);
+            assert_eq!(old.count.re.is_sign_negative(), donated.count.re.is_sign_negative());
+            assert_eq!(old.count.im.is_sign_negative(), donated.count.im.is_sign_negative());
             assert!(old.sat && new.sat);
             assert_eq!(old.count.re, new.count.re);
             assert_eq!(old.count.im, new.count.im);
@@ -612,12 +635,18 @@ mod tests {
                 let deadline = Instant::now() + Duration::from_secs(30);
                 let old = solve_with_adaptive(&p, bits, deadline, false, false).unwrap();
                 let new = solve_with_adaptive(&p, bits, deadline, true, false).unwrap();
-                let compact = solve_with_options(&p, bits, deadline, false, true, false).unwrap();
+                let compact = solve_with_options(&p, bits, deadline, false, true, false, false).unwrap();
                 assert_eq!(old.sat, compact.sat);
                 assert_eq!(old.count.re, compact.count.re);
                 assert_eq!(old.count.im, compact.count.im);
                 assert_eq!(old.count.re.is_sign_negative(), compact.count.re.is_sign_negative());
                 assert_eq!(old.count.im.is_sign_negative(), compact.count.im.is_sign_negative());
+                let donated = solve_with_options(&p, bits, deadline, false, true, true, false).unwrap();
+                assert_eq!(old.sat, donated.sat);
+                assert_eq!(old.count.re, donated.count.re);
+                assert_eq!(old.count.im, donated.count.im);
+                assert_eq!(old.count.re.is_sign_negative(), donated.count.re.is_sign_negative());
+                assert_eq!(old.count.im.is_sign_negative(), donated.count.im.is_sign_negative());
                 let exact = crate::reference(&p, raw, bits).unwrap();
                 assert_eq!(old.sat, new.sat);
                 assert_eq!(old.count.re, new.count.re);

@@ -73,6 +73,28 @@ explicit small-case diagnostic, not the auto fallback. An external process
 resource supervisor is still required for hard RSS and whole-process time.
 The heap frame guard is not a bound on all allocations.
 
+### Explicit large General mode
+
+The CLI supports bounded streaming admission when explicitly selecting
+`--solver general --large-general`. The default input limits and auto router
+are unchanged.
+
+```sh
+rawmocs --digits 30 --solver general --large-general --timeout-ms 20000 input.cnf
+```
+
+Large mode has hard limits of 32,000,000 source bytes, 1,000,000 bytes per
+line, 65,536 variables, 600,000 clauses and 4,000,000 literal occurrences.
+It does not retain the entire source string, but the parsed clauses and
+search state remain in memory. The deadline covers parsing and solving.
+For a large residual with at least 4,096 clauses, after two scan assignments
+and a third pending unit, ordered occurrence-indexed propagation preserves
+the original forced-literal and arithmetic order. Small residuals keep the
+scan path. This is not an out-of-core solver or a hard process memory bound;
+use an external resource supervisor, including for blocking input. The
+Python adapter and auto mode do not select this option automatically.
+Admission and safe timeout are not proof of a completed count.
+
 ### Opt-in QuPRS Python adapter
 
 For a QuPRS Python version supporting scoped solver registration (release

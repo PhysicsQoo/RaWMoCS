@@ -868,6 +868,40 @@ impl Scratch {
     fn new(bits: u32) -> Self {
         Self(std::array::from_fn(|_| Float::new(bits)))
     }
+    // Exactly the supported branch (1 * a) * b, including the original
+    // canonicalization of zero and the first identity's imaginary sign.
+    // All operands and scratch cells have the same MPFR precision.
+    fn multiply_pair(&mut self, out: &mut C, a: &C, b: &C) {
+        if (a.re == 0 && a.im == 0) || (b.re == 0 && b.im == 0) {
+            out.re.assign(0);
+            out.im.assign(0);
+            return;
+        }
+        let a_one = a.re == 1 && a.im == 0;
+        if b.re == 1 && b.im == 0 {
+            if a_one {
+                out.re.assign(1);
+                out.im.assign(0);
+            } else {
+                out.re.assign(&a.re);
+                out.im.assign(&a.im);
+            }
+            return;
+        }
+        if a_one {
+            out.re.assign(&b.re);
+            out.im.assign(&b.im);
+            return;
+        }
+        let [ac, bd, ad, bc] = &mut self.0;
+        ac.assign(&a.re * &b.re);
+        bd.assign(&a.im * &b.im);
+        ad.assign(&a.re * &b.im);
+        bc.assign(&a.im * &b.re);
+        out.re.assign(&*ac - &*bd);
+        out.im.assign(&*ad + &*bc);
+    }
+
     fn multiply(&mut self, a: &mut C, b: &C) {
         if (a.re == 0 && a.im == 0) || (b.re == 0 && b.im == 0) {
             a.re.assign(0);
@@ -891,6 +925,16 @@ impl Scratch {
         a.im.assign(&*ad + &*bc);
     }
 }
+fn binary_branch(scratch: &mut Scratch, out: &mut C, a: &Cell<C>, b: &Cell<C>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => {
+            scratch.multiply_pair(out, a, b);
+            true
+        }
+        _ => false,
+    }
+}
+
 // Reuse only dead table entries, at the same precision. Support remains
 // Option<C>; a numeric zero must never become an absent entry.
 fn recycle_copy(pool: &mut Vec<C>, x: &C) -> C {
@@ -913,6 +957,20 @@ fn cadd(a: Cell<C>, b: Cell<C>) -> Cell<C> {
     }
 }
 fn execute(
+    fs: Vec<Factor<R>>,
+    scalar: Cell<R>,
+    p: &Plan,
+    bits: u32,
+    d: Instant,
+) -> Result<Cell<C>, String> {
+    if std::env::var("RAWMOCS_RESEARCH_DIRECT_BINARY").as_deref() == Ok("1") {
+        execute_impl::<true>(fs, scalar, p, bits, d)
+    } else {
+        execute_impl::<false>(fs, scalar, p, bits, d)
+    }
+}
+
+fn execute_impl<const BINARY: bool>(
     fs: Vec<Factor<R>>,
     scalar: Cell<R>,
     p: &Plan,
@@ -942,6 +1000,9 @@ fn execute(
     // The original replay cost remains unchanged; the pool is extra storage.
     let recycle_cap = 32_768.min(LIVE.saturating_sub(p.cost.peak));
     let mut recycle = Vec::new();
+    let mut binary_ops = 0usize;
+    let mut binary_visits = 0usize;
+    let mut binary_join_visits = 0usize;
     let (mut left, mut right) = (C::one(bits), C::one(bits));
     for op in &p.ops {
         deadline(d)?;
@@ -979,12 +1040,25 @@ fn execute(
             }
             flips.push(b);
         }
+        let direct = BINARY && bucket.len() == 2;
+        if direct {
+            binary_ops += 1;
+            binary_visits += size * if op.pivot.is_some() { 2 } else { 1 };
+            if op.pivot.is_none() {
+                binary_join_visits += size;
+            }
+        }
         let mut values = Vec::with_capacity(size);
         for m in 0..size {
             if m % 4096 == 0 {
                 deadline(d)?;
             }
             let mut branch = |positive: bool, x: &mut C| {
+                if direct {
+                    let a = &bucket[0].values[indices[0] | if positive { pivots[0] } else { 0 }];
+                    let b = &bucket[1].values[indices[1] | if positive { pivots[1] } else { 0 }];
+                    return binary_branch(&mut scratch, x, a, b);
+                }
                 x.re.assign(1);
                 x.im.assign(0);
                 for (i, f) in bucket.iter().enumerate() {
@@ -1039,6 +1113,11 @@ fn execute(
     }
     if cost != p.cost {
         return Err("plan replay drift".into());
+    }
+    if BINARY {
+        eprintln!(
+            "PREJOIN_RESEARCH_BINARY ops={binary_ops} visits={binary_visits} join_visits={binary_join_visits}"
+        );
     }
     let mut out = mpfr(scalar, bits);
     for f in tables.into_values() {
@@ -1177,6 +1256,123 @@ fn pair_scan(raw: &str, use_mask: bool) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn direct_binary_matches_ordered_products_and_support() {
+        for bits in [100, 200, 333, 432] {
+            let mut values = vec![None];
+            for (r, i) in [
+                (0.0, 0.0),
+                (-0.0, 0.0),
+                (0.0, -0.0),
+                (-0.0, -0.0),
+                (1.0, 0.0),
+                (1.0, -0.0),
+                (-1.0, -0.0),
+                (0.0, 1.0),
+                (-0.0, -1.0),
+                (-0.125, 0.375),
+                (0.5, -0.25),
+            ] {
+                values.push(Some(C {
+                    re: Float::with_val(bits, r),
+                    im: Float::with_val(bits, i),
+                }));
+            }
+            values.push(Some(C {
+                re: Float::with_val(
+                    bits,
+                    decimal("0.123456789012345678901234567890123456789").unwrap(),
+                ),
+                im: Float::with_val(bits, decimal("-1e-80").unwrap()),
+            }));
+            let mut scratch = Scratch::new(bits);
+            let mut out = C::one(bits);
+            for a in &values {
+                for b in &values {
+                    let present = binary_branch(&mut scratch, &mut out, a, b);
+                    match (a, b) {
+                        (Some(a), Some(b)) => {
+                            assert!(present);
+                            let mut expected = C::one(bits);
+                            scratch.multiply(&mut expected, a);
+                            scratch.multiply(&mut expected, b);
+                            assert_eq!(out.re, expected.re);
+                            assert_eq!(out.im, expected.im);
+                            assert_eq!(out.re.is_sign_negative(), expected.re.is_sign_negative());
+                            assert_eq!(out.im.is_sign_negative(), expected.im.is_sign_negative());
+                            assert_eq!(out.re.prec(), bits);
+                            assert_eq!(out.im.prec(), bits);
+                        }
+                        _ => assert!(!present),
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn direct_binary_replays_join_and_elimination() {
+        let z = (Rational::from(0), Rational::from(0));
+        let c = (decimal("-0.125").unwrap(), decimal("0.375").unwrap());
+        let fs = vec![
+            Factor {
+                scope: vec![1, 2],
+                values: vec![None, Some(c.clone()), Some(z), Some(one())],
+            },
+            Factor {
+                scope: vec![1, 2],
+                values: vec![Some(one()), Some(one()), Some(c.clone()), Some(c)],
+            },
+        ];
+        for join in [false, true] {
+            let mut ops = vec![Op {
+                ids: vec![0, 1],
+                dst: 2,
+                out: if join { vec![1, 2] } else { vec![2] },
+                pivot: if join { None } else { Some(1) },
+            }];
+            if join {
+                ops.push(Op {
+                    ids: vec![2],
+                    dst: 3,
+                    out: vec![2],
+                    pivot: Some(1),
+                });
+            }
+            ops.push(Op {
+                ids: vec![if join { 3 } else { 2 }],
+                dst: if join { 4 } else { 3 },
+                out: vec![],
+                pivot: Some(2),
+            });
+            let plan = Plan {
+                ops,
+                cost: Cost {
+                    width: 1,
+                    work: if join { 14 } else { 10 },
+                    peak: if join { 12 } else { 10 },
+                    joins: usize::from(join),
+                },
+                extra: 0,
+            };
+            for bits in [100, 200, 333, 432] {
+                let d = Instant::now() + Duration::from_secs(5);
+                let off = execute_impl::<false>(fs.clone(), Some(one()), &plan, bits, d)
+                    .unwrap()
+                    .unwrap();
+                let on = execute_impl::<true>(fs.clone(), Some(one()), &plan, bits, d)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(off.re, on.re);
+                assert_eq!(off.im, on.im);
+                assert_eq!(on.re, Float::with_val(bits, -0.25));
+                assert_eq!(on.im, Float::with_val(bits, 0.75));
+                assert_eq!(off.re.is_sign_negative(), on.re.is_sign_negative());
+                assert_eq!(off.im.is_sign_negative(), on.im.is_sign_negative());
+            }
+        }
+    }
+
     #[test]
     fn recycled_complex_copy_matches_clone_including_signed_zero() {
         for bits in [100, 333] {

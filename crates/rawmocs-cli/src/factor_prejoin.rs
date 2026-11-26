@@ -963,7 +963,9 @@ fn execute(
     bits: u32,
     d: Instant,
 ) -> Result<Cell<C>, String> {
-    if std::env::var("RAWMOCS_RESEARCH_DIRECT_BINARY").as_deref() == Ok("1") {
+    // Admission candidate: exercise the measured direct kernel by default.
+    // Keep an explicit same-binary reference arm until the science gate passes.
+    if std::env::var("RAWMOCS_RESEARCH_DIRECT_BINARY").as_deref() != Ok("0") {
         execute_impl::<true>(fs, scalar, p, bits, d)
     } else {
         execute_impl::<false>(fs, scalar, p, bits, d)

@@ -575,7 +575,11 @@ mod tests {
                 assert!(a.sat && b.sat);
                 assert_eq!(a.count.re, b.count.re);
                 assert_eq!(a.count.im, b.count.im);
-                let expected = if root { (-0.09375, 0.125) } else { (0.15625, 0.0) };
+                let expected = if root {
+                    (-0.09375, 0.125)
+                } else {
+                    (0.15625, 0.0)
+                };
                 assert_eq!(b.count.re, rug::Float::with_val(bits, expected.0));
                 assert_eq!(b.count.im, rug::Float::with_val(bits, expected.1));
             }

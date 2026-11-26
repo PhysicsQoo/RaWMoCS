@@ -105,6 +105,7 @@ struct Engine<'a> {
     cache: HashMap<Key, Outcome>,
     cache_items: usize,
     root_indexed: bool,
+    descendant_indexed: bool,
     stats: Stats,
 }
 #[derive(Default)]
@@ -119,6 +120,12 @@ struct Stats {
     root_index_units: u64,
     root_index_touches: u64,
     root_closed: bool,
+    descendant_index_attempts: u64,
+    descendant_index_complete: u64,
+    descendant_index_conflicts: u64,
+    descendant_index_units: u64,
+    descendant_index_touches: u64,
+    descendant_index_build_clauses: u64,
 }
 fn normalize(mut clauses: Vec<Clause>) -> Vec<Clause> {
     for clause in &mut clauses {
@@ -343,16 +350,37 @@ impl Engine<'_> {
             let Some(lit) = residual.iter().find(|c| c.len() == 1).map(|c| c[0]) else {
                 break;
             };
-            // Restrict the index to the first root closure, after two
-            // witnessed scan units. No descendant index build.
-            if root_node && self.root_indexed && scanned >= 2 && residual.len() >= 4096 {
-                self.stats.root_index_attempts += 1;
+            // Independently gate large descendant closure. Two scan
+            // assignments and a third live unit amortize index construction;
+            // never build a descendant index for ordinary small residuals.
+            let use_index = if root_node {
+                self.root_indexed
+            } else {
+                self.descendant_indexed
+            };
+            if use_index && scanned >= 2 && residual.len() >= 4096 {
+                if root_node {
+                    self.stats.root_index_attempts += 1;
+                } else {
+                    self.stats.descendant_index_attempts += 1;
+                    self.stats.descendant_index_build_clauses += residual.len() as u64;
+                }
                 let Some(closed) = indexed_units(residual, self.p.n, self.deadline)? else {
-                    self.stats.root_closed = true;
+                    if root_node {
+                        self.stats.root_closed = true;
+                    } else {
+                        self.stats.descendant_index_conflicts += 1;
+                    }
                     return self.save(key, Outcome::unsat(self.bits)).map(Step::Done);
                 };
-                self.stats.root_index_units += closed.forced.len() as u64;
-                self.stats.root_index_touches += closed.touches as u64;
+                if root_node {
+                    self.stats.root_index_units += closed.forced.len() as u64;
+                    self.stats.root_index_touches += closed.touches as u64;
+                } else {
+                    self.stats.descendant_index_complete += 1;
+                    self.stats.descendant_index_units += closed.forced.len() as u64;
+                    self.stats.descendant_index_touches += closed.touches as u64;
+                }
                 let mut assigned = vec![false; self.p.n + 1];
                 for lit in closed.forced {
                     self.check()?;
@@ -531,10 +559,11 @@ pub(crate) fn solve(p: &Problem, bits: u32, deadline: Instant) -> Result<Outcome
     solve_research(
         p, bits, deadline,
         enabled("RAWMOCS_RESEARCH_LARGE_ROOT_INDEX"),
+        enabled("RAWMOCS_RESEARCH_LARGE_DESC_INDEX"),
         enabled("RAWMOCS_RESEARCH_ROOT_STATS"),
     )
 }
-pub(crate) fn solve_research(p: &Problem, bits: u32, deadline: Instant, indexed: bool, report: bool) -> Result<Outcome, String> {
+fn solve_research(p: &Problem, bits: u32, deadline: Instant, indexed: bool, descendant: bool, report: bool) -> Result<Outcome, String> {
     let mut engine = Engine {
         p,
         bits,
@@ -542,12 +571,13 @@ pub(crate) fn solve_research(p: &Problem, bits: u32, deadline: Instant, indexed:
         cache: HashMap::new(),
         cache_items: 0,
         root_indexed: indexed,
+        descendant_indexed: descendant,
         stats: Stats::default(),
     };
     let result = engine.count(p.clauses.clone(), (1..=p.n).collect());
     if report {
         let s = &engine.stats;
-        eprintln!("RAWMOCS_ROOT_STATS nodes={} units={} scan_clause_visits={} branches={} splits={} hits={} root_index_attempts={} root_index_units={} root_index_touches={} root_closed={}", s.nodes,s.units,s.scan_clause_visits,s.branches,s.splits,s.hits,s.root_index_attempts,s.root_index_units,s.root_index_touches,s.root_closed);
+        eprintln!("RAWMOCS_ROOT_STATS nodes={} units={} scan_clause_visits={} branches={} splits={} hits={} root_index_attempts={} root_index_units={} root_index_touches={} root_closed={} descendant_index_attempts={} descendant_index_complete={} descendant_index_conflicts={} descendant_index_units={} descendant_index_touches={} descendant_index_build_clauses={}", s.nodes,s.units,s.scan_clause_visits,s.branches,s.splits,s.hits,s.root_index_attempts,s.root_index_units,s.root_index_touches,s.root_closed,s.descendant_index_attempts,s.descendant_index_complete,s.descendant_index_conflicts,s.descendant_index_units,s.descendant_index_touches,s.descendant_index_build_clauses);
     }
     result
 }
@@ -569,8 +599,8 @@ mod tests {
         for bits in [100, 200, 333, 432] {
             let deadline = Instant::now()+Duration::from_secs(30);
             let p = crate::parse_large(std::io::Cursor::new(&raw), bits, deadline).unwrap();
-            let a = solve_research(&p,bits,deadline,false,false).unwrap();
-            let b = solve_research(&p,bits,deadline,true,false).unwrap();
+            let a = solve_research(&p,bits,deadline,false,false,false).unwrap();
+            let b = solve_research(&p,bits,deadline,true,false,false).unwrap();
             assert_eq!(a.sat,b.sat);
             assert_eq!(a.count.re,b.count.re);
             assert_eq!(a.count.im,b.count.im);
@@ -585,10 +615,41 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(30);
         let p = crate::parse_large(std::io::Cursor::new(&conflict), 100, deadline).unwrap();
         for indexed in [false, true] {
-            let a = solve_research(&p, 100, deadline, indexed, false).unwrap();
+            let a = solve_research(&p, 100, deadline, indexed, false, false).unwrap();
             assert!(!a.sat);
             assert_eq!(a.count.re, 0);
             assert_eq!(a.count.im, 0);
+        }
+    }
+
+    #[test]
+    fn indexed_descendant_matches_scan_after_branch() {
+        // No root units. Variable 1 has the unique highest occurrence
+        // count, and either assignment triggers a long weighted closure.
+        let mut raw = "p cnf 8192 8206\nc t wmc\nc p weight 1 -0.5 0.25 0\nc p weight 8192 0.25 -0.125 0\n".to_owned();
+        for v in 2..=9 {
+            raw.push_str(&format!("1 {v} 0\n-1 {v} 0\n"));
+        }
+        for v in 2..8192 {
+            raw.push_str(&format!("-{v} {} 0\n", v + 1));
+        }
+        for bits in [100, 200, 333, 432] {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            let p = crate::parse_large(std::io::Cursor::new(&raw), bits, deadline).unwrap();
+            let a = solve_research(&p, bits, deadline, false, false, false).unwrap();
+            let mut engine = Engine {
+                p: &p, bits, deadline, cache: HashMap::new(), cache_items: 0,
+                root_indexed: false, descendant_indexed: true, stats: Stats::default(),
+            };
+            let b = engine.count(p.clauses.clone(), (1..=p.n).collect()).unwrap();
+            assert!(a.sat && b.sat);
+            assert_eq!(a.count.re, b.count.re);
+            assert_eq!(a.count.im, b.count.im);
+            assert_eq!(a.count.re, rug::Float::with_val(bits, 0.15625));
+            assert_eq!(a.count.im, 0);
+            assert_eq!(engine.stats.root_index_attempts, 0);
+            assert!(engine.stats.descendant_index_complete > 0);
+            assert!(engine.stats.descendant_index_units > 4000);
         }
     }
 

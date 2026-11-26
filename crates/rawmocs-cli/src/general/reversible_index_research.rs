@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 enum Frontier {
     Tree(BTreeSet<usize>),
     Dense { ids: Vec<usize>, positions: Vec<usize> },
+    Bitmap { words: Vec<u64>, count: usize },
 }
 impl Frontier {
     fn new(m: usize, dense: bool) -> Self {
@@ -23,9 +24,20 @@ impl Frontier {
             Self::Tree((0..m).collect())
         }
     }
+    fn bitmap(m: usize) -> Self {
+        let mut words = vec![u64::MAX; m.div_ceil(64)];
+        if m % 64 != 0 { *words.last_mut().unwrap() = (1_u64 << (m % 64)) - 1; }
+        Self::Bitmap { words, count: m }
+    }
     fn insert(&mut self, cid: usize) {
         match self {
             Self::Tree(set) => { set.insert(cid); }
+            Self::Bitmap { words, count } => {
+                let bit = 1_u64 << (cid % 64);
+                assert_eq!(words[cid / 64] & bit, 0);
+                words[cid / 64] |= bit;
+                *count += 1;
+            }
             Self::Dense { ids, positions } => {
                 assert_eq!(positions[cid], usize::MAX);
                 positions[cid] = ids.len();
@@ -36,6 +48,12 @@ impl Frontier {
     fn remove(&mut self, cid: usize) {
         match self {
             Self::Tree(set) => { set.remove(&cid); }
+            Self::Bitmap { words, count } => {
+                let bit = 1_u64 << (cid % 64);
+                assert_ne!(words[cid / 64] & bit, 0);
+                words[cid / 64] &= !bit;
+                *count -= 1;
+            }
             Self::Dense { ids, positions } => {
                 let pos = positions[cid];
                 assert_ne!(pos, usize::MAX);
@@ -49,15 +67,28 @@ impl Frontier {
         match self {
             Self::Tree(set) => set.iter().copied().collect(),
             Self::Dense { ids, .. } => ids.clone(),
+            Self::Bitmap { words, count } => {
+                let mut ids = Vec::with_capacity(*count);
+                for (i, &word) in words.iter().enumerate() {
+                    let mut bits = word;
+                    while bits != 0 {
+                        ids.push(i * 64 + bits.trailing_zeros() as usize);
+                        bits &= bits - 1;
+                    }
+                }
+                ids
+            }
         }
     }
     fn is_empty(&self) -> bool {
         match self {
             Self::Tree(set) => set.is_empty(),
             Self::Dense { ids, .. } => ids.is_empty(),
+            Self::Bitmap { count, .. } => *count == 0,
         }
     }
     fn verify(&self, satisfied: &[usize]) {
+        if let Self::Bitmap { count, .. } = self { assert_eq!(*count, self.ids().len()); }
         let mut ids = self.ids();
         ids.sort_unstable();
         assert_eq!(ids, (0..satisfied.len()).filter(|&i| satisfied[i] == 0).collect::<Vec<_>>());
@@ -228,6 +259,21 @@ impl TrailIndex {
         ids
     }
 
+    // Reduce each active clause once instead of filtering its literals
+    // on every sort comparison. Lexicographic order and stable ID tie
+    // are identical to canonical_ids; keep one representative per key.
+    fn materialized_boundary(&self) -> (Vec<usize>, Vec<Clause>) {
+        let mut entries: Vec<_> = self.active.ids().into_iter().map(|cid| {
+            let clause: Clause = self.clauses[cid].iter().copied()
+                .filter(|l| self.assigned[l.unsigned_abs() as usize] == 0).collect();
+            (clause, cid)
+        }).collect();
+        entries.sort_unstable();
+        entries.dedup_by(|a,b| a.0 == b.0);
+        let (key, ids) = entries.into_iter().unzip();
+        (ids, key)
+    }
+
     fn materialize_ids(&self, ids: &[usize]) -> Vec<Clause> {
         ids.iter().copied().filter(|&cid| self.satisfied[cid] == 0)
             .map(|cid| self.clauses[cid].iter().copied().filter(|l| self.assigned[l.unsigned_abs() as usize] == 0).collect()).collect()
@@ -314,6 +360,7 @@ fn reversible_index_random_nested_rollback() {
         }
         let source = normalize(source);
         let mut state = TrailIndex::with_mode(source.clone(), 12, (case / 4) % 2 == 0, (case / 8) % 2 == 0);
+        if (case / 16) % 2 == 0 { state.active = Frontier::bitmap(source.len()); }
         for _ in 0..12 {
             let parent = state.checkpoint();
             let before = state.residual();
@@ -337,6 +384,7 @@ fn reversible_index_random_nested_rollback() {
                     let canonical = normalize(state.residual());
                     let ids = state.canonical_ids();
                     assert_eq!(state.materialize_ids(&ids), canonical);
+                    assert_eq!(state.materialized_boundary(), (ids.clone(), canonical.clone()));
                     let expected = scan(canonical);
                     let actual = state.ranked_closure(&ids, deadline).unwrap()
                         .map(|forced| (state.materialize_ids(&ids), forced));
@@ -642,5 +690,92 @@ fn frontier_transition_fixed_work() {
             if let Some(st) = state.as_ref() { st.verify(); assert!(st.trail.is_empty()); }
             println!("FRONTIER_FIXED_WORK trial={trial} mode={mode} branches=64 forced={work} wall_ns={wall_ns} boundary_ns={boundary_ns} closure_ns={closure_ns}");
         }
+    }
+}
+
+#[test]
+#[ignore = "research-only ordered frontier ablation"]
+fn ordered_frontier_fixed_work() {
+    let n = 8192_i32;
+    let mut source = Vec::new();
+    for v in 2..=9 { source.push(vec![1,v]); source.push(vec![-1,v]); }
+    for v in 2..n { source.push(vec![-v,v+1]); }
+    let source = normalize(source);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let expected: Vec<_> = [1,-1].iter().map(|&lit| {
+        let mut c = source.clone();
+        assign_inplace(&mut c,lit);
+        let closed = indexed_units(normalize(c),n as usize,deadline).unwrap().unwrap();
+        assert!(closed.clauses.is_empty());
+        closed.forced
+    }).collect();
+    // Balanced cyclic and reverse orders. Four combinations of factors,
+    // plus per-branch rebuild as an end-to-end diagnostic control.
+    let orders = [
+        [0,1,2,3,4], [1,2,3,4,0], [2,3,4,0,1], [3,4,0,1,2], [4,0,1,2,3],
+        [4,3,2,1,0], [0,4,3,2,1], [1,0,4,3,2], [2,1,0,4,3], [3,2,1,0,4],
+    ];
+    for (trial,order) in orders.into_iter().enumerate() {
+        for mode in order {
+            let dense = mode == 1 || mode == 3;
+            let transitions = true;
+            let start = Instant::now();
+            let mut state = (mode != 0).then(|| TrailIndex::with_mode(source.clone(),n as usize,dense,transitions));
+            if mode == 2 || mode == 4 { state.as_mut().unwrap().active = Frontier::bitmap(source.len()); }
+            let mut boundary_ns = 0_u128;
+            let mut closure_ns = 0_u128;
+            let mut work = 0;
+            for _ in 0..32 {
+                for (arm,lit) in [1,-1].into_iter().enumerate() {
+                    let boundary = Instant::now();
+                    let forced = if let Some(st) = state.as_mut() {
+                        assert!(st.apply(lit));
+                        let (ids, key) = if mode >= 3 { st.materialized_boundary() } else {
+                            let ids = st.canonical_ids();
+                            let key = st.materialize_ids(&ids);
+                            (ids,key)
+                        };
+                        boundary_ns += boundary.elapsed().as_nanos();
+                        let closure = Instant::now();
+                        let forced = st.ranked_closure(&ids,deadline).unwrap().unwrap();
+                        assert!(st.active.is_empty());
+                        st.rollback(0);
+                        closure_ns += closure.elapsed().as_nanos();
+                        std::hint::black_box(key);
+                        forced
+                    } else {
+                        let mut clauses = source.clone();
+                        assign_inplace(&mut clauses,lit);
+                        let clauses = normalize(clauses);
+                        let key = clauses.clone();
+                        boundary_ns += boundary.elapsed().as_nanos();
+                        let closure = Instant::now();
+                        let closed = indexed_units(clauses,n as usize,deadline).unwrap().unwrap();
+                        assert!(closed.clauses.is_empty());
+                        closure_ns += closure.elapsed().as_nanos();
+                        std::hint::black_box(key);
+                        closed.forced
+                    };
+                    assert_eq!(forced,expected[arm]);
+                    work += forced.len();
+                }
+            }
+            let wall_ns = start.elapsed().as_nanos();
+            if let Some(st) = state.as_ref() { st.verify(); assert!(st.trail.is_empty()); }
+            println!("ORDERED_FRONTIER_FIXED_WORK trial={trial} mode={mode} branches=64 forced={work} wall_ns={wall_ns} boundary_ns={boundary_ns} closure_ns={closure_ns}");
+        }
+    }
+}
+
+#[test]
+fn bitmap_frontier_partial_words_and_restore() {
+    for m in [0,1,63,64,65,129,8193] {
+        let mut f = Frontier::bitmap(m);
+        let mut sat = vec![0; m];
+        f.verify(&sat);
+        for cid in (0..m).step_by(3) { f.remove(cid); sat[cid]=1; }
+        f.verify(&sat);
+        for cid in (0..m).step_by(3).rev() { f.insert(cid); sat[cid]=0; }
+        f.verify(&sat);
     }
 }

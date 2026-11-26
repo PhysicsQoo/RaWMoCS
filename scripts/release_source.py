@@ -124,6 +124,10 @@ def verify_assets(r, assets):
         "offline_build": False, "controls": ["version", "help", "SAT-zero", "UNSAT", "general", "timeout"],
     }.items():
         require(receipt.get(key) == value, f"receipt mismatch: {key}")
+    if v != "0.1.0":
+        require(receipt.get("large_general_controls") ==
+                ["analytic", "default-cap", "parse-deadline"],
+                "missing installed large General evidence")
     prefix = f"rawmocs-{v}/"
     with tarfile.open(fileobj=io.BytesIO(assets[archive]), mode="r:gz") as tar:
         members = tar.getmembers()

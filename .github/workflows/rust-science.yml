@@ -36,6 +36,8 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      - name: Verify release gate rejects incomplete science receipts
+        run: python3 scripts/test_release_source.py
 
   a0-science:
     runs-on: ubuntu-latest

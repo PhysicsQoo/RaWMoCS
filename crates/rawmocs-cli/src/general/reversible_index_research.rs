@@ -3,7 +3,8 @@
 //! node the current residual must be re-ranked/canonicalized separately.
 use super::{assign_inplace, indexed_units, normalize, occurrence_slot};
 use crate::Clause;
-use std::collections::BTreeSet;
+use std::cmp::{Ordering, Reverse};
+use std::collections::{BTreeSet, BinaryHeap};
 use std::time::{Duration, Instant};
 
 #[derive(Debug)]
@@ -14,6 +15,7 @@ struct TrailIndex {
     live: Vec<usize>,
     satisfied: Vec<usize>,
     trail: Vec<i32>,
+    active: BTreeSet<usize>,
     units: BTreeSet<usize>,
     conflicts: BTreeSet<usize>,
     touches: u64,
@@ -33,13 +35,15 @@ impl TrailIndex {
             }
         }
         let m = clauses.len();
+        let active = (0..m).collect();
         Self {
             clauses, occurrence, assigned: vec![0; n + 1], live,
-            satisfied: vec![0; m], trail: Vec::new(), units, conflicts, touches: 0,
+            satisfied: vec![0; m], trail: Vec::new(), active, units, conflicts, touches: 0,
         }
     }
 
     fn refresh(&mut self, cid: usize) {
+        if self.satisfied[cid] == 0 { self.active.insert(cid); } else { self.active.remove(&cid); }
         if self.satisfied[cid] == 0 && self.live[cid] == 1 {
             self.units.insert(cid);
         } else {
@@ -116,6 +120,54 @@ impl TrailIndex {
         }
     }
 
+    fn cmp_reduced(&self, a: usize, b: usize) -> Ordering {
+        let live = |lit: &&i32| self.assigned[lit.unsigned_abs() as usize] == 0;
+        self.clauses[a].iter().filter(live).cmp(self.clauses[b].iter().filter(live))
+    }
+
+    // Only the active frontier is visited, not all original clauses.
+    // Sorting is at node entry; never re-sort during ordered propagation.
+    fn canonical_ids(&self) -> Vec<usize> {
+        let mut ids: Vec<_> = self.active.iter().copied().collect();
+        ids.sort_unstable_by(|&a, &b| self.cmp_reduced(a, b).then(a.cmp(&b)));
+        ids.dedup_by(|a, b| self.cmp_reduced(*a, *b) == Ordering::Equal);
+        ids
+    }
+
+    fn materialize_ids(&self, ids: &[usize]) -> Vec<Clause> {
+        ids.iter().copied().filter(|&cid| self.satisfied[cid] == 0)
+            .map(|cid| self.clauses[cid].iter().copied().filter(|l| self.assigned[l.unsigned_abs() as usize] == 0).collect()).collect()
+    }
+
+    // Re-rank current reduced clauses once, including duplicate collapse.
+    // A representative and its omitted duplicates stay equivalent under
+    // subsequent monotone assignments. All source counters still update.
+    fn ranked_closure(&mut self, ids: &[usize], deadline: Instant) -> Result<Option<Vec<i32>>, &'static str> {
+        if Instant::now() >= deadline { return Err("deadline"); }
+        if !self.conflicts.is_empty() { return Ok(None); }
+        let mut rank = vec![usize::MAX; self.clauses.len()];
+        let mut units = BinaryHeap::new();
+        for (i, &cid) in ids.iter().enumerate() {
+            rank[cid] = i;
+            if self.live[cid] == 1 { units.push(Reverse(i)); }
+        }
+        let mut forced = Vec::new();
+        while let Some(Reverse(i)) = units.pop() {
+            if Instant::now() >= deadline { return Err("deadline"); }
+            let cid = ids[i];
+            if self.satisfied[cid] != 0 || self.live[cid] != 1 { continue; }
+            let lit = *self.clauses[cid].iter().find(|&&l| self.assigned[l.unsigned_abs() as usize] == 0).expect("live unit");
+            if !self.apply(lit) { return Ok(None); }
+            forced.push(lit);
+            for &j in &self.occurrence[occurrence_slot(-lit)] {
+                if rank[j] != usize::MAX && self.satisfied[j] == 0 && self.live[j] == 1 {
+                    units.push(Reverse(rank[j]));
+                }
+            }
+        }
+        Ok(Some(forced))
+    }
+
     fn residual(&self) -> Vec<Clause> {
         self.clauses.iter().enumerate().filter(|(cid, _)| self.satisfied[*cid] == 0)
             .map(|(_, c)| c.iter().copied().filter(|l| self.assigned[l.unsigned_abs() as usize] == 0).collect()).collect()
@@ -133,6 +185,7 @@ impl TrailIndex {
             if sat == 0 && live == 1 { units.insert(i); }
             if sat == 0 && live == 0 { conflicts.insert(i); }
         }
+        assert_eq!(self.active, (0..self.clauses.len()).filter(|&i| self.satisfied[i] == 0).collect());
         assert_eq!(self.units, units);
         assert_eq!(self.conflicts, conflicts);
     }
@@ -183,6 +236,16 @@ fn reversible_index_random_nested_rollback() {
                     assert_eq!(indexed, expected);
                     let child = state.checkpoint();
                     let actual = state.propagate(deadline).unwrap().map(|forced| (state.residual(), forced));
+                    assert_eq!(actual, expected);
+                    state.verify();
+                    state.rollback(child);
+                    state.verify();
+                    let canonical = normalize(state.residual());
+                    let ids = state.canonical_ids();
+                    assert_eq!(state.materialize_ids(&ids), canonical);
+                    let expected = scan(canonical);
+                    let actual = state.ranked_closure(&ids, deadline).unwrap()
+                        .map(|forced| (state.materialize_ids(&ids), forced));
                     assert_eq!(actual, expected);
                     state.verify();
                     state.rollback(child);
@@ -299,5 +362,94 @@ fn reversible_index_fixed_work() {
         let elapsed = start.elapsed().as_nanos();
         if let Some(state) = state.as_ref() { state.verify(); assert!(state.trail.is_empty()); }
         println!("TRAIL_FIXED_WORK trial={trial} reuse={reuse} branches={} forced={forced_count} wall_ns={elapsed} touches={}", 2 * rounds, state.as_ref().map_or(0, |s| s.touches));
+    }
+}
+
+#[test]
+fn canonical_rank_changes_after_assignment_and_dedup() {
+    // [-3, 2] becomes [2]; [1] remains first after canonical
+    // re-ranking, even though [-3, 2] had the earlier source ID.
+    let source = normalize(vec![vec![-3, 2], vec![1], vec![2], vec![-1, 4], vec![-2, 5]]);
+    let mut state = TrailIndex::new(source.clone(), 5);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    assert!(state.apply(3));
+    let checkpoint = state.checkpoint();
+    let ids = state.canonical_ids();
+    let canonical = normalize(state.residual());
+    assert_eq!(state.materialize_ids(&ids), canonical);
+    assert_eq!(ids.len(), 4);
+    let expected = scan(canonical).unwrap();
+    let actual = state.ranked_closure(&ids, deadline).unwrap().unwrap();
+    assert_eq!(actual, expected.1);
+    assert_eq!(actual[0], 1);
+    assert_eq!(state.materialize_ids(&ids), expected.0);
+    state.rollback(checkpoint);
+    state.verify();
+    state.rollback(0);
+    assert_eq!(state.residual(), source);
+}
+
+#[test]
+#[ignore = "research-only canonical boundary diagnostic"]
+fn reversible_canonical_fixed_work() {
+    let n = 8192_i32;
+    let mut source = Vec::new();
+    for v in 2..=9 { source.push(vec![1,v]); source.push(vec![-1,v]); }
+    for v in 2..n { source.push(vec![-v,v+1]); }
+    let source = normalize(source);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let expected: Vec<_> = [1,-1].iter().map(|&lit| {
+        let mut c = source.clone();
+        assign_inplace(&mut c,lit);
+        let c = normalize(c);
+        let closed = indexed_units(c,n as usize,deadline).unwrap().unwrap();
+        assert!(closed.clauses.is_empty());
+        closed.forced
+    }).collect();
+    for (trial,reuse) in [false,true,true,false].into_iter().enumerate() {
+        let start = Instant::now();
+        let mut state = reuse.then(|| TrailIndex::new(source.clone(),n as usize));
+        let mut boundary_ns = 0_u128;
+        let mut closure_ns = 0_u128;
+        let mut work = 0;
+        for _ in 0..32 {
+            for (arm,lit) in [1,-1].into_iter().enumerate() {
+                let boundary = Instant::now();
+                let forced = if let Some(st) = state.as_mut() {
+                    assert!(st.apply(lit));
+                    let ids = st.canonical_ids();
+                    // Include exact canonical key materialization, even
+                    // though this diagnostic does not run a cache lookup.
+                    let key = st.materialize_ids(&ids);
+                    boundary_ns += boundary.elapsed().as_nanos();
+                    let closure = Instant::now();
+                    let forced = st.ranked_closure(&ids,deadline).unwrap().unwrap();
+                    assert!(st.active.is_empty());
+                    st.rollback(0);
+                    closure_ns += closure.elapsed().as_nanos();
+                    std::hint::black_box(key);
+                    forced
+                } else {
+                    let mut clauses = source.clone();
+                    assign_inplace(&mut clauses,lit);
+                    let clauses = normalize(clauses);
+                    // Both arms include key materialization and keep
+                    // the key alive through closure, not hashing.
+                    let key = clauses.clone();
+                    boundary_ns += boundary.elapsed().as_nanos();
+                    let closure = Instant::now();
+                    let closed = indexed_units(clauses,n as usize,deadline).unwrap().unwrap();
+                    assert!(closed.clauses.is_empty());
+                    closure_ns += closure.elapsed().as_nanos();
+                    std::hint::black_box(key);
+                    closed.forced
+                };
+                assert_eq!(forced,expected[arm]);
+                work += forced.len();
+            }
+        }
+        let wall_ns = start.elapsed().as_nanos();
+        if let Some(st) = state.as_ref() { st.verify(); assert!(st.trail.is_empty()); }
+        println!("CANONICAL_FIXED_WORK trial={trial} reuse={reuse} branches=64 forced={work} wall_ns={wall_ns} boundary_ns={boundary_ns} closure_ns={closure_ns}");
     }
 }

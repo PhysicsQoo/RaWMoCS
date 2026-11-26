@@ -570,7 +570,12 @@ fn run() -> Result<(), String> {
         start + Duration::from_millis(timeout_ms.unwrap_or(45_000))
     };
     let (answer, route) = if large_general {
-        (general::solve_large(&problem, bits, deadline)?, "general")
+        let answer = if std::env::var("RAWMOCS_RESEARCH_ROOT_DONATE").as_deref() == Ok("1") {
+            general::solve_large_owned(problem, bits, deadline)?
+        } else {
+            general::solve_large(&problem, bits, deadline)?
+        };
+        (answer, "general")
     } else {
         solve_until(&problem, &raw, bits, &mode, deadline)?
     };

@@ -107,6 +107,49 @@ struct Engine<'a> {
     large: bool,
     frequency: Vec<usize>,
     parent: Vec<usize>,
+    #[cfg(test)]
+    research: Option<PivotResearch>,
+}
+#[cfg(test)]
+#[derive(Default)]
+struct PivotResearch {
+    policy: u8,
+    nodes: usize,
+    hits: usize,
+    splits: usize,
+    branches: usize,
+    positive: Vec<usize>,
+    negative: Vec<usize>,
+}
+
+// Research-only: shortest-clause occurrence counts and polarity balance.
+// Both retain the production total-frequency and variable-ID tie breaks.
+#[cfg(test)]
+fn short_clause_pivot(
+    residual: &[Clause],
+    active: &[usize],
+    frequency: &[usize],
+    research: &mut PivotResearch,
+) -> usize {
+    let min_len = residual.iter().map(Vec::len).min().unwrap();
+    for &v in active {
+        research.positive[v] = 0;
+        research.negative[v] = 0;
+    }
+    for c in residual.iter().filter(|c| c.len() == min_len) {
+        for &lit in c {
+            let v = lit.unsigned_abs() as usize;
+            if lit > 0 { research.positive[v] += 1; }
+            else { research.negative[v] += 1; }
+        }
+    }
+    *active.iter().max_by_key(|&&v| {
+        let p = research.positive[v];
+        let n = research.negative[v];
+        let score = if research.policy == 1 { (p+n) as u128 }
+                    else { (p as u128)*(n as u128) };
+        (score, p+n, frequency[v], v)
+    }).unwrap()
 }
 fn normalize(mut clauses: Vec<Clause>) -> Vec<Clause> {
     for clause in &mut clauses {
@@ -295,6 +338,8 @@ impl Engine<'_> {
         stack: &mut Vec<Frame>,
     ) -> Result<Step, String> {
         self.check()?;
+        #[cfg(test)]
+        if let Some(r) = &mut self.research { r.nodes += 1; }
         let mut residual = normalize(clauses);
         let query = KeyQuery {
             scope: &scope,
@@ -302,6 +347,8 @@ impl Engine<'_> {
         };
         let view: &dyn KeyView = &query;
         if let Some(hit) = self.cache.get(view) {
+            #[cfg(test)]
+            if let Some(r) = &mut self.research { r.hits += 1; }
             return Ok(Step::Done(hit.clone()));
         }
         // Without eviction, both admission counters are monotone.
@@ -382,6 +429,8 @@ impl Engine<'_> {
         let mut parts =
             components_with_parent(&mut residual, &active, &mut self.parent).into_iter();
         if let Some((scope, clauses)) = parts.next() {
+            #[cfg(test)]
+            if let Some(r) = &mut self.research { r.splits += 1; }
             push(
                 stack,
                 Frame::Parts {
@@ -397,6 +446,11 @@ impl Engine<'_> {
             .iter()
             .max_by_key(|&&v| self.frequency[v])
             .ok_or("no active pivot")?;
+        #[cfg(test)]
+        let v = if let Some(r) = &mut self.research {
+            r.branches += 1;
+            if r.policy == 0 { v } else { short_clause_pivot(&residual, &active, &self.frequency, r) }
+        } else { v };
         let child: Vec<_> = active.into_iter().filter(|&x| x != v).collect();
         // Queue a compact negative child; donate the owned buffers to the
         // positive child, which is visited immediately.
@@ -531,6 +585,8 @@ fn solve_mode(
         large,
         frequency: vec![0; p.n + 1],
         parent: vec![0; p.n + 1],
+        #[cfg(test)]
+        research: None,
     };
     let clauses = root.unwrap_or_else(|| p.clauses.clone());
     engine.count(clauses, (1..=p.n).collect())
@@ -767,6 +823,103 @@ mod tests {
                 assert_eq!(exact.sat, candidate.sat);
                 assert_eq!(exact.count.re, candidate.count.re);
                 assert_eq!(exact.count.im, candidate.count.im);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod pivot_research {
+    use super::*;
+    use std::time::Duration;
+
+    fn run(p: &Problem, bits: u32, policy: u8, deadline: Instant)
+        -> (Result<Outcome,String>, PivotResearch) {
+        let mut engine=Engine {
+            p,bits,deadline,cache:HashMap::new(),cache_items:0,large:false,
+            frequency:vec![0;p.n+1],parent:vec![0;p.n+1],
+            research:Some(PivotResearch {
+                policy,positive:vec![0;p.n+1],negative:vec![0;p.n+1],
+                ..PivotResearch::default()
+            }),
+        };
+        let out=engine.count(p.clauses.clone(),(1..=p.n).collect());
+        (out,engine.research.take().unwrap())
+    }
+
+    #[test]
+    fn short_clause_pivot_matches_independent_dyadic_counts() {
+        let mut seed=0x4ac91e71u32;
+        let mut next=|| {seed=seed.wrapping_mul(1664525).wrapping_add(1013904223); seed>>8};
+        let weights=["0.5 0.25","-0.25 0.125","0 0","1 0","-1 0","0.125 -0.5"];
+        for _ in 0..256 {
+            let n=8;
+            let m=12;
+            let mut raw=format!("p cnf {n} {m}\nc t wmc\n");
+            for v in 1..=n {
+                for lit in [v,-v] {
+                    raw.push_str(&format!("c p weight {lit} {} 0\n",weights[next() as usize%weights.len()]));
+                }
+            }
+            for _ in 0..m {
+                let width=1+next()%4;
+                for _ in 0..width {
+                    let v=1+(next()%n as u32) as i32;
+                    let lit=if next()%2==0 {v} else {-v};
+                    raw.push_str(&format!("{lit} "));
+                }
+                raw.push_str("0\n");
+            }
+            for bits in [100,200,333,432] {
+                let p=crate::parse_emitted(&raw,bits).unwrap();
+                let exact=crate::reference(&p,&raw,bits).unwrap();
+                for policy in [0,1,2] {
+                    let (out,_)=run(&p,bits,policy,Instant::now()+Duration::from_secs(5));
+                    let out=out.unwrap();
+                    assert_eq!(out.sat,exact.sat);
+                    assert_eq!(out.count.re,exact.count.re);
+                    assert_eq!(out.count.im,exact.count.im);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn short_clause_pivot_scores_are_distinct() {
+        let clauses=vec![vec![1,2],vec![-1,3],vec![2,3],vec![2,4],vec![4,5,6],vec![4,5,7],vec![4,6,7]];
+        let active:Vec<_>=(1..=7).collect();
+        let mut freq=vec![0;8];
+        for c in &clauses {for &lit in c {freq[(lit as i32).unsigned_abs() as usize]+=1;}}
+        let mut r=PivotResearch {policy:1,positive:vec![0;8],negative:vec![0;8],..PivotResearch::default()};
+        assert_eq!(short_clause_pivot(&clauses,&active,&freq,&mut r),2);
+        r.policy=2;
+        assert_eq!(short_clause_pivot(&clauses,&active,&freq,&mut r),1);
+        assert_eq!(*active.iter().max_by_key(|&&v|freq[v]).unwrap(),4);
+    }
+
+    #[test]
+    #[ignore = "source-locked research: changed pivot order requires independent interval witness"]
+    fn original_pivot_work_diagnostic() {
+        let digits:usize=std::env::var("RAWMOCS_TEST_DIGITS").unwrap().parse().unwrap();
+        let bits=match digits {30=>100,130=>432,_=>panic!("unsupported cohort")};
+        let raw=std::fs::read_to_string(std::env::var("RAWMOCS_TEST_ORIGINAL").unwrap()).unwrap();
+        let p=crate::parse_large(std::io::Cursor::new(raw.as_bytes()),bits,Instant::now()+Duration::from_secs(12)).unwrap();
+        // One bounded scout per arm, not a speedup acceptance experiment.
+        for policy in [0,1,2] {
+            let start=Instant::now();
+            let (out,r)=run(&p,bits,policy,start+Duration::from_secs(30));
+            let wall_ns=start.elapsed().as_nanos();
+            match out {
+                Ok(out)=>{
+                    let sat=if out.sat {"SATISFIABLE"} else {"UNSATISFIABLE"};
+                    let real=out.count.re.to_string_radix(10,Some(digits+4));
+                    let imag=out.count.im.to_string_radix(10,Some(digits+4));
+                    println!("PIVOT_SCOUT policy={policy} digits={digits} status=COMPLETE nodes={} hits={} splits={} branches={} wall_ns={wall_ns} sat={sat} real={real} imag={imag}",r.nodes,r.hits,r.splits,r.branches);
+                }
+                Err(err)=>{
+                    assert!(err.contains("deadline")||err.contains("timeout"),"unexpected {err}");
+                    println!("PIVOT_SCOUT policy={policy} digits={digits} status=CENSORED nodes={} hits={} splits={} branches={} wall_ns={wall_ns}",r.nodes,r.hits,r.splits,r.branches);
+                }
             }
         }
     }

@@ -117,9 +117,13 @@ fn parse_emitted_bounded(
     if n > 4096 || declared > 50_000 {
         return Err("oversize CNF".into());
     }
-    match lines.next().map(str::trim) {
-        Some("c t wmc") => {}
-        Some(s) if s.starts_with("c t ") => return Err("unsupported input semantics".into()),
+    let marker = lines.next().ok_or("missing wmc marker")?;
+    if marker.len() > MAX_LINE_BYTES {
+        return Err("source line cap".into());
+    }
+    match marker.trim() {
+        "c t wmc" => {}
+        s if s.starts_with("c t ") => return Err("unsupported input semantics".into()),
         _ => return Err("missing wmc marker".into()),
     }
     let mut weights = vec![
@@ -555,19 +559,55 @@ mod tests {
         assert!(parse_emitted_bounded("p cnf 1 1\nc t wmc\n1", 100, 100, None).is_err());
         let expired = Some(Instant::now());
         assert_eq!(
-            read_bounded_source(raw.as_bytes(), size, expired).err().as_deref(),
+            read_bounded_source(raw.as_bytes(), size, expired)
+                .err()
+                .as_deref(),
             Some("input deadline")
         );
         assert_eq!(
-            parse_emitted_bounded(raw, 100, size, expired).err().as_deref(),
+            parse_emitted_bounded(raw, 100, size, expired)
+                .err()
+                .as_deref(),
             Some("input deadline")
         );
     }
 
     #[test]
+    fn extended_source_retains_structural_caps() {
+        let raw = format!("p cnf 1 1\nc t wmc\n{}0\n", "1 ".repeat(MAX_LINE_BYTES / 2));
+        let cap = raw.len() as u64;
+        assert_eq!(
+            parse_emitted_bounded(&raw, 100, cap, None).err().as_deref(),
+            Some("source line cap")
+        );
+        // Smaller lines whose total literal count exceeds the hard ceiling.
+        let clause = format!("{}0\n", "1 ".repeat(MAX_LITERAL_ITEMS / 4 + 1));
+        let raw = format!("p cnf 1 4\nc t wmc\n{}", clause.repeat(4));
+        assert_eq!(
+            parse_emitted_bounded(&raw, 100, HARD_SOURCE_BYTES, None)
+                .err()
+                .as_deref(),
+            Some("source literal cap")
+        );
+        for raw in ["p cnf 4097 0\nc t wmc\n", "p cnf 1 50001\nc t wmc\n"] {
+            assert_eq!(
+                parse_emitted_bounded(raw, 100, HARD_SOURCE_BYTES, None)
+                    .err()
+                    .as_deref(),
+                Some("oversize CNF")
+            );
+        }
+    }
+
+    #[test]
     fn extended_source_preserves_signed_complex_and_sat_zero_semantics() {
         for (small, sat, re, im) in [
-            ("p cnf 1 1\nc t wmc\nc p weight 1 -0.5 0.25 0\n1 0\n", true, -0.5, 0.25),
+            (
+                "p cnf 1 1\nc t wmc\nc p weight 1 -0.5 0.25 0\n1 0\n",
+                true,
+                -0.5,
+                0.25,
+            ),
             ("p cnf 1 0\nc t wmc\nc p weight 1 -1 0 0\n", true, 0.0, 0.0),
             ("p cnf 1 2\nc t wmc\n1 0\n-1 0\n", false, 0.0, 0.0),
         ] {

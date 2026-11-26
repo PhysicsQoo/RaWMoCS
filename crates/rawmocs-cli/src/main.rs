@@ -369,6 +369,7 @@ fn solve_until(
 }
 fn failure(reason: &str) -> (&'static str, i32) {
     match reason {
+        "research node budget" => ("RESEARCH_LIMIT", 8),
         "general deadline" | "prejoin deadline" | "solver deadline" | "source deadline" => ("TIMEOUT", 4),
         "source bytes cap" | "source line cap" | "source literal cap" | "oversize CNF" | "general frame allocation" => ("RESOURCE_LIMIT", 5),
         "unsupported input semantics" => ("UNSUPPORTED_INPUT", 3),

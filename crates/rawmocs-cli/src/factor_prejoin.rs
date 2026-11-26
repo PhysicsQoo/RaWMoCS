@@ -1258,6 +1258,89 @@ fn pair_scan(raw: &str, use_mask: bool) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Diagnostic only: re-run the exact local prefix with a bounded step cap.
+    // A failed contraction is never reused. Earlier successful prefixes keep
+    // all remaining factors, including weights, before MPFR execution.
+    #[test]
+    #[ignore = "source-locked frontier scout; no production policy changes"]
+    fn original_exact_frontier_scout() {
+        let raw = std::fs::read_to_string(std::env::var("RAWMOCS_TEST_ORIGINAL").unwrap()).unwrap();
+        let bits = 432;
+        let p = parse_emitted(&raw, bits).unwrap();
+        let d = Instant::now() + Duration::from_secs(30);
+        let start = Instant::now();
+        let original = local(&p, &raw, d);
+        match original {
+            Ok((fs, nodes, scalar, local_cost)) => {
+                println!("FRONTIER_LOCAL_COMPLETE remaining={} factors={} work={} peak={} width={}",nodes.len(),fs.len(),local_cost.work,local_cost.peak,local_cost.width);
+                match choose(&fs, &nodes, &scalar, &local_cost, d) {
+                    Ok((cuts, plans, cost)) => println!("FRONTIER_ORIGINAL_PLAN cuts={} leaves={} width={} work={} peak={}", cuts.len(),plans.len(),cost.width,cost.work,cost.peak),
+                    Err(reason) => println!("FRONTIER_ORIGINAL_REJECT reason={reason}"),
+                }
+                return;
+            }
+            Err(reason) if reason == "exact local bit cap" => {
+                println!("FRONTIER_ORIGINAL_REJECT reason={reason}");
+            }
+            Err(reason) => {
+                println!("FRONTIER_ORIGINAL_REJECT reason={reason}");
+                return;
+            }
+        }
+        let mut lo = 0usize;
+        let mut hi = p.n;
+        let initial = local_frontier_probe::<false, true>(&p,&raw,d,true,true,Some(0)).unwrap();
+        assert_eq!(initial.1.len(), p.n);
+        // Success is monotone for deterministic capped prefixes until the
+        // first failed exact multiplication/addition. Keep a known-good cap.
+        while hi-lo > 1 {
+            let mid = lo+(hi-lo)/2;
+            match local_frontier_probe::<false,true>(&p,&raw,d,true,true,Some(mid)) {
+                Ok(_) => lo=mid,
+                Err(reason) if reason=="exact local bit cap" => hi=mid,
+                Err(reason) => {
+                    println!("FRONTIER_SEARCH_STOP reason={reason}");
+                    return;
+                }
+            }
+        }
+        println!("FRONTIER_BOUND last_safe={lo} first_rejected={hi} search_ns={}",start.elapsed().as_nanos());
+        assert!(matches!(local_frontier_probe::<false,true>(&p,&raw,d,true,true,Some(hi)),Err(ref e) if e=="exact local bit cap"));
+        let (fs,nodes,scalar,local_cost)=local_frontier_probe::<false,true>(&p,&raw,d,true,true,Some(lo)).unwrap();
+        assert_eq!(nodes.len(),p.n-lo);
+        let max_bits=fs.iter().flat_map(|f|f.values.iter()).chain(std::iter::once(&scalar))
+            .filter_map(|x|x.as_ref()).flat_map(|(a,b)|[a,b]).map(|x|x.numer().significant_bits().max(x.denom().significant_bits())).max().unwrap_or(0);
+        assert!(max_bits<=EXACT_BITS);
+        println!("FRONTIER_SAFE remaining={} factors={} work={} peak={} width={} exact_bits={max_bits}",nodes.len(),fs.len(),local_cost.work,local_cost.peak,local_cost.width);
+        if nodes.len()>RESIDUAL_CAP {
+            println!("FRONTIER_PLAN_REJECT reason=residual variable cap");
+            return;
+        }
+        let (cuts,plans,cost)=match choose(&fs,&nodes,&scalar,&local_cost,d) {
+            Ok(x)=>x,
+            Err(reason)=>{println!("FRONTIER_PLAN_REJECT reason={reason}");return;}
+        };
+        println!("FRONTIER_PLAN cuts={} leaves={} width={} work={} peak={}",cuts.len(),plans.len(),cost.width,cost.work,cost.peak);
+        let mut out=None;
+        for (m,plan) in plans.iter().enumerate() {
+            let (f,s)=match restrict(&fs,&scalar,&cuts,m) {
+                Ok(x)=>x,
+                Err(reason)=>{println!("FRONTIER_EXEC_REJECT reason={reason}");return;}
+            };
+            let value=match execute(f,s,plan,bits,d) {
+                Ok(x)=>x,
+                Err(reason)=>{println!("FRONTIER_EXEC_REJECT reason={reason}");return;}
+            };
+            out=cadd(out,value);
+        }
+        let (sat,count)=match out {
+            Some(count)=>(true,count),
+            None=>(false,Outcome::unsat(bits).count),
+        };
+        assert!(count.re.is_finite() && count.im.is_finite());
+        println!("FRONTIER_RESULT sat={} real={} imag={} diagnostic_ns={}",sat,count.re.to_string_radix(10,Some(134)),count.im.to_string_radix(10,Some(134)),start.elapsed().as_nanos());
+    }
     #[test]
     fn direct_binary_matches_ordered_products_and_support() {
         for bits in [100, 200, 333, 432] {

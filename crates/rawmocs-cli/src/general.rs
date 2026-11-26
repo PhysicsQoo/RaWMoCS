@@ -271,15 +271,15 @@ impl Engine<'_> {
         }
         // Reuse dense global-indexed buffers but reset only the current
         // scope. This avoids O(global n) allocation/initialization per node.
-        let mut fresh = Vec::new();
-        let frequency = if let Some(scratch) = &mut self.scratch {
+        let mut fresh;
+        let (frequency, parent) = if let Some(scratch) = &mut self.scratch {
             for &v in &remaining {
                 scratch.frequency[v] = 0;
             }
-            &mut scratch.frequency
+            (&mut scratch.frequency, Some(&mut scratch.parent))
         } else {
-            fresh.resize(self.p.n + 1, 0);
-            &mut fresh
+            fresh = vec![0; self.p.n + 1];
+            (&mut fresh, None)
         };
         count_frequency(&residual, frequency);
         let mut active = Vec::new();
@@ -302,9 +302,8 @@ impl Engine<'_> {
                 )
                 .map(Step::Done);
         }
-        let pivot = active.iter().copied().max_by_key(|&v| frequency[v]);
-        let mut parts = if let Some(scratch) = &mut self.scratch {
-            components_with_parent(&mut residual, &active, &mut scratch.parent)
+        let mut parts = if let Some(parent) = parent {
+            components_with_parent(&mut residual, &active, parent)
         } else {
             components(&mut residual, &active, self.p.n)
         }
@@ -321,7 +320,10 @@ impl Engine<'_> {
             )?;
             return Ok(Step::Enter(clauses, scope));
         }
-        let v = pivot.ok_or("no active pivot")?;
+        let v = *active
+            .iter()
+            .max_by_key(|&&v| frequency[v])
+            .ok_or("no active pivot")?;
         let child: Vec<_> = active.into_iter().filter(|&x| x != v).collect();
         // Queue a compact negative child; donate the owned buffers to the
         // positive child, which is visited immediately.

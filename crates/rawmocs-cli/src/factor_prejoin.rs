@@ -1048,6 +1048,14 @@ fn cadd(a: Cell<C>, b: Cell<C>) -> Cell<C> {
         (a, None) | (None, a) => a,
     }
 }
+// A missing cell is Boolean absence, not a zero-valued supported cell.
+// Inspect support in reverse bucket order first: the baseline already checks
+// early cells as it multiplies, so late missing cells are the costly cases.
+fn supported_branch(bucket: &[Factor<C>], indices: &[usize], pivots: &[usize], positive: bool) -> bool {
+    bucket.iter().zip(indices).zip(pivots).rev().all(|((f, &i), &p)| {
+        f.values[i | if positive { p } else { 0 }].is_some()
+    })
+}
 fn execute(
     fs: Vec<Factor<R>>,
     scalar: Cell<R>,
@@ -1079,6 +1087,7 @@ fn execute(
     let recycle_cap = 32_768.min(LIVE.saturating_sub(p.cost.peak));
     let mut recycle = Vec::new();
     let move_result = std::env::var("RAWMOCS_RESEARCH_RECYCLE_MOVE").as_deref() == Ok("1");
+    let support_first = std::env::var("RAWMOCS_RESEARCH_SUPPORT_FIRST").as_deref() == Ok("1");
     let (mut left, mut right) = (C::one(bits), C::one(bits));
     for op in &p.ops {
         deadline(d)?;
@@ -1122,6 +1131,15 @@ fn execute(
                 deadline(d)?;
             }
             let mut branch = |positive: bool, x: &mut C| {
+                // Only research-opt-in large buckets; retain small-table path.
+                // Unsupported branches have no numeric contribution. On
+                // supported branches preserve the exact baseline multiply
+                // sequence, including the existing zero/one fast paths.
+                if support_first && size >= 1024 && bucket.len() >= 2
+                    && !supported_branch(&bucket, &indices, &pivots, positive)
+                {
+                    return false;
+                }
                 x.re.assign(1);
                 x.im.assign(0);
                 for (i, f) in bucket.iter().enumerate() {
@@ -1338,6 +1356,24 @@ mod tests {
                 assert_eq!(y.im.is_sign_negative(), x.im.is_sign_negative());
             }
             assert!(pool.is_empty());
+        }
+    }
+    #[test]
+    fn support_first_distinguishes_absence_and_numeric_zero() {
+        for bits in [100, 200, 333, 432] {
+            let zero = C {
+                re: Float::with_val(bits, -0.0),
+                im: Float::with_val(bits, 0),
+            };
+            let bucket = vec![
+                Factor { scope: vec![1], values: vec![Some(zero), Some(C::one(bits))] },
+                Factor { scope: vec![1], values: vec![None, Some(C::one(bits))] },
+            ];
+            assert!(!supported_branch(&bucket, &[0, 0], &[1, 1], false));
+            assert!(supported_branch(&bucket, &[0, 0], &[1, 1], true));
+            assert!(supported_branch(&bucket, &[0, 1], &[0, 0], false));
+            assert!(!supported_branch(&bucket, &[1, 0], &[0, 0], false));
+            assert!(bucket[0].values[0].as_ref().unwrap().re.is_sign_negative());
         }
     }
     #[test]

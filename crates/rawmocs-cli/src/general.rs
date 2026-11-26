@@ -4,7 +4,8 @@
 //! assign, split_components). Preserve chronological order and exact cache equality.
 use crate::{Clause, Outcome, Problem, C};
 use std::borrow::Borrow;
-use std::collections::{BTreeMap, HashMap};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BinaryHeap, HashMap};
 use std::hash::{Hash, Hasher};
 use std::time::Instant;
 
@@ -103,6 +104,7 @@ struct Engine<'a> {
     deadline: Instant,
     cache: HashMap<Key, Outcome>,
     cache_items: usize,
+    large: bool,
 }
 fn normalize(mut clauses: Vec<Clause>) -> Vec<Clause> {
     for clause in &mut clauses {
@@ -132,6 +134,90 @@ fn assign_inplace(clauses: &mut Vec<Clause>, lit: i32) {
         }
     });
 }
+struct Closure {
+    clauses: Vec<Clause>,
+    forced: Vec<i32>,
+}
+
+fn occurrence_slot(lit: i32) -> usize {
+    2 * (lit.unsigned_abs() as usize - 1) + usize::from(lit < 0)
+}
+
+fn indexed_units(
+    clauses: Vec<Clause>,
+    n: usize,
+    deadline: Instant,
+) -> Result<Option<Closure>, String> {
+    let check = || {
+        if Instant::now() >= deadline {
+            Err("general deadline".to_owned())
+        } else {
+            Ok(())
+        }
+    };
+    check()?;
+    let mut occurrences = vec![Vec::<usize>::new(); 2 * n];
+    let mut lengths = Vec::with_capacity(clauses.len());
+    let mut units = BinaryHeap::new();
+    for (i, clause) in clauses.iter().enumerate() {
+        check()?;
+        if clause.is_empty() {
+            return Ok(None);
+        }
+        lengths.push(clause.len());
+        if clause.len() == 1 {
+            units.push(Reverse(i));
+        }
+        for &lit in clause {
+            occurrences[occurrence_slot(lit)].push(i);
+        }
+    }
+    let mut values = vec![0i8; n + 1];
+    let mut forced = Vec::new();
+    // usize::MAX denotes a satisfied clause; zero is an immediate conflict.
+    while let Some(Reverse(i)) = units.pop() {
+        check()?;
+        if lengths[i] != 1 {
+            continue;
+        }
+        let lit = clauses[i]
+            .iter()
+            .copied()
+            .find(|l| values[l.unsigned_abs() as usize] == 0)
+            .ok_or("indexed unit invariant")?;
+        let v = lit.unsigned_abs() as usize;
+        values[v] = if lit > 0 { 1 } else { -1 };
+        forced.push(lit);
+        for &j in &occurrences[occurrence_slot(lit)] {
+            lengths[j] = usize::MAX;
+        }
+        for &j in &occurrences[occurrence_slot(-lit)] {
+            if lengths[j] == usize::MAX {
+                continue;
+            }
+            lengths[j] -= 1;
+            if lengths[j] == 0 {
+                return Ok(None);
+            }
+            if lengths[j] == 1 {
+                units.push(Reverse(j));
+            }
+        }
+    }
+    let mut residual = Vec::new();
+    for (i, mut clause) in clauses.into_iter().enumerate() {
+        check()?;
+        if lengths[i] != usize::MAX {
+            clause.retain(|l| values[l.unsigned_abs() as usize] == 0);
+            residual.push(clause);
+        }
+    }
+    Ok(Some(Closure {
+        clauses: residual,
+        forced,
+    }))
+}
+
 fn root(parent: &mut [usize], mut x: usize) -> usize {
     while parent[x] != x {
         let p = parent[x];
@@ -223,6 +309,7 @@ impl Engine<'_> {
         });
         let mut remaining = scope;
         let mut prefix = C::one(self.bits);
+        let mut scanned = 0;
         loop {
             self.check()?;
             if residual.iter().any(Vec::is_empty) {
@@ -231,6 +318,24 @@ impl Engine<'_> {
             let Some(lit) = residual.iter().find(|c| c.len() == 1).map(|c| c[0]) else {
                 break;
             };
+            // Only the explicit large-input route uses the index. A third
+            // live unit and substantial residual amortize construction.
+            if self.large && scanned >= 2 && residual.len() >= 4096 {
+                let Some(closed) = indexed_units(residual, self.p.n, self.deadline)? else {
+                    return self.save(key, Outcome::unsat(self.bits)).map(Step::Done);
+                };
+                let mut assigned = vec![false; self.p.n + 1];
+                for lit in closed.forced {
+                    self.check()?;
+                    let v = lit.unsigned_abs() as usize;
+                    prefix = prefix.mul(self.weight(v, lit > 0), self.bits);
+                    assigned[v] = true;
+                }
+                remaining.retain(|&v| !assigned[v]);
+                residual = closed.clauses;
+                break;
+            }
+            scanned += 1;
             let v = lit.unsigned_abs() as usize;
             prefix = prefix.mul(self.weight(v, lit > 0), self.bits);
             remaining.retain(|&x| x != v);
@@ -386,12 +491,21 @@ impl Engine<'_> {
 }
 
 pub(crate) fn solve(p: &Problem, bits: u32, deadline: Instant) -> Result<Outcome, String> {
+    solve_mode(p, bits, deadline, false)
+}
+
+pub(crate) fn solve_large(p: &Problem, bits: u32, deadline: Instant) -> Result<Outcome, String> {
+    solve_mode(p, bits, deadline, true)
+}
+
+fn solve_mode(p: &Problem, bits: u32, deadline: Instant, large: bool) -> Result<Outcome, String> {
     let mut engine = Engine {
         p,
         bits,
         deadline,
         cache: HashMap::new(),
         cache_items: 0,
+        large,
     };
     engine.count(p.clauses.clone(), (1..=p.n).collect())
 }
@@ -401,6 +515,83 @@ mod tests {
     use super::*;
     use crate::parse_emitted;
     use std::time::Duration;
+
+    #[test]
+    fn ordered_index_matches_scan_on_normalized_residuals() {
+        let mut seed = 1731_u32;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        for _ in 0..2048 {
+            let mut clauses = Vec::new();
+            for _ in 0..16 {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                let width = ((seed >> 16) % 5) as usize;
+                let mut clause = Vec::new();
+                for _ in 0..width {
+                    seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                    let v = ((seed >> 16) % 8 + 1) as i32;
+                    clause.push(if seed & 256 == 0 { v } else { -v });
+                }
+                clauses.push(clause);
+            }
+            let mut scan = normalize(clauses);
+            let indexed = indexed_units(scan.clone(), 8, deadline).unwrap();
+            let mut forced = Vec::new();
+            let expected = loop {
+                if scan.iter().any(Vec::is_empty) {
+                    break None;
+                }
+                if let Some(lit) = scan.iter().find(|c| c.len() == 1).map(|c| c[0]) {
+                    forced.push(lit);
+                    assign_inplace(&mut scan, lit);
+                } else {
+                    break Some((scan, forced));
+                }
+            };
+            assert_eq!(indexed.map(|c| (c.clauses, c.forced)), expected);
+        }
+    }
+
+    #[test]
+    fn large_mode_branch_and_root_counts() {
+        for bits in [100, 200, 333, 432] {
+            for root in [true, false] {
+                let mut raw = if root {
+                    "p cnf 8192 8192\nc t wmc\nc p weight 1 -0.5 0.25 0\nc p weight 8192 0.25 -0.125 0\n1 0\n".to_owned()
+                } else {
+                    "p cnf 8192 8206\nc t wmc\nc p weight 1 -0.5 0.25 0\nc p weight 8192 0.25 -0.125 0\n".to_owned()
+                };
+                if !root {
+                    for v in 2..=9 {
+                        raw.push_str(&format!("1 {v} 0\n-1 {v} 0\n"));
+                    }
+                }
+                for v in (if root { 1 } else { 2 })..8192 {
+                    raw.push_str(&format!("-{v} {} 0\n", v + 1));
+                }
+                let deadline = Instant::now() + Duration::from_secs(30);
+                let p = crate::parse_large(std::io::Cursor::new(&raw), bits, deadline).unwrap();
+                let a = solve(&p, bits, deadline).unwrap();
+                let b = solve_large(&p, bits, deadline).unwrap();
+                assert!(a.sat && b.sat);
+                assert_eq!(a.count.re, b.count.re);
+                assert_eq!(a.count.im, b.count.im);
+                let expected = if root { (-0.09375, 0.125) } else { (0.15625, 0.0) };
+                assert_eq!(b.count.re, rug::Float::with_val(bits, expected.0));
+                assert_eq!(b.count.im, rug::Float::with_val(bits, expected.1));
+            }
+        }
+        let mut raw = "p cnf 8192 8193\nc t wmc\n1 0\n".to_owned();
+        for v in 1..8192 {
+            raw.push_str(&format!("-{v} {} 0\n", v + 1));
+        }
+        raw.push_str("-8192 0\n");
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let p = crate::parse_large(std::io::Cursor::new(&raw), 100, deadline).unwrap();
+        let b = solve_large(&p, 100, deadline).unwrap();
+        assert!(!b.sat);
+        assert_eq!(b.count.re, 0);
+        assert_eq!(b.count.im, 0);
+    }
 
     #[test]
     fn stable_compaction_matches_copying_assignment() {

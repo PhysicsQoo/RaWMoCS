@@ -6,19 +6,27 @@ use crate::{Clause, Outcome, Problem, C};
 use std::borrow::Borrow;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap};
-use std::hash::{Hash, Hasher};
+use std::hash::{BuildHasher, Hash, Hasher};
 use std::time::Instant;
 
-#[derive(Hash, Eq, PartialEq)]
+#[derive(Eq, PartialEq)]
 struct Key {
     scope: Vec<usize>,
     clauses: Vec<Clause>,
+    digest: Option<u64>,
+}
+impl Hash for Key {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let view: &dyn KeyView = self;
+        view.hash(state);
+    }
 }
 // Borrowed queries hash and compare the entire ordered key, including clause
 // boundaries and scope. The HashMap still owns every admitted cache key.
 trait KeyView {
     fn scope(&self) -> &[usize];
     fn clauses(&self) -> &[Clause];
+    fn digest(&self) -> Option<u64>;
 }
 impl KeyView for Key {
     fn scope(&self) -> &[usize] {
@@ -27,10 +35,14 @@ impl KeyView for Key {
     fn clauses(&self) -> &[Clause] {
         &self.clauses
     }
+    fn digest(&self) -> Option<u64> {
+        self.digest
+    }
 }
 struct KeyQuery<'a> {
     scope: &'a [usize],
     clauses: &'a [Clause],
+    digest: Option<u64>,
 }
 impl KeyView for KeyQuery<'_> {
     fn scope(&self) -> &[usize] {
@@ -39,16 +51,25 @@ impl KeyView for KeyQuery<'_> {
     fn clauses(&self) -> &[Clause] {
         self.clauses
     }
+    fn digest(&self) -> Option<u64> {
+        self.digest
+    }
 }
 impl Hash for dyn KeyView + '_ {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.scope().hash(state);
-        self.clauses().hash(state);
+        if let Some(digest) = self.digest() {
+            digest.hash(state);
+        } else {
+            self.scope().hash(state);
+            self.clauses().hash(state);
+        }
     }
 }
 impl PartialEq for dyn KeyView + '_ {
     fn eq(&self, other: &Self) -> bool {
-        self.scope() == other.scope() && self.clauses() == other.clauses()
+        self.digest() == other.digest()
+            && self.scope() == other.scope()
+            && self.clauses() == other.clauses()
     }
 }
 impl Eq for dyn KeyView + '_ {}
@@ -56,6 +77,11 @@ impl<'a> Borrow<dyn KeyView + 'a> for Key {
     fn borrow(&self) -> &(dyn KeyView + 'a) {
         self
     }
+}
+// The digest is an accelerator, never a cache identity. Each engine uses
+// its own keyed hasher; equality always checks the full scope and clauses.
+fn key_digest<S: BuildHasher>(hasher: &S, scope: &[usize], clauses: &[Clause]) -> u64 {
+    hasher.hash_one((scope, clauses))
 }
 fn key_items(scope: &[usize], clauses: &[Clause]) -> usize {
     scope.len() + clauses.len() + clauses.iter().map(Vec::len).sum::<usize>()
@@ -371,9 +397,15 @@ impl Engine<'_> {
     ) -> Result<Step, String> {
         self.check()?;
         let mut residual = normalize(clauses);
+        // Isolate the experiment to the explicit separator mode. Existing
+        // routes retain their original full-key hashing policy.
+        let digest = self.separator.as_ref().map(|_| {
+            key_digest(self.cache.hasher(), &scope, &residual)
+        });
         let query = KeyQuery {
             scope: &scope,
             clauses: &residual,
+            digest,
         };
         let view: &dyn KeyView = &query;
         if let Some(hit) = self.cache.get(view) {
@@ -389,6 +421,7 @@ impl Engine<'_> {
         .then(|| Key {
             scope: scope.clone(),
             clauses: residual.clone(),
+            digest,
         });
         let mut remaining = scope;
         let mut prefix = C::one(self.bits);
@@ -897,12 +930,14 @@ mod tests {
             Key {
                 scope: scope.clone(),
                 clauses: clauses.clone(),
+                digest: None,
             },
             17,
         );
         let query = KeyQuery {
             scope: &scope,
             clauses: &clauses,
+            digest: None,
         };
         let view: &dyn KeyView = &query;
         assert_eq!(map.get(view), Some(&17));
@@ -916,6 +951,7 @@ mod tests {
             let q = KeyQuery {
                 scope: &s,
                 clauses: &c,
+                digest: None,
             };
             let v: &dyn KeyView = &q;
             assert_eq!(map.get(v), None);
@@ -923,6 +959,43 @@ mod tests {
         assert!(cache_can_admit(9999, 399999, 1));
         assert!(!cache_can_admit(10000, 0, 1));
         assert!(!cache_can_admit(9999, 399999, 2));
+    }
+
+    #[test]
+    fn prehashed_cache_collision_is_not_a_hit() {
+        // Deliberately force the same digest for distinct exact keys.
+        let mut map = HashMap::new();
+        let a = vec![vec![-1, 2], vec![1, 3]];
+        let b = vec![vec![1, 2], vec![1, 3]];
+        let scope = vec![1, 2, 3];
+        let digest = Some(42);
+        for (clauses, value) in [(&a, 17), (&b, 23)] {
+            map.insert(Key {
+                scope: scope.clone(),
+                clauses: clauses.clone(),
+                digest,
+            }, value);
+        }
+        for (clauses, value) in [(&a, 17), (&b, 23)] {
+            let q = KeyQuery { scope: &scope, clauses, digest };
+            let view: &dyn KeyView = &q;
+            assert_eq!(map.get(view), Some(&value));
+        }
+        let merged = vec![vec![-1, 2, 1, 3]];
+        let q = KeyQuery { scope: &scope, clauses: &merged, digest };
+        let view: &dyn KeyView = &q;
+        assert_eq!(map.get(view), None);
+        let other_scope = vec![2, 1, 3];
+        let q = KeyQuery { scope: &other_scope, clauses: &a, digest };
+        let view: &dyn KeyView = &q;
+        assert_eq!(map.get(view), None);
+        let mut map = HashMap::new();
+        let digest = Some(key_digest(map.hasher(), &scope, &a));
+        let key = Key { scope: scope.clone(), clauses: a.clone(), digest };
+        let q = KeyQuery { scope: &scope, clauses: &a, digest };
+        let view: &dyn KeyView = &q;
+        map.insert(key, 99);
+        assert_eq!(map.get(view), Some(&99));
     }
 
     #[test]

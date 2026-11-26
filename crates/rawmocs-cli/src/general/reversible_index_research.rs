@@ -170,6 +170,26 @@ impl TrailIndex {
         }
     }
 
+    // Direct construction of the final research representation: do not
+    // allocate a tree frontier and source-order unit set just to discard
+    // them. Source clauses and occurrence ordering are unchanged.
+    fn ranked_bitmap(clauses: Vec<Clause>, n: usize) -> Self {
+        let m = clauses.len();
+        let mut occurrence = vec![Vec::new(); 2*n];
+        let live: Vec<_> = clauses.iter().map(Vec::len).collect();
+        let conflicts = live.iter().enumerate().filter_map(|(i,&k)| (k==0).then_some(i)).collect();
+        for (i,clause) in clauses.iter().enumerate() {
+            for &lit in clause { occurrence[occurrence_slot(lit)].push(i); }
+        }
+        Self {
+            clauses, occurrence, assigned:vec![0;n+1], live,
+            satisfied:vec![0;m], trail:Vec::new(), active:Frontier::bitmap(m),
+            transitions:true, units:BTreeSet::new(), conflicts, touches:0,
+            rank_scratch:Some(RankScratch::new(m)), maintain_source_units:false,
+            fuse_ranked_updates:true,
+        }
+    }
+
     // Ranked closure has its own queue in canonical rank order. It
     // does not need the source-ID queue, which is only a test oracle.
     fn ranked_only(&mut self, enabled: bool) {
@@ -1192,6 +1212,27 @@ struct TrailStats {
     branches: usize,
     free: usize,
 }
+// Exclusive native phase diagnostics; enable only in separate profile
+// runs. These timers are not used to compute a solver speedup.
+#[derive(Default)]
+struct PhaseProfile {
+    ns: [u128; 11],
+    calls: [usize; 11],
+    fresh_sizes: [usize; 6],
+    fresh_cache_hits: usize,
+}
+impl PhaseProfile {
+    fn start(profile: &Option<Self>) -> Option<Instant> {
+        profile.as_ref().map(|_| Instant::now())
+    }
+    fn end(profile: &mut Option<Self>, start: Option<Instant>, phase: usize) {
+        if let (Some(p),Some(t))=(profile.as_mut(),start) {
+            p.ns[phase]+=t.elapsed().as_nanos();
+            p.calls[phase]+=1;
+        }
+    }
+}
+
 struct ScopedTrail<'a> {
     p: &'a Problem,
     bits: u32,
@@ -1205,12 +1246,13 @@ struct ScopedTrail<'a> {
     frequency: Vec<usize>,
     parent: Vec<usize>,
     bypasses: usize,
+    profile: Option<PhaseProfile>,
 }
 impl<'a> ScopedTrail<'a> {
     fn new(p: &'a Problem, bits: u32, deadline: Instant) -> Self {
         Self { p, bits, deadline, cache: HashMap::new(), items: 0,
             stats: TrailStats::default(), max_nodes: 100_000, trace: None, policy: 0,
-            frequency: Vec::new(), parent: Vec::new(), bypasses: 0 }
+            frequency: Vec::new(), parent: Vec::new(), bypasses: 0, profile:None }
     }
     fn check(&self) -> Result<(), String> {
         if Instant::now() >= self.deadline { return Err("research deadline".into()); }
@@ -1224,6 +1266,7 @@ impl<'a> ScopedTrail<'a> {
         if !out.count.re.is_finite() || !out.count.im.is_finite() {
             return Err("nonfinite research".into());
         }
+        let timer=PhaseProfile::start(&self.profile);
         if let Some(key) = key {
             let items = key_items(&key.scope,&key.clauses);
             if cache_can_admit(self.cache.len(),self.items,items) {
@@ -1231,6 +1274,7 @@ impl<'a> ScopedTrail<'a> {
                 self.cache.insert(key,out.clone());
             }
         }
+        PhaseProfile::end(&mut self.profile,timer,10);
         Ok(out)
     }
     fn fresh(&mut self, clauses: Vec<Clause>, scope: Vec<usize>, depth: usize) -> Result<Outcome,String> {
@@ -1260,12 +1304,26 @@ impl<'a> ScopedTrail<'a> {
             self.bypasses += 1;
             return out;
         }
-        let mut state = TrailIndex::with_mode(normalize(clauses),self.p.n,false,true);
-        state.active = Frontier::bitmap(state.clauses.len());
-        state.rank_scratch = Some(RankScratch::new(state.clauses.len()));
-        state.ranked_only(true);
-        state.fuse_ranked_updates = true;
-        self.stats.indexes += 1;
+        let timer=PhaseProfile::start(&self.profile);
+        let clauses=normalize(clauses);
+        if let Some(p)=self.profile.as_mut() {
+            let bucket=match scope.len() {0..=2=>0,3..=4=>1,5..=8=>2,9..=16=>3,17..=64=>4,_=>5};
+            p.fresh_sizes[bucket]+=1;
+        }
+        PhaseProfile::end(&mut self.profile,timer,0);
+        let timer=PhaseProfile::start(&self.profile);
+        let mut state=if self.policy==3 {
+            TrailIndex::ranked_bitmap(clauses,self.p.n)
+        } else {
+            let mut state=TrailIndex::with_mode(clauses,self.p.n,false,true);
+            state.active=Frontier::bitmap(state.clauses.len());
+            state.rank_scratch=Some(RankScratch::new(state.clauses.len()));
+            state.ranked_only(true);
+            state.fuse_ranked_updates=true;
+            state
+        };
+        PhaseProfile::end(&mut self.profile,timer,1);
+        self.stats.indexes+=1;
         self.node(&mut state,scope,depth)
     }
     // Every node restores its entry checkpoint, including early
@@ -1273,16 +1331,22 @@ impl<'a> ScopedTrail<'a> {
     fn node(&mut self, state: &mut TrailIndex, scope: Vec<usize>, depth: usize) -> Result<Outcome,String> {
         let checkpoint = state.checkpoint();
         let result = self.enter(state,scope,depth);
+        let timer=PhaseProfile::start(&self.profile);
         state.rollback(checkpoint);
+        PhaseProfile::end(&mut self.profile,timer,9);
         result
     }
     fn child(&mut self, state: &mut TrailIndex, scope: Vec<usize>, lit: i32, depth: usize) -> Result<Outcome,String> {
         let checkpoint = state.checkpoint();
         // Do not short-circuit here: the existing engine enters the
         // child, including its canonical key, even on a conflict.
+        let timer=PhaseProfile::start(&self.profile);
         state.apply(lit);
+        PhaseProfile::end(&mut self.profile,timer,8);
         let result = self.node(state,scope,depth);
+        let timer=PhaseProfile::start(&self.profile);
         state.rollback(checkpoint);
+        PhaseProfile::end(&mut self.profile,timer,9);
         result
     }
     fn enter(&mut self, state: &mut TrailIndex, scope: Vec<usize>, depth: usize) -> Result<Outcome,String> {
@@ -1290,20 +1354,33 @@ impl<'a> ScopedTrail<'a> {
         if depth > 96 { return Err("research depth limit".into()); }
         if self.stats.nodes >= self.max_nodes { return Err("research node limit".into()); }
         self.stats.nodes += 1;
+        let timer=PhaseProfile::start(&self.profile);
         let (ids,clauses) = state.materialized_boundary();
+        PhaseProfile::end(&mut self.profile,timer,2);
         if let Some(t) = &mut self.trace { t.enter(&scope, &clauses); }
+        let timer=PhaseProfile::start(&self.profile);
         let query = KeyQuery { scope: &scope, clauses: &clauses };
         let view: &dyn KeyView = &query;
         if let Some(hit) = self.cache.get(view) {
             self.stats.hits += 1;
             if let Some(t) = &mut self.trace { t.hits += 1; }
-            return Ok(hit.clone());
+            if state.trail.is_empty() {
+                if let Some(p)=self.profile.as_mut() { p.fresh_cache_hits+=1; }
+            }
+            let out=hit.clone();
+            PhaseProfile::end(&mut self.profile,timer,3);
+            return Ok(out);
         }
         let key = cache_can_admit(self.cache.len(),self.items,key_items(&scope,&clauses))
             .then(|| Key { scope: scope.clone(), clauses });
-        let Some(forced) = state.ranked_closure(&ids,self.deadline)? else {
+        PhaseProfile::end(&mut self.profile,timer,3);
+        let timer=PhaseProfile::start(&self.profile);
+        let forced=state.ranked_closure(&ids,self.deadline);
+        PhaseProfile::end(&mut self.profile,timer,4);
+        let Some(forced)=forced? else {
             return self.save(key,Outcome::unsat(self.bits));
         };
+        let timer=PhaseProfile::start(&self.profile);
         let mut prefix = C::one(self.bits);
         for lit in forced {
             self.check()?;
@@ -1311,6 +1388,8 @@ impl<'a> ScopedTrail<'a> {
         }
         // Preserve the post-closure order and multiplicity; only the
         // next node's canonical boundary sorts and deduplicates.
+        PhaseProfile::end(&mut self.profile,timer,5);
+        let timer=PhaseProfile::start(&self.profile);
         let mut residual = state.materialize_ids(&ids);
         let mut temporary = Vec::new();
         let frequency = if self.policy == 0 {
@@ -1334,15 +1413,18 @@ impl<'a> ScopedTrail<'a> {
                 prefix = prefix.mul(&w.positive.add(&w.negative,self.bits),self.bits);
             } else { active.push(v); }
         }
+        PhaseProfile::end(&mut self.profile,timer,6);
         if residual.is_empty() {
             return self.save(key,Outcome { sat:true,count:prefix });
         }
+        let timer=PhaseProfile::start(&self.profile);
         let parts = if self.policy == 0 {
             components_with_parent(&mut residual,&active,&mut vec![0;self.p.n+1])
         } else {
             self.parent.resize(self.p.n+1,0);
             components_with_parent(&mut residual,&active,&mut self.parent)
         };
+        PhaseProfile::end(&mut self.profile,timer,7);
         if !parts.is_empty() {
             self.stats.splits += 1;
             if let Some(t) = &mut self.trace { t.splits += 1; }
@@ -1638,6 +1720,114 @@ fn scoped_adaptive_complete_ablation() {
                 let real=out.count.re.to_string_radix(10,Some(digits+4));
                 let imag=out.count.im.to_string_radix(10,Some(digits+4));
                 println!("ADAPTIVE_FULL_FINAL case={name} digits={digits} trial={trial} mode={mode} wall_ns={wall_ns} sat={sat} real={real} imag={imag}");
+            }
+        }
+    }
+}
+
+#[test]
+fn direct_ranked_bitmap_matches_existing_constructor() {
+    let raw="p cnf 8 3\nc t wmc\nc p weight 7 -1 0 0\n1 2 0\n3 4 0\n5 6 0\n";
+    for bits in [100,200,333,432] {
+        let p=crate::parse_emitted(raw,bits).unwrap();
+        let (base,bt,n,_,_)=adaptive_ablation_run(&p,bits,0,true,1000);
+        let (out,ct,cn,_,_)=adaptive_ablation_run(&p,bits,4,true,n);
+        same_outcome(&base.unwrap(),&out.unwrap());
+        assert_eq!(cn,n);
+        assert_eq!(bt.unwrap().summary(),ct.unwrap().summary());
+    }
+    let mut seed=0x6172a3b4_u32;
+    let mut next=|| {seed=seed.wrapping_mul(1664525).wrapping_add(1013904223);seed>>8};
+    for case in 0..512 {
+        let n=12;
+        let mut clauses=Vec::new();
+        for _ in 0..18 {
+            let mut c=Vec::new();
+            for _ in 0..(if case%4==0 {next()%5} else {2+next()%3}) {
+                let v=(next()%n+1) as i32;
+                c.push(if next()%2==0 {v} else {-v});
+            }
+            clauses.push(c);
+        }
+        let source=normalize(clauses);
+        let mut st=TrailIndex::ranked_bitmap(source.clone(),n as usize);
+        for v in [1,-1,2,-2] {
+            st.apply(v);
+            let checkpoint=st.checkpoint();
+            let (ids,key)=st.materialized_boundary();
+            let expected=scan(key);
+            let actual=st.ranked_closure(&ids,Instant::now()+Duration::from_secs(2)).unwrap()
+                .map(|forced|(st.materialize_ids(&ids),forced));
+            assert_eq!(actual,expected);
+            st.verify();
+            st.rollback(checkpoint);
+            st.verify();
+            st.rollback(0);
+            st.verify();
+            assert_eq!(st.residual(),source);
+        }
+    }
+}
+
+#[test]
+#[ignore = "research-only phase attribution and direct construction"]
+fn scoped_phase_profile_ablation() {
+    let digits:usize=std::env::var("RAWMOCS_TEST_DIGITS").unwrap().parse().unwrap();
+    let bits=match digits {30=>100,130=>432,_=>panic!("unsupported cohort")};
+    let original=std::fs::read_to_string(std::env::var("RAWMOCS_TEST_ORIGINAL").unwrap()).unwrap();
+    let mut chain="p cnf 8192 8206\nc t wmc\nc p weight 1 -0.5 0.25 0\nc p weight 8192 0.25 -0.125 0\n".to_owned();
+    for v in 2..=9 {chain.push_str(&format!("1 {v} 0\n-1 {v} 0\n"));}
+    for v in 2..8192 {chain.push_str(&format!("-{v} {} 0\n",v+1));}
+    let mut split="p cnf 4096 2048\nc t wmc\n".to_owned();
+    for v in 1..=4096 {split.push_str(&format!("c p weight -{v} 0 0 0\n"));}
+    for v in (1..=4096).step_by(2) {split.push_str(&format!("{v} {} 0\n",v+1));}
+    for (name,raw) in [("chain8192",chain),("split4096",split),("vqe8",original)] {
+        let p=crate::parse_large(std::io::Cursor::new(raw.as_bytes()),bits,Instant::now()+Duration::from_secs(12)).unwrap();
+        let (base,trace,nodes,_,_)=adaptive_ablation_run(&p,bits,0,true,1_000_000);
+        let base=base.unwrap();
+        let trace=trace.unwrap().summary();
+        assert_eq!(nodes,trace.1);
+        for mode in [0,2,4] {
+            let (out,tr,n,idx,by)=adaptive_ablation_run(&p,bits,mode,true,nodes);
+            same_outcome(&base,&out.unwrap());
+            assert_eq!(tr.unwrap().summary(),trace);
+            assert_eq!(n,nodes);
+            println!("PHASE_TRACE case={name} digits={digits} mode={mode} status=COMPLETE fingerprint={:016x} nodes={n} hits={} splits={} branches={} free={} indexes={idx} bypasses={by} budget={nodes}",trace.0,trace.2,trace.3,trace.4,trace.5);
+        }
+        // Separate native instrumentation runs: no search fingerprint
+        // cost, and no claim of speed from these timed phases.
+        for mode in [2,4] {
+            for trial in 0..2 {
+                let mut e=ScopedTrail::new(&p,bits,Instant::now()+Duration::from_secs(12));
+                e.max_nodes=nodes;
+                e.policy=mode-1;
+                e.profile=Some(PhaseProfile::default());
+                let start=Instant::now();
+                let out=e.fresh(p.clauses.clone(),(1..=p.n).collect(),0).unwrap();
+                let wall=start.elapsed().as_nanos();
+                same_outcome(&base,&out);
+                assert_eq!(e.stats.nodes,nodes);
+                let profile=e.profile.unwrap();
+                assert_eq!(profile.fresh_sizes.iter().sum::<usize>(),e.stats.indexes);
+                assert!(profile.ns.iter().sum::<u128>()<=wall);
+                let ns=profile.ns.iter().map(ToString::to_string).collect::<Vec<_>>().join(",");
+                let calls=profile.calls.iter().map(ToString::to_string).collect::<Vec<_>>().join(",");
+                let sizes=profile.fresh_sizes.iter().map(ToString::to_string).collect::<Vec<_>>().join(",");
+                println!("PHASE_PROFILE case={name} digits={digits} mode={mode} trial={trial} wall_ns={wall} phases_ns={ns} calls={calls} fresh_sizes={sizes} fresh_cache_hits={}",profile.fresh_cache_hits);
+            }
+        }
+        for (trial,order) in [[0,2,4],[0,4,2],[2,0,4],[2,4,0],[4,0,2],[4,2,0]].into_iter().enumerate() {
+            for mode in order {
+                let start=Instant::now();
+                let (out,_,n,_,_)=adaptive_ablation_run(&p,bits,mode,false,nodes);
+                let wall_ns=start.elapsed().as_nanos();
+                let out=out.unwrap();
+                assert_eq!(n,nodes);
+                same_outcome(&base,&out);
+                let sat=if out.sat {"SATISFIABLE"} else {"UNSATISFIABLE"};
+                let real=out.count.re.to_string_radix(10,Some(digits+4));
+                let imag=out.count.im.to_string_radix(10,Some(digits+4));
+                println!("PHASE_FULL_FINAL case={name} digits={digits} trial={trial} mode={mode} wall_ns={wall_ns} sat={sat} real={real} imag={imag}");
             }
         }
     }

@@ -335,6 +335,9 @@ impl Engine<'_> {
         loop {
             self.check()?;
             if residual.iter().any(Vec::is_empty) {
+                if root_node {
+                    self.stats.root_closed = true;
+                }
                 return self.save(key, Outcome::unsat(self.bits)).map(Step::Done);
             }
             let Some(lit) = residual.iter().find(|c| c.len() == 1).map(|c| c[0]) else {
@@ -524,7 +527,12 @@ impl Engine<'_> {
 }
 
 pub(crate) fn solve(p: &Problem, bits: u32, deadline: Instant) -> Result<Outcome, String> {
-    solve_research(p, bits, deadline, false, false)
+    let enabled = |name| std::env::var_os(name).as_deref() == Some(std::ffi::OsStr::new("1"));
+    solve_research(
+        p, bits, deadline,
+        enabled("RAWMOCS_RESEARCH_LARGE_ROOT_INDEX"),
+        enabled("RAWMOCS_RESEARCH_ROOT_STATS"),
+    )
 }
 pub(crate) fn solve_research(p: &Problem, bits: u32, deadline: Instant, indexed: bool, report: bool) -> Result<Outcome, String> {
     let mut engine = Engine {
@@ -552,23 +560,35 @@ mod tests {
 
     #[test]
     fn indexed_root_matches_scan_on_long_weighted_closure() {
-        let mut raw = "p cnf 4096 4096\nc t wmc\nc p weight 1 -0.5 0.25 0\nc p weight 4096 0.25 -0.125 0\n1 0\n".to_owned();
-        for v in 1..4096 {
+        let mut raw = "p cnf 8192 8192\nc t wmc\nc p weight 1 -0.5 0.25 0\nc p weight 8192 0.25 -0.125 0\n1 0\n".to_owned();
+        for v in 1..8192 {
             raw.push_str(&format!("-{v} {} 0\n", v+1));
         }
-        // The initial 4096 clauses shrink below the threshold after two
-        // assignments, so test the kernel independently as well.
+        // More than 4096 clauses remain after the first two scan units,
+        // so this exercises the actual root dispatch as well as the kernel.
         for bits in [100, 200, 333, 432] {
-            let p = parse_emitted(&raw,bits).unwrap();
             let deadline = Instant::now()+Duration::from_secs(30);
+            let p = crate::parse_large(std::io::Cursor::new(&raw), bits, deadline).unwrap();
             let a = solve_research(&p,bits,deadline,false,false).unwrap();
             let b = solve_research(&p,bits,deadline,true,false).unwrap();
             assert_eq!(a.sat,b.sat);
             assert_eq!(a.count.re,b.count.re);
             assert_eq!(a.count.im,b.count.im);
             let closed = indexed_units(normalize(p.clauses.clone()),p.n,deadline).unwrap().unwrap();
-            assert_eq!(closed.forced,(1..=4096).collect::<Vec<i32>>());
+            assert_eq!(closed.forced,(1..=8192).collect::<Vec<i32>>());
             assert!(closed.clauses.is_empty());
+            assert_eq!(a.count.re, rug::Float::with_val(bits, -0.09375));
+            assert_eq!(a.count.im, rug::Float::with_val(bits, 0.125));
+        }
+        let mut conflict = raw.replacen("p cnf 8192 8192", "p cnf 8192 8193", 1);
+        conflict.push_str("-8192 0\n");
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let p = crate::parse_large(std::io::Cursor::new(&conflict), 100, deadline).unwrap();
+        for indexed in [false, true] {
+            let a = solve_research(&p, 100, deadline, indexed, false).unwrap();
+            assert!(!a.sat);
+            assert_eq!(a.count.re, 0);
+            assert_eq!(a.count.im, 0);
         }
     }
 

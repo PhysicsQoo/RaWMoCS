@@ -827,6 +827,106 @@ fn triples(high: &[usize]) -> Vec<Vec<usize>> {
     out
 }
 
+// Rank an additional cut by participation in expensive operations in the
+// already feasible plan, not the input graph degree. This is a bounded
+// incumbent refinement, never a relaxation of the admission caps.
+fn refinement_variables(base: &Selected, nodes: &Scope) -> Vec<usize> {
+    let mut scores = BTreeMap::<usize, usize>::new();
+    for p in &base.1 {
+        for op in &p.ops {
+            let score = (1usize << op.out.len()).saturating_mul(op.ids.len());
+            for &v in &op.out {
+                if nodes.contains(&v) && !base.0.contains(&v) {
+                    let x = scores.entry(v).or_default();
+                    *x = x.saturating_add(score);
+                }
+            }
+        }
+    }
+    let mut ranked: Vec<_> = scores.into_iter().collect();
+    ranked.sort_by_key(|&(v, score)| (usize::MAX - score, v));
+    ranked.into_iter().take(8).map(|(v, _)| v).collect()
+}
+
+fn refine_one_cut(
+    fs: &[Factor<R>],
+    nodes: &Scope,
+    scalar: &Cell<R>,
+    local: &Cost,
+    base: &Selected,
+    d: Instant,
+) -> Result<Option<Selected>, String> {
+    let now = Instant::now();
+    // Bound incremental planning separately and preserve the execution
+    // reservation from solve_until. A missed optional deadline keeps the
+    // incumbent or best complete admissible candidate.
+    let rd = now + d.saturating_duration_since(now).min(Duration::from_millis(250));
+    let retained = fs.iter().map(|f| f.values.len()).sum::<usize>();
+    let max_work = base.2.work.saturating_mul(3) / 4;
+    let max_peak = base.2.peak.saturating_mul(3) / 4;
+    let mut best: Option<Selected> = None;
+    let mut rejected = Rejections::default();
+    let mut attempted = 0;
+    let mut admitted = 0;
+    'candidates: for v in refinement_variables(base, nodes) {
+        if Instant::now() >= rd {
+            break;
+        }
+        attempted += 1;
+        let mut cuts = vec![base.0[0], v];
+        cuts.sort_unstable();
+        let ns: Scope = nodes.iter().copied().filter(|v| !cuts.contains(v)).collect();
+        let mut plans = Vec::new();
+        let mut cost = local.clone();
+        for m in 0..4 {
+            if Instant::now() >= rd {
+                break 'candidates;
+            }
+            let (f, _) = restrict(fs, scalar, &cuts, m)?;
+            let mut leaf: Option<Plan> = None;
+            for policy in [Some(0), Some(4), None] {
+                for reverse in [true, false] {
+                    match plan(&f, &ns, (policy, reverse), retained, rd, &mut rejected) {
+                        Ok(Some(x)) => {
+                            if leaf.as_ref().is_none_or(|b|
+                                (x.cost.work, x.cost.peak, x.cost.width)
+                                    < (b.cost.work, b.cost.peak, b.cost.width))
+                            {
+                                leaf = Some(x);
+                            }
+                        }
+                        Ok(None) => (),
+                        Err(e) if e == "prejoin deadline" => break 'candidates,
+                        Err(e) => return Err(e),
+                    }
+                }
+            }
+            let Some(x) = leaf else { break; };
+            cost.work += x.cost.work + retained;
+            cost.peak = cost.peak.max(x.cost.peak);
+            cost.width = cost.width.max(x.cost.width);
+            cost.joins += x.cost.joins;
+            if cost.work > max_work || cost.peak > max_peak {
+                break;
+            }
+            plans.push(x);
+        }
+        if plans.len() == 4 {
+            admitted += 1;
+            if best.as_ref().is_none_or(|b|
+                (cost.work, cost.peak, cost.width, &cuts)
+                    < (b.2.work, b.2.peak, b.2.width, &b.0))
+            {
+                best = Some((cuts, plans, cost));
+            }
+        }
+    }
+    eprintln!("PREJOIN_RESEARCH_REFINE attempted={attempted} admitted={admitted} base_work={} base_peak={} candidate_work={:?} candidate_peak={:?} cuts={:?} elapsed_ns={}",
+              base.2.work, base.2.peak, best.as_ref().map(|b| b.2.work),
+              best.as_ref().map(|b| b.2.peak), best.as_ref().map(|b| &b.0), now.elapsed().as_nanos());
+    Ok(best)
+}
+
 fn choose(
     fs: &[Factor<R>],
     nodes: &Scope,
@@ -839,7 +939,12 @@ fn choose(
     // Explicit branch-only ablation. Never relax the existing hard budgets.
     // Explore peak-first leaves and zero/one cuts at <=125% of base work.
     let mode = std::env::var("RAWMOCS_RESEARCH_PEAK_FIRST").unwrap_or_default();
-    let gated = mode == "2";
+    let gated = mode == "2" || mode == "3";
+    if mode == "3" && base.0.len() == 1 && base.2.work >= 8_000_000 && base.2.peak >= 524_288 {
+        if let Some(candidate) = refine_one_cut(fs, nodes, scalar, local, &base, d)? {
+            return Ok(candidate);
+        }
+    }
     // The low-cost mode only considers high-cost zero-cut baseline plans.
     // Thresholds and shortlist length are research hypotheses, not defaults.
     if base.0.is_empty()
@@ -1357,6 +1462,21 @@ mod tests {
             }
             assert!(pool.is_empty());
         }
+    }
+    #[test]
+    fn refinement_ranks_expensive_scopes_excludes_incumbent_and_is_bounded() {
+        let nodes: Scope = (1..=20).collect();
+        let base = (vec![1], vec![Plan {
+            ops: vec![
+                Op { ids: vec![0, 1], dst: 2, out: (2..=12).collect(), pivot: Some(1) },
+                Op { ids: vec![2], dst: 3, out: vec![13], pivot: Some(2) },
+            ],
+            cost: Cost::default(),
+            extra: 0,
+        }], Cost::default());
+        let vars = refinement_variables(&base, &nodes);
+        assert_eq!(vars, (2..=9).collect::<Vec<_>>());
+        assert!(!vars.contains(&1));
     }
     #[test]
     fn support_first_distinguishes_absence_and_numeric_zero() {

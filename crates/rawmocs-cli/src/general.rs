@@ -1016,6 +1016,41 @@ mod pivot_research {
     }
 
     #[test]
+    #[ignore = "source-locked balanced General separator comparisons"]
+    fn original_separator_balanced() {
+        let digits:usize=std::env::var("RAWMOCS_TEST_DIGITS").unwrap().parse().unwrap();
+        let bits=match digits {30=>100,130=>432,_=>panic!("unsupported cohort")};
+        let trials:usize=std::env::var("RAWMOCS_TEST_TRIALS").unwrap().parse().unwrap();
+        assert!(trials==1 || trials==7);
+        let raw=std::fs::read_to_string(std::env::var("RAWMOCS_TEST_ORIGINAL").unwrap()).unwrap();
+        let p=crate::parse_large(std::io::Cursor::new(raw.as_bytes()),bits,Instant::now()+Duration::from_secs(12)).unwrap();
+        // A single screening pair on unfamiliar cases; seven alternating
+        // pairs for admitted VQE8. Stop after a censored pair, not 7 timeouts.
+        for trial in 0..trials {
+            let mut censored=false;
+            for policy in if trial%2==0 {[0,3]} else {[3,0]} {
+                let start=Instant::now();
+                let (out,r)=run(&p,bits,policy,start+Duration::from_secs(30));
+                let wall_ns=start.elapsed().as_nanos();
+                match out {
+                    Ok(out)=>{
+                        let sat=if out.sat {"SATISFIABLE"} else {"UNSATISFIABLE"};
+                        let real=out.count.re.to_string_radix(10,Some(digits+4));
+                        let imag=out.count.im.to_string_radix(10,Some(digits+4));
+                        println!("SEPARATOR_PAIR trial={trial} policy={policy} digits={digits} status=COMPLETE nodes={} hits={} splits={} branches={} checks={} overrides={} wall_ns={wall_ns} sat={sat} real={real} imag={imag}",r.nodes,r.hits,r.splits,r.branches,r.separator_checks,r.separator_overrides);
+                    }
+                    Err(err)=>{
+                        assert!(err.contains("deadline")||err.contains("timeout"),"unexpected {err}");
+                        censored=true;
+                        println!("SEPARATOR_PAIR trial={trial} policy={policy} digits={digits} status=CENSORED nodes={} hits={} splits={} branches={} checks={} overrides={} wall_ns={wall_ns}",r.nodes,r.hits,r.splits,r.branches,r.separator_checks,r.separator_overrides);
+                    }
+                }
+            }
+            if censored {break;}
+        }
+    }
+
+    #[test]
     #[ignore = "source-locked separator research with independent interval witness"]
     fn original_separator_work_diagnostic() {
         let digits:usize=std::env::var("RAWMOCS_TEST_DIGITS").unwrap().parse().unwrap();

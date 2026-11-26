@@ -56,6 +56,7 @@ struct Engine<'a> {
     adaptive: bool,
     inplace_scan: bool,
     inplace_branch: bool,
+    move_components: bool,
     stats: Stats,
 }
 
@@ -209,9 +210,9 @@ fn root(parent: &mut [usize], mut x: usize) -> usize {
     }
     x
 }
-fn components(clauses: &[Clause], scope: &[usize], n: usize) -> Vec<Component> {
+fn components(clauses: &mut Vec<Clause>, scope: &[usize], n: usize, move_components: bool) -> Vec<Component> {
     let mut parent: Vec<_> = (0..=n).collect();
-    for c in clauses {
+    for c in clauses.iter() {
         let first = c[0].unsigned_abs() as usize;
         for &lit in &c[1..] {
             let a = root(&mut parent, first);
@@ -226,9 +227,18 @@ fn components(clauses: &[Clause], scope: &[usize], n: usize) -> Vec<Component> {
     if groups.len() <= 1 {
         return Vec::new();
     }
-    for c in clauses {
-        let r = root(&mut parent, c[0].unsigned_abs() as usize);
-        groups.entry(r).or_default().1.push(c.clone());
+    // Only consume the residual after proving there is a split. Both arms
+    // keep the same DSU representatives, BTreeMap ordering and clause order.
+    if move_components {
+        for c in std::mem::take(clauses) {
+            let r = root(&mut parent, c[0].unsigned_abs() as usize);
+            groups.entry(r).or_default().1.push(c);
+        }
+    } else {
+        for c in clauses.iter() {
+            let r = root(&mut parent, c[0].unsigned_abs() as usize);
+            groups.entry(r).or_default().1.push(c.clone());
+        }
     }
     groups.into_values().collect()
 }
@@ -350,7 +360,7 @@ impl Engine<'_> {
                 )
                 .map(Step::Done);
         }
-        let mut parts = components(&residual, &active, self.p.n).into_iter();
+        let mut parts = components(&mut residual, &active, self.p.n, self.move_components).into_iter();
         if let Some((scope, clauses)) = parts.next() {
             self.stats.splits += 1;
             push(
@@ -480,7 +490,8 @@ pub(crate) fn solve(p: &Problem, bits: u32, deadline: Instant) -> Result<Outcome
     let report = std::env::var("RAWMOCS_RESEARCH_GENERAL_STATS").as_deref() == Ok("1");
     let inplace_scan = std::env::var("RAWMOCS_RESEARCH_INPLACE_SCAN").as_deref() == Ok("1");
     let inplace_branch = std::env::var("RAWMOCS_RESEARCH_INPLACE_BRANCH").as_deref() == Ok("1");
-    solve_with_options(p, bits, deadline, adaptive, inplace_scan, inplace_branch, report)
+    let move_components = std::env::var("RAWMOCS_RESEARCH_MOVE_COMPONENTS").as_deref() == Ok("1");
+    solve_with_options(p, bits, deadline, adaptive, inplace_scan, inplace_branch, move_components, report)
 }
 
 #[cfg(test)]
@@ -491,7 +502,7 @@ fn solve_with_adaptive(
     adaptive: bool,
     report: bool,
 ) -> Result<Outcome, String> {
-    solve_with_options(p, bits, deadline, adaptive, false, false, report)
+    solve_with_options(p, bits, deadline, adaptive, false, false, false, report)
 }
 
 fn solve_with_options(
@@ -501,6 +512,7 @@ fn solve_with_options(
     adaptive: bool,
     inplace_scan: bool,
     inplace_branch: bool,
+    move_components: bool,
     report: bool,
 ) -> Result<Outcome, String> {
     let mut engine = Engine {
@@ -512,6 +524,7 @@ fn solve_with_options(
         adaptive,
         inplace_scan,
         inplace_branch,
+        move_components,
         stats: Stats::default(),
     };
     let result = engine.count(p.clauses.clone(), (1..=p.n).collect());
@@ -591,6 +604,38 @@ mod tests {
     }
 
     #[test]
+    fn component_move_preserves_order_and_connected_residual() {
+        let mut seed = 2187_u32;
+        for _ in 0..1024 {
+            let mut clauses = Vec::new();
+            for _ in 0..12 {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                let a = ((seed >> 16) % 8 + 1) as i32;
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                let b = ((seed >> 16) % 8 + 1) as i32;
+                clauses.push(vec![a, if seed & 0x100 == 0 { b } else { -b }]);
+            }
+            let clauses = normalize(clauses);
+            let scope: Vec<usize> = (1..=8).filter(|&v| clauses.iter().any(|c| c.iter().any(|l| l.unsigned_abs() as usize == v))).collect();
+            let mut reference = clauses.clone();
+            let mut candidate = clauses.clone();
+            let expected = components(&mut reference, &scope, 8, false);
+            let actual = components(&mut candidate, &scope, 8, true);
+            assert_eq!(actual, expected);
+            assert_eq!(reference, clauses);
+            if expected.is_empty() {
+                assert_eq!(candidate, clauses);
+            } else {
+                assert!(candidate.is_empty());
+            }
+        }
+        let mut clauses = vec![vec![1, 2], vec![-3, 4], vec![5, 6]];
+        let parts = components(&mut clauses, &[1,2,3,4,5,6], 6, true);
+        assert_eq!(parts.len(), 3);
+        assert!(clauses.is_empty());
+    }
+
+    #[test]
     fn branch_driven_chain_preserves_signed_complex_counts() {
         // No root units; either pivot branch forces all other variables.
         let n = 512;
@@ -603,11 +648,11 @@ mod tests {
             let deadline = Instant::now() + Duration::from_secs(30);
             let old = solve_with_adaptive(&p, bits, deadline, false, false).unwrap();
             let new = solve_with_adaptive(&p, bits, deadline, true, false).unwrap();
-            let compact = solve_with_options(&p, bits, deadline, false, true, false, false).unwrap();
+            let compact = solve_with_options(&p, bits, deadline, false, true, false, false, false).unwrap();
             assert_eq!(old.sat, compact.sat);
             assert_eq!(old.count.re, compact.count.re);
             assert_eq!(old.count.im, compact.count.im);
-            let donated = solve_with_options(&p, bits, deadline, false, true, true, false).unwrap();
+            let donated = solve_with_options(&p, bits, deadline, false, true, true, false, false).unwrap();
             assert_eq!(old.sat, donated.sat);
             assert_eq!(old.count.re, donated.count.re);
             assert_eq!(old.count.im, donated.count.im);
@@ -630,23 +675,30 @@ mod tests {
                 "p cnf 4 3\nc t wmc\nc p weight 1 -0.5 0.25 0\nc p weight 2 0.25 -0.125 0\n1 0\n-1 2 0\n3 4 0\n",
                 "p cnf 2 2\nc t wmc\nc p weight 2 -1 0 0\n1 0\n1 2 0\n",
                 "p cnf 2 3\nc t wmc\n1 0\n-1 2 0\n-2 0\n",
+                "p cnf 6 3\nc t wmc\nc p weight 1 -0.5 0.25 0\nc p weight -3 0.25 -0.125 0\n1 2 0\n-3 4 0\n5 6 0\n",
             ] {
                 let p = parse_emitted(raw, bits).unwrap();
                 let deadline = Instant::now() + Duration::from_secs(30);
                 let old = solve_with_adaptive(&p, bits, deadline, false, false).unwrap();
                 let new = solve_with_adaptive(&p, bits, deadline, true, false).unwrap();
-                let compact = solve_with_options(&p, bits, deadline, false, true, false, false).unwrap();
+                let compact = solve_with_options(&p, bits, deadline, false, true, false, false, false).unwrap();
                 assert_eq!(old.sat, compact.sat);
                 assert_eq!(old.count.re, compact.count.re);
                 assert_eq!(old.count.im, compact.count.im);
                 assert_eq!(old.count.re.is_sign_negative(), compact.count.re.is_sign_negative());
                 assert_eq!(old.count.im.is_sign_negative(), compact.count.im.is_sign_negative());
-                let donated = solve_with_options(&p, bits, deadline, false, true, true, false).unwrap();
+                let donated = solve_with_options(&p, bits, deadline, false, true, true, false, false).unwrap();
                 assert_eq!(old.sat, donated.sat);
                 assert_eq!(old.count.re, donated.count.re);
                 assert_eq!(old.count.im, donated.count.im);
                 assert_eq!(old.count.re.is_sign_negative(), donated.count.re.is_sign_negative());
                 assert_eq!(old.count.im.is_sign_negative(), donated.count.im.is_sign_negative());
+                let moved = solve_with_options(&p, bits, deadline, false, true, true, true, false).unwrap();
+                assert_eq!(old.sat, moved.sat);
+                assert_eq!(old.count.re, moved.count.re);
+                assert_eq!(old.count.im, moved.count.im);
+                assert_eq!(old.count.re.is_sign_negative(), moved.count.re.is_sign_negative());
+                assert_eq!(old.count.im.is_sign_negative(), moved.count.im.is_sign_negative());
                 let exact = crate::reference(&p, raw, bits).unwrap();
                 assert_eq!(old.sat, new.sat);
                 assert_eq!(old.count.re, new.count.re);

@@ -946,6 +946,41 @@ fn recycle_copy(pool: &mut Vec<C>, x: &C) -> C {
         x.clone()
     }
 }
+// A consumed input is a donor only if its scope covers every output
+// variable. Its index is then injective in the output assignment for
+// each pivot branch. After both branches finish, neither index can be
+// read by a later output assignment. No data-dependent assumption.
+fn last_use_donor(bucket: &[Factor<C>], out: &[usize]) -> Option<usize> {
+    bucket
+        .iter()
+        .position(|f| out.iter().all(|v| f.scope.binary_search(v).is_ok()))
+}
+
+fn donor_copy(
+    pool: &mut Vec<C>,
+    x: &C,
+    donor: &mut Factor<C>,
+    index: usize,
+    pivot: usize,
+    reused: &mut usize,
+) -> C {
+    if pool.is_empty() {
+        let mut dead = donor.values[index].take();
+        if dead.is_none() && pivot != 0 {
+            dead = donor.values[index | pivot].take();
+        }
+        if let Some(mut y) = dead {
+            // The arithmetic has completed at the original precision.
+            // Assigning into an equal-precision cell preserves signed zero.
+            y.re.assign(&x.re);
+            y.im.assign(&x.im);
+            *reused += 1;
+            return y;
+        }
+    }
+    recycle_copy(pool, x)
+}
+
 fn cadd(a: Cell<C>, b: Cell<C>) -> Cell<C> {
     match (a, b) {
         (Some(mut a), Some(b)) => {
@@ -966,13 +1001,27 @@ fn execute(
     // Admission candidate: exercise the measured direct kernel by default.
     // Keep an explicit same-binary reference arm until the science gate passes.
     if std::env::var("RAWMOCS_RESEARCH_DIRECT_BINARY").as_deref() != Ok("0") {
-        execute_impl::<true>(fs, scalar, p, bits, d)
+        if std::env::var("RAWMOCS_RESEARCH_LAST_USE_DONOR").as_deref() == Ok("1") {
+            execute_donor_impl::<true, true>(fs, scalar, p, bits, d)
+        } else {
+            execute_impl::<true>(fs, scalar, p, bits, d)
+        }
     } else {
         execute_impl::<false>(fs, scalar, p, bits, d)
     }
 }
 
 fn execute_impl<const BINARY: bool>(
+    fs: Vec<Factor<R>>,
+    scalar: Cell<R>,
+    p: &Plan,
+    bits: u32,
+    d: Instant,
+) -> Result<Cell<C>, String> {
+    execute_donor_impl::<BINARY, false>(fs, scalar, p, bits, d)
+}
+
+fn execute_donor_impl<const BINARY: bool, const DONOR: bool>(
     fs: Vec<Factor<R>>,
     scalar: Cell<R>,
     p: &Plan,
@@ -1005,10 +1054,13 @@ fn execute_impl<const BINARY: bool>(
     let mut binary_ops = 0usize;
     let mut binary_visits = 0usize;
     let mut binary_join_visits = 0usize;
+    let mut donor_ops = 0usize;
+    let mut donor_slots = 0usize;
+    let mut donor_reuses = 0usize;
     let (mut left, mut right) = (C::one(bits), C::one(bits));
     for op in &p.ops {
         deadline(d)?;
-        let bucket: Vec<_> = op
+        let mut bucket: Vec<_> = op
             .ids
             .iter()
             .map(|i| tables.remove(i).ok_or("execution owner"))
@@ -1050,6 +1102,15 @@ fn execute_impl<const BINARY: bool>(
                 binary_join_visits += size;
             }
         }
+        let donor = if DONOR {
+            last_use_donor(&bucket, &op.out)
+        } else {
+            None
+        };
+        if donor.is_some() {
+            donor_ops += 1;
+            donor_slots += size;
+        }
         let mut values = Vec::with_capacity(size);
         for m in 0..size {
             if m % 4096 == 0 {
@@ -1074,16 +1135,32 @@ fn execute_impl<const BINARY: bool>(
             };
             let a = branch(false, &mut left);
             let b = op.pivot.is_some() && branch(true, &mut right);
-            values.push(match (a, b) {
+            // Both branch reads have ended. Only a proven injective
+            // donor index can be taken here; all other cells stay intact.
+            let result = match (a, b) {
                 (true, true) => {
                     left.re += &right.re;
                     left.im += &right.im;
-                    Some(recycle_copy(&mut recycle, &left))
+                    Some(&left)
                 }
-                (true, false) => Some(recycle_copy(&mut recycle, &left)),
-                (false, true) => Some(recycle_copy(&mut recycle, &right)),
+                (true, false) => Some(&left),
+                (false, true) => Some(&right),
                 _ => None,
-            });
+            };
+            values.push(result.map(|x| {
+                if let Some(i) = donor {
+                    donor_copy(
+                        &mut recycle,
+                        x,
+                        &mut bucket[i],
+                        indices[i],
+                        pivots[i],
+                        &mut donor_reuses,
+                    )
+                } else {
+                    recycle_copy(&mut recycle, x)
+                }
+            }));
             if m + 1 < size {
                 let bit = (m + 1).trailing_zeros() as usize;
                 for (i, x) in indices.iter_mut().enumerate() {
@@ -1119,6 +1196,11 @@ fn execute_impl<const BINARY: bool>(
     if BINARY {
         eprintln!(
             "PREJOIN_RESEARCH_BINARY ops={binary_ops} visits={binary_visits} join_visits={binary_join_visits}"
+        );
+    }
+    if DONOR {
+        eprintln!(
+            "PREJOIN_RESEARCH_DONOR ops={donor_ops} slots={donor_slots} reuses={donor_reuses} cap={recycle_cap}"
         );
     }
     let mut out = mpfr(scalar, bits);
@@ -1259,6 +1341,43 @@ fn pair_scan(raw: &str, use_mask: bool) -> Result<String, String> {
 mod tests {
     use super::*;
     #[test]
+    fn last_use_donor_requires_injective_output_scope() {
+        for bits in [100, 200, 333, 432] {
+            let make = |scope: Vec<usize>| Factor {
+                values: vec![Some(C::one(bits)); 1usize << scope.len()],
+                scope,
+            };
+            let bucket = vec![make(vec![1]), make(vec![1, 2, 3]), make(vec![2, 3])];
+            assert_eq!(last_use_donor(&bucket, &[2, 3]), Some(1));
+            assert_eq!(last_use_donor(&bucket[..1], &[2, 3]), None);
+            assert_eq!(last_use_donor(&bucket[2..], &[2, 3]), Some(0));
+            let mut f = make(vec![1, 2, 3]);
+            f.values[2] = None;
+            let x = C {
+                re: Float::with_val(bits, -0.0),
+                im: Float::with_val(bits, 0),
+            };
+            let mut pool = vec![C::one(bits)];
+            let mut reused = 0;
+            let a = donor_copy(&mut pool, &x, &mut f, 2, 1, &mut reused);
+            assert_eq!(reused, 0);
+            assert!(f.values[3].is_some());
+            let b = donor_copy(&mut pool, &x, &mut f, 2, 1, &mut reused);
+            assert_eq!(reused, 1);
+            assert!(f.values[2].is_none() && f.values[3].is_none());
+            assert!(f.values[4].is_some());
+            for y in [a, b] {
+                assert_eq!(y.re, x.re);
+                assert_eq!(y.im, x.im);
+                assert_eq!(y.re.is_sign_negative(), x.re.is_sign_negative());
+                assert_eq!(y.im.is_sign_negative(), x.im.is_sign_negative());
+                assert_eq!(y.re.prec(), bits);
+                assert_eq!(y.im.prec(), bits);
+            }
+        }
+    }
+
+    #[test]
     fn direct_binary_matches_ordered_products_and_support() {
         for bits in [100, 200, 333, 432] {
             let mut values = vec![None];
@@ -1365,6 +1484,13 @@ mod tests {
                 let on = execute_impl::<true>(fs.clone(), Some(one()), &plan, bits, d)
                     .unwrap()
                     .unwrap();
+                let donor = execute_donor_impl::<true, true>(fs.clone(), Some(one()), &plan, bits, d)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(donor.re, on.re);
+                assert_eq!(donor.im, on.im);
+                assert_eq!(donor.re.is_sign_negative(), on.re.is_sign_negative());
+                assert_eq!(donor.im.is_sign_negative(), on.im.is_sign_negative());
                 assert_eq!(off.re, on.re);
                 assert_eq!(off.im, on.im);
                 assert_eq!(on.re, Float::with_val(bits, -0.25));

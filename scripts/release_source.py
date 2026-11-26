@@ -90,7 +90,12 @@ def verify_run(r, run_data, jobs, kind):
     require(run_data["head_branch"] == "main" and run_data["head_sha"] == r["revision"], "wrong run revision")
     require(run_data["event"] in ("push", "workflow_dispatch"), "untrusted run event")
     if kind == "science" and r["version"] != "0.1.0":
-        require(run_data["event"] == "workflow_dispatch", "new releases require full manual science")
+        release_push = (
+            run_data["event"] == "push"
+            and "[release-science]" in (run_data.get("head_commit") or {}).get("message", "")
+        )
+        require(run_data["event"] == "workflow_dispatch" or release_push,
+                "new releases require explicit full science intent")
     require(run_data["status"] == "completed" and run_data["conclusion"] == "success", "run not successful")
     require(jobs["total_count"] == len(jobs["jobs"]) == len(expected)
             and {j["name"] for j in jobs["jobs"]} == expected, "missing or unexpected jobs")

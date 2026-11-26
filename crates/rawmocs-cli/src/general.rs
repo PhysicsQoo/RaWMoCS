@@ -3,7 +3,9 @@
 //! benchmarks/mpfr_research/src/main.rs (Engine::count, normalize,
 //! assign, split_components). No experimental cache or branching switches.
 use crate::{Clause, Outcome, Problem, C};
+use std::borrow::Borrow;
 use std::cmp::Reverse;
+use std::hash::{Hash, Hasher};
 use std::collections::{BTreeMap, BinaryHeap, HashMap};
 use std::time::Instant;
 
@@ -11,6 +13,45 @@ use std::time::Instant;
 struct Key {
     scope: Vec<usize>,
     clauses: Vec<Clause>,
+}
+// Hash and equality must inspect the same ordered scope and clause sequence
+// as the owned key, never just a fingerprint.
+trait KeyView {
+    fn scope(&self) -> &[usize];
+    fn clauses(&self) -> &[Clause];
+}
+impl KeyView for Key {
+    fn scope(&self) -> &[usize] { &self.scope }
+    fn clauses(&self) -> &[Clause] { &self.clauses }
+}
+struct KeyQuery<'a> {
+    scope: &'a [usize],
+    clauses: &'a [Clause],
+}
+impl KeyView for KeyQuery<'_> {
+    fn scope(&self) -> &[usize] { self.scope }
+    fn clauses(&self) -> &[Clause] { self.clauses }
+}
+impl Hash for dyn KeyView + '_ {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.scope().hash(state);
+        self.clauses().hash(state);
+    }
+}
+impl PartialEq for dyn KeyView + '_ {
+    fn eq(&self, other: &Self) -> bool {
+        self.scope() == other.scope() && self.clauses() == other.clauses()
+    }
+}
+impl Eq for dyn KeyView + '_ {}
+impl<'a> Borrow<dyn KeyView + 'a> for Key {
+    fn borrow(&self) -> &(dyn KeyView + 'a) { self }
+}
+fn key_items(scope: &[usize], clauses: &[Clause]) -> usize {
+    scope.len() + clauses.len() + clauses.iter().map(Vec::len).sum::<usize>()
+}
+fn cache_can_admit(entries: usize, used: usize, items: usize) -> bool {
+    entries < 10_000 && used + items <= 400_000
 }
 type Component = (Vec<usize>, Vec<Clause>);
 
@@ -20,20 +61,20 @@ enum Step {
 }
 enum Frame {
     Yes {
-        key: Key,
+        key: Option<Key>,
         prefix: C,
         var: usize,
         no_clauses: Vec<Clause>,
         no_scope: Vec<usize>,
     },
     No {
-        key: Key,
+        key: Option<Key>,
         prefix: C,
         var: usize,
         yes: Outcome,
     },
     Parts {
-        key: Key,
+        key: Option<Key>,
         prefix: C,
         value: C,
         remaining: std::vec::IntoIter<Component>,
@@ -57,6 +98,7 @@ struct Engine<'a> {
     inplace_scan: bool,
     inplace_branch: bool,
     move_components: bool,
+    borrowed_cache: bool,
     stats: Stats,
 }
 
@@ -257,16 +299,17 @@ impl Engine<'_> {
             &w.negative
         }
     }
-    fn save(&mut self, key: Key, out: Outcome) -> Result<Outcome, String> {
+    fn save(&mut self, key: Option<Key>, out: Outcome) -> Result<Outcome, String> {
         if !out.count.re.is_finite() || !out.count.im.is_finite() {
             return Err("nonfinite general".into());
         }
-        let items =
-            key.scope.len() + key.clauses.len() + key.clauses.iter().map(Vec::len).sum::<usize>();
-        // Cache admission is optional: exhaustion never stops search.
-        if self.cache.len() < 10_000 && self.cache_items + items <= 400_000 {
-            self.cache_items += items;
-            self.cache.insert(key, out.clone());
+        // Check again at completion: descendant inserts may consume the budget.
+        if let Some(key) = key {
+            let items = key_items(&key.scope, &key.clauses);
+            if cache_can_admit(self.cache.len(), self.cache_items, items) {
+                self.cache_items += items;
+                self.cache.insert(key, out.clone());
+            }
         }
         Ok(out)
     }
@@ -279,14 +322,28 @@ impl Engine<'_> {
         self.check()?;
         self.stats.nodes += 1;
         let mut residual = normalize(clauses);
-        let key = Key {
-            scope: scope.clone(),
-            clauses: residual.clone(),
+        let key = if self.borrowed_cache {
+            let query = KeyQuery { scope: &scope, clauses: &residual };
+            let view: &dyn KeyView = &query;
+            if let Some(hit) = self.cache.get(view) {
+                self.stats.cache_hits += 1;
+                return Ok(Step::Done(hit.clone()));
+            }
+            // Both admission counters are monotone (no eviction). An entry
+            // rejected now cannot become admissible before this frame saves.
+            if cache_can_admit(self.cache.len(), self.cache_items, key_items(&scope, &residual)) {
+                Some(Key { scope: scope.clone(), clauses: residual.clone() })
+            } else {
+                None
+            }
+        } else {
+            let key = Key { scope: scope.clone(), clauses: residual.clone() };
+            if let Some(hit) = self.cache.get(&key) {
+                self.stats.cache_hits += 1;
+                return Ok(Step::Done(hit.clone()));
+            }
+            Some(key)
         };
-        if let Some(hit) = self.cache.get(&key) {
-            self.stats.cache_hits += 1;
-            return Ok(Step::Done(hit.clone()));
-        }
         let mut remaining = scope;
         let mut prefix = C::one(self.bits);
         let mut scanned = 0usize;
@@ -491,7 +548,8 @@ pub(crate) fn solve(p: &Problem, bits: u32, deadline: Instant) -> Result<Outcome
     let inplace_scan = std::env::var("RAWMOCS_RESEARCH_INPLACE_SCAN").as_deref() == Ok("1");
     let inplace_branch = std::env::var("RAWMOCS_RESEARCH_INPLACE_BRANCH").as_deref() == Ok("1");
     let move_components = std::env::var("RAWMOCS_RESEARCH_MOVE_COMPONENTS").as_deref() == Ok("1");
-    solve_with_options(p, bits, deadline, adaptive, inplace_scan, inplace_branch, move_components, report)
+    let borrowed_cache = std::env::var("RAWMOCS_RESEARCH_BORROWED_CACHE").as_deref() == Ok("1");
+    solve_with_options(p, bits, deadline, adaptive, inplace_scan, inplace_branch, move_components, borrowed_cache, report)
 }
 
 #[cfg(test)]
@@ -502,7 +560,7 @@ fn solve_with_adaptive(
     adaptive: bool,
     report: bool,
 ) -> Result<Outcome, String> {
-    solve_with_options(p, bits, deadline, adaptive, false, false, false, report)
+    solve_with_options(p, bits, deadline, adaptive, false, false, false, false, report)
 }
 
 fn solve_with_options(
@@ -513,6 +571,7 @@ fn solve_with_options(
     inplace_scan: bool,
     inplace_branch: bool,
     move_components: bool,
+    borrowed_cache: bool,
     report: bool,
 ) -> Result<Outcome, String> {
     let mut engine = Engine {
@@ -525,6 +584,7 @@ fn solve_with_options(
         inplace_scan,
         inplace_branch,
         move_components,
+        borrowed_cache,
         stats: Stats::default(),
     };
     let result = engine.count(p.clauses.clone(), (1..=p.n).collect());
@@ -604,6 +664,31 @@ mod tests {
     }
 
     #[test]
+    fn borrowed_key_matches_owned_exactly() {
+        let mut map = HashMap::new();
+        let scope = vec![1, 2, 3];
+        let clauses = vec![vec![-1, 2], vec![1, 3]];
+        map.insert(Key { scope: scope.clone(), clauses: clauses.clone() }, 17);
+        let query = KeyQuery { scope: &scope, clauses: &clauses };
+        let view: &dyn KeyView = &query;
+        assert_eq!(map.get(view), Some(&17));
+        for (s, c) in [
+            (vec![1, 2], clauses.clone()),
+            (vec![2, 1, 3], clauses.clone()),
+            (scope.clone(), vec![vec![1, 3], vec![-1, 2]]),
+            (scope.clone(), vec![vec![-1, 2, 1, 3]]),
+            (scope.clone(), vec![vec![1, 2], vec![1, 3]]),
+        ] {
+            let q = KeyQuery { scope: &s, clauses: &c };
+            let v: &dyn KeyView = &q;
+            assert_eq!(map.get(v), None);
+        }
+        assert!(cache_can_admit(9999, 399999, 1));
+        assert!(!cache_can_admit(10000, 0, 1));
+        assert!(!cache_can_admit(9999, 399999, 2));
+    }
+
+    #[test]
     fn component_move_preserves_order_and_connected_residual() {
         let mut seed = 2187_u32;
         for _ in 0..1024 {
@@ -648,11 +733,11 @@ mod tests {
             let deadline = Instant::now() + Duration::from_secs(30);
             let old = solve_with_adaptive(&p, bits, deadline, false, false).unwrap();
             let new = solve_with_adaptive(&p, bits, deadline, true, false).unwrap();
-            let compact = solve_with_options(&p, bits, deadline, false, true, false, false, false).unwrap();
+            let compact = solve_with_options(&p, bits, deadline, false, true, false, false, false, false).unwrap();
             assert_eq!(old.sat, compact.sat);
             assert_eq!(old.count.re, compact.count.re);
             assert_eq!(old.count.im, compact.count.im);
-            let donated = solve_with_options(&p, bits, deadline, false, true, true, false, false).unwrap();
+            let donated = solve_with_options(&p, bits, deadline, false, true, true, false, false, false).unwrap();
             assert_eq!(old.sat, donated.sat);
             assert_eq!(old.count.re, donated.count.re);
             assert_eq!(old.count.im, donated.count.im);
@@ -681,24 +766,30 @@ mod tests {
                 let deadline = Instant::now() + Duration::from_secs(30);
                 let old = solve_with_adaptive(&p, bits, deadline, false, false).unwrap();
                 let new = solve_with_adaptive(&p, bits, deadline, true, false).unwrap();
-                let compact = solve_with_options(&p, bits, deadline, false, true, false, false, false).unwrap();
+                let compact = solve_with_options(&p, bits, deadline, false, true, false, false, false, false).unwrap();
                 assert_eq!(old.sat, compact.sat);
                 assert_eq!(old.count.re, compact.count.re);
                 assert_eq!(old.count.im, compact.count.im);
                 assert_eq!(old.count.re.is_sign_negative(), compact.count.re.is_sign_negative());
                 assert_eq!(old.count.im.is_sign_negative(), compact.count.im.is_sign_negative());
-                let donated = solve_with_options(&p, bits, deadline, false, true, true, false, false).unwrap();
+                let donated = solve_with_options(&p, bits, deadline, false, true, true, false, false, false).unwrap();
                 assert_eq!(old.sat, donated.sat);
                 assert_eq!(old.count.re, donated.count.re);
                 assert_eq!(old.count.im, donated.count.im);
                 assert_eq!(old.count.re.is_sign_negative(), donated.count.re.is_sign_negative());
                 assert_eq!(old.count.im.is_sign_negative(), donated.count.im.is_sign_negative());
-                let moved = solve_with_options(&p, bits, deadline, false, true, true, true, false).unwrap();
+                let moved = solve_with_options(&p, bits, deadline, false, true, true, true, false, false).unwrap();
                 assert_eq!(old.sat, moved.sat);
                 assert_eq!(old.count.re, moved.count.re);
                 assert_eq!(old.count.im, moved.count.im);
                 assert_eq!(old.count.re.is_sign_negative(), moved.count.re.is_sign_negative());
                 assert_eq!(old.count.im.is_sign_negative(), moved.count.im.is_sign_negative());
+                let borrowed = solve_with_options(&p, bits, deadline, false, true, true, true, true, false).unwrap();
+                assert_eq!(old.sat, borrowed.sat);
+                assert_eq!(old.count.re, borrowed.count.re);
+                assert_eq!(old.count.im, borrowed.count.im);
+                assert_eq!(old.count.re.is_sign_negative(), borrowed.count.re.is_sign_negative());
+                assert_eq!(old.count.im.is_sign_negative(), borrowed.count.im.is_sign_negative());
                 let exact = crate::reference(&p, raw, bits).unwrap();
                 assert_eq!(old.sat, new.sat);
                 assert_eq!(old.count.re, new.count.re);

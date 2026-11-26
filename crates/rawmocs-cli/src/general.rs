@@ -132,6 +132,10 @@ struct Engine<'a> {
     parent: Vec<usize>,
     #[cfg(test)]
     trace: Option<WorkTrace>,
+    #[cfg(test)]
+    work_nodes: usize,
+    #[cfg(test)]
+    work_limit: usize,
 }
 fn normalize(mut clauses: Vec<Clause>) -> Vec<Clause> {
     for clause in &mut clauses {
@@ -320,6 +324,11 @@ impl Engine<'_> {
         stack: &mut Vec<Frame>,
     ) -> Result<Step, String> {
         self.check()?;
+        #[cfg(test)]
+        {
+            if self.work_nodes >= self.work_limit { return Err("baseline research node limit".into()); }
+            self.work_nodes += 1;
+        }
         let mut residual = normalize(clauses);
         #[cfg(test)]
         if let Some(t) = &mut self.trace { t.enter(&scope, &residual); }
@@ -565,6 +574,10 @@ fn solve_mode(
         cache_items: 0,
         #[cfg(test)]
         trace: None,
+        #[cfg(test)]
+        work_nodes: 0,
+        #[cfg(test)]
+        work_limit: usize::MAX,
         large,
         frequency: vec![0; p.n + 1],
         parent: vec![0; p.n + 1],

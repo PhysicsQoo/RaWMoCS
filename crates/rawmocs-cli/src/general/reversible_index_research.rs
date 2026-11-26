@@ -1201,11 +1201,16 @@ struct ScopedTrail<'a> {
     stats: TrailStats,
     max_nodes: usize,
     trace: Option<super::WorkTrace>,
+    policy: u8,
+    frequency: Vec<usize>,
+    parent: Vec<usize>,
+    bypasses: usize,
 }
 impl<'a> ScopedTrail<'a> {
     fn new(p: &'a Problem, bits: u32, deadline: Instant) -> Self {
         Self { p, bits, deadline, cache: HashMap::new(), items: 0,
-            stats: TrailStats::default(), max_nodes: 100_000, trace: None }
+            stats: TrailStats::default(), max_nodes: 100_000, trace: None, policy: 0,
+            frequency: Vec::new(), parent: Vec::new(), bypasses: 0 }
     }
     fn check(&self) -> Result<(), String> {
         if Instant::now() >= self.deadline { return Err("research deadline".into()); }
@@ -1230,6 +1235,31 @@ impl<'a> ScopedTrail<'a> {
     }
     fn fresh(&mut self, clauses: Vec<Clause>, scope: Vec<usize>, depth: usize) -> Result<Outcome,String> {
         self.check()?;
+        // Research hybrid: tiny independently scoped components do
+        // not amortize an occurrence index. Share exact cache and
+        // reusable scratch with the existing bounded heap engine.
+        if self.policy == 2 && depth > 0 && scope.len() <= 2 && clauses.len() <= 4 {
+            if depth > 96 { return Err("research depth limit".into()); }
+            let budget = self.max_nodes.saturating_sub(self.stats.nodes);
+            self.frequency.resize(self.p.n+1,0);
+            self.parent.resize(self.p.n+1,0);
+            let mut engine = super::Engine {
+                p:self.p,bits:self.bits,deadline:self.deadline,
+                cache:std::mem::take(&mut self.cache),cache_items:self.items,
+                large:true,frequency:std::mem::take(&mut self.frequency),
+                parent:std::mem::take(&mut self.parent),
+                trace:self.trace.take(),work_nodes:0,work_limit:budget,
+            };
+            let out = engine.count(clauses,scope);
+            self.stats.nodes += engine.work_nodes;
+            self.cache = engine.cache;
+            self.items = engine.cache_items;
+            self.frequency = engine.frequency;
+            self.parent = engine.parent;
+            self.trace = engine.trace;
+            self.bypasses += 1;
+            return out;
+        }
         let mut state = TrailIndex::with_mode(normalize(clauses),self.p.n,false,true);
         state.active = Frontier::bitmap(state.clauses.len());
         state.rank_scratch = Some(RankScratch::new(state.clauses.len()));
@@ -1257,7 +1287,8 @@ impl<'a> ScopedTrail<'a> {
     }
     fn enter(&mut self, state: &mut TrailIndex, scope: Vec<usize>, depth: usize) -> Result<Outcome,String> {
         self.check()?;
-        if depth > 96 || self.stats.nodes >= self.max_nodes { return Err("research work limit".into()); }
+        if depth > 96 { return Err("research depth limit".into()); }
+        if self.stats.nodes >= self.max_nodes { return Err("research node limit".into()); }
         self.stats.nodes += 1;
         let (ids,clauses) = state.materialized_boundary();
         if let Some(t) = &mut self.trace { t.enter(&scope, &clauses); }
@@ -1281,7 +1312,15 @@ impl<'a> ScopedTrail<'a> {
         // Preserve the post-closure order and multiplicity; only the
         // next node's canonical boundary sorts and deduplicates.
         let mut residual = state.materialize_ids(&ids);
-        let mut frequency = vec![0usize;self.p.n+1];
+        let mut temporary = Vec::new();
+        let frequency = if self.policy == 0 {
+            temporary.resize(self.p.n+1,0);
+            &mut temporary
+        } else {
+            self.frequency.resize(self.p.n+1,0);
+            for &v in &scope { self.frequency[v]=0; }
+            &mut self.frequency
+        };
         for c in &residual {
             for &lit in c { frequency[lit.unsigned_abs() as usize] += 1; }
         }
@@ -1298,7 +1337,12 @@ impl<'a> ScopedTrail<'a> {
         if residual.is_empty() {
             return self.save(key,Outcome { sat:true,count:prefix });
         }
-        let parts = components_with_parent(&mut residual,&active,&mut vec![0;self.p.n+1]);
+        let parts = if self.policy == 0 {
+            components_with_parent(&mut residual,&active,&mut vec![0;self.p.n+1])
+        } else {
+            self.parent.resize(self.p.n+1,0);
+            components_with_parent(&mut residual,&active,&mut self.parent)
+        };
         if !parts.is_empty() {
             self.stats.splits += 1;
             if let Some(t) = &mut self.trace { t.splits += 1; }
@@ -1440,7 +1484,7 @@ fn scoped_ablation_run(p: &Problem,bits: u32,reuse: bool,trace: bool)
         let mut engine = super::Engine {
             p,bits,deadline,cache: HashMap::new(),cache_items:0,
             large:true,frequency:vec![0;p.n+1],parent:vec![0;p.n+1],
-            trace:trace.then(super::WorkTrace::default),
+            trace:trace.then(super::WorkTrace::default),work_nodes:0,work_limit:usize::MAX,
         };
         let out = engine.count(p.clauses.clone(),(1..=p.n).collect())?;
         Ok((out,engine.trace,0))
@@ -1493,6 +1537,108 @@ fn scoped_complete_ablation() {
             let real=out.count.re.to_string_radix(10,Some(digits+4));
             let imag=out.count.im.to_string_radix(10,Some(digits+4));
             println!("SCOPED_FULL_FINAL case={name} digits={digits} trial={trial} reuse={reuse} wall_ns={wall_ns} sat={sat} real={real} imag={imag}");
+        }
+    }
+}
+
+
+fn adaptive_ablation_run(p: &Problem,bits:u32,mode:u8,trace:bool,budget:usize)
+    -> (Result<Outcome,String>,Option<super::WorkTrace>,usize,usize,usize) {
+    let deadline=Instant::now()+Duration::from_secs(12);
+    if mode==0 {
+        let mut e=super::Engine {
+            p,bits,deadline,cache:HashMap::new(),cache_items:0,large:true,
+            frequency:vec![0;p.n+1],parent:vec![0;p.n+1],
+            trace:trace.then(super::WorkTrace::default),work_nodes:0,work_limit:budget,
+        };
+        let out=e.count(p.clauses.clone(),(1..=p.n).collect());
+        (out,e.trace,e.work_nodes,0,0)
+    } else {
+        let mut e=ScopedTrail::new(p,bits,deadline);
+        e.policy=mode-1;
+        e.max_nodes=budget;
+        e.trace=trace.then(super::WorkTrace::default);
+        let out=e.fresh(p.clauses.clone(),(1..=p.n).collect(),0);
+        (out,e.trace,e.stats.nodes,e.stats.indexes,e.bypasses)
+    }
+}
+
+#[test]
+fn scoped_adaptive_tiny_components_share_cache() {
+    let raw="p cnf 8 3\nc t wmc\nc p weight 7 -1 0 0\n1 2 0\n3 4 0\n5 6 0\n";
+    for bits in [100,200,333,432] {
+        let p=crate::parse_emitted(raw,bits).unwrap();
+        let (base,bt,_,_,_)=adaptive_ablation_run(&p,bits,0,true,1000);
+        let base=base.unwrap();
+        assert!(base.sat && base.count.re==0 && base.count.im==0);
+        let bt=bt.unwrap().summary();
+        for mode in 1..=3 {
+            let (out,trace,nodes,_,bypasses)=adaptive_ablation_run(&p,bits,mode,true,1000);
+            same_outcome(&base,&out.unwrap());
+            assert_eq!(trace.unwrap().summary(),bt);
+            assert_eq!(nodes,bt.1);
+            if mode==3 { assert_eq!(bypasses,3); }
+        }
+        let (out,_,nodes,_,_)=adaptive_ablation_run(&p,bits,3,true,2);
+        assert!(out.is_err());
+        assert!(nodes<=2);
+    }
+}
+
+#[test]
+#[ignore = "research-only adaptive complete weighted search comparison"]
+fn scoped_adaptive_complete_ablation() {
+    let digits:usize=std::env::var("RAWMOCS_TEST_DIGITS").unwrap().parse().unwrap();
+    let bits=match digits {30=>100,130=>432,_=>panic!("unsupported cohort")};
+    let original=std::fs::read_to_string(std::env::var("RAWMOCS_TEST_ORIGINAL").unwrap()).unwrap();
+    let mut chain="p cnf 8192 8206\nc t wmc\nc p weight 1 -0.5 0.25 0\nc p weight 8192 0.25 -0.125 0\n".to_owned();
+    for v in 2..=9 {chain.push_str(&format!("1 {v} 0\n-1 {v} 0\n"));}
+    for v in 2..8192 {chain.push_str(&format!("-{v} {} 0\n",v+1));}
+    let mut split="p cnf 4096 2048\nc t wmc\n".to_owned();
+    for v in 1..=4096 {split.push_str(&format!("c p weight -{v} 0 0 0\n"));}
+    for v in (1..=4096).step_by(2) {split.push_str(&format!("{v} {} 0\n",v+1));}
+    for (name,raw) in [("chain8192",chain),("split4096",split),("vqe8",original)] {
+        let p=crate::parse_large(std::io::Cursor::new(raw.as_bytes()),bits,Instant::now()+Duration::from_secs(12)).unwrap();
+        // Explicit bounded scout: derive the candidate budget from
+        // the completed baseline, never remove the recursion cap.
+        let (base,trace,nodes,_,_)=adaptive_ablation_run(&p,bits,0,true,1_000_000);
+        let base=base.unwrap();
+        let trace=trace.unwrap().summary();
+        assert_eq!(nodes,trace.1);
+        let budget=nodes;
+        let mut admitted=[true,false,false,false];
+        println!("ADAPTIVE_TRACE case={name} digits={digits} mode=0 status=COMPLETE fingerprint={:016x} nodes={nodes} hits={} splits={} branches={} free={} indexes=0 bypasses=0 budget={budget}",trace.0,trace.2,trace.3,trace.4,trace.5);
+        for mode in 1..=3 {
+            let (out,tr,n,idx,by)=adaptive_ablation_run(&p,bits,mode,true,budget);
+            match out {
+                Ok(out)=>{
+                    same_outcome(&base,&out);
+                    assert_eq!(tr.unwrap().summary(),trace,"trace mismatch {name} mode={mode}");
+                    assert_eq!(n,nodes);
+                    admitted[mode as usize]=true;
+                    println!("ADAPTIVE_TRACE case={name} digits={digits} mode={mode} status=COMPLETE fingerprint={:016x} nodes={n} hits={} splits={} branches={} free={} indexes={idx} bypasses={by} budget={budget}",trace.0,trace.2,trace.3,trace.4,trace.5);
+                }
+                Err(err)=>{
+                    assert!(err.contains("deadline")||err.contains("limit"),"{err}");
+                    println!("ADAPTIVE_TRACE case={name} digits={digits} mode={mode} status=CENSORED nodes={n} indexes={idx} bypasses={by} budget={budget} reason={}",err.replace(' ',"_"));
+                }
+            }
+        }
+        // All four modes have equal position exposure when admitted.
+        for (trial,order) in [[0,1,2,3],[3,2,1,0],[1,2,3,0],[0,3,2,1],[2,3,0,1],[1,0,3,2],[3,0,1,2],[2,1,0,3]].into_iter().enumerate() {
+            for mode in order {
+                if !admitted[mode as usize] {continue;}
+                let start=Instant::now();
+                let (out,_,n,_,_)=adaptive_ablation_run(&p,bits,mode,false,budget);
+                let wall_ns=start.elapsed().as_nanos();
+                let out=out.unwrap();
+                assert_eq!(n,nodes);
+                same_outcome(&base,&out);
+                let sat=if out.sat {"SATISFIABLE"} else {"UNSATISFIABLE"};
+                let real=out.count.re.to_string_radix(10,Some(digits+4));
+                let imag=out.count.im.to_string_radix(10,Some(digits+4));
+                println!("ADAPTIVE_FULL_FINAL case={name} digits={digits} trial={trial} mode={mode} wall_ns={wall_ns} sat={sat} real={real} imag={imag}");
+            }
         }
     }
 }

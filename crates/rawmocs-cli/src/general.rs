@@ -106,6 +106,8 @@ struct Engine<'a> {
     cache_items: usize,
     root_indexed: bool,
     descendant_indexed: bool,
+    node_budget: Option<u64>,
+    trace: Option<std::collections::hash_map::DefaultHasher>,
     stats: Stats,
 }
 #[derive(Default)]
@@ -313,9 +315,19 @@ impl Engine<'_> {
         stack: &mut Vec<Frame>,
     ) -> Result<Step, String> {
         self.check()?;
+        if self.node_budget.is_some_and(|limit| self.stats.nodes >= limit) {
+            return Err("research node budget".into());
+        }
         self.stats.nodes += 1;
         let root_node = self.stats.nodes == 1;
         let mut residual = normalize(clauses);
+        // A deterministic in-process fingerprint of the ordered normalized
+        // node-entry stream, before any cache lookup or propagation. Only
+        // enabled for fixed-work controls; not a numerical proof.
+        if let Some(trace) = &mut self.trace {
+            scope.hash(trace);
+            residual.hash(trace);
+        }
         let query = KeyQuery {
             scope: &scope,
             clauses: &residual,
@@ -556,14 +568,24 @@ impl Engine<'_> {
 
 pub(crate) fn solve(p: &Problem, bits: u32, deadline: Instant) -> Result<Outcome, String> {
     let enabled = |name| std::env::var_os(name).as_deref() == Some(std::ffi::OsStr::new("1"));
-    solve_research(
+    let budget = match std::env::var("RAWMOCS_RESEARCH_NODE_BUDGET") {
+        Ok(s) => Some(s.parse::<u64>().ok().filter(|&n| n > 0).ok_or("INPUT: invalid research node budget")?),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(_) => return Err("INPUT: invalid research node budget".into()),
+    };
+    solve_research_budget(
         p, bits, deadline,
         enabled("RAWMOCS_RESEARCH_LARGE_ROOT_INDEX"),
         enabled("RAWMOCS_RESEARCH_LARGE_DESC_INDEX"),
-        enabled("RAWMOCS_RESEARCH_ROOT_STATS"),
+        enabled("RAWMOCS_RESEARCH_ROOT_STATS") || budget.is_some(),
+        budget,
     )
 }
+#[cfg(test)]
 fn solve_research(p: &Problem, bits: u32, deadline: Instant, indexed: bool, descendant: bool, report: bool) -> Result<Outcome, String> {
+    solve_research_budget(p, bits, deadline, indexed, descendant, report, None)
+}
+fn solve_research_budget(p: &Problem, bits: u32, deadline: Instant, indexed: bool, descendant: bool, report: bool, budget: Option<u64>) -> Result<Outcome, String> {
     let mut engine = Engine {
         p,
         bits,
@@ -572,12 +594,17 @@ fn solve_research(p: &Problem, bits: u32, deadline: Instant, indexed: bool, desc
         cache_items: 0,
         root_indexed: indexed,
         descendant_indexed: descendant,
+        node_budget: budget,
+        trace: budget.map(|_| std::collections::hash_map::DefaultHasher::new()),
         stats: Stats::default(),
     };
     let result = engine.count(p.clauses.clone(), (1..=p.n).collect());
     if report {
         let s = &engine.stats;
         eprintln!("RAWMOCS_ROOT_STATS nodes={} units={} scan_clause_visits={} branches={} splits={} hits={} root_index_attempts={} root_index_units={} root_index_touches={} root_closed={} descendant_index_attempts={} descendant_index_complete={} descendant_index_conflicts={} descendant_index_units={} descendant_index_touches={} descendant_index_build_clauses={}", s.nodes,s.units,s.scan_clause_visits,s.branches,s.splits,s.hits,s.root_index_attempts,s.root_index_units,s.root_index_touches,s.root_closed,s.descendant_index_attempts,s.descendant_index_complete,s.descendant_index_conflicts,s.descendant_index_units,s.descendant_index_touches,s.descendant_index_build_clauses);
+    }
+    if let Some(trace) = engine.trace {
+        eprintln!("RAWMOCS_FIXED_WORK nodes={} entry_fingerprint={:016x}", engine.stats.nodes, trace.finish());
     }
     result
 }
@@ -639,7 +666,7 @@ mod tests {
             let a = solve_research(&p, bits, deadline, false, false, false).unwrap();
             let mut engine = Engine {
                 p: &p, bits, deadline, cache: HashMap::new(), cache_items: 0,
-                root_indexed: false, descendant_indexed: true, stats: Stats::default(),
+                root_indexed: false, descendant_indexed: true, node_budget: None, trace: None, stats: Stats::default(),
             };
             let b = engine.count(p.clauses.clone(), (1..=p.n).collect()).unwrap();
             assert!(a.sat && b.sat);
@@ -650,6 +677,24 @@ mod tests {
             assert_eq!(engine.stats.root_index_attempts, 0);
             assert!(engine.stats.descendant_index_complete > 0);
             assert!(engine.stats.descendant_index_units > 4000);
+        }
+    }
+
+    #[test]
+    fn fixed_work_cutoff_never_emits_partial_count() {
+        let raw = "p cnf 4 2\nc t wmc\n1 2 0\n-1 3 4 0\n";
+        let p = parse_emitted(raw, 100).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        for indexed in [false, true] {
+            let mut engine = Engine {
+                p: &p, bits: 100, deadline, cache: HashMap::new(), cache_items: 0,
+                root_indexed: false, descendant_indexed: indexed,
+                node_budget: Some(1), trace: Some(std::collections::hash_map::DefaultHasher::new()),
+                stats: Stats::default(),
+            };
+            let result = engine.count(p.clauses.clone(), (1..=p.n).collect());
+            assert_eq!(result.err().as_deref(), Some("research node budget"));
+            assert_eq!(engine.stats.nodes, 1);
         }
     }
 

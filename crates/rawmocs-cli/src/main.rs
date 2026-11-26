@@ -79,17 +79,93 @@ impl Outcome {
         }
     }
 }
+// Keep the legacy default parser independent from the explicitly selected
+// streaming route; differential tests guard their common record semantics.
 fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
     if raw.is_empty() || raw.len() > 2_000_000 {
         return Err("invalid source bytes".into());
     }
-    parse_records(
-        raw.lines()
-            .filter(|s| !s.trim().is_empty())
-            .map(|s| Ok(Cow::Borrowed(s))),
-        bits,
-        false,
-    )
+    let mut lines = raw.lines().filter(|s| !s.trim().is_empty());
+    let header: Vec<_> = lines
+        .next()
+        .ok_or("missing header")?
+        .split_whitespace()
+        .collect();
+    if header.len() != 4 || header[0] != "p" || header[1] != "cnf" {
+        return Err("bad p cnf header".into());
+    }
+    let n: usize = header[2].parse().map_err(|_| "bad variable count")?;
+    let declared: usize = header[3].parse().map_err(|_| "bad clause count")?;
+    if n > 4096 || declared > 50_000 {
+        return Err("oversize CNF".into());
+    }
+    match lines.next().map(str::trim) {
+        Some("c t wmc") => {}
+        Some(s) if s.starts_with("c t ") => return Err("unsupported input semantics".into()),
+        _ => return Err("missing wmc marker".into()),
+    }
+    let mut weights = vec![
+        Weights {
+            positive: C::one(bits),
+            negative: C::one(bits)
+        };
+        n
+    ];
+    let mut assigned = vec![[false; 2]; n];
+    let mut clauses = Vec::with_capacity(declared);
+    let mut clause_started = false;
+    for line in lines {
+        let f: Vec<_> = line.split_whitespace().collect();
+        if f.first() == Some(&"c") {
+            if clause_started || f.len() != 7 || f[1..3] != ["p", "weight"] || f[6] != "0" {
+                return Err("bad weight record".into());
+            }
+            let lit: i32 = f[3].parse().map_err(|_| "invalid weight literal")?;
+            let var = lit.unsigned_abs() as usize;
+            if lit == 0 || var > n {
+                return Err("weight variable out of range".into());
+            }
+            let side = usize::from(lit < 0);
+            if assigned[var - 1][side] {
+                return Err("duplicated weight".into());
+            }
+            assigned[var - 1][side] = true;
+            // Strict exact decimal grammar shared with the contraction kernel.
+            factor_prejoin::decimal(f[4])?;
+            factor_prejoin::decimal(f[5])?;
+            let value = C::decimal(bits, f[4], f[5])?;
+            if side == 0 {
+                weights[var - 1].positive = value;
+            } else {
+                weights[var - 1].negative = value;
+            }
+        } else {
+            clause_started = true;
+            if f.last() != Some(&"0") {
+                return Err("unterminated clause".into());
+            }
+            let mut clause = Vec::with_capacity(f.len() - 1);
+            for token in &f[..f.len() - 1] {
+                let lit: i32 = token.parse().map_err(|_| "invalid clause")?;
+                if lit == 0 || lit.unsigned_abs() as usize > n {
+                    return Err("invalid clause literal".into());
+                }
+                clause.push(lit);
+            }
+            clauses.push(clause);
+            if clauses.len() > declared {
+                return Err("excess clauses".into());
+            }
+        }
+    }
+    if clauses.len() != declared {
+        return Err("missing clauses".into());
+    }
+    Ok(Problem {
+        n,
+        clauses,
+        weights,
+    })
 }
 
 const LARGE_SOURCE_BYTES: u64 = 32_000_000;
@@ -126,13 +202,12 @@ fn parse_large<R: BufRead>(mut reader: R, bits: u32, deadline: Instant) -> Resul
             return Some(Ok(Cow::Owned(line)));
         }
     });
-    parse_records(lines, bits, true)
+    parse_records(lines, bits)
 }
 
 fn parse_records<'a>(
     mut lines: impl Iterator<Item = Result<Cow<'a, str>, String>>,
     bits: u32,
-    large: bool,
 ) -> Result<Problem, String> {
     let header_line = lines.next().ok_or("missing header")??;
     let header: Vec<_> = header_line.split_whitespace().collect();
@@ -141,12 +216,7 @@ fn parse_records<'a>(
     }
     let n: usize = header[2].parse().map_err(|_| "bad variable count")?;
     let declared: usize = header[3].parse().map_err(|_| "bad clause count")?;
-    let (max_n, max_clauses) = if large {
-        (LARGE_VARIABLES, LARGE_CLAUSES)
-    } else {
-        (4096, 50_000)
-    };
-    if n > max_n || declared > max_clauses {
+    if n > LARGE_VARIABLES || declared > LARGE_CLAUSES {
         return Err("oversize CNF".into());
     }
     let marker = lines.next().transpose()?;
@@ -197,13 +267,11 @@ fn parse_records<'a>(
             if f.last() != Some(&"0") {
                 return Err("unterminated clause".into());
             }
-            if large {
-                literal_items = literal_items
-                    .checked_add(f.len() - 1)
-                    .ok_or("source literal cap")?;
-                if literal_items > LARGE_LITERALS {
-                    return Err("source literal cap".into());
-                }
+            literal_items = literal_items
+                .checked_add(f.len() - 1)
+                .ok_or("source literal cap")?;
+            if literal_items > LARGE_LITERALS {
+                return Err("source literal cap".into());
             }
             let mut clause = Vec::with_capacity(f.len() - 1);
             for token in &f[..f.len() - 1] {

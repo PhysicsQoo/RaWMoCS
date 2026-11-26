@@ -463,9 +463,7 @@ fn run() -> Result<(), String> {
         })?
     };
     let parsed = if large_general {
-        let reader = BufReader::new(
-            std::fs::File::open(&file).map_err(|e| format!("INPUT: {e}"))?,
-        );
+        let reader = BufReader::new(std::fs::File::open(&file).map_err(|e| format!("INPUT: {e}"))?);
         parse_large(reader, bits, large_deadline)
     } else {
         parse_emitted(&raw, bits)
@@ -630,7 +628,9 @@ mod tests {
         let raw = "p cnf 4097 0\nc t wmc\n";
         assert!(parse_emitted(raw, 100).is_err());
         assert_eq!(
-            parse_large(std::io::Cursor::new(raw), 100, deadline).unwrap().n,
+            parse_large(std::io::Cursor::new(raw), 100, deadline)
+                .unwrap()
+                .n,
             4097
         );
     }

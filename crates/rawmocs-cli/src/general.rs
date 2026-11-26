@@ -172,9 +172,6 @@ fn components_with_parent(
     scope: &[usize],
     parent: &mut [usize],
 ) -> Vec<Component> {
-    for &v in scope {
-        parent[v] = v;
-    }
     for c in clauses.iter() {
         let first = c[0].unsigned_abs() as usize;
         for &lit in &c[1..] {
@@ -303,6 +300,9 @@ impl Engine<'_> {
                 .map(Step::Done);
         }
         let mut parts = if let Some(parent) = parent {
+            for &v in &active {
+                parent[v] = v;
+            }
             components_with_parent(&mut residual, &active, parent)
         } else {
             components(&mut residual, &active, self.p.n)
@@ -509,7 +509,12 @@ mod tests {
             count_frequency(&clauses, &mut scratch.frequency);
             assert!(scope.iter().all(|&v| scratch.frequency[v] == 1));
             assert_eq!(
-                components_with_parent(&mut clauses, &scope, &mut scratch.parent),
+                {
+                    for &v in &scope {
+                        scratch.parent[v] = v;
+                    }
+                    components_with_parent(&mut clauses, &scope, &mut scratch.parent)
+                },
                 components(&mut reference, &scope, 4096)
             );
         }

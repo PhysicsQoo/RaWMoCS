@@ -956,6 +956,36 @@ fn last_use_donor(bucket: &[Factor<C>], out: &[usize]) -> Option<usize> {
         .position(|f| out.iter().all(|v| f.scope.binary_search(v).is_ok()))
 }
 
+// With ascending binary output assignments, every input index's last
+// occurrence has all output bits absent from that input set to one.
+// Prefer the previous full-scope donor, then at most two missing bits.
+// The latter is a cost gate, not a correctness requirement.
+fn missing_output_mask(scope: &[usize], out: &[usize]) -> usize {
+    out.iter().enumerate().fold(0, |mask, (j, v)| {
+        if scope.binary_search(v).is_err() {
+            mask | (1usize << j)
+        } else {
+            mask
+        }
+    })
+}
+
+fn masked_last_use_donor(bucket: &[Factor<C>], out: &[usize]) -> Option<(usize, usize)> {
+    let mut best: Option<(usize, usize)> = None;
+    for (i, f) in bucket.iter().enumerate() {
+        let mask = missing_output_mask(&f.scope, out);
+        if mask == 0 {
+            return Some((i, 0));
+        }
+        if mask.count_ones() <= 2
+            && best.is_none_or(|(_, old)| mask.count_ones() < old.count_ones())
+        {
+            best = Some((i, mask));
+        }
+    }
+    best
+}
+
 fn donor_copy(
     pool: &mut Vec<C>,
     x: &C,
@@ -1001,7 +1031,9 @@ fn execute(
     // Admission candidate: exercise the measured direct kernel by default.
     // Keep an explicit same-binary reference arm until the science gate passes.
     if std::env::var("RAWMOCS_RESEARCH_DIRECT_BINARY").as_deref() != Ok("0") {
-        if std::env::var("RAWMOCS_RESEARCH_LAST_USE_DONOR").as_deref() == Ok("1") {
+        if std::env::var("RAWMOCS_RESEARCH_MASKED_DONOR").as_deref() == Ok("1") {
+            execute_masked_impl::<true, true, true>(fs, scalar, p, bits, d)
+        } else if std::env::var("RAWMOCS_RESEARCH_LAST_USE_DONOR").as_deref() == Ok("1") {
             execute_donor_impl::<true, true>(fs, scalar, p, bits, d)
         } else {
             execute_impl::<true>(fs, scalar, p, bits, d)
@@ -1022,6 +1054,16 @@ fn execute_impl<const BINARY: bool>(
 }
 
 fn execute_donor_impl<const BINARY: bool, const DONOR: bool>(
+    fs: Vec<Factor<R>>,
+    scalar: Cell<R>,
+    p: &Plan,
+    bits: u32,
+    d: Instant,
+) -> Result<Cell<C>, String> {
+    execute_masked_impl::<BINARY, DONOR, false>(fs, scalar, p, bits, d)
+}
+
+fn execute_masked_impl<const BINARY: bool, const DONOR: bool, const MASK: bool>(
     fs: Vec<Factor<R>>,
     scalar: Cell<R>,
     p: &Plan,
@@ -1057,6 +1099,9 @@ fn execute_donor_impl<const BINARY: bool, const DONOR: bool>(
     let mut donor_ops = 0usize;
     let mut donor_slots = 0usize;
     let mut donor_reuses = 0usize;
+    let mut partial_ops = 0usize;
+    let mut partial_slots = 0usize;
+    let mut partial_reuses = 0usize;
     let (mut left, mut right) = (C::one(bits), C::one(bits));
     for op in &p.ops {
         deadline(d)?;
@@ -1102,14 +1147,23 @@ fn execute_donor_impl<const BINARY: bool, const DONOR: bool>(
                 binary_join_visits += size;
             }
         }
-        let donor = if DONOR {
-            last_use_donor(&bucket, &op.out)
+        let donor = if MASK {
+            masked_last_use_donor(&bucket, &op.out)
+        } else if DONOR {
+            last_use_donor(&bucket, &op.out).map(|i| (i, 0))
         } else {
             None
         };
-        if donor.is_some() {
+        let partial = donor.is_some_and(|(_, mask)| mask != 0);
+        let reused_before = donor_reuses;
+        if let Some((_, mask)) = donor {
+            let slots = size >> mask.count_ones();
             donor_ops += 1;
-            donor_slots += size;
+            donor_slots += slots;
+            if partial {
+                partial_ops += 1;
+                partial_slots += slots;
+            }
         }
         let mut values = Vec::with_capacity(size);
         for m in 0..size {
@@ -1135,8 +1189,8 @@ fn execute_donor_impl<const BINARY: bool, const DONOR: bool>(
             };
             let a = branch(false, &mut left);
             let b = op.pivot.is_some() && branch(true, &mut right);
-            // Both branch reads have ended. Only a proven injective
-            // donor index can be taken here; all other cells stay intact.
+            // Both branch reads have ended. A donor index is dead only
+            // on its last output assignment, for both pivot branches.
             let result = match (a, b) {
                 (true, true) => {
                     left.re += &right.re;
@@ -1148,7 +1202,7 @@ fn execute_donor_impl<const BINARY: bool, const DONOR: bool>(
                 _ => None,
             };
             values.push(result.map(|x| {
-                if let Some(i) = donor {
+                if let Some((i, _)) = donor.filter(|&(_, mask)| !MASK || m & mask == mask) {
                     donor_copy(
                         &mut recycle,
                         x,
@@ -1167,6 +1221,9 @@ fn execute_donor_impl<const BINARY: bool, const DONOR: bool>(
                     *x ^= flips[i][bit];
                 }
             }
+        }
+        if MASK && partial {
+            partial_reuses += donor_reuses - reused_before;
         }
         live = live + size - bucket.iter().map(|f| f.values.len()).sum::<usize>();
         // No references to consumed factors survive the operation.
@@ -1201,6 +1258,11 @@ fn execute_donor_impl<const BINARY: bool, const DONOR: bool>(
     if DONOR {
         eprintln!(
             "PREJOIN_RESEARCH_DONOR ops={donor_ops} slots={donor_slots} reuses={donor_reuses} cap={recycle_cap}"
+        );
+    }
+    if MASK {
+        eprintln!(
+            "PREJOIN_RESEARCH_MASKED_DONOR ops={partial_ops} slots={partial_slots} reuses={partial_reuses}"
         );
     }
     let mut out = mpfr(scalar, bits);
@@ -1340,6 +1402,68 @@ fn pair_scan(raw: &str, use_mask: bool) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn masked_last_use_is_exact_for_every_small_projection() {
+        for width in 0..=8 {
+            let size = 1usize << width;
+            for mask in 0..size {
+                let mut last = vec![None; size];
+                for m in 0..size {
+                    last[m & !mask] = Some(m);
+                }
+                for m in 0..size {
+                    assert_eq!(m & mask == mask, last[m & !mask] == Some(m));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn masked_donor_replays_partial_scope_elimination() {
+        let c = (decimal("-0.125").unwrap(), decimal("0.375").unwrap());
+        let z = (Rational::from(0), Rational::from(0));
+        let fs = vec![
+            Factor {
+                scope: vec![1, 2],
+                values: vec![None, Some(c.clone()), Some(one()), Some(one())],
+            },
+            Factor {
+                scope: vec![1, 3],
+                values: vec![Some(one()), Some(one()), Some(z), Some(c)],
+            },
+        ];
+        let plan = Plan {
+            ops: vec![
+                Op { ids: vec![0, 1], dst: 2, out: vec![2, 3], pivot: Some(1) },
+                Op { ids: vec![2], dst: 3, out: vec![3], pivot: Some(2) },
+                Op { ids: vec![3], dst: 4, out: vec![], pivot: Some(3) },
+            ],
+            cost: Cost { width: 2, work: 22, peak: 12, joins: 0 },
+            extra: 0,
+        };
+        for bits in [100, 200, 333, 432] {
+            let bucket: Vec<_> = fs.iter().map(|f| Factor {
+                scope: f.scope.clone(),
+                values: f.values.iter().cloned().map(|x| mpfr(x, bits)).collect(),
+            }).collect();
+            assert_eq!(last_use_donor(&bucket, &[2, 3]), None);
+            assert_eq!(masked_last_use_donor(&bucket, &[2, 3]), Some((0, 2)));
+            assert_eq!(masked_last_use_donor(&bucket, &[2, 3, 4, 5]), None);
+            assert_eq!(masked_last_use_donor(&bucket, &[3]), Some((1, 0)));
+            let d = Instant::now() + Duration::from_secs(5);
+            let off = execute_donor_impl::<true, true>(fs.clone(), Some(one()), &plan, bits, d)
+                .unwrap().unwrap();
+            let on = execute_masked_impl::<true, true, true>(fs.clone(), Some(one()), &plan, bits, d)
+                .unwrap().unwrap();
+            assert_eq!(off.re, on.re);
+            assert_eq!(off.im, on.im);
+            assert_eq!(on.re, Float::with_val(bits, 1.625));
+            assert_eq!(on.im, Float::with_val(bits, 0.65625));
+            assert_eq!(off.re.is_sign_negative(), on.re.is_sign_negative());
+            assert_eq!(off.im.is_sign_negative(), on.im.is_sign_negative());
+        }
+    }
+
     #[test]
     fn last_use_donor_requires_injective_output_scope() {
         for bits in [100, 200, 333, 432] {

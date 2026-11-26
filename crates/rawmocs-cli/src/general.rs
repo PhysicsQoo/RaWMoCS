@@ -504,24 +504,26 @@ impl Engine<'_> {
 }
 
 pub(crate) fn solve(p: &Problem, bits: u32, deadline: Instant) -> Result<Outcome, String> {
-    solve_mode(p, bits, deadline, false, None)
+    solve_mode(p, bits, deadline, false)
 }
 
+// Keep the ordinary borrowed entry independent of terminal ownership.
 pub(crate) fn solve_large(mut p: Problem, bits: u32, deadline: Instant) -> Result<Outcome, String> {
-    // The large route is terminal: the parser's clause vector is no
-    // longer needed after solve. Weights and the declared scope remain
-    // immutable for the entire search, as in the borrowed route.
     let root = std::mem::take(&mut p.clauses);
-    solve_mode(&p, bits, deadline, true, Some(root))
+    let mut engine = Engine {
+        p: &p,
+        bits,
+        deadline,
+        cache: HashMap::new(),
+        cache_items: 0,
+        large: true,
+        frequency: vec![0; p.n + 1],
+        parent: vec![0; p.n + 1],
+    };
+    engine.count(root, (1..=p.n).collect())
 }
 
-fn solve_mode(
-    p: &Problem,
-    bits: u32,
-    deadline: Instant,
-    large: bool,
-    root: Option<Vec<Clause>>,
-) -> Result<Outcome, String> {
+fn solve_mode(p: &Problem, bits: u32, deadline: Instant, large: bool) -> Result<Outcome, String> {
     let mut engine = Engine {
         p,
         bits,
@@ -532,8 +534,7 @@ fn solve_mode(
         frequency: vec![0; p.n + 1],
         parent: vec![0; p.n + 1],
     };
-    let clauses = root.unwrap_or_else(|| p.clauses.clone());
-    engine.count(clauses, (1..=p.n).collect())
+    engine.count(p.clauses.clone(), (1..=p.n).collect())
 }
 
 #[cfg(test)]
@@ -559,7 +560,7 @@ mod tests {
             ] {
                 let deadline = Instant::now() + Duration::from_secs(30);
                 let p = parse_emitted(raw, bits).unwrap();
-                let a = solve_mode(&p, bits, deadline, true, None).unwrap();
+                let a = solve_mode(&p, bits, deadline, true).unwrap();
                 let b = solve_large(p, bits, deadline).unwrap();
                 assert_eq!(a.sat, b.sat);
                 assert_eq!(a.count.re, b.count.re);

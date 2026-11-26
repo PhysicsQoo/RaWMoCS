@@ -912,7 +912,202 @@ fn cadd(a: Cell<C>, b: Cell<C>) -> Cell<C> {
         (a, None) | (None, a) => a,
     }
 }
+// Diagnostic only. Equality includes support and signed zero; nonfinite
+// cells never certify an independent axis. Sampling can reject an axis,
+// but only a full proof can certify it.
+fn same_profile_cell(a: &Cell<C>, b: &Cell<C>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => {
+            a.re.is_finite()
+                && a.im.is_finite()
+                && b.re.is_finite()
+                && b.im.is_finite()
+                && a.re == b.re
+                && a.im == b.im
+                && a.re.is_sign_negative() == b.re.is_sign_negative()
+                && a.im.is_sign_negative() == b.im.is_sign_negative()
+        }
+        _ => false,
+    }
+}
+const AXIS_PROFILE_MIN_CELLS: usize = 256;
+const AXIS_PROFILE_PAIR_BUDGET: usize = 8_000_000;
+
+#[derive(Default)]
+struct AxisProfile {
+    tables: usize,
+    cells: usize,
+    axes: usize,
+    sample_pairs: usize,
+    sample_equal: usize,
+    sample_sparse_axes: usize,
+    sample_all_equal: usize,
+    full_pairs: usize,
+    rejected_after_sample: usize,
+    unverified: usize,
+    proven_axes: usize,
+    proven_saved_cells: usize,
+    projected_saved_cells: usize,
+    projected_saved_calls: usize,
+    unary_calls: usize,
+    binary_calls: usize,
+    wide_calls: usize,
+    join_calls: usize,
+    prefix_twofold_ops: usize,
+    prefix_bounded_ops: usize,
+    prefix_potential_calls: usize,
+    max_table: usize,
+}
+impl AxisProfile {
+    fn observe(
+        &mut self,
+        scope: &[usize],
+        values: &[Cell<C>],
+        d: Instant,
+    ) -> Result<Scope, String> {
+        let mut reduced: Scope = scope.iter().copied().collect();
+        if values.len() < AXIS_PROFILE_MIN_CELLS {
+            return Ok(reduced);
+        }
+        if values.len() != 1usize << scope.len() {
+            return Err("axis profile shape".into());
+        }
+        self.tables += 1;
+        self.cells += values.len();
+        self.max_table = self.max_table.max(values.len());
+        let half = values.len() / 2;
+        let samples = 32.min(half);
+        for (j, &v) in scope.iter().enumerate() {
+            deadline(d)?;
+            self.axes += 1;
+            let bit = 1usize << j;
+            let low = |k: usize| (k & (bit - 1)) | ((k & !(bit - 1)) << 1);
+            let mut equal = 0usize;
+            for t in 0..samples {
+                let k = t * (half - 1) / (samples - 1);
+                let a = low(k);
+                equal += usize::from(same_profile_cell(&values[a], &values[a | bit]));
+            }
+            self.sample_pairs += samples;
+            self.sample_equal += equal;
+            self.sample_sparse_axes += usize::from(equal * 4 >= samples * 3);
+            if equal != samples {
+                continue;
+            }
+            self.sample_all_equal += 1;
+            if half > AXIS_PROFILE_PAIR_BUDGET.saturating_sub(self.full_pairs) {
+                self.unverified += 1;
+                continue;
+            }
+            let mut proved = true;
+            for k in 0..half {
+                if k % 4096 == 0 {
+                    deadline(d)?;
+                }
+                let a = low(k);
+                self.full_pairs += 1;
+                if !same_profile_cell(&values[a], &values[a | bit]) {
+                    proved = false;
+                    break;
+                }
+            }
+            if proved {
+                reduced.remove(&v);
+                self.proven_axes += 1;
+            } else {
+                self.rejected_after_sample += 1;
+            }
+        }
+        self.proven_saved_cells += values.len() - (1usize << reduced.len());
+        Ok(reduced)
+    }
+
+    fn scheduled(&mut self, bucket: &[Factor<C>], op: &Op, size: usize, projected: &Scope) {
+        let visits = size * if op.pivot.is_some() { 2 } else { 1 };
+        let calls = visits * bucket.len();
+        match bucket.len() {
+            0 => {}
+            1 => self.unary_calls += calls,
+            2 => self.binary_calls += calls,
+            _ => self.wide_calls += calls,
+        }
+        if op.pivot.is_none() {
+            self.join_calls += calls;
+        }
+        let active_out = op.out.iter().filter(|v| projected.contains(v)).count();
+        let saved = size - (1usize << active_out);
+        self.projected_saved_cells += saved;
+        self.projected_saved_calls += saved * (visits / size) * bucket.len();
+        // Broader diagnostic than the earlier memo admission gate; report
+        // potential calls only, not actual arithmetic or cache hits.
+        if bucket.len() >= 3 {
+            let mut scope = Scope::new();
+            let mut best = 0;
+            let mut bounded = false;
+            for (i, f) in bucket.iter().take(bucket.len() - 1).enumerate() {
+                scope.extend(f.scope.iter().copied());
+                if scope.len() >= usize::BITS as usize {
+                    break;
+                }
+                let slots = 1usize << scope.len();
+                if slots > visits / 2 {
+                    break;
+                }
+                if i >= 1 {
+                    best = best.max((visits - slots) * (i + 1));
+                    bounded |= slots <= 4096 && slots <= visits / 4;
+                }
+            }
+            self.prefix_twofold_ops += usize::from(best > 0);
+            self.prefix_bounded_ops += usize::from(bounded);
+            self.prefix_potential_calls += best;
+        }
+    }
+
+    fn emit(&self) {
+        eprintln!(
+            "PREJOIN_RESEARCH_AXIS tables={} cells={} axes={} sample_pairs={} sample_equal={} sample_75_axes={} sample_all_equal={} full_pairs={} rejected={} unverified={} proven_axes={} proven_saved_cells={} projected_saved_cells={} projected_saved_calls={} unary_calls={} binary_calls={} wide_calls={} join_calls={} prefix_twofold_ops={} prefix_bounded_ops={} prefix_potential_calls={} max_table={}",
+            self.tables,
+            self.cells,
+            self.axes,
+            self.sample_pairs,
+            self.sample_equal,
+            self.sample_sparse_axes,
+            self.sample_all_equal,
+            self.full_pairs,
+            self.rejected_after_sample,
+            self.unverified,
+            self.proven_axes,
+            self.proven_saved_cells,
+            self.projected_saved_cells,
+            self.projected_saved_calls,
+            self.unary_calls,
+            self.binary_calls,
+            self.wide_calls,
+            self.join_calls,
+            self.prefix_twofold_ops,
+            self.prefix_bounded_ops,
+            self.prefix_potential_calls,
+            self.max_table,
+        );
+    }
+}
+
 fn execute(
+    fs: Vec<Factor<R>>,
+    scalar: Cell<R>,
+    p: &Plan,
+    bits: u32,
+    d: Instant,
+) -> Result<Cell<C>, String> {
+    if std::env::var("RAWMOCS_RESEARCH_AXIS_PROFILE").as_deref() == Ok("1") {
+        execute_impl::<true>(fs, scalar, p, bits, d)
+    } else {
+        execute_impl::<false>(fs, scalar, p, bits, d)
+    }
+}
+fn execute_impl<const PROFILE: bool>(
     fs: Vec<Factor<R>>,
     scalar: Cell<R>,
     p: &Plan,
@@ -932,6 +1127,13 @@ fn execute(
             )
         })
         .collect();
+    let mut profile = AxisProfile::default();
+    let mut projected_scopes = BTreeMap::new();
+    if PROFILE {
+        for (&id, f) in &tables {
+            projected_scopes.insert(id, profile.observe(&f.scope, &f.values, d)?);
+        }
+    }
     let mut live = tables.values().map(|f| f.values.len()).sum::<usize>();
     let mut cost = Cost {
         peak: live + p.extra,
@@ -951,6 +1153,13 @@ fn execute(
             .map(|i| tables.remove(i).ok_or("execution owner"))
             .collect::<Result<_, _>>()?;
         let size = 1usize << op.out.len();
+        let mut projected = Scope::new();
+        if PROFILE {
+            for id in &op.ids {
+                projected.extend(projected_scopes.remove(id).ok_or("axis profile owner")?);
+            }
+            profile.scheduled(&bucket, op, size, &projected);
+        }
         cost.peak = cost.peak.max(live + size + p.extra);
         if op.pivot.is_some() {
             cost.width = cost.width.max(op.out.len());
@@ -1029,6 +1238,13 @@ fn execute(
                 }
             }
         }
+        if PROFILE {
+            let mut reduced = profile.observe(&op.out, &values, d)?;
+            // Axes already absent from every projected input are also
+            // redundant in the output, without reassociating arithmetic.
+            reduced.retain(|v| projected.contains(v));
+            projected_scopes.insert(op.dst, reduced);
+        }
         tables.insert(
             op.dst,
             Factor {
@@ -1039,6 +1255,9 @@ fn execute(
     }
     if cost != p.cost {
         return Err("plan replay drift".into());
+    }
+    if PROFILE {
+        profile.emit();
     }
     let mut out = mpfr(scalar, bits);
     for f in tables.into_values() {
@@ -1177,6 +1396,92 @@ fn pair_scan(raw: &str, use_mask: bool) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn axis_profile_requires_full_support_and_signed_zero_proof() {
+        for bits in [100, 200, 333, 432] {
+            let scope: Vec<_> = (1..=8).collect();
+            let z = C {
+                re: Float::with_val(bits, -0.0),
+                im: Float::with_val(bits, 0),
+            };
+            let values: Vec<_> = (0..256)
+                .map(|i| match i & 3 {
+                    0 => None,
+                    1 => Some(z.clone()),
+                    2 => Some(C::one(bits)),
+                    _ => Some(C {
+                        re: Float::with_val(bits, -2),
+                        im: Float::with_val(bits, 3),
+                    }),
+                })
+                .collect();
+            let d = Instant::now() + Duration::from_secs(5);
+            let mut p = AxisProfile::default();
+            assert_eq!(
+                p.observe(&scope, &values, d).unwrap(),
+                [1, 2].into_iter().collect::<Scope>()
+            );
+            assert_eq!(p.proven_axes, 6);
+            assert_eq!(p.proven_saved_cells, 252);
+            assert_eq!(p.sample_all_equal, 6);
+
+            // Flip a signed zero on an unsampled pair along axis 8.
+            // The sample can nominate it, but full equality must reject it.
+            let mut perturbed = values;
+            perturbed[137] = Some(C::zero(bits));
+            assert!(!same_profile_cell(&perturbed[9], &perturbed[137]));
+            let mut p = AxisProfile::default();
+            let reduced = p.observe(&scope, &perturbed, d).unwrap();
+            assert!(reduced.contains(&8));
+            assert!(p.rejected_after_sample > 0);
+
+            // Exhausted proof budget is explicitly unknown, never certified.
+            let mut p = AxisProfile {
+                full_pairs: AXIS_PROFILE_PAIR_BUDGET,
+                ..AxisProfile::default()
+            };
+            assert_eq!(
+                p.observe(&scope, &perturbed, d).unwrap(),
+                scope.iter().copied().collect::<Scope>()
+            );
+            assert!(p.unverified > 0);
+            assert_eq!(p.proven_axes, 0);
+        }
+    }
+
+    #[test]
+    fn axis_profile_scheduled_projection_preserves_plan_accounting() {
+        let bits = 100;
+        let bucket = vec![
+            Factor {
+                scope: vec![1, 2],
+                values: vec![Some(C::one(bits)); 4],
+            },
+            Factor {
+                scope: vec![1, 2],
+                values: vec![Some(C::one(bits)); 4],
+            },
+            Factor {
+                scope: (1..=11).collect(),
+                values: vec![Some(C::one(bits)); 2048],
+            },
+        ];
+        let op = Op {
+            ids: vec![0, 1, 2],
+            dst: 3,
+            out: (2..=11).collect(),
+            pivot: Some(1),
+        };
+        let mut p = AxisProfile::default();
+        p.scheduled(&bucket, &op, 1024, &[1, 2].into_iter().collect());
+        assert_eq!(p.wide_calls, 6144);
+        assert_eq!(p.projected_saved_cells, 1022);
+        assert_eq!(p.projected_saved_calls, 6132);
+        assert_eq!(p.prefix_twofold_ops, 1);
+        assert_eq!(p.prefix_bounded_ops, 1);
+        assert_eq!(p.prefix_potential_calls, 4088);
+    }
+
     #[test]
     fn recycled_complex_copy_matches_clone_including_signed_zero() {
         for bits in [100, 333] {

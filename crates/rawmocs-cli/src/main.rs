@@ -570,7 +570,7 @@ fn run() -> Result<(), String> {
         start + Duration::from_millis(timeout_ms.unwrap_or(45_000))
     };
     let (answer, route) = if large_general {
-        (general::solve_large(&problem, bits, deadline)?, "general")
+        (general::solve_large(problem, bits, deadline)?, "general")
     } else {
         solve_until(&problem, &raw, bits, &mode, deadline)?
     };

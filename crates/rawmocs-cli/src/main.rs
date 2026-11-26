@@ -648,6 +648,50 @@ mod tests {
     }
 
     #[test]
+    fn independent_parsers_preserve_shared_record_semantics() {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        for bits in [100, 200, 333, 432] {
+            for raw in [
+                "p cnf 2 2\nc t wmc\nc p weight 1 -0.125 0.25 0\nc p weight -1 2e-3 -3e-4 0\n1 1 -2 0\n-1 2 0\n",
+                "\n p cnf 2 1\r\n\r\n c t wmc \r\n c p weight -2 0 0 0\r\n1 -1 0",
+                "p cnf 0 0\nc t wmc\n",
+                "p cnf 1 0\nc t wmc\nc p weight 1 -1 0 0\n",
+                "p cnf 1 1\nc t wmc\n0\n",
+                "p cnf 1 1\nc t wmc\n2 0\n",
+                "p cnf 1 1\nc t wmc\n1\n",
+                "p cnf 1 1\nc t wmc\n1 0 0\n",
+                "p cnf 1 1\nc t wmc\n",
+                "p cnf 1 0\nc t wmc\n1 0\n",
+                "p cnf 1 1\nc t wmc\n1 0\nc p weight 1 1 0 0\n",
+                "p cnf 1 0\nc t wmc\nc p weight 1 1 0 0\nc p weight 1 2 0 0\n",
+                "p cnf 1 0\nc t wmc\nc p weight 0 1 0 0\n",
+                "p cnf 1 0\nc t wmc\nc p weight 1 NaN 0 0\n",
+                "p cnf 1 0\nc t wmc\nc p weight 1 1/2 0 0\n",
+                "p cnf 1 0\nc t pwmc\n",
+                "p cnf 1 0\n",
+                "p dnf 1 0\nc t wmc\n",
+            ] {
+                let a = parse_emitted(raw, bits);
+                let b = parse_large(std::io::Cursor::new(raw), bits, deadline);
+                match (a, b) {
+                    (Ok(a), Ok(b)) => {
+                        assert_eq!(a.n, b.n);
+                        assert_eq!(a.clauses, b.clauses);
+                        for (x, y) in a.weights.iter().zip(&b.weights) {
+                            assert_eq!(x.positive.re, y.positive.re);
+                            assert_eq!(x.positive.im, y.positive.im);
+                            assert_eq!(x.negative.re, y.negative.re);
+                            assert_eq!(x.negative.im, y.negative.im);
+                        }
+                    }
+                    (Err(a), Err(b)) => assert_eq!(a, b, "{raw:?}"),
+                    _ => panic!("parser admission mismatch: {raw:?}"),
+                }
+            }
+        }
+    }
+
+    #[test]
     fn streamed_limits_and_invalid_records_fail_closed() {
         let deadline = Instant::now() + Duration::from_secs(30);
         for raw in [

@@ -912,7 +912,64 @@ fn cadd(a: Cell<C>, b: Cell<C>) -> Cell<C> {
         (a, None) | (None, a) => a,
     }
 }
+// A single late, very sparse, frequently reused factor can rule out a
+// branch before any MPFR work. Never inspect numeric values here: Some(0)
+// is supported. Scheduled visits are an upper bound, not an observed hit rate.
+fn sparse_anchor(
+    bucket: &[Factor<C>],
+    size: usize,
+    pivot: bool,
+    d: Instant,
+) -> Result<(Option<usize>, usize), String> {
+    if size < 1024 || bucket.len() < 2 {
+        return Ok((None, 0));
+    }
+    let lookups = size * if pivot { 2 } else { 1 };
+    let mut best = None;
+    let mut best_score = 0u64;
+    let mut inspected = 0;
+    for (i, f) in bucket.iter().enumerate().skip(1) {
+        let len = f.values.len();
+        if len == 0 || lookups < 4 * len {
+            continue;
+        }
+        let mut absent = 0;
+        for (j, x) in f.values.iter().enumerate() {
+            if j % 4096 == 0 {
+                deadline(d)?;
+            }
+            absent += usize::from(x.is_none());
+        }
+        inspected += len;
+        if absent * 4 < len * 3 {
+            continue;
+        }
+        // Late factor and high missing density: more potential prefix visits
+        // avoided. Earlier absence may already skip this work; measure it.
+        let score = (i as u64) * (absent as u64) * 1024 / (len as u64);
+        if score > best_score {
+            best = Some(i);
+            best_score = score;
+        }
+    }
+    Ok((best, inspected))
+}
+
 fn execute(
+    fs: Vec<Factor<R>>,
+    scalar: Cell<R>,
+    p: &Plan,
+    bits: u32,
+    d: Instant,
+) -> Result<Cell<C>, String> {
+    if std::env::var("RAWMOCS_RESEARCH_SPARSE_ANCHOR").as_deref() == Ok("1") {
+        execute_impl::<true>(fs, scalar, p, bits, d)
+    } else {
+        execute_impl::<false>(fs, scalar, p, bits, d)
+    }
+}
+
+fn execute_impl<const ANCHOR: bool>(
     fs: Vec<Factor<R>>,
     scalar: Cell<R>,
     p: &Plan,
@@ -942,6 +999,11 @@ fn execute(
     // The original replay cost remains unchanged; the pool is extra storage.
     let recycle_cap = 32_768.min(LIVE.saturating_sub(p.cost.peak));
     let mut recycle = Vec::new();
+    let mut anchor_ops = 0usize;
+    let mut inspected_cells = 0usize;
+    let mut checks = 0usize;
+    let mut skips = 0usize;
+    let mut prefix_visit_upper = 0usize;
     let (mut left, mut right) = (C::one(bits), C::one(bits));
     for op in &p.ops {
         deadline(d)?;
@@ -962,6 +1024,14 @@ fn execute(
         if cost.work > WORK || cost.peak > LIVE || cost.width > WIDTH {
             return Err("execution cap".into());
         }
+        let anchor = if ANCHOR {
+            let (anchor, inspected) = sparse_anchor(&bucket, size, op.pivot.is_some(), d)?;
+            inspected_cells += inspected;
+            anchor_ops += usize::from(anchor.is_some());
+            anchor
+        } else {
+            None
+        };
         let mut indices = vec![0; bucket.len()];
         let mut pivots = vec![0; bucket.len()];
         let mut flips = Vec::new();
@@ -985,6 +1055,17 @@ fn execute(
                 deadline(d)?;
             }
             let mut branch = |positive: bool, x: &mut C| {
+                if ANCHOR {
+                    if let Some(i) = anchor {
+                        checks += 1;
+                        let j = indices[i] | if positive { pivots[i] } else { 0 };
+                        if bucket[i].values[j].is_none() {
+                            skips += 1;
+                            prefix_visit_upper += i;
+                            return false;
+                        }
+                    }
+                }
                 x.re.assign(1);
                 x.im.assign(0);
                 for (i, f) in bucket.iter().enumerate() {
@@ -1039,6 +1120,11 @@ fn execute(
     }
     if cost != p.cost {
         return Err("plan replay drift".into());
+    }
+    if ANCHOR {
+        eprintln!(
+            "PREJOIN_RESEARCH_ANCHOR ops={anchor_ops} inspected={inspected_cells} checks={checks} skips={skips} prefix_upper={prefix_visit_upper}"
+        );
     }
     let mut out = mpfr(scalar, bits);
     for f in tables.into_values() {
@@ -1177,6 +1263,105 @@ fn pair_scan(raw: &str, use_mask: bool) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sparse_anchor_preserves_full_replay_and_numeric_zero_support() {
+        let z = (Rational::from(0), Rational::from(0));
+        let complex = (decimal("-0.125").unwrap(), decimal("0.375").unwrap());
+        let mut dense = vec![Some(one()); 2048];
+        dense[3] = None;
+        dense[7] = Some(z);
+        let fs = vec![
+            Factor {
+                scope: (1..=11).collect(),
+                values: dense,
+            },
+            Factor {
+                scope: vec![1, 2],
+                values: vec![None, None, None, Some(complex)],
+            },
+        ];
+        let mut ops = vec![Op {
+            ids: vec![0, 1],
+            dst: 2,
+            out: (2..=11).collect(),
+            pivot: Some(1),
+        }];
+        for v in 2..=11 {
+            ops.push(Op {
+                ids: vec![v],
+                dst: v + 1,
+                out: (v + 1..=11).collect(),
+                pivot: Some(v),
+            });
+        }
+        let plan = Plan {
+            ops,
+            cost: Cost {
+                width: 10,
+                work: 6142,
+                peak: 3076,
+                joins: 0,
+            },
+            extra: 0,
+        };
+        for bits in [100, 200, 333, 432] {
+            let d = Instant::now() + Duration::from_secs(5);
+            let bucket: Vec<Factor<C>> = fs
+                .iter()
+                .map(|f| Factor {
+                    scope: f.scope.clone(),
+                    values: f
+                        .values
+                        .iter()
+                        .cloned()
+                        .map(|v| mpfr(v, bits))
+                        .collect(),
+                })
+                .collect();
+            assert_eq!(
+                sparse_anchor(&bucket, 1024, true, d).unwrap(),
+                (Some(1), 4)
+            );
+            assert_eq!(sparse_anchor(&bucket, 512, true, d).unwrap(), (None, 0));
+            assert!(bucket[0].values[7].is_some());
+            let off = execute_impl::<false>(fs.clone(), Some(one()), &plan, bits, d)
+                .unwrap()
+                .unwrap();
+            let on = execute_impl::<true>(fs.clone(), Some(one()), &plan, bits, d)
+                .unwrap()
+                .unwrap();
+            assert_eq!(off.re, on.re);
+            assert_eq!(off.im, on.im);
+            assert_eq!(on.re, Float::with_val(bits, -63.75));
+            assert_eq!(on.im, Float::with_val(bits, 191.25));
+            assert_eq!(off.re.is_sign_negative(), on.re.is_sign_negative());
+            assert_eq!(off.im.is_sign_negative(), on.im.is_sign_negative());
+        }
+    }
+
+    #[test]
+    fn sparse_anchor_does_not_treat_supported_zero_as_absent() {
+        let bits = 100;
+        let bucket = vec![
+            Factor {
+                scope: vec![1],
+                values: vec![Some(C::one(bits)); 2],
+            },
+            Factor {
+                scope: vec![1, 2],
+                values: vec![
+                    None,
+                    Some(C::zero(bits)),
+                    Some(C::zero(bits)),
+                    Some(C::zero(bits)),
+                ],
+            },
+        ];
+        let d = Instant::now() + Duration::from_secs(5);
+        assert_eq!(sparse_anchor(&bucket, 1024, true, d).unwrap(), (None, 4));
+        assert!(sparse_anchor(&bucket, 1024, true, Instant::now()).is_err());
+    }
+
     #[test]
     fn recycled_complex_copy_matches_clone_including_signed_zero() {
         for bits in [100, 333] {

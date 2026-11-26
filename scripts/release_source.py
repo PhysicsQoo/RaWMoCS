@@ -89,13 +89,20 @@ def verify_run(r, run_data, jobs, kind):
     require(run_data["path"].split("@", 1)[0] == ".github/workflows/" + workflow, "wrong workflow")
     require(run_data["head_branch"] == "main" and run_data["head_sha"] == r["revision"], "wrong run revision")
     require(run_data["event"] in ("push", "workflow_dispatch"), "untrusted run event")
+    if kind == "science" and r["version"] != "0.1.0":
+        require(run_data["event"] == "workflow_dispatch", "new releases require full manual science")
     require(run_data["status"] == "completed" and run_data["conclusion"] == "success", "run not successful")
     require(jobs["total_count"] == len(jobs["jobs"]) == len(expected)
             and {j["name"] for j in jobs["jobs"]} == expected, "missing or unexpected jobs")
     for j in jobs["jobs"]:
         require(j["status"] == "completed" and j["conclusion"] == "success", f"failed job {j['name']}")
         steps = {s["name"]: s["conclusion"] for s in j["steps"]}
-        require(all(steps.get(s) == "success" for s in STEPS.get(j["name"], ())),
+        required_steps = STEPS.get(j["name"], ())
+        # Preserve the published v0.1.0 receipt, but never let a future
+        # release claim a two-arm or skipped routine gate as full admission.
+        if j["name"].startswith("Release matched native GPMC (") and r["version"] != "0.1.0":
+            required_steps = {"Seven order-rotated same-precision native triples"}
+        require(all(steps.get(s) == "success" for s in required_steps),
                 f"missing or failed required step {j['name']}")
         require(not any(s["conclusion"] in ("failure", "cancelled", "timed_out") for s in j["steps"]),
                 f"failed step in {j['name']}")

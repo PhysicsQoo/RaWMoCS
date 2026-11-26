@@ -912,7 +912,85 @@ fn cadd(a: Cell<C>, b: Cell<C>) -> Cell<C> {
         (a, None) | (None, a) => a,
     }
 }
+// Memoize an ordered prefix, not a reassociated product. The key is the
+// projection of the original assignment onto the union of prefix scopes.
+// Three states distinguish uncomputed, Boolean absence, and supported C.
+struct PrefixSpec {
+    len: usize,
+    slots: usize,
+    flips: Vec<usize>,
+    pivot: usize,
+}
+
+fn prefix_spec(
+    bucket: &[Factor<C>],
+    op: &Op,
+    size: usize,
+    headroom: usize,
+) -> Result<Option<PrefixSpec>, String> {
+    if size < 1024 || bucket.len() < 3 || headroom == 0 {
+        return Ok(None);
+    }
+    let visits = size * if op.pivot.is_some() { 2 } else { 1 };
+    let cap = 4096.min(headroom);
+    let mut scope = Scope::new();
+    let mut best = None;
+    let mut best_score = 0usize;
+    // Leave at least one suffix factor. A pair join already spans its output.
+    for (i, f) in bucket.iter().take(bucket.len() - 1).enumerate() {
+        scope.extend(f.scope.iter().copied());
+        if scope.len() > 12 {
+            break;
+        }
+        let slots = 1usize << scope.len();
+        if slots > cap || slots * 4 > visits {
+            break;
+        }
+        let len = i + 1;
+        if len < 2 {
+            continue;
+        }
+        let score = (visits - slots) * len;
+        if score > best_score {
+            let mut flips = vec![0; op.out.len()];
+            let mut pivot = 0;
+            for (j, &v) in scope.iter().enumerate() {
+                if Some(v) == op.pivot {
+                    pivot = 1 << j;
+                } else {
+                    flips[op.out.binary_search(&v).map_err(|_| "prefix scope")?] = 1 << j;
+                }
+            }
+            for j in 1..flips.len() {
+                flips[j] ^= flips[j - 1];
+            }
+            best = Some(PrefixSpec {
+                len,
+                slots,
+                flips,
+                pivot,
+            });
+            best_score = score;
+        }
+    }
+    Ok(best)
+}
+
 fn execute(
+    fs: Vec<Factor<R>>,
+    scalar: Cell<R>,
+    p: &Plan,
+    bits: u32,
+    d: Instant,
+) -> Result<Cell<C>, String> {
+    if std::env::var("RAWMOCS_RESEARCH_PREFIX_MEMO").as_deref() == Ok("1") {
+        execute_impl::<true>(fs, scalar, p, bits, d)
+    } else {
+        execute_impl::<false>(fs, scalar, p, bits, d)
+    }
+}
+
+fn execute_impl<const MEMO: bool>(
     fs: Vec<Factor<R>>,
     scalar: Cell<R>,
     p: &Plan,
@@ -942,6 +1020,13 @@ fn execute(
     // The original replay cost remains unchanged; the pool is extra storage.
     let recycle_cap = 32_768.min(LIVE.saturating_sub(p.cost.peak));
     let mut recycle = Vec::new();
+    let memo_headroom = LIVE.saturating_sub(p.cost.peak).saturating_sub(recycle_cap);
+    let mut memo_ops = 0usize;
+    let mut memo_peak_slots = 0usize;
+    let mut hits = 0usize;
+    let mut misses = 0usize;
+    let mut absent_hits = 0usize;
+    let mut saved_calls = 0usize;
     let (mut left, mut right) = (C::one(bits), C::one(bits));
     for op in &p.ops {
         deadline(d)?;
@@ -979,15 +1064,58 @@ fn execute(
             }
             flips.push(b);
         }
+        let spec = if MEMO {
+            prefix_spec(&bucket, op, size, memo_headroom)?
+        } else {
+            None
+        };
+        let mut memo: Vec<Option<Cell<C>>> = Vec::new();
+        let mut memo_index = 0usize;
+        if let Some(s) = &spec {
+            memo.resize_with(s.slots, || None);
+            memo_ops += 1;
+            memo_peak_slots = memo_peak_slots.max(s.slots);
+        }
         let mut values = Vec::with_capacity(size);
         for m in 0..size {
             if m % 4096 == 0 {
                 deadline(d)?;
             }
             let mut branch = |positive: bool, x: &mut C| {
+                let mut start = 0;
                 x.re.assign(1);
                 x.im.assign(0);
-                for (i, f) in bucket.iter().enumerate() {
+                if MEMO {
+                    if let Some(s) = &spec {
+                        let key = memo_index | if positive { s.pivot } else { 0 };
+                        match &memo[key] {
+                            Some(Some(c)) => {
+                                hits += 1;
+                                saved_calls += s.len;
+                                x.re.assign(&c.re);
+                                x.im.assign(&c.im);
+                            }
+                            Some(None) => {
+                                absent_hits += 1;
+                                return false;
+                            }
+                            None => {
+                                misses += 1;
+                                for (i, f) in bucket[..s.len].iter().enumerate() {
+                                    let idx = indices[i] | if positive { pivots[i] } else { 0 };
+                                    let Some(y) = &f.values[idx] else {
+                                        memo[key] = Some(None);
+                                        return false;
+                                    };
+                                    scratch.multiply(x, y);
+                                }
+                                memo[key] = Some(Some(x.clone()));
+                            }
+                        }
+                        start = s.len;
+                    }
+                }
+                for (i, f) in bucket.iter().enumerate().skip(start) {
                     let Some(y) = &f.values[indices[i] | if positive { pivots[i] } else { 0 }]
                     else {
                         return false;
@@ -1013,8 +1141,15 @@ fn execute(
                 for (i, x) in indices.iter_mut().enumerate() {
                     *x ^= flips[i][bit];
                 }
+                if MEMO {
+                    if let Some(s) = &spec {
+                        memo_index ^= s.flips[bit];
+                    }
+                }
             }
         }
+        // Release memo-owned MPFR cells before retaining dead bucket cells.
+        drop(memo);
         live = live + size - bucket.iter().map(|f| f.values.len()).sum::<usize>();
         // No references to consumed factors survive the operation.
         // Do not scan an entire dead table once the bounded pool is full.
@@ -1039,6 +1174,11 @@ fn execute(
     }
     if cost != p.cost {
         return Err("plan replay drift".into());
+    }
+    if MEMO {
+        eprintln!(
+            "PREJOIN_RESEARCH_PREFIX ops={memo_ops} peak_slots={memo_peak_slots} hits={hits} misses={misses} absent_hits={absent_hits} saved_calls={saved_calls}"
+        );
     }
     let mut out = mpfr(scalar, bits);
     for f in tables.into_values() {
@@ -1177,6 +1317,83 @@ fn pair_scan(raw: &str, use_mask: bool) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ordered_prefix_memo_replays_signed_complex_and_absence() {
+        let z = (Rational::from(0), Rational::from(0));
+        let complex = (decimal("-0.125").unwrap(), decimal("0.375").unwrap());
+        let fs = vec![
+            Factor {
+                scope: vec![1, 2],
+                values: vec![None, Some(complex.clone()), Some(one()), Some(z)],
+            },
+            Factor {
+                scope: vec![1, 2],
+                values: vec![Some(one()), Some(one()), Some(complex), Some(one())],
+            },
+            Factor {
+                scope: (1..=11).collect(),
+                values: vec![Some(one()); 2048],
+            },
+        ];
+        let mut ops = vec![Op {
+            ids: vec![0, 1, 2],
+            dst: 3,
+            out: (2..=11).collect(),
+            pivot: Some(1),
+        }];
+        for v in 2..=11 {
+            ops.push(Op {
+                ids: vec![v + 1],
+                dst: v + 2,
+                out: (v + 1..=11).collect(),
+                pivot: Some(v),
+            });
+        }
+        let plan = Plan {
+            ops,
+            cost: Cost {
+                width: 10,
+                work: 8190,
+                peak: 3080,
+                joins: 0,
+            },
+            extra: 0,
+        };
+        for bits in [100, 200, 333, 432] {
+            let d = Instant::now() + Duration::from_secs(5);
+            let bucket: Vec<_> = fs
+                .iter()
+                .map(|f| Factor {
+                    scope: f.scope.clone(),
+                    values: f
+                        .values
+                        .iter()
+                        .cloned()
+                        .map(|v| mpfr(v, bits))
+                        .collect(),
+                })
+                .collect();
+            let op = &plan.ops[0];
+            let spec = prefix_spec(&bucket, op, 1024, 4096).unwrap().unwrap();
+            assert_eq!((spec.len, spec.slots, spec.pivot), (2, 4, 1));
+            assert_eq!(spec.flips, vec![2; 10]);
+            assert!(prefix_spec(&bucket, op, 1024, 3).unwrap().is_none());
+            assert!(prefix_spec(&bucket, op, 512, 4096).unwrap().is_none());
+            let off = execute_impl::<false>(fs.clone(), Some(one()), &plan, bits, d)
+                .unwrap()
+                .unwrap();
+            let on = execute_impl::<true>(fs.clone(), Some(one()), &plan, bits, d)
+                .unwrap()
+                .unwrap();
+            assert_eq!(off.re, on.re);
+            assert_eq!(off.im, on.im);
+            assert_eq!(on.re, Float::with_val(bits, -128));
+            assert_eq!(on.im, Float::with_val(bits, 384));
+            assert_eq!(off.re.is_sign_negative(), on.re.is_sign_negative());
+            assert_eq!(off.im.is_sign_negative(), on.im.is_sign_negative());
+        }
+    }
+
     #[test]
     fn recycled_complex_copy_matches_clone_including_signed_zero() {
         for bits in [100, 333] {

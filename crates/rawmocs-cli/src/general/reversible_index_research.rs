@@ -1283,12 +1283,13 @@ struct ScopedTrail<'a> {
     profile: Option<PhaseProfile>,
     fresh_shortcut: bool,
     reuse_residual: bool,
+    preindex_cache: bool,
 }
 impl<'a> ScopedTrail<'a> {
     fn new(p: &'a Problem, bits: u32, deadline: Instant) -> Self {
         Self { p, bits, deadline, cache: HashMap::new(), items: 0,
             stats: TrailStats::default(), max_nodes: 100_000, trace: None, policy: 0,
-            frequency: Vec::new(), parent: Vec::new(), bypasses: 0, profile: None, fresh_shortcut:false, reuse_residual:false }
+            frequency: Vec::new(), parent: Vec::new(), bypasses: 0, profile: None, fresh_shortcut:false, reuse_residual:false, preindex_cache:false }
     }
     fn check(&self) -> Result<(), String> {
         if Instant::now() >= self.deadline { return Err("research deadline".into()); }
@@ -1340,6 +1341,28 @@ impl<'a> ScopedTrail<'a> {
         }
         let timer=stamp(self.profile.is_some());
         let normalized=normalize(clauses);
+        // Fresh components already have the exact normalized node key.
+        // On a hit avoid constructing the occurrence index entirely.
+        // Misses still follow the unchanged indexed path (including
+        // its ordinary exact lookup); the extra miss cost is measured.
+        if self.preindex_cache && self.policy>=3 && !self.cache.is_empty() {
+            self.check()?;
+            if depth > 96 { return Err("research depth limit".into()); }
+            if self.stats.nodes >= self.max_nodes { return Err("research node limit".into()); }
+            let query=KeyQuery {scope:&scope,clauses:&normalized};
+            let view:&dyn KeyView=&query;
+            if let Some(hit)=self.cache.get(view) {
+                let out=hit.clone();
+                self.stats.nodes+=1;
+                self.stats.hits+=1;
+                if let Some(t)=&mut self.trace {
+                    t.enter(&scope,&normalized);
+                    t.hits+=1;
+                }
+                if let Some(p)=&mut self.profile {p.init_ns+=elapsed(timer);}
+                return Ok(out);
+            }
+        }
         let mut state=if self.policy>=3 {
             TrailIndex::ranked_direct(normalized,self.p.n,&scope,self.policy==4)
         } else {
@@ -1929,11 +1952,12 @@ fn scoped_canonical_reuse_randomized() {
             let p = parse_emitted(&raw,bits).unwrap();
             let baseline = super::solve(&p,bits,deadline).unwrap();
             let exact=dyadic.then(||crate::reference(&p,&raw,bits).unwrap());
-            for mode in 0..4 {
+            for mode in 0..8 {
                 let mut trial=ScopedTrail::new(&p,bits,deadline);
                 trial.policy=if case%2==0 {3} else {4};
                 trial.fresh_shortcut=mode&1!=0;
                 trial.reuse_residual=mode&2!=0;
+                trial.preindex_cache=mode&4!=0;
                 let actual=trial.fresh(p.clauses.clone(),(1..=p.n).collect(),0).unwrap();
                 same_outcome(&actual,&baseline);
                 if let Some(exact)=exact.as_ref() {same_outcome(&actual,exact);}
@@ -1946,7 +1970,7 @@ fn scoped_canonical_reuse_randomized() {
         }
     }
     assert!(totals.hits>0 && totals.splits>0 && totals.branches>0 && totals.free>0);
-    println!("CANONICAL_REUSE_RANDOM_PASS counts=8192 independent_dyadic=4096 nodes={} hits={} splits={} branches={} free={}",totals.nodes,totals.hits,totals.splits,totals.branches,totals.free);
+    println!("CANONICAL_REUSE_RANDOM_PASS counts=16384 independent_dyadic=8192 nodes={} hits={} splits={} branches={} free={}",totals.nodes,totals.hits,totals.splits,totals.branches,totals.free);
 }
 
 #[test]
@@ -1976,8 +2000,10 @@ fn canonical_reuse_run(p:&Problem,bits:u32,mode:u8,trace:bool,budget:usize)
     // Global direct construction is the factor control; compact local
     // indexing is deliberately held out of this factorial comparison.
     e.policy=3;
-    e.fresh_shortcut=(mode-1)&1!=0;
-    e.reuse_residual=(mode-1)&2!=0;
+    assert!((1..=5).contains(&mode));
+    e.fresh_shortcut=mode==5 || (mode-1)&1!=0;
+    e.reuse_residual=mode==5 || (mode-1)&2!=0;
+    e.preindex_cache=mode==5;
     e.max_nodes=budget;
     e.trace=trace.then(super::WorkTrace::default);
     e.profile=trace.then(PhaseProfile::default);
@@ -2047,3 +2073,80 @@ fn scoped_canonical_reuse_ablation() {
     }
 }
 
+
+
+#[test]
+fn scoped_preindex_exact_scope_budget_and_cancellation() {
+    let raw="p cnf 6 2\nc t wmc\nc p weight 5 -1 0 0\n1 2 0\n3 4 0\n";
+    for bits in [100,200,333,432] {
+        let p=crate::parse_emitted(raw,bits).unwrap();
+        for policy in [3,4] {
+            let mut e=ScopedTrail::new(&p,bits,Instant::now()+Duration::from_secs(5));
+            e.policy=policy;
+            e.fresh_shortcut=true;
+            e.reuse_residual=true;
+            e.preindex_cache=true;
+            let scope:Vec<_>=(1..=6).collect();
+            let a=e.fresh(p.clauses.clone(),scope.clone(),0).unwrap();
+            assert!(a.sat);
+            assert_eq!(a.count.re,0);
+            assert_eq!(a.count.im,0);
+            let (nodes,hits,indexes)=(e.stats.nodes,e.stats.hits,e.stats.indexes);
+            same_outcome(&a,&e.fresh(p.clauses.clone(),scope.clone(),0).unwrap());
+            assert_eq!((e.stats.nodes,e.stats.hits,e.stats.indexes),(nodes+1,hits+1,indexes));
+            let b=e.fresh(p.clauses.clone(),vec![1,2,3,4,6],0).unwrap();
+            assert!(b.sat);
+            assert_eq!(b.count.re,18);
+            assert_eq!(b.count.im,0);
+            e.max_nodes=e.stats.nodes;
+            assert!(e.fresh(p.clauses.clone(),scope.clone(),0).err().unwrap().contains("node limit"));
+            e.max_nodes=usize::MAX;
+            assert!(e.fresh(p.clauses.clone(),scope.clone(),97).err().unwrap().contains("depth limit"));
+            e.deadline=Instant::now();
+            assert!(e.fresh(p.clauses.clone(),scope,0).err().unwrap().contains("deadline"));
+        }
+    }
+}
+
+#[test]
+#[ignore = "research-only exact fresh cache hit before index construction"]
+fn scoped_preindex_cache_ablation() {
+    let digits:usize=std::env::var("RAWMOCS_TEST_DIGITS").unwrap().parse().unwrap();
+    let bits=match digits {30=>100,130=>432,_=>panic!("unsupported cohort")};
+    let raw=std::fs::read_to_string(std::env::var("RAWMOCS_TEST_ORIGINAL").unwrap()).unwrap();
+    let mut split="p cnf 4096 2048\nc t wmc\n".to_owned();
+    for v in 1..=4096 {split.push_str(&format!("c p weight -{v} 0 0\n"));}
+    for v in (1..=4096).step_by(2) {split.push_str(&format!("{v} {} 0\n",v+1));}
+    for (name,raw) in [("split4096",split),("vqe8",raw)] {
+        let p=crate::parse_large(std::io::Cursor::new(raw.as_bytes()),bits,Instant::now()+Duration::from_secs(12)).unwrap();
+        let (base,tr,budget,_,_)=canonical_reuse_run(&p,bits,0,true,1_000_000);
+        let base=base.unwrap();
+        let trace=tr.unwrap().summary();
+        let mut indexes=[0usize;6];
+        for mode in [0,4,5] {
+            let (out,tr,n,idx,_)=canonical_reuse_run(&p,bits,mode,true,budget);
+            same_outcome(&base,&out.unwrap());
+            assert_eq!(tr.unwrap().summary(),trace);
+            assert_eq!(n,budget);
+            indexes[mode as usize]=idx;
+            println!("PREINDEX_TRACE case={name} digits={digits} mode={mode} nodes={n} indexes={idx} fingerprint={:016x} hits={} splits={} branches={} free={}",trace.0,trace.2,trace.3,trace.4,trace.5);
+        }
+        assert!(indexes[5]<=indexes[4]);
+        println!("PREINDEX_AVOIDED case={name} digits={digits} indexes={}",indexes[4]-indexes[5]);
+        for (trial,order) in [[0,4,5],[4,5,0],[5,0,4],[5,4,0],[0,5,4],[4,0,5]].into_iter().enumerate() {
+            for mode in order {
+                let start=Instant::now();
+                let (out,_,n,idx,_)=canonical_reuse_run(&p,bits,mode,false,budget);
+                let wall_ns=start.elapsed().as_nanos();
+                let out=out.unwrap();
+                assert_eq!(n,budget);
+                assert_eq!(idx,indexes[mode as usize]);
+                same_outcome(&base,&out);
+                let sat=if out.sat {"SATISFIABLE"} else {"UNSATISFIABLE"};
+                let real=out.count.re.to_string_radix(10,Some(digits+4));
+                let imag=out.count.im.to_string_radix(10,Some(digits+4));
+                println!("PREINDEX_FULL_FINAL case={name} digits={digits} trial={trial} mode={mode} wall_ns={wall_ns} sat={sat} real={real} imag={imag}");
+            }
+        }
+    }
+}

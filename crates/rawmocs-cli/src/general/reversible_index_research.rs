@@ -888,3 +888,52 @@ fn rank_generation_fixed_work() {
         println!("RANK_GENERATION_FINAL trial={trial} reuse={reuse} source={} active={} branches=256 forced={work} wall_ns={ns}",source.len(),parent.len());
     }
 }
+
+#[test]
+#[ignore = "research-only dense rank generation control"]
+fn rank_generation_dense_fixed_work() {
+    // Dense root control: no inactive prefix. Same canonical boundary,
+    // forced order, and bitmap state as the sparse sibling benchmark.
+    let n = 8192_i32;
+    let mut source = Vec::new();
+    for v in 2..=9 { source.push(vec![1,v]); source.push(vec![-1,v]); }
+    for v in 2..n { source.push(vec![-v,v+1]); }
+    let source = normalize(source);
+    let deadline = Instant::now() + Duration::from_secs(90);
+    let parent = source.clone();
+    let expected: Vec<_> = [1,-1].iter().map(|&lit| {
+        let mut c = parent.clone();
+        assign_inplace(&mut c,lit);
+        let closed = indexed_units(normalize(c),n as usize,deadline).unwrap().unwrap();
+        assert!(closed.clauses.is_empty());
+        closed.forced
+    }).collect();
+    for (trial, reuse) in [false,true,true,false,false,true,true,false,false,true,true,false].into_iter().enumerate() {
+        let mut state = TrailIndex::with_mode(source.clone(),n as usize,false,true);
+        state.active = Frontier::bitmap(source.len());
+        if reuse { state.rank_scratch = Some(RankScratch::new(source.len())); }
+        let checkpoint = state.checkpoint();
+        assert_eq!(normalize(state.residual()),parent);
+        let start = Instant::now();
+        let mut work = 0;
+        for _ in 0..32 {
+            for (arm,lit) in [1,-1].into_iter().enumerate() {
+                assert!(state.apply(lit));
+                let (ids,key) = state.materialized_boundary();
+                let forced = state.ranked_closure(&ids,deadline).unwrap().unwrap();
+                assert_eq!(forced,expected[arm]);
+                assert!(state.active.is_empty());
+                work += forced.len();
+                state.rollback(checkpoint);
+                std::hint::black_box(key);
+            }
+        }
+        let ns = start.elapsed().as_nanos();
+        state.verify();
+        assert_eq!(normalize(state.residual()),parent);
+        state.rollback(0);
+        state.verify();
+        assert_eq!(state.residual(),source);
+        println!("RANK_GENERATION_DENSE_FINAL trial={trial} reuse={reuse} source={} active={} branches=64 forced={work} wall_ns={ns}",source.len(),parent.len());
+    }
+}

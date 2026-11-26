@@ -1001,12 +1001,13 @@ mod pivot_research {
         assert_eq!(base,3);
         assert_eq!(separator_pivot(&star,&active,&freq,base,&mut r),4);
         assert_eq!(r.separator_overrides,1);
-        let mut raw=format!("p cnf 8 {}\\nc t wmc\\nc p weight 4 -0.5 0.25 0\\nc p weight -4 0.25 -0.125 0\\n",star.len());
-        for c in star {for lit in c {raw.push_str(&format!("{lit} "));} raw.push_str("0\\n");}
+        let mut raw=format!("p cnf 8 {}\nc t wmc\nc p weight 4 -0.5 0.25 0\nc p weight -4 0.25 -0.125 0\n",star.len());
+        for c in star {for lit in c {raw.push_str(&format!("{lit} "));} raw.push_str("0\n");}
         for bits in [100,200,333,432] {
             let p=crate::parse_emitted(&raw,bits).unwrap();
             let exact=crate::reference(&p,&raw,bits).unwrap();
-            let (out,_)=run(&p,bits,3,Instant::now()+Duration::from_secs(5));
+            let (out,stats)=run(&p,bits,3,Instant::now()+Duration::from_secs(5));
+            assert!(stats.separator_overrides>0);
             let out=out.unwrap();
             assert_eq!(out.sat,exact.sat);
             assert_eq!(out.count.re,exact.count.re);

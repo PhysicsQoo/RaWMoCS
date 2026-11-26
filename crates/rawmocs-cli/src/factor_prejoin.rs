@@ -598,17 +598,35 @@ fn fill_count(graph: &[u64], nb: u64) -> usize {
     let graph: Vec<_> = graph.iter().map(|&w| Mask([w])).collect();
     fill_words(&graph, Mask([nb]))
 }
+#[derive(Default, Debug, PartialEq, Eq)]
+struct Rejections {
+    width: usize,
+    work: usize,
+    live: usize,
+    both: usize,
+    accepted: usize,
+    aggregate_work: usize,
+    aggregate_live: usize,
+    aggregate_both: usize,
+    min_rejected_width: Option<usize>,
+    min_rejected_work: Option<usize>,
+    min_rejected_live: Option<usize>,
+}
+fn record_min(slot: &mut Option<usize>, v: usize) {
+    *slot = Some(slot.map_or(v, |old| old.min(v)));
+}
 fn plan(
     fs: &[Factor<R>],
     nodes: &Scope,
     policy: (Option<usize>, bool),
     retained: usize,
     d: Instant,
+    rejected: &mut Rejections,
 ) -> Result<Option<Plan>, String> {
     if nodes.len() <= 64 {
-        plan_words::<1>(fs, nodes, policy, retained, d)
+        plan_words::<1>(fs, nodes, policy, retained, d, rejected)
     } else {
-        plan_words::<4>(fs, nodes, policy, retained, d)
+        plan_words::<4>(fs, nodes, policy, retained, d, rejected)
     }
 }
 fn plan_words<const N: usize>(
@@ -617,8 +635,9 @@ fn plan_words<const N: usize>(
     policy: (Option<usize>, bool),
     retained: usize,
     d: Instant,
+    rejected: &mut Rejections,
 ) -> Result<Option<Plan>, String> {
-    plan_words_impl::<N, true>(fs, nodes, policy, retained, d)
+    plan_words_impl::<N, true>(fs, nodes, policy, retained, d, rejected)
 }
 fn plan_words_impl<const N: usize, const MASK_PAIRS: bool>(
     fs: &[Factor<R>],
@@ -626,6 +645,7 @@ fn plan_words_impl<const N: usize, const MASK_PAIRS: bool>(
     policy: (Option<usize>, bool),
     retained: usize,
     d: Instant,
+    rejected: &mut Rejections,
 ) -> Result<Option<Plan>, String> {
     let mut scopes: BTreeMap<usize, Scope> = fs
         .iter()
@@ -684,6 +704,8 @@ fn plan_words_impl<const N: usize, const MASK_PAIRS: bool>(
         let neighbors = graph[i];
         let nb: Scope = neighbors.indices().map(|j| vars[j]).collect();
         if nb.len() > WIDTH {
+            rejected.width += 1;
+            record_min(&mut rejected.min_rejected_width, nb.len());
             return Ok(None);
         }
         cost.width = cost.width.max(nb.len());
@@ -756,6 +778,18 @@ fn plan_words_impl<const N: usize, const MASK_PAIRS: bool>(
         cost.work += 2 * size * bucket.len();
         cost.peak = cost.peak.max(live + size + extra);
         if cost.work > WORK || cost.peak > LIVE {
+            match (cost.work > WORK, cost.peak > LIVE) {
+                (true, true) => rejected.both += 1,
+                (true, false) => rejected.work += 1,
+                (false, true) => rejected.live += 1,
+                _ => unreachable!(),
+            }
+            if cost.work > WORK {
+                record_min(&mut rejected.min_rejected_work, cost.work);
+            }
+            if cost.peak > LIVE {
+                record_min(&mut rejected.min_rejected_live, cost.peak);
+            }
             return Ok(None);
         }
         live = live + size - bucket.iter().map(|(_, s)| 1usize << s.len()).sum::<usize>();
@@ -774,6 +808,7 @@ fn plan_words_impl<const N: usize, const MASK_PAIRS: bool>(
             graph[j].union(fill);
         }
     }
+    rejected.accepted += 1;
     Ok(Some(Plan { ops, cost, extra }))
 }
 type Selected = (Vec<usize>, Vec<Plan>, Cost);
@@ -799,17 +834,27 @@ fn choose(
     local: &Cost,
     d: Instant,
 ) -> Result<Selected, String> {
-    let base = choose_search(fs, nodes, scalar, local, d, None)?;
+    let three = std::env::var("RAWMOCS_RESEARCH_THREE_CUT").as_deref() == Ok("1");
+    let base = choose_search(fs, nodes, scalar, local, d, None, three, false)?;
     // Explicit branch-only ablation. Never relax the existing hard budgets.
     // Explore peak-first leaves and zero/one cuts at <=125% of base work.
+    let mode = std::env::var("RAWMOCS_RESEARCH_PEAK_FIRST").unwrap_or_default();
+    let gated = mode == "2";
+    // The low-cost mode only considers high-cost zero-cut baseline plans.
+    // Thresholds and shortlist length are research hypotheses, not defaults.
     if base.0.is_empty()
-        && std::env::var("RAWMOCS_RESEARCH_PEAK_FIRST").as_deref() == Ok("1")
+        && (mode == "1" || (gated && base.2.peak >= 262_144 && base.2.work >= 1_000_000))
     {
-        let max_work = WORK.min(base.2.work.saturating_mul(5) / 4);
-        match choose_search(fs, nodes, scalar, local, d, Some((max_work, base.2.peak))) {
+        let max_work = if gated {
+            base.2.work
+        } else {
+            WORK.min(base.2.work.saturating_mul(5) / 4)
+        };
+        let max_peak = if gated { base.2.peak / 2 + 1 } else { base.2.peak };
+        match choose_search(fs, nodes, scalar, local, d, Some((max_work, max_peak)), false, gated) {
             Ok(candidate) => {
-                eprintln!("PREJOIN_RESEARCH_PEAK base={} candidate={} base_work={} candidate_work={}",
-                          base.2.peak, candidate.2.peak, base.2.work, candidate.2.work);
+                eprintln!("PREJOIN_RESEARCH_PEAK base={} candidate={} base_work={} candidate_work={} gated={gated} cuts={:?}",
+                          base.2.peak, candidate.2.peak, base.2.work, candidate.2.work, candidate.0);
                 return Ok(candidate);
             }
             Err(e) if e == "no bounded prejoin plan" || e == "prejoin deadline" => {
@@ -817,6 +862,9 @@ fn choose(
             }
             Err(e) => return Err(e),
         }
+    }
+    if gated {
+        eprintln!("PREJOIN_RESEARCH_GATE baseline_cuts={} peak={} work={} retained_baseline=true", base.0.len(), base.2.peak, base.2.work);
     }
     Ok(base)
 }
@@ -828,6 +876,8 @@ fn choose_search(
     local: &Cost,
     d: Instant,
     memory_budget: Option<(usize, usize)>,
+    three: bool,
+    shortlist: bool,
 ) -> Result<Selected, String> {
     let retained = fs.iter().map(|f| f.values.len()).sum::<usize>();
     let mut high: Vec<_> = nodes.iter().copied().collect();
@@ -842,9 +892,10 @@ fn choose_search(
     });
     high.truncate(12);
     let mut memory_best: Option<Selected> = None;
-    for n in 0..=if memory_budget.is_some() { 1 } else { 3 } {
+    for n in 0..=if memory_budget.is_some() { 1 } else if three { 3 } else { 2 } {
         let candidates: Vec<Vec<usize>> = match n {
             0 => vec![vec![]],
+            1 if shortlist => high.iter().take(8).map(|&v| vec![v]).collect(),
             1 => nodes.iter().map(|&v| vec![v]).collect(),
             2 => high
                 .iter()
@@ -856,6 +907,7 @@ fn choose_search(
         let mut best: Option<Selected> = None;
         let attempted = candidates.len();
         let mut admitted = 0usize;
+        let mut rejected = Rejections::default();
         for cuts in candidates {
             deadline(d)?;
             let ns: Scope = nodes
@@ -870,7 +922,7 @@ fn choose_search(
                 let mut options = Vec::new();
                 for p in [Some(0), Some(4), None] {
                     for reverse in [true, false] {
-                        if let Some(x) = plan(&f, &ns, (p, reverse), retained, d)? {
+                        if let Some(x) = plan(&f, &ns, (p, reverse), retained, d, &mut rejected)? {
                             options.push(x);
                         }
                     }
@@ -892,10 +944,15 @@ fn choose_search(
                 cost.joins += x.cost.joins;
                 plans.push(x);
             }
-            if plans.len() == 1 << cuts.len()
-                && cost.work <= WORK
-                && cost.peak <= LIVE
-            {
+            if plans.len() == 1 << cuts.len() {
+                match (cost.work > WORK, cost.peak > LIVE) {
+                    (true, true) => rejected.aggregate_both += 1,
+                    (true, false) => rejected.aggregate_work += 1,
+                    (false, true) => rejected.aggregate_live += 1,
+                    _ => (),
+                }
+            }
+            if plans.len() == 1 << cuts.len() && cost.work <= WORK && cost.peak <= LIVE {
                 admitted += 1;
                 if let Some((max_work, max_peak)) = memory_budget {
                     if cost.work <= max_work && cost.peak < max_peak
@@ -913,7 +970,7 @@ fn choose_search(
                 }
             }
         }
-        eprintln!("PREJOIN_RESEARCH_LEVEL cuts={n} attempted={attempted} admitted={admitted} memory_mode={}", memory_budget.is_some());
+        eprintln!("PREJOIN_RESEARCH_LEVEL cuts={n} attempted={attempted} admitted={admitted} memory_mode={} shortlist={shortlist} leaf_rejections={rejected:?}", memory_budget.is_some());
         if let Some(b) = best {
             return Ok(b);
         }
@@ -1283,8 +1340,8 @@ mod tests {
             for p in [Some(0), Some(4), None] {
                 for reverse in [true, false] {
                     assert_eq!(
-                        plan_words::<1>(&fs, &nodes, (p, reverse), 0, d).unwrap(),
-                        plan_words::<4>(&fs, &nodes, (p, reverse), 0, d).unwrap()
+                        plan_words::<1>(&fs, &nodes, (p, reverse), 0, d, &mut Rejections::default()).unwrap(),
+                        plan_words::<4>(&fs, &nodes, (p, reverse), 0, d, &mut Rejections::default()).unwrap()
                     );
                 }
             }
@@ -1304,10 +1361,10 @@ mod tests {
         let n = 170;
         let fs = make(n);
         let nodes: Scope = (1..=n).collect();
-        let p = plan(&fs, &nodes, (Some(0), false), 0, d).unwrap().unwrap();
+        let p = plan(&fs, &nodes, (Some(0), false), 0, d, &mut Rejections::default()).unwrap().unwrap();
         assert_eq!(p.ops.iter().filter(|op| op.pivot.is_some()).count(), n);
         assert_eq!(p.cost.width, 1);
-        assert!(plan_words::<1>(&fs, &nodes, (Some(0), false), 0, d).is_err());
+        assert!(plan_words::<1>(&fs, &nodes, (Some(0), false), 0, d, &mut Rejections::default()).is_err());
     }
     #[test]
     fn counted_edges_preserve_shared_support() {
@@ -1381,14 +1438,14 @@ mod tests {
                 for p in [Some(0), Some(4), None] {
                     for reverse in [true, false] {
                         let a =
-                            plan_words_impl::<4, false>(&fs, &nodes, (p, reverse), 0, d).unwrap();
+                            plan_words_impl::<4, false>(&fs, &nodes, (p, reverse), 0, d, &mut Rejections::default()).unwrap();
                         let b =
-                            plan_words_impl::<4, true>(&fs, &nodes, (p, reverse), 0, d).unwrap();
+                            plan_words_impl::<4, true>(&fs, &nodes, (p, reverse), 0, d, &mut Rejections::default()).unwrap();
                         assert_eq!(a, b);
                         if n <= 64 {
                             assert_eq!(
                                 a,
-                                plan_words_impl::<1, true>(&fs, &nodes, (p, reverse), 0, d)
+                                plan_words_impl::<1, true>(&fs, &nodes, (p, reverse), 0, d, &mut Rejections::default())
                                     .unwrap()
                             );
                         }
@@ -1551,6 +1608,23 @@ mod tests {
                 assert_eq!(a.count.im, im);
             }
         }
+    }
+    #[test]
+    fn width_rejection_is_distinct_from_work_and_live() {
+        let nodes: Scope = (1..=21).collect();
+        let fs: Vec<_> = (1..=21)
+            .flat_map(|a| (a + 1..=21).map(move |b| Factor {
+                scope: vec![a, b],
+                values: vec![Some(one()); 4],
+            }))
+            .collect();
+        let mut rejected = Rejections::default();
+        let d = Instant::now() + Duration::from_secs(5);
+        assert!(plan(&fs, &nodes, (Some(0), false), 0, d, &mut rejected)
+            .unwrap().is_none());
+        assert_eq!(rejected.width, 1);
+        assert_eq!(rejected.min_rejected_width, Some(20));
+        assert_eq!(rejected.work + rejected.live + rejected.both + rejected.accepted, 0);
     }
     #[test]
     fn three_cut_candidates_are_unique_and_bounded() {

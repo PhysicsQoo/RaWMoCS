@@ -863,6 +863,43 @@ fn mpfr(x: Cell<R>, bits: u32) -> Cell<C> {
         im: Float::with_val(bits, b),
     })
 }
+// Immutable numeric metadata, never a Boolean support certificate. A
+// supported zero remains Some(C), and a missing cell remains None.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ValueClass {
+    Zero,
+    One,
+    General,
+}
+fn value_class(x: &C) -> ValueClass {
+    if x.re == 0 && x.im == 0 {
+        ValueClass::Zero
+    } else if x.re == 1 && x.im == 0 {
+        ValueClass::One
+    } else {
+        ValueClass::General
+    }
+}
+fn classify_reused(
+    f: &Factor<C>,
+    lookups: usize,
+    d: Instant,
+) -> Result<Option<Vec<ValueClass>>, String> {
+    // One byte per immutable cell, only when the scheduled lookup count
+    // amortizes the classification pass. No additional MPFR allocation.
+    if lookups < 4 * f.values.len() {
+        return Ok(None);
+    }
+    let mut classes = Vec::with_capacity(f.values.len());
+    for (i, x) in f.values.iter().enumerate() {
+        if i % 4096 == 0 {
+            deadline(d)?;
+        }
+        classes.push(x.as_ref().map_or(ValueClass::General, value_class));
+    }
+    Ok(Some(classes))
+}
 struct Scratch([Float; 4]);
 impl Scratch {
     fn new(bits: u32) -> Self {
@@ -882,6 +919,27 @@ impl Scratch {
             a.im.assign(&b.im);
             return;
         }
+        self.multiply_full(a, b);
+    }
+    fn multiply_classified(&mut self, a: &mut C, b: &C, class: ValueClass) {
+        // Preserve the original zero-before-one precedence and signed-zero
+        // assignments. Classification uses the same rounded MPFR predicates.
+        if (a.re == 0 && a.im == 0) || class == ValueClass::Zero {
+            a.re.assign(0);
+            a.im.assign(0);
+            return;
+        }
+        if class == ValueClass::One {
+            return;
+        }
+        if a.re == 1 && a.im == 0 {
+            a.re.assign(&b.re);
+            a.im.assign(&b.im);
+            return;
+        }
+        self.multiply_full(a, b);
+    }
+    fn multiply_full(&mut self, a: &mut C, b: &C) {
         let [ac, bd, ad, bc] = &mut self.0;
         ac.assign(&a.re * &b.re);
         bd.assign(&a.im * &b.im);
@@ -942,6 +1000,10 @@ fn execute(
     // The original replay cost remains unchanged; the pool is extra storage.
     let recycle_cap = 32_768.min(LIVE.saturating_sub(p.cost.peak));
     let mut recycle = Vec::new();
+    let classify = std::env::var("RAWMOCS_RESEARCH_FACTOR_CLASSES").as_deref() == Ok("1");
+    let mut classified_cells = 0usize;
+    let mut classified_factors = 0usize;
+    let mut peak_class_bytes = 0usize;
     let (mut left, mut right) = (C::one(bits), C::one(bits));
     for op in &p.ops {
         deadline(d)?;
@@ -962,6 +1024,20 @@ fn execute(
         if cost.work > WORK || cost.peak > LIVE || cost.width > WIDTH {
             return Err("execution cap".into());
         }
+        let classes = if classify {
+            let lookups = size * if op.pivot.is_some() { 2 } else { 1 };
+            let classes = bucket
+                .iter()
+                .map(|f| classify_reused(f, lookups, d))
+                .collect::<Result<Vec<_>, _>>()?;
+            let bytes = classes.iter().flatten().map(Vec::len).sum::<usize>();
+            classified_cells += bytes;
+            classified_factors += classes.iter().flatten().count();
+            peak_class_bytes = peak_class_bytes.max(bytes);
+            Some(classes)
+        } else {
+            None
+        };
         let mut indices = vec![0; bucket.len()];
         let mut pivots = vec![0; bucket.len()];
         let mut flips = Vec::new();
@@ -988,11 +1064,15 @@ fn execute(
                 x.re.assign(1);
                 x.im.assign(0);
                 for (i, f) in bucket.iter().enumerate() {
-                    let Some(y) = &f.values[indices[i] | if positive { pivots[i] } else { 0 }]
-                    else {
+                    let index = indices[i] | if positive { pivots[i] } else { 0 };
+                    let Some(y) = &f.values[index] else {
                         return false;
                     };
-                    scratch.multiply(x, y);
+                    if let Some(c) = classes.as_ref().and_then(|c| c[i].as_ref()) {
+                        scratch.multiply_classified(x, y, c[index]);
+                    } else {
+                        scratch.multiply(x, y);
+                    }
                 }
                 true
             };
@@ -1039,6 +1119,11 @@ fn execute(
     }
     if cost != p.cost {
         return Err("plan replay drift".into());
+    }
+    if classify {
+        eprintln!(
+            "PREJOIN_RESEARCH_CLASSES factors={classified_factors} cells={classified_cells} peak_bytes={peak_class_bytes}"
+        );
     }
     let mut out = mpfr(scalar, bits);
     for f in tables.into_values() {
@@ -1177,6 +1262,77 @@ fn pair_scan(raw: &str, use_mask: bool) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn classified_multiply_preserves_values_and_signed_zero() {
+        for bits in [100, 200, 333, 432] {
+            let mut values = Vec::new();
+            for (r, i) in [
+                (0.0, 0.0),
+                (-0.0, 0.0),
+                (0.0, -0.0),
+                (-0.0, -0.0),
+                (1.0, -0.0),
+                (-1.0, 0.0),
+                (0.0, 1.0),
+                (0.0, -1.0),
+                (2.5, -3.25),
+                (-1e-80, 1e-80),
+            ] {
+                values.push(C {
+                    re: Float::with_val(bits, r),
+                    im: Float::with_val(bits, i),
+                });
+            }
+            values.push(C {
+                re: Float::with_val(bits, decimal("0.12345678901234567890123456789").unwrap()),
+                im: Float::with_val(bits, decimal("-0.98765432109876543210987654321").unwrap()),
+            });
+            let mut scratch = Scratch::new(bits);
+            for a in &values {
+                for b in &values {
+                    let mut old = a.clone();
+                    let mut new = a.clone();
+                    scratch.multiply(&mut old, b);
+                    scratch.multiply_classified(&mut new, b, value_class(b));
+                    assert_eq!(old.re, new.re);
+                    assert_eq!(old.im, new.im);
+                    assert_eq!(old.re.is_sign_negative(), new.re.is_sign_negative());
+                    assert_eq!(old.im.is_sign_negative(), new.im.is_sign_negative());
+                    assert_eq!(new.re.prec(), bits);
+                    assert_eq!(new.im.prec(), bits);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn metadata_is_reuse_gated_and_preserves_support() {
+        let f = Factor {
+            scope: vec![1, 2],
+            values: vec![
+                None,
+                Some(C::zero(100)),
+                Some(C::one(100)),
+                Some(C::one(100)),
+            ],
+        };
+        let d = Instant::now() + Duration::from_secs(5);
+        assert!(classify_reused(&f, 15, d).unwrap().is_none());
+        assert_eq!(
+            classify_reused(&f, 16, d).unwrap().unwrap(),
+            vec![
+                ValueClass::General,
+                ValueClass::Zero,
+                ValueClass::One,
+                ValueClass::One,
+            ]
+        );
+        assert!(f.values[0].is_none());
+        assert!(f.values[1].is_some());
+        assert_eq!(std::mem::size_of::<ValueClass>(), 1);
+        assert!(classify_reused(&f, 16, Instant::now()).is_err());
+    }
+
     #[test]
     fn recycled_complex_copy_matches_clone_including_signed_zero() {
         for bits in [100, 333] {

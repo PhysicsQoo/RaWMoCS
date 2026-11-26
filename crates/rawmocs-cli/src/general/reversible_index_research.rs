@@ -1174,3 +1174,249 @@ fn single_queue_dense_fixed_work() {
     }
   }
 }
+
+ 
+// Bounded test-only full weighted search. A persistent incidence index
+// belongs to exactly one component. Splits create independent children;
+// a sibling branch instead rolls back to its parent checkpoint.
+use super::{cache_can_admit, components_with_parent, key_items, Key, KeyQuery, KeyView};
+use crate::{Outcome, Problem, C};
+use std::collections::HashMap;
+
+#[derive(Default, Debug)]
+struct TrailStats {
+    nodes: usize,
+    hits: usize,
+    splits: usize,
+    indexes: usize,
+    branches: usize,
+    free: usize,
+}
+struct ScopedTrail<'a> {
+    p: &'a Problem,
+    bits: u32,
+    deadline: Instant,
+    cache: HashMap<Key, Outcome>,
+    items: usize,
+    stats: TrailStats,
+    max_nodes: usize,
+}
+impl<'a> ScopedTrail<'a> {
+    fn new(p: &'a Problem, bits: u32, deadline: Instant) -> Self {
+        Self { p, bits, deadline, cache: HashMap::new(), items: 0,
+            stats: TrailStats::default(), max_nodes: 100_000 }
+    }
+    fn check(&self) -> Result<(), String> {
+        if Instant::now() >= self.deadline { return Err("research deadline".into()); }
+        Ok(())
+    }
+    fn weight(&self, v: usize, positive: bool) -> &C {
+        let w = &self.p.weights[v-1];
+        if positive { &w.positive } else { &w.negative }
+    }
+    fn save(&mut self, key: Option<Key>, out: Outcome) -> Result<Outcome,String> {
+        if !out.count.re.is_finite() || !out.count.im.is_finite() {
+            return Err("nonfinite research".into());
+        }
+        if let Some(key) = key {
+            let items = key_items(&key.scope,&key.clauses);
+            if cache_can_admit(self.cache.len(),self.items,items) {
+                self.items += items;
+                self.cache.insert(key,out.clone());
+            }
+        }
+        Ok(out)
+    }
+    fn fresh(&mut self, clauses: Vec<Clause>, scope: Vec<usize>, depth: usize) -> Result<Outcome,String> {
+        self.check()?;
+        let mut state = TrailIndex::with_mode(normalize(clauses),self.p.n,false,true);
+        state.active = Frontier::bitmap(state.clauses.len());
+        state.rank_scratch = Some(RankScratch::new(state.clauses.len()));
+        state.ranked_only(true);
+        state.fuse_ranked_updates = true;
+        self.stats.indexes += 1;
+        self.node(&mut state,scope,depth)
+    }
+    // Every node restores its entry checkpoint, including early
+    // conflict, cache hit and error. Branch assignment belongs to caller.
+    fn node(&mut self, state: &mut TrailIndex, scope: Vec<usize>, depth: usize) -> Result<Outcome,String> {
+        let checkpoint = state.checkpoint();
+        let result = self.enter(state,scope,depth);
+        state.rollback(checkpoint);
+        result
+    }
+    fn child(&mut self, state: &mut TrailIndex, scope: Vec<usize>, lit: i32, depth: usize) -> Result<Outcome,String> {
+        let checkpoint = state.checkpoint();
+        // Do not short-circuit here: the existing engine enters the
+        // child, including its canonical key, even on a conflict.
+        state.apply(lit);
+        let result = self.node(state,scope,depth);
+        state.rollback(checkpoint);
+        result
+    }
+    fn enter(&mut self, state: &mut TrailIndex, scope: Vec<usize>, depth: usize) -> Result<Outcome,String> {
+        self.check()?;
+        if depth > 96 || self.stats.nodes >= self.max_nodes { return Err("research work limit".into()); }
+        self.stats.nodes += 1;
+        let (ids,clauses) = state.materialized_boundary();
+        let query = KeyQuery { scope: &scope, clauses: &clauses };
+        let view: &dyn KeyView = &query;
+        if let Some(hit) = self.cache.get(view) {
+            self.stats.hits += 1;
+            return Ok(hit.clone());
+        }
+        let key = cache_can_admit(self.cache.len(),self.items,key_items(&scope,&clauses))
+            .then(|| Key { scope: scope.clone(), clauses });
+        let Some(forced) = state.ranked_closure(&ids,self.deadline)? else {
+            return self.save(key,Outcome::unsat(self.bits));
+        };
+        let mut prefix = C::one(self.bits);
+        for lit in forced {
+            self.check()?;
+            prefix = prefix.mul(self.weight(lit.unsigned_abs() as usize,lit>0),self.bits);
+        }
+        // Preserve the post-closure order and multiplicity; only the
+        // next node's canonical boundary sorts and deduplicates.
+        let mut residual = state.materialize_ids(&ids);
+        let mut frequency = vec![0usize;self.p.n+1];
+        for c in &residual {
+            for &lit in c { frequency[lit.unsigned_abs() as usize] += 1; }
+        }
+        let mut active = Vec::new();
+        for v in scope {
+            if state.assigned[v] != 0 { continue; }
+            if frequency[v] == 0 {
+                self.stats.free += 1;
+                let w = &self.p.weights[v-1];
+                prefix = prefix.mul(&w.positive.add(&w.negative,self.bits),self.bits);
+            } else { active.push(v); }
+        }
+        if residual.is_empty() {
+            return self.save(key,Outcome { sat:true,count:prefix });
+        }
+        let parts = components_with_parent(&mut residual,&active,&mut vec![0;self.p.n+1]);
+        if !parts.is_empty() {
+            self.stats.splits += 1;
+            let mut value = C::one(self.bits);
+            for (scope,clauses) in parts {
+                let out = self.fresh(clauses,scope,depth+1)?;
+                if !out.sat { return self.save(key,Outcome::unsat(self.bits)); }
+                value = value.mul(&out.count,self.bits);
+            }
+            return self.save(key,Outcome { sat:true,count:prefix.mul(&value,self.bits) });
+        }
+        let v = *active.iter().max_by_key(|&&v|frequency[v]).ok_or("research pivot")?;
+        let child: Vec<_> = active.into_iter().filter(|&x|x!=v).collect();
+        self.stats.branches += 1;
+        let yes = self.child(state,child.clone(),v as i32,depth+1)?;
+        let no = self.child(state,child,-(v as i32),depth+1)?;
+        let y = self.weight(v,true).mul(&yes.count,self.bits);
+        let n = self.weight(v,false).mul(&no.count,self.bits);
+        self.save(key,Outcome { sat:yes.sat||no.sat,count:prefix.mul(&y.add(&n,self.bits),self.bits) })
+    }
+}
+
+fn same_outcome(a: &Outcome,b: &Outcome) {
+    assert_eq!(a.sat,b.sat);
+    assert_eq!(a.count.re,b.count.re);
+    assert_eq!(a.count.im,b.count.im);
+}
+
+#[test]
+fn scoped_trail_full_wmc_randomized() {
+    use crate::parse_emitted;
+    let mut seed = 0x81a3b93d_u32;
+    let mut next = || { seed = seed.wrapping_mul(1664525).wrapping_add(1013904223); seed >> 8 };
+    let deadline = Instant::now()+Duration::from_secs(60);
+    let mut totals = TrailStats::default();
+    for case in 0..512 {
+        let n = 8;
+        let mut clauses = Vec::new();
+        for _ in 0..(next()%15) {
+            let mut c = Vec::new();
+            let width = if case%8==0 { next()%5 } else { 2+next()%3 };
+            for _ in 0..width {
+                let v = (next()%n+1) as i32;
+                c.push(if next()%2==0 {v} else {-v});
+            }
+            clauses.push(c);
+        }
+        let dyadic = case%2==0;
+        let weights = if dyadic {
+            ["0.5 0.25","-0.25 0.125","0 0","1 0","-1 0","0.125 -0.5"]
+        } else {
+            ["0.13 0.27","-0.29 0.31","0 0","1 0","-1 0","0.37 -0.41"]
+        };
+        let mut raw = format!("p cnf {n} {}\nc t wmc\n",clauses.len());
+        for v in 1..=n as i32 {
+            for lit in [v,-v] {
+                raw.push_str(&format!("c p weight {lit} {} 0\n",weights[next() as usize%weights.len()]));
+            }
+        }
+        for c in &clauses {
+            for lit in c { raw.push_str(&format!("{lit} ")); }
+            raw.push_str("0\n");
+        }
+        for bits in [100,200,333,432] {
+            let p = parse_emitted(&raw,bits).unwrap();
+            let mut engine = ScopedTrail::new(&p,bits,deadline);
+            let actual = engine.fresh(p.clauses.clone(),(1..=p.n).collect(),0).unwrap();
+            let baseline = super::solve(&p,bits,deadline).unwrap();
+            same_outcome(&actual,&baseline);
+            // Small dyadic counts are exactly representable at every
+            // selected precision. Non-dyadic tests require exact
+            // production MPFR operation-order parity instead.
+            if dyadic { same_outcome(&actual,&crate::reference(&p,&raw,bits).unwrap()); }
+            totals.nodes += engine.stats.nodes;
+            totals.hits += engine.stats.hits;
+            totals.splits += engine.stats.splits;
+            totals.branches += engine.stats.branches;
+            totals.free += engine.stats.free;
+        }
+    }
+    assert!(totals.hits>0 && totals.splits>0 && totals.branches>0 && totals.free>0);
+    println!("SCOPED_TRAIL_RANDOM_PASS counts=2048 independent_dyadic=1024 nodes={} hits={} splits={} branches={} free={}",totals.nodes,totals.hits,totals.splits,totals.branches,totals.free);
+}
+
+#[test]
+fn scoped_trail_cache_scope_cancel_and_error_rollback() {
+    use crate::parse_emitted;
+    let raw = "p cnf 6 2\nc t wmc\nc p weight 5 -1 0 0\n1 2 0\n3 4 0\n";
+    for bits in [100,200,333,432] {
+        let p = parse_emitted(raw,bits).unwrap();
+        let deadline = Instant::now()+Duration::from_secs(5);
+        let mut e = ScopedTrail::new(&p,bits,deadline);
+        let source = normalize(p.clauses.clone());
+        let mut st = TrailIndex::with_mode(source.clone(),p.n,false,true);
+        st.active = Frontier::bitmap(source.len());
+        st.rank_scratch = Some(RankScratch::new(source.len()));
+        st.ranked_only(true);
+        st.fuse_ranked_updates = true;
+        let a = e.node(&mut st,(1..=6).collect(),0).unwrap();
+        assert!(a.sat);
+        assert_eq!(a.count.re,0);
+        assert_eq!(a.count.im,0);
+        let hits = e.stats.hits;
+        same_outcome(&a,&e.node(&mut st,(1..=6).collect(),0).unwrap());
+        assert_eq!(e.stats.hits,hits+1);
+        let b = e.node(&mut st,vec![1,2,3,4,6],0).unwrap();
+        assert!(b.sat);
+        assert_eq!(b.count.re,18);
+        assert_eq!(b.count.im,0);
+        assert!(e.stats.splits>0 && e.stats.indexes>0);
+        st.verify();
+        assert_eq!(st.residual(),source);
+        assert!(st.trail.is_empty());
+        let mut limited = ScopedTrail::new(&p,bits,deadline);
+        limited.max_nodes=1;
+        assert!(limited.node(&mut st,(1..=6).collect(),0).is_err());
+        st.verify();
+        assert!(st.trail.is_empty());
+        assert_eq!(st.residual(),source);
+        limited.deadline=Instant::now();
+        assert!(limited.child(&mut st,vec![2,3,4,5,6],1,0).is_err());
+        st.verify();
+        assert!(st.trail.is_empty());
+        assert_eq!(st.residual(),source);
+    }
+}

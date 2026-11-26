@@ -200,6 +200,34 @@ fn edge_remove(edges: &mut EdgeCounts, scope: &[usize]) -> Result<(), String> {
     }
     Ok(())
 }
+fn local_contract<'a>(
+    bucket: impl Iterator<Item = &'a Factor<R>> + Clone,
+    out: &[usize],
+    v: usize,
+    size: usize,
+) -> Result<Factor<R>, String> {
+    let mut vals = Vec::with_capacity(size);
+    for m in 0..size {
+        let mut pair = [None, None];
+        for (j, positive) in [false, true].into_iter().enumerate() {
+            let mut x = Some(one());
+            for f in bucket.clone() {
+                let b = &f.values[mask(&f.scope, out, m, v, positive)];
+                x = match (x, b) {
+                    (Some(a), Some(b)) => Some(rmul(&a, b)?),
+                    _ => None,
+                };
+                if x.is_none() {
+                    break;
+                }
+            }
+            pair[j] = x;
+        }
+        let [a, b] = pair;
+        vals.push(radd(a, b)?);
+    }
+    Ok(reduce_axes(Factor { scope: out.to_vec(), values: vals }))
+}
 fn local(p: &Problem, raw: &str, d: Instant) -> Result<Local, String> {
     local_frontier(p, raw, d, true, true)
 }
@@ -221,6 +249,18 @@ fn local_frontier_probe<const PROFILE: bool, const ADJ: bool>(
     incremental: bool,
     widen: bool,
     step_cap: Option<usize>,
+) -> Result<Local, String> {
+    local_frontier_policy::<PROFILE, ADJ>(p, raw, d, incremental, widen, step_cap, false)
+}
+
+fn local_frontier_policy<const PROFILE: bool, const ADJ: bool>(
+    p: &Problem,
+    raw: &str,
+    d: Instant,
+    incremental: bool,
+    widen: bool,
+    step_cap: Option<usize>,
+    stop_at_bit_cap: bool,
 ) -> Result<Local, String> {
     let started = if PROFILE { Some(Instant::now()) } else { None };
     let mut phase = started;
@@ -391,20 +431,46 @@ fn local_frontier_probe<const PROFILE: bool, const ADJ: bool>(
                 break;
             }
         }
+        let out: Vec<_> = nb.iter().copied().collect();
+        let size = 1usize << out.len();
+        let mut proposed = cost.clone();
+        proposed.work += 2 * size * owners[v].len();
+        proposed.peak = proposed.peak.max(live + 2 * size);
+        proposed.width = proposed.width.max(out.len());
+        if proposed.work > LOCAL_WORK || proposed.peak > LIVE {
+            return Err("local budget".into());
+        }
+        // The opt-in frontier prepares the entire exact result, including
+        // scalar folding, before touching ownership, queue, or live costs.
+        let prepared = if stop_at_bit_cap {
+            let bucket = owners[v].iter().map(|id| &tables[id]);
+            let result = local_contract(bucket, &out, v, size).and_then(|mut f| {
+                let folded = if f.scope.is_empty() {
+                    Some(rscalar(scalar.clone(), f.values.pop().expect("scalar cell"))?)
+                } else {
+                    None
+                };
+                Ok((f, folded))
+            });
+            match result {
+                Ok(result) => Some(result),
+                Err(reason) if reason == "exact local bit cap" => {
+                    eprintln!("PREJOIN_FRONTIER_STOP steps={steps} remaining={} reason=exact local bit cap", nodes.len());
+                    break;
+                }
+                Err(reason) => return Err(reason),
+            }
+        } else {
+            None
+        };
+        deadline(d)?;
+        cost = proposed;
         if incremental {
             for u in std::iter::once(v).chain(nb.iter().copied()) {
                 if !queue.remove(&keys[u].take().ok_or("local missing key")?) {
                     return Err("local queue drift".into());
                 }
             }
-        }
-        let out: Vec<_> = nb.iter().copied().collect();
-        let size = 1usize << out.len();
-        cost.work += 2 * size * owners[v].len();
-        cost.peak = cost.peak.max(live + 2 * size);
-        cost.width = cost.width.max(out.len());
-        if cost.work > LOCAL_WORK || cost.peak > LIVE {
-            return Err("local budget".into());
         }
         tick(&mut phase, &mut times[2]);
         let ids = std::mem::take(&mut owners[v]);
@@ -426,33 +492,16 @@ fn local_frontier_probe<const PROFILE: bool, const ADJ: bool>(
             return Err("local pivot edge drift".into());
         }
         tick(&mut phase, &mut times[3]);
-        let mut vals = Vec::with_capacity(size);
-        for m in 0..size {
-            let mut pair = [None, None];
-            for (j, positive) in [false, true].into_iter().enumerate() {
-                let mut x = Some(one());
-                for f in &bucket {
-                    let b = &f.values[mask(&f.scope, &out, m, v, positive)];
-                    x = match (x, b) {
-                        (Some(a), Some(b)) => Some(rmul(&a, b)?),
-                        _ => None,
-                    };
-                    if x.is_none() {
-                        break;
-                    }
-                }
-                pair[j] = x;
-            }
-            let [a, b] = pair;
-            vals.push(radd(a, b)?);
-        }
+        let (f, folded) = match prepared {
+            Some(result) => result,
+            None => (local_contract(bucket.iter(), &out, v, size)?, None),
+        };
         tick(&mut phase, &mut times[4]);
-        let f = reduce_axes(Factor {
-            scope: out,
-            values: vals,
-        });
         if f.scope.is_empty() {
-            scalar = rscalar(scalar.take(), f.values.into_iter().next().unwrap())?;
+            scalar = match folded {
+                Some(value) => value,
+                None => rscalar(scalar.take(), f.values.into_iter().next().unwrap())?,
+            };
         } else {
             live += f.values.len();
             for &u in &f.scope {
@@ -1146,6 +1195,14 @@ pub(crate) fn solve_until(
     bits: u32,
     d: Instant,
 ) -> Result<Outcome, String> {
+    solve_policy(p, raw, bits, d, false)
+}
+
+pub(crate) fn solve_frontier(p: &Problem, raw: &str, bits: u32, d: Instant) -> Result<Outcome, String> {
+    solve_policy(p, raw, bits, d, true)
+}
+
+fn solve_policy(p: &Problem, raw: &str, bits: u32, d: Instant, frontier: bool) -> Result<Outcome, String> {
     let start = Instant::now();
     let planning_budget = (d.saturating_duration_since(start) * 2 / 3).min(Duration::from_secs(30));
     let pd = start + planning_budget;
@@ -1156,7 +1213,11 @@ pub(crate) fn solve_until(
             e
         }
     };
-    let (fs, nodes, scalar, local) = local(p, raw, pd).map_err(planning_error)?;
+    let (fs, nodes, scalar, local) = if frontier {
+        local_frontier_policy::<false, true>(p, raw, pd, true, true, None, true)
+    } else {
+        local(p, raw, pd)
+    }.map_err(planning_error)?;
     let local_ns = start.elapsed().as_nanos();
     let phase = Instant::now();
     let (cuts, plans, cost) = choose(&fs, &nodes, &scalar, &local, pd).map_err(planning_error)?;
@@ -1312,6 +1373,12 @@ mod tests {
         let max_bits=fs.iter().flat_map(|f|f.values.iter()).chain(std::iter::once(&scalar))
             .filter_map(|x|x.as_ref()).flat_map(|(a,b)|[a,b]).map(|x|x.numer().significant_bits().max(x.denom().significant_bits())).max().unwrap_or(0);
         assert!(max_bits<=EXACT_BITS);
+        let tx = local_frontier_policy::<false,true>(&p,&raw,d,true,true,None,true).unwrap();
+        assert_eq!(tx.0,fs);
+        assert_eq!(tx.1,nodes);
+        assert_eq!(tx.2,scalar);
+        assert_eq!(tx.3,local_cost);
+        println!("FRONTIER_TRANSACTION_EXACT_MATCH");
         println!("FRONTIER_SAFE remaining={} factors={} work={} peak={} width={} exact_bits={max_bits}",nodes.len(),fs.len(),local_cost.work,local_cost.peak,local_cost.width);
         if nodes.len()>RESIDUAL_CAP {
             println!("FRONTIER_PLAN_REJECT reason=residual variable cap");

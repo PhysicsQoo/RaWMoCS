@@ -2,9 +2,17 @@
 # Source-only package; do not publish or redistribute a linked binary here.
 set -euo pipefail
 export LC_ALL=C
-version=0.1.0
 root=$(git rev-parse --show-toplevel)
 cd "$root"
+version=$(python3 - <<'PY'
+import re
+import tomllib
+with open("crates/rawmocs-cli/Cargo.toml", "rb") as f:
+    version = tomllib.load(f)["package"]["version"]
+assert re.fullmatch(r"\d+\.\d+\.\d+", version)
+print(version)
+PY
+)
 sha=$(git rev-parse HEAD)
 test -z "$(git status --porcelain --untracked-files=no)"
 test "$(uname -s)" = Linux
@@ -62,22 +70,55 @@ rc=0
 test "$rc" -eq 4
 test ! -s "$out/deadline.stdout"
 grep -F 'RAWMOCS_FAILURE kind=TIMEOUT' "$out/deadline.stderr"
+# Verify the installed binary's explicit large route, including the
+# unchanged default cap and a parse-inclusive deadline.
+printf 'p cnf 4097 0\nc t wmc\nc p weight 1 -0.5 0.25 0\n' > "$tmp/large.cnf"
+python3 - "$tmp/large.cnf" <<'PY'
+from pathlib import Path
+import sys
+with Path(sys.argv[1]).open("a") as f:
+    for v in range(2, 4098):
+        f.write(f"c p weight -{v} 0 0 0\n")
+PY
+"$bin" --digits 60 --solver general --large-general --timeout-ms 20000 "$tmp/large.cnf" > "$out/large.stdout" 2> "$out/large.stderr"
+grep -F 'RAWMOCS_SOURCE_ADMITTED variables=4097 clauses=0 literals=0 ' "$out/large.stderr"
+grep -F 'RAWMOCS_COMPLETE route=general digits=60 bits=200 ' "$out/large.stderr"
+python3 - "$out/large.stdout" <<'PY'
+from fractions import Fraction
+from pathlib import Path
+import sys
+lines = Path(sys.argv[1]).read_text().splitlines()
+assert len(lines) == 2 and lines[0] == "s SATISFIABLE"
+row = lines[1].split()
+assert len(row) == 5 and row[:3] == ["c", "r", "mpfr"]
+assert Fraction(row[3]) == Fraction(1, 2) and Fraction(row[4]) == Fraction(1, 4)
+PY
+rc=0
+"$bin" --digits 60 "$tmp/large.cnf" > "$out/large-default.stdout" 2> "$out/large-default.stderr" || rc=$?
+test "$rc" -eq 5
+test ! -s "$out/large-default.stdout"
+grep -F 'RAWMOCS_FAILURE kind=RESOURCE_LIMIT' "$out/large-default.stderr"
+rc=0
+"$bin" --digits 60 --solver general --large-general --timeout-ms 0 "$tmp/large.cnf" > "$out/large-deadline.stdout" 2> "$out/large-deadline.stderr" || rc=$?
+test "$rc" -eq 4
+test ! -s "$out/large-deadline.stdout"
+grep -F 'RAWMOCS_FAILURE kind=TIMEOUT: source deadline' "$out/large-deadline.stderr"
 rustc -Vv > "$out/rustc.txt"
 cargo -V > "$out/cargo.txt"
 ldd "$bin" > "$out/linked-libraries.txt"
-python3 - "$out" "$sha" "$archive" "$bin" "$src/crates/rawmocs-cli/Cargo.lock" <<'PY'
+python3 - "$out" "$sha" "$version" "$archive" "$bin" "$src/crates/rawmocs-cli/Cargo.lock" <<'PY'
 import hashlib
 import json
 from pathlib import Path
 import sys
-out, sha, archive, binary, lock = sys.argv[1:]
+out, sha, version, archive, binary, lock = sys.argv[1:]
 def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 p = Path(out)
 receipt = {
     "status": "SOURCE_PACKAGE_INSTALL_PASS",
     "revision": sha,
-    "version": "0.1.0",
+    "version": version,
     "target": "x86_64-unknown-linux-gnu",
     "source_archive": archive,
     "source_sha256": digest(p / archive),
@@ -85,6 +126,7 @@ receipt = {
     "installed_binary_sha256": digest(binary),
     "deterministic_archive": True,
     "controls": ["version", "help", "SAT-zero", "UNSAT", "general", "timeout"],
+    "large_general_controls": ["analytic", "default-cap", "parse-deadline"],
     "redistributed_binary": False,
     "offline_build": False,
 }

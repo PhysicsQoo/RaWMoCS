@@ -102,6 +102,33 @@ impl Frontier {
 }
 
 #[derive(Debug)]
+struct RankScratch {
+    ranks: Vec<usize>,
+    stamps: Vec<u32>,
+    epoch: u32,
+}
+impl RankScratch {
+    fn new(m: usize) -> Self {
+        Self { ranks: vec![0; m], stamps: vec![0; m], epoch: 0 }
+    }
+    fn begin(&mut self) {
+        if self.epoch == u32::MAX {
+            self.stamps.fill(0);
+            self.epoch = 1;
+        } else {
+            self.epoch += 1;
+        }
+    }
+    fn set(&mut self, cid: usize, rank: usize) {
+        self.ranks[cid] = rank;
+        self.stamps[cid] = self.epoch;
+    }
+    fn get(&self, cid: usize) -> usize {
+        if self.stamps[cid] == self.epoch { self.ranks[cid] } else { usize::MAX }
+    }
+}
+
+#[derive(Debug)]
 struct TrailIndex {
     clauses: Vec<Clause>,
     occurrence: Vec<Vec<usize>>,
@@ -114,6 +141,7 @@ struct TrailIndex {
     units: BTreeSet<usize>,
     conflicts: BTreeSet<usize>,
     touches: u64,
+    rank_scratch: Option<RankScratch>,
 }
 
 impl TrailIndex {
@@ -136,7 +164,7 @@ impl TrailIndex {
         let active = Frontier::new(m, dense);
         Self {
             clauses, occurrence, assigned: vec![0; n + 1], live,
-            satisfied: vec![0; m], trail: Vec::new(), active, transitions, units, conflicts, touches: 0,
+            satisfied: vec![0; m], trail: Vec::new(), active, transitions, units, conflicts, touches: 0, rank_scratch: None,
         }
     }
 
@@ -285,10 +313,20 @@ impl TrailIndex {
     fn ranked_closure(&mut self, ids: &[usize], deadline: Instant) -> Result<Option<Vec<i32>>, &'static str> {
         if Instant::now() >= deadline { return Err("deadline"); }
         if !self.conflicts.is_empty() { return Ok(None); }
-        let mut rank = vec![usize::MAX; self.clauses.len()];
+        // Temporarily move scratch out so apply can mutate the trail.
+        // Restore it on success, conflict and deadline alike.
+        let mut scratch = self.rank_scratch.take();
+        let result = self.ranked_closure_impl(ids, deadline, scratch.as_mut());
+        self.rank_scratch = scratch;
+        result
+    }
+
+    fn ranked_closure_impl(&mut self, ids: &[usize], deadline: Instant, mut scratch: Option<&mut RankScratch>) -> Result<Option<Vec<i32>>, &'static str> {
+        let mut rank = if scratch.is_some() { Vec::new() } else { vec![usize::MAX; self.clauses.len()] };
+        if let Some(s) = scratch.as_mut() { s.begin(); }
         let mut units = BinaryHeap::new();
         for (i, &cid) in ids.iter().enumerate() {
-            rank[cid] = i;
+            if let Some(s) = scratch.as_mut() { s.set(cid, i); } else { rank[cid] = i; }
             if self.live[cid] == 1 { units.push(Reverse(i)); }
         }
         let mut forced = Vec::new();
@@ -300,8 +338,9 @@ impl TrailIndex {
             if !self.apply(lit) { return Ok(None); }
             forced.push(lit);
             for &j in &self.occurrence[occurrence_slot(-lit)] {
-                if rank[j] != usize::MAX && self.satisfied[j] == 0 && self.live[j] == 1 {
-                    units.push(Reverse(rank[j]));
+                let r = if let Some(s) = scratch.as_ref() { s.get(j) } else { rank[j] };
+                if r != usize::MAX && self.satisfied[j] == 0 && self.live[j] == 1 {
+                    units.push(Reverse(r));
                 }
             }
         }
@@ -361,6 +400,7 @@ fn reversible_index_random_nested_rollback() {
         let source = normalize(source);
         let mut state = TrailIndex::with_mode(source.clone(), 12, (case / 4) % 2 == 0, (case / 8) % 2 == 0);
         if (case / 16) % 2 == 0 { state.active = Frontier::bitmap(source.len()); }
+        if (case / 32) % 2 == 0 { state.rank_scratch = Some(RankScratch::new(source.len())); }
         for _ in 0..12 {
             let parent = state.checkpoint();
             let before = state.residual();
@@ -777,5 +817,74 @@ fn bitmap_frontier_partial_words_and_restore() {
         f.verify(&sat);
         for cid in (0..m).step_by(3).rev() { f.insert(cid); sat[cid]=0; }
         f.verify(&sat);
+    }
+}
+
+#[test]
+fn rank_generation_wrap_and_stale_ids() {
+    let mut r = RankScratch::new(129);
+    r.begin();
+    r.set(64, 3);
+    assert_eq!(r.get(64), 3);
+    r.begin();
+    assert_eq!(r.get(64), usize::MAX);
+    r.set(128, 2);
+    r.epoch = u32::MAX;
+    r.begin();
+    assert_eq!(r.get(64), usize::MAX);
+    assert_eq!(r.get(128), usize::MAX);
+    r.set(1, 0);
+    assert_eq!(r.get(1), 0);
+}
+
+#[test]
+#[ignore = "research-only late-depth rank generation diagnostic"]
+fn rank_generation_fixed_work() {
+    // Large inactive prefix, and a small live chain. Set up the
+    // parent once; do not charge repeated root construction to either arm.
+    let n = 65536_i32;
+    let mut source = Vec::new();
+    for v in 2..=9 { source.push(vec![1,v]); source.push(vec![-1,v]); }
+    for v in 2..512 { source.push(vec![-v,v+1]); }
+    for v in 513..=n { source.push(vec![v]); }
+    let source = normalize(source);
+    let deadline = Instant::now() + Duration::from_secs(90);
+    let mut parent = source.clone();
+    parent.retain(|c| !(c.len()==1 && c[0]>512));
+    let expected: Vec<_> = [1,-1].iter().map(|&lit| {
+        let mut c = parent.clone();
+        assign_inplace(&mut c,lit);
+        let closed = indexed_units(normalize(c),n as usize,deadline).unwrap().unwrap();
+        assert!(closed.clauses.is_empty());
+        closed.forced
+    }).collect();
+    for (trial, reuse) in [false,true,true,false,false,true,true,false,false,true,true,false].into_iter().enumerate() {
+        let mut state = TrailIndex::with_mode(source.clone(),n as usize,false,true);
+        state.active = Frontier::bitmap(source.len());
+        if reuse { state.rank_scratch = Some(RankScratch::new(source.len())); }
+        for v in 513..=n { assert!(state.apply(v)); }
+        let checkpoint = state.checkpoint();
+        assert_eq!(normalize(state.residual()),parent);
+        let start = Instant::now();
+        let mut work = 0;
+        for _ in 0..128 {
+            for (arm,lit) in [1,-1].into_iter().enumerate() {
+                assert!(state.apply(lit));
+                let (ids,key) = state.materialized_boundary();
+                let forced = state.ranked_closure(&ids,deadline).unwrap().unwrap();
+                assert_eq!(forced,expected[arm]);
+                assert!(state.active.is_empty());
+                work += forced.len();
+                state.rollback(checkpoint);
+                std::hint::black_box(key);
+            }
+        }
+        let ns = start.elapsed().as_nanos();
+        state.verify();
+        assert_eq!(normalize(state.residual()),parent);
+        state.rollback(0);
+        state.verify();
+        assert_eq!(state.residual(),source);
+        println!("RANK_GENERATION_FINAL trial={trial} reuse={reuse} source={} active={} branches=256 forced={work} wall_ns={ns}",source.len(),parent.len());
     }
 }

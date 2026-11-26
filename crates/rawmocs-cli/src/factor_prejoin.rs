@@ -925,6 +925,52 @@ impl Scratch {
         a.im.assign(&*ad + &*bc);
     }
 }
+// Diagnostic only: count the actual pair operands using the same fast-path
+// precedence as multiply_pair. The potential is an upper bound on products
+// involving exact zero, not a proven shortcut or measured speedup.
+#[derive(Default)]
+struct OperandProfile {
+    counts: [usize; 13],
+}
+impl OperandProfile {
+    fn observe(&mut self, a: &Cell<C>, b: &Cell<C>) {
+        let (Some(a), Some(b)) = (a, b) else {
+            self.counts[0] += 1;
+            return;
+        };
+        if (a.re == 0 && a.im == 0) || (b.re == 0 && b.im == 0) {
+            self.counts[1] += 1;
+        } else if (a.re == 1 && a.im == 0) || (b.re == 1 && b.im == 0) {
+            self.counts[2] += 1;
+        } else if !a.re.is_finite() || !a.im.is_finite() || !b.re.is_finite() || !b.im.is_finite() {
+            self.counts[3] += 1;
+        } else {
+            let axis = |x: &C| {
+                if x.im == 0 {
+                    0
+                } else if x.re == 0 {
+                    1
+                } else {
+                    2
+                }
+            };
+            self.counts[4 + 3 * axis(a) + axis(b)] += 1;
+        }
+    }
+
+    fn emit(&self) {
+        let c = &self.counts;
+        let existing_products = 4 * c[3..].iter().sum::<usize>();
+        let zero_product_upper = 3 * (c[4] + c[5] + c[7] + c[8])
+            + 2 * (c[6] + c[9] + c[10] + c[11]);
+        eprintln!(
+            "PREJOIN_RESEARCH_OPERANDS absent={} zero={} one={} nonfinite={} rr={} ri={} rc={} ir={} ii={} ic={} cr={} ci={} cc={} existing_products={} zero_product_upper={}",
+            c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8], c[9], c[10], c[11], c[12],
+            existing_products, zero_product_upper,
+        );
+    }
+}
+
 fn binary_branch(scratch: &mut Scratch, out: &mut C, a: &Cell<C>, b: &Cell<C>) -> bool {
     match (a, b) {
         (Some(a), Some(b)) => {
@@ -966,7 +1012,11 @@ fn execute(
     // Admission candidate: exercise the measured direct kernel by default.
     // Keep an explicit same-binary reference arm until the science gate passes.
     if std::env::var("RAWMOCS_RESEARCH_DIRECT_BINARY").as_deref() != Ok("0") {
-        execute_impl::<true>(fs, scalar, p, bits, d)
+        if std::env::var("RAWMOCS_RESEARCH_OPERAND_PROFILE").as_deref() == Ok("1") {
+            execute_profile_impl::<true, true>(fs, scalar, p, bits, d)
+        } else {
+            execute_impl::<true>(fs, scalar, p, bits, d)
+        }
     } else {
         execute_impl::<false>(fs, scalar, p, bits, d)
     }
@@ -979,6 +1029,17 @@ fn execute_impl<const BINARY: bool>(
     bits: u32,
     d: Instant,
 ) -> Result<Cell<C>, String> {
+    execute_profile_impl::<BINARY, false>(fs, scalar, p, bits, d)
+}
+
+fn execute_profile_impl<const BINARY: bool, const PROFILE: bool>(
+    fs: Vec<Factor<R>>,
+    scalar: Cell<R>,
+    p: &Plan,
+    bits: u32,
+    d: Instant,
+) -> Result<Cell<C>, String> {
+    let mut operand_profile = OperandProfile::default();
     let mut tables: BTreeMap<usize, Factor<C>> = fs
         .into_iter()
         .enumerate()
@@ -1059,6 +1120,9 @@ fn execute_impl<const BINARY: bool>(
                 if direct {
                     let a = &bucket[0].values[indices[0] | if positive { pivots[0] } else { 0 }];
                     let b = &bucket[1].values[indices[1] | if positive { pivots[1] } else { 0 }];
+                    if PROFILE {
+                        operand_profile.observe(a, b);
+                    }
                     return binary_branch(&mut scratch, x, a, b);
                 }
                 x.re.assign(1);
@@ -1120,6 +1184,12 @@ fn execute_impl<const BINARY: bool>(
         eprintln!(
             "PREJOIN_RESEARCH_BINARY ops={binary_ops} visits={binary_visits} join_visits={binary_join_visits}"
         );
+    }
+    if PROFILE {
+        if operand_profile.counts.iter().sum::<usize>() != binary_visits {
+            return Err("operand profile accounting drift".into());
+        }
+        operand_profile.emit();
     }
     let mut out = mpfr(scalar, bits);
     for f in tables.into_values() {
@@ -1258,6 +1328,41 @@ fn pair_scan(raw: &str, use_mask: bool) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn operand_profile_partitions_supported_pairs_after_fast_paths() {
+        for bits in [100, 200, 333, 432] {
+            let values = [
+                None,
+                Some(C::zero(bits)),
+                Some(C::one(bits)),
+                Some(C {
+                    re: Float::with_val(bits, 2),
+                    im: Float::with_val(bits, -0.0),
+                }),
+                Some(C {
+                    re: Float::with_val(bits, -0.0),
+                    im: Float::with_val(bits, -2),
+                }),
+                Some(C {
+                    re: Float::with_val(bits, 2),
+                    im: Float::with_val(bits, 3),
+                }),
+                Some(C {
+                    re: Float::with_val(bits, f64::INFINITY),
+                    im: Float::with_val(bits, 0),
+                }),
+            ];
+            let mut profile = OperandProfile::default();
+            for a in &values {
+                for b in &values {
+                    profile.observe(a, b);
+                }
+            }
+            assert_eq!(profile.counts, [13, 11, 9, 7, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
+            assert_eq!(profile.counts.iter().sum::<usize>(), 49);
+        }
+    }
+
     #[test]
     fn direct_binary_matches_ordered_products_and_support() {
         for bits in [100, 200, 333, 432] {

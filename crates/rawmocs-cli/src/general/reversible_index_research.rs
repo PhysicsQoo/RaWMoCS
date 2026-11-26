@@ -1200,11 +1200,12 @@ struct ScopedTrail<'a> {
     items: usize,
     stats: TrailStats,
     max_nodes: usize,
+    trace: Option<super::WorkTrace>,
 }
 impl<'a> ScopedTrail<'a> {
     fn new(p: &'a Problem, bits: u32, deadline: Instant) -> Self {
         Self { p, bits, deadline, cache: HashMap::new(), items: 0,
-            stats: TrailStats::default(), max_nodes: 100_000 }
+            stats: TrailStats::default(), max_nodes: 100_000, trace: None }
     }
     fn check(&self) -> Result<(), String> {
         if Instant::now() >= self.deadline { return Err("research deadline".into()); }
@@ -1259,10 +1260,12 @@ impl<'a> ScopedTrail<'a> {
         if depth > 96 || self.stats.nodes >= self.max_nodes { return Err("research work limit".into()); }
         self.stats.nodes += 1;
         let (ids,clauses) = state.materialized_boundary();
+        if let Some(t) = &mut self.trace { t.enter(&scope, &clauses); }
         let query = KeyQuery { scope: &scope, clauses: &clauses };
         let view: &dyn KeyView = &query;
         if let Some(hit) = self.cache.get(view) {
             self.stats.hits += 1;
+            if let Some(t) = &mut self.trace { t.hits += 1; }
             return Ok(hit.clone());
         }
         let key = cache_can_admit(self.cache.len(),self.items,key_items(&scope,&clauses))
@@ -1287,6 +1290,7 @@ impl<'a> ScopedTrail<'a> {
             if state.assigned[v] != 0 { continue; }
             if frequency[v] == 0 {
                 self.stats.free += 1;
+                if let Some(t) = &mut self.trace { t.free += 1; }
                 let w = &self.p.weights[v-1];
                 prefix = prefix.mul(&w.positive.add(&w.negative,self.bits),self.bits);
             } else { active.push(v); }
@@ -1297,6 +1301,7 @@ impl<'a> ScopedTrail<'a> {
         let parts = components_with_parent(&mut residual,&active,&mut vec![0;self.p.n+1]);
         if !parts.is_empty() {
             self.stats.splits += 1;
+            if let Some(t) = &mut self.trace { t.splits += 1; }
             let mut value = C::one(self.bits);
             for (scope,clauses) in parts {
                 let out = self.fresh(clauses,scope,depth+1)?;
@@ -1308,6 +1313,7 @@ impl<'a> ScopedTrail<'a> {
         let v = *active.iter().max_by_key(|&&v|frequency[v]).ok_or("research pivot")?;
         let child: Vec<_> = active.into_iter().filter(|&x|x!=v).collect();
         self.stats.branches += 1;
+        if let Some(t) = &mut self.trace { t.branches += 1; }
         let yes = self.child(state,child.clone(),v as i32,depth+1)?;
         let no = self.child(state,child,-(v as i32),depth+1)?;
         let y = self.weight(v,true).mul(&yes.count,self.bits);
@@ -1418,5 +1424,75 @@ fn scoped_trail_cache_scope_cancel_and_error_rollback() {
         st.verify();
         assert!(st.trail.is_empty());
         assert_eq!(st.residual(),source);
+    }
+}
+
+ 
+fn scoped_ablation_run(p: &Problem,bits: u32,reuse: bool,trace: bool)
+    -> Result<(Outcome,Option<super::WorkTrace>,usize),String> {
+    let deadline = Instant::now()+Duration::from_secs(12);
+    if reuse {
+        let mut engine = ScopedTrail::new(p,bits,deadline);
+        engine.trace = trace.then(super::WorkTrace::default);
+        let out = engine.fresh(p.clauses.clone(),(1..=p.n).collect(),0)?;
+        Ok((out,engine.trace,engine.stats.indexes))
+    } else {
+        let mut engine = super::Engine {
+            p,bits,deadline,cache: HashMap::new(),cache_items:0,
+            large:true,frequency:vec![0;p.n+1],parent:vec![0;p.n+1],
+            trace:trace.then(super::WorkTrace::default),
+        };
+        let out = engine.count(p.clauses.clone(),(1..=p.n).collect())?;
+        Ok((out,engine.trace,0))
+    }
+}
+
+#[test]
+#[ignore = "research-only complete weighted search comparison"]
+fn scoped_complete_ablation() {
+    let digits: usize = std::env::var("RAWMOCS_TEST_DIGITS").unwrap().parse().unwrap();
+    let bits = match digits {30=>100,130=>432,_=>panic!("unsupported cohort")};
+    let original = std::fs::read_to_string(std::env::var("RAWMOCS_TEST_ORIGINAL").unwrap()).unwrap();
+    // Chain with two sibling branches, signed-complex terminal weights.
+    let n = 8192_i32;
+    let mut chain = "p cnf 8192 8206\nc t wmc\nc p weight 1 -0.5 0.25 0\nc p weight 8192 0.25 -0.125 0\n".to_owned();
+    for v in 2..=9 { chain.push_str(&format!("1 {v} 0\n-1 {v} 0\n")); }
+    for v in 2..n { chain.push_str(&format!("-{v} {} 0\n",v+1)); }
+    // Independent binary components with one zero-weight polarity:
+    // only the all-positive assignment has nonzero weight.
+    let mut split = "p cnf 4096 2048\nc t wmc\n".to_owned();
+    for v in 1..=4096 { split.push_str(&format!("c p weight -{v} 0 0 0\n")); }
+    for v in (1..=4096).step_by(2) { split.push_str(&format!("{v} {} 0\n",v+1)); }
+    for (name,raw) in [("chain8192",chain),("split4096",split),("vqe8",original)] {
+        let p = crate::parse_large(std::io::Cursor::new(raw.as_bytes()),bits,Instant::now()+Duration::from_secs(12)).unwrap();
+        // Trace runs are distinct from timing runs. The hash is a
+        // diagnostic, not a formal search equivalence certificate.
+        let (base,bt,_) = scoped_ablation_run(&p,bits,false,true).unwrap();
+        let (candidate,ct,indexes) = scoped_ablation_run(&p,bits,true,true).unwrap();
+        same_outcome(&base,&candidate);
+        let a = bt.unwrap().summary();
+        let b = ct.unwrap().summary();
+        assert_eq!(a,b,"canonical node sequence mismatch for {name}");
+        if name=="chain8192" {
+            assert!(base.sat);
+            assert_eq!(base.count.re,rug::Float::with_val(bits,0.15625));
+            assert_eq!(base.count.im,0);
+        } else if name=="split4096" {
+            assert!(base.sat);
+            assert_eq!(base.count.re,1);
+            assert_eq!(base.count.im,0);
+            assert!(a.3>0);
+        }
+        println!("SCOPED_WORK_TRACE case={name} digits={digits} fingerprint={:016x} nodes={} hits={} splits={} branches={} free={} indexes={indexes}",a.0,a.1,a.2,a.3,a.4,a.5);
+        for (trial,reuse) in [false,true,true,false,false,true,true,false].into_iter().enumerate() {
+            let start=Instant::now();
+            let (out,_,_) = scoped_ablation_run(&p,bits,reuse,false).unwrap();
+            let wall_ns=start.elapsed().as_nanos();
+            same_outcome(&base,&out);
+            let sat=if out.sat {"SATISFIABLE"} else {"UNSATISFIABLE"};
+            let real=out.count.re.to_string_radix(10,Some(digits+4));
+            let imag=out.count.im.to_string_radix(10,Some(digits+4));
+            println!("SCOPED_FULL_FINAL case={name} digits={digits} trial={trial} reuse={reuse} wall_ns={wall_ns} sat={sat} real={real} imag={imag}");
+        }
     }
 }

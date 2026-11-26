@@ -98,6 +98,29 @@ fn push(stack: &mut Vec<Frame>, frame: Frame) -> Result<(), String> {
     Ok(())
 }
 
+// Test-only trace; never add fingerprint overhead to release builds.
+#[cfg(test)]
+#[derive(Default)]
+struct WorkTrace {
+    hasher: std::collections::hash_map::DefaultHasher,
+    nodes: usize,
+    hits: usize,
+    splits: usize,
+    branches: usize,
+    free: usize,
+}
+#[cfg(test)]
+impl WorkTrace {
+    fn enter(&mut self, scope: &[usize], clauses: &[Clause]) {
+        self.nodes += 1;
+        scope.hash(&mut self.hasher);
+        clauses.hash(&mut self.hasher);
+    }
+    fn summary(&self) -> (u64,usize,usize,usize,usize,usize) {
+        (self.hasher.finish(),self.nodes,self.hits,self.splits,self.branches,self.free)
+    }
+}
+
 struct Engine<'a> {
     p: &'a Problem,
     bits: u32,
@@ -107,6 +130,8 @@ struct Engine<'a> {
     large: bool,
     frequency: Vec<usize>,
     parent: Vec<usize>,
+    #[cfg(test)]
+    trace: Option<WorkTrace>,
 }
 fn normalize(mut clauses: Vec<Clause>) -> Vec<Clause> {
     for clause in &mut clauses {
@@ -296,12 +321,16 @@ impl Engine<'_> {
     ) -> Result<Step, String> {
         self.check()?;
         let mut residual = normalize(clauses);
+        #[cfg(test)]
+        if let Some(t) = &mut self.trace { t.enter(&scope, &residual); }
         let query = KeyQuery {
             scope: &scope,
             clauses: &residual,
         };
         let view: &dyn KeyView = &query;
         if let Some(hit) = self.cache.get(view) {
+            #[cfg(test)]
+            if let Some(t) = &mut self.trace { t.hits += 1; }
             return Ok(Step::Done(hit.clone()));
         }
         // Without eviction, both admission counters are monotone.
@@ -362,6 +391,8 @@ impl Engine<'_> {
         let mut active = Vec::new();
         for v in remaining {
             if self.frequency[v] == 0 {
+                #[cfg(test)]
+                if let Some(t) = &mut self.trace { t.free += 1; }
                 let w = &self.p.weights[v - 1];
                 prefix = prefix.mul(&w.positive.add(&w.negative, self.bits), self.bits);
             } else {
@@ -382,6 +413,8 @@ impl Engine<'_> {
         let mut parts =
             components_with_parent(&mut residual, &active, &mut self.parent).into_iter();
         if let Some((scope, clauses)) = parts.next() {
+            #[cfg(test)]
+            if let Some(t) = &mut self.trace { t.splits += 1; }
             push(
                 stack,
                 Frame::Parts {
@@ -393,6 +426,8 @@ impl Engine<'_> {
             )?;
             return Ok(Step::Enter(clauses, scope));
         }
+        #[cfg(test)]
+        if let Some(t) = &mut self.trace { t.branches += 1; }
         let v = *active
             .iter()
             .max_by_key(|&&v| self.frequency[v])
@@ -528,6 +563,8 @@ fn solve_mode(
         deadline,
         cache: HashMap::new(),
         cache_items: 0,
+        #[cfg(test)]
+        trace: None,
         large,
         frequency: vec![0; p.n + 1],
         parent: vec![0; p.n + 1],

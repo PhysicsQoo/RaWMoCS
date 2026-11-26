@@ -2108,15 +2108,34 @@ fn scoped_preindex_exact_scope_budget_and_cancellation() {
     }
 }
 
+fn scoped_preindex_split_fixture() -> String {
+    let mut split="p cnf 4096 2048\nc t wmc\n".to_owned();
+    for v in 1..=4096 {split.push_str(&format!("c p weight -{v} 0 0 0\n"));}
+    for v in (1..=4096).step_by(2) {split.push_str(&format!("{v} {} 0\n",v+1));}
+    split
+}
+
+#[test]
+fn scoped_preindex_split_fixture_parses_and_counts() {
+    let raw=scoped_preindex_split_fixture();
+    for bits in [100,432] {
+        let deadline=Instant::now()+Duration::from_secs(10);
+        let p=crate::parse_large(std::io::Cursor::new(raw.as_bytes()),bits,deadline).unwrap();
+        let (out,_,_,_,_)=canonical_reuse_run(&p,bits,0,false,1_000_000);
+        let out=out.unwrap();
+        assert!(out.sat);
+        assert_eq!(out.count.re,1);
+        assert_eq!(out.count.im,0);
+    }
+}
+
 #[test]
 #[ignore = "research-only exact fresh cache hit before index construction"]
 fn scoped_preindex_cache_ablation() {
     let digits:usize=std::env::var("RAWMOCS_TEST_DIGITS").unwrap().parse().unwrap();
     let bits=match digits {30=>100,130=>432,_=>panic!("unsupported cohort")};
     let raw=std::fs::read_to_string(std::env::var("RAWMOCS_TEST_ORIGINAL").unwrap()).unwrap();
-    let mut split="p cnf 4096 2048\nc t wmc\n".to_owned();
-    for v in 1..=4096 {split.push_str(&format!("c p weight -{v} 0 0\n"));}
-    for v in (1..=4096).step_by(2) {split.push_str(&format!("{v} {} 0\n",v+1));}
+    let split=scoped_preindex_split_fixture();
     for (name,raw) in [("split4096",split),("vqe8",raw)] {
         let p=crate::parse_large(std::io::Cursor::new(raw.as_bytes()),bits,Instant::now()+Duration::from_secs(12)).unwrap();
         let (base,tr,budget,_,_)=canonical_reuse_run(&p,bits,0,true,1_000_000);

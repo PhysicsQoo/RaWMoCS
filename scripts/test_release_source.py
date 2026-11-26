@@ -5,7 +5,7 @@ import json
 import tarfile
 import unittest
 
-from release_source import REPO, SCIENCE, STEPS, digest, verify_assets, verify_run
+from release_source import REPO, SCIENCE, STEPS, digest, verify_assets, verify_draft, verify_run
 
 
 def fixture(version="0.1.1"):
@@ -147,6 +147,34 @@ class ReleaseSourceTests(unittest.TestCase):
         assets["source-package.json"] = json.dumps(receipt).encode()
         with self.assertRaisesRegex(ValueError, "receipt mismatch: version"):
             verify_assets(request, assets)
+
+
+class ReleaseDraftTests(unittest.TestCase):
+    def test_exact_ci_draft_resume_and_wrong_identity_rejected(self):
+        request, assets = source_fixture("0.1.1")
+        notes = "# Release notes"
+        draft = {
+            "id": 42, "tag_name": "v0.1.1", "draft": True, "prerelease": False,
+            "target_commitish": request["revision"], "name": "RaWMoCS v0.1.1",
+            "body": notes, "author": {"login": "github-actions[bot]"},
+            "assets": [{"name": name, "digest": "sha256:" + digest(data),
+                        "state": "uploaded"} for name, data in assets.items()],
+        }
+        verify_draft(draft, request, assets, None, notes)
+        verify_draft(draft, request, assets, request["revision"], notes)
+        for field, value in (
+            ("target_commitish", "b" * 40), ("body", "other notes"),
+            ("name", "other title"), ("author", {"login": "other"}),
+            ("draft", False), ("assets", []), ("id", 0),
+        ):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                verify_draft({**draft, field: value}, request, assets, None, notes)
+        with self.assertRaises(ValueError):
+            verify_draft(draft, request, assets, "b" * 40, notes)
+        corrupted = copy.deepcopy(draft)
+        corrupted["assets"][0]["digest"] = "sha256:" + "0" * 64
+        with self.assertRaises(ValueError):
+            verify_draft(corrupted, request, assets, None, notes)
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import tomllib
 import zipfile
 
@@ -202,39 +203,71 @@ def verify_release(release, r, assets, draft):
             and all(a["state"] == "uploaded" for a in release["assets"]), "release asset digest mismatch")
 
 
+def verify_draft(draft, r, assets, actual, notes):
+    verify_release(draft, r, assets, True)
+    require(draft["target_commitish"] == r["revision"], "draft target mismatch")
+    require(draft["name"] == "RaWMoCS v" + r["version"], "draft title mismatch")
+    require((draft.get("body") or "").strip() == notes.strip(), "draft notes mismatch")
+    require(draft.get("author", {}).get("login") == "github-actions[bot]",
+            "draft is not a CI-created release")
+    require(type(draft["id"]) is int and draft["id"] > 0, "invalid draft ID")
+    require(actual in (None, r["revision"]), "tag appeared at wrong revision")
+
+
 def publish(r, assets):
     require(os.environ.get("GITHUB_REF") == "refs/heads/main"
             and os.environ.get("GITHUB_EVENT_NAME") in ("push", "workflow_dispatch"), "publication must run on main")
     current = api(f"repos/{REPO}/git/ref/heads/main")["object"]["sha"]
     require(run("git", "rev-parse", "HEAD").decode().strip() == current, "stale release request checkout")
     tag = "v" + r["version"]
+    notes = Path(r["notes"]).read_text()
     existing = releases(tag)
     actual = tag_commit(tag)
     if existing:
-        require(len(existing) == 1 and not existing[0]["draft"], "existing draft/duplicate release; inspect manually")
-        require(actual == r["revision"], "existing tag points elsewhere")
-        verify_release(existing[0], r, assets, False)
-        print("RELEASE_ALREADY_PUBLISHED", existing[0]["html_url"])
-        return
-    require(actual is None, "existing tag without release; inspect manually")
-    with tempfile.TemporaryDirectory() as tmp:
-        paths = []
-        for name, data in assets.items():
-            path = Path(tmp) / name
-            path.write_bytes(data)
-            paths.append(str(path))
-        # Draft first; no partial public release if upload/verification fails.
-        subprocess.run(["gh", "release", "create", tag, *paths, "-R", REPO, "--draft",
-                        "--target", r["revision"], "--title", f"RaWMoCS {tag}",
-                        "--notes-file", r["notes"]], check=True)
-        drafts = releases(tag)
-        require(len(drafts) == 1 and drafts[0]["target_commitish"] == r["revision"], "draft target mismatch")
-        verify_release(drafts[0], r, assets, True)
-        require(tag_commit(tag) in (None, r["revision"]), "tag appeared at wrong revision")
-        require(api(f"repos/{REPO}/git/ref/heads/main")["object"]["sha"] == current, "main advanced before publication")
-        subprocess.run(["gh", "release", "edit", tag, "-R", REPO, "--draft=false"], check=True)
+        require(len(existing) == 1, "duplicate release; inspect manually")
+        if not existing[0]["draft"]:
+            require(actual == r["revision"], "existing tag points elsewhere")
+            verify_release(existing[0], r, assets, False)
+            print("RELEASE_ALREADY_PUBLISHED", existing[0]["html_url"])
+            return
+        # Resume only the exact CI-created draft with every asset already
+        # uploaded. Never overwrite, delete, or repair an unmatched draft.
+        draft = existing[0]
+        verify_draft(draft, r, assets, actual, notes)
+        print("RELEASE_VERIFIED_DRAFT_RESUME", draft["id"], r["revision"], flush=True)
+    else:
+        require(actual is None, "existing tag without release; inspect manually")
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = []
+            for name, data in assets.items():
+                path = Path(tmp) / name
+                path.write_bytes(data)
+                paths.append(str(path))
+            subprocess.run(["gh", "release", "create", tag, *paths, "-R", REPO, "--draft",
+                            "--target", r["revision"], "--title", f"RaWMoCS {tag}",
+                            "--notes-file", r["notes"]], check=True)
+        # The list API may not expose a newly created draft immediately.
+        # Retry reads only, with a bounded delay; never repeat creation.
+        drafts = []
+        for attempt in range(6):
+            drafts = releases(tag)
+            if drafts:
+                break
+            if attempt < 5:
+                time.sleep(1)
+        require(len(drafts) == 1, "draft missing or duplicate; inspect manually")
+        draft = drafts[0]
+        verify_draft(draft, r, assets, tag_commit(tag), notes)
+    # Read the exact ID again immediately before promotion; no mutation
+    # occurs unless all source, asset, notes and tag checks still agree.
+    endpoint = f"repos/{REPO}/releases/{draft['id']}"
+    verify_draft(api(endpoint), r, assets, tag_commit(tag), notes)
+    require(api(f"repos/{REPO}/git/ref/heads/main")["object"]["sha"] == current,
+            "main advanced before publication")
+    subprocess.run(["gh", "api", "--method", "PATCH", endpoint, "-F", "draft=false"], check=True)
     published = releases(tag)
-    require(len(published) == 1 and tag_commit(tag) == r["revision"], "published tag mismatch")
+    require(len(published) == 1 and published[0]["id"] == draft["id"]
+            and tag_commit(tag) == r["revision"], "published tag mismatch")
     verify_release(published[0], r, assets, False)
     print("RELEASE_PUBLISHED_AND_TAG_VERIFIED", published[0]["html_url"], r["revision"])
 

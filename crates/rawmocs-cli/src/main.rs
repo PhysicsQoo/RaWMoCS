@@ -298,7 +298,7 @@ fn parse_records<'a>(
 }
 
 const MAX_SOURCE_BYTES: u64 = 2_000_000;
-const HELP: &str = "rawmocs --digits {30|60|100|130} [--solver auto|prejoin|general|reference] [--timeout-ms N] [--large-general] FILE\n\
+const HELP: &str = "rawmocs --digits {30|60|100|130} [--solver auto|prejoin|general|general-separator|reference] [--timeout-ms N] [--large-general] FILE\n\
 Full signed complex WMC for QuPRS weighted CNF. Output is rounded MPFR, not a certified interval.\n\
 Exit 0: complete SAT and complex count. Nonzero: classified failure, empty stdout. Use an external process resource supervisor.";
 fn read_source(path: &std::ffi::OsStr) -> Result<String, String> {
@@ -401,6 +401,9 @@ fn solve_until(
     }
     if mode == "reference" {
         return reference(p, raw, bits).map(|a| (a, "reference"));
+    }
+    if mode == "general-separator" {
+        return general::solve_separator(p, bits, deadline).map(|a| (a, "general-separator"));
     }
     if mode == "general" || (mode == "auto" && p.n == 0) {
         return general::solve(p, bits, deadline).map(|a| (a, "general"));
@@ -551,7 +554,7 @@ fn run() -> Result<(), String> {
             format!("INPUT: {e}")
         }
     })?;
-    if !matches!(mode.as_str(), "auto" | "prejoin" | "general" | "reference") {
+    if !matches!(mode.as_str(), "auto" | "prejoin" | "general" | "general-separator" | "reference") {
         return Err("INPUT: invalid solver".into());
     }
     if large_general {

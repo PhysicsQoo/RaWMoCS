@@ -369,6 +369,32 @@ impl TrailIndex {
         (ids, key)
     }
 
+    // At the fresh component boundary, normalization already established
+    // lexicographic order and removed duplicates. Empty trail means no
+    // assigned literal can change the source's canonical representatives.
+    fn fresh_boundary(&self) -> (Vec<usize>,Vec<Clause>) {
+        debug_assert!(self.trail.is_empty());
+        ((0..self.clauses.len()).collect(),self.clauses.clone())
+    }
+
+    // Consume the pre-closure materialization in its representative
+    // order. No sort/dedup here: closure may have created duplicates,
+    // which the baseline retains until the next node boundary.
+    fn compact_materialized(&self, ids:&[usize], mut clauses:Vec<Clause>) -> Vec<Clause> {
+        debug_assert_eq!(ids.len(),clauses.len());
+        let mut ids=ids.iter();
+        clauses.retain_mut(|clause| {
+            let cid=*ids.next().expect("representative count");
+            if self.satisfied[cid]!=0 {return false;}
+            if self.live[cid]!=clause.len() {
+                clause.retain(|lit|self.value(lit.unsigned_abs() as usize)==0);
+                debug_assert_eq!(clause.len(),self.live[cid]);
+            }
+            true
+        });
+        clauses
+    }
+
     fn materialize_ids(&self, ids: &[usize]) -> Vec<Clause> {
         ids.iter().copied().filter(|&cid| self.satisfied[cid] == 0)
             .map(|cid| self.clauses[cid].iter().copied().filter(|l| self.value(l.unsigned_abs() as usize) == 0).collect()).collect()
@@ -1237,6 +1263,7 @@ struct TrailStats {
 struct PhaseProfile {
     init_ns:u128, boundary_ns:u128, cache_ns:u128, closure_ns:u128,
     residual_ns:u128, slots:usize, source_clauses:usize,
+    fresh_shortcuts:usize, reused_residuals:usize, unchanged_residuals:usize,
 }
 fn stamp(enabled:bool)->Option<Instant> { enabled.then(Instant::now) }
 fn elapsed(start:Option<Instant>)->u128 { start.map_or(0,|t|t.elapsed().as_nanos()) }
@@ -1254,12 +1281,14 @@ struct ScopedTrail<'a> {
     parent: Vec<usize>,
     bypasses: usize,
     profile: Option<PhaseProfile>,
+    fresh_shortcut: bool,
+    reuse_residual: bool,
 }
 impl<'a> ScopedTrail<'a> {
     fn new(p: &'a Problem, bits: u32, deadline: Instant) -> Self {
         Self { p, bits, deadline, cache: HashMap::new(), items: 0,
             stats: TrailStats::default(), max_nodes: 100_000, trace: None, policy: 0,
-            frequency: Vec::new(), parent: Vec::new(), bypasses: 0, profile: None }
+            frequency: Vec::new(), parent: Vec::new(), bypasses: 0, profile: None, fresh_shortcut:false, reuse_residual:false }
     }
     fn check(&self) -> Result<(), String> {
         if Instant::now() >= self.deadline { return Err("research deadline".into()); }
@@ -1352,7 +1381,10 @@ impl<'a> ScopedTrail<'a> {
         if self.stats.nodes >= self.max_nodes { return Err("research node limit".into()); }
         self.stats.nodes += 1;
         let timer=stamp(self.profile.is_some());
-        let (ids,clauses) = state.materialized_boundary();
+        let (ids,clauses) = if self.fresh_shortcut && state.trail.is_empty() {
+            if let Some(p)=&mut self.profile {p.fresh_shortcuts+=1;}
+            state.fresh_boundary()
+        } else {state.materialized_boundary()};
         if let Some(p)=&mut self.profile {p.boundary_ns+=elapsed(timer);}
         if let Some(t) = &mut self.trace { t.enter(&scope, &clauses); }
         let timer=stamp(self.profile.is_some());
@@ -1364,8 +1396,14 @@ impl<'a> ScopedTrail<'a> {
             if let Some(t) = &mut self.trace { t.hits += 1; }
             return Ok(hit.clone());
         }
-        let key = cache_can_admit(self.cache.len(),self.items,key_items(&scope,&clauses))
-            .then(|| Key { scope: scope.clone(), clauses });
+        let admit=cache_can_admit(self.cache.len(),self.items,key_items(&scope,&clauses));
+        // A cache key, if admitted, must own the unchanged pre-closure
+        // clauses. The working residual can reuse their materialization.
+        let (key,pre_residual)=if self.reuse_residual {
+            (admit.then(||Key {scope:scope.clone(),clauses:clauses.clone()}),Some(clauses))
+        } else {
+            (admit.then(||Key {scope:scope.clone(),clauses}),None)
+        };
         if let Some(p)=&mut self.profile {p.cache_ns+=elapsed(timer);}
         let timer=stamp(self.profile.is_some());
         let closed=state.ranked_closure(&ids,self.deadline)?;
@@ -1373,6 +1411,7 @@ impl<'a> ScopedTrail<'a> {
         let Some(forced) = closed else {
             return self.save(key,Outcome::unsat(self.bits));
         };
+        let unchanged=forced.is_empty();
         let mut prefix = C::one(self.bits);
         for lit in forced {
             self.check()?;
@@ -1381,7 +1420,13 @@ impl<'a> ScopedTrail<'a> {
         // Preserve the post-closure order and multiplicity; only the
         // next node's canonical boundary sorts and deduplicates.
         let timer=stamp(self.profile.is_some());
-        let mut residual = state.materialize_ids(&ids);
+        let mut residual = if let Some(clauses)=pre_residual {
+            if let Some(p)=&mut self.profile {
+                p.reused_residuals+=1;
+                if unchanged {p.unchanged_residuals+=1;}
+            }
+            if unchanged {clauses} else {state.compact_materialized(&ids,clauses)}
+        } else {state.materialize_ids(&ids)};
         if let Some(p)=&mut self.profile {p.residual_ns+=elapsed(timer);}
         let mut temporary = Vec::new();
         let frequency = if self.policy == 0 {
@@ -1844,3 +1889,168 @@ fn scoped_local_complete_ablation() {
         }
     }
 }
+
+#[test]
+fn scoped_canonical_reuse_randomized() {
+    use crate::parse_emitted;
+    let mut seed = 0x81a3b93d_u32;
+    let mut next = || { seed = seed.wrapping_mul(1664525).wrapping_add(1013904223); seed >> 8 };
+    let deadline = Instant::now()+Duration::from_secs(60);
+    let mut totals = TrailStats::default();
+    for case in 0..512 {
+        let n = 8;
+        let mut clauses = Vec::new();
+        for _ in 0..(next()%15) {
+            let mut c = Vec::new();
+            let width = if case%8==0 { next()%5 } else { 2+next()%3 };
+            for _ in 0..width {
+                let v = (next()%n+1) as i32;
+                c.push(if next()%2==0 {v} else {-v});
+            }
+            clauses.push(c);
+        }
+        let dyadic = case%2==0;
+        let weights = if dyadic {
+            ["0.5 0.25","-0.25 0.125","0 0","1 0","-1 0","0.125 -0.5"]
+        } else {
+            ["0.13 0.27","-0.29 0.31","0 0","1 0","-1 0","0.37 -0.41"]
+        };
+        let mut raw = format!("p cnf {n} {}\nc t wmc\n",clauses.len());
+        for v in 1..=n as i32 {
+            for lit in [v,-v] {
+                raw.push_str(&format!("c p weight {lit} {} 0\n",weights[next() as usize%weights.len()]));
+            }
+        }
+        for c in &clauses {
+            for lit in c { raw.push_str(&format!("{lit} ")); }
+            raw.push_str("0\n");
+        }
+        for bits in [100,200,333,432] {
+            let p = parse_emitted(&raw,bits).unwrap();
+            let baseline = super::solve(&p,bits,deadline).unwrap();
+            let mut engine=ScopedTrail::new(&p,bits,deadline);
+            engine.policy=3;
+            for mode in 0..4 {
+                let mut trial=ScopedTrail::new(&p,bits,deadline);
+                trial.policy=if case%2==0 {3} else {4};
+                trial.fresh_shortcut=mode&1!=0;
+                trial.reuse_residual=mode&2!=0;
+                let actual=trial.fresh(p.clauses.clone(),(1..=p.n).collect(),0).unwrap();
+                same_outcome(&actual,&baseline);
+                if dyadic {same_outcome(&actual,&crate::reference(&p,&raw,bits).unwrap());}
+                engine=trial;
+            }
+            let actual=baseline.clone();
+            // Small dyadic counts are exactly representable at every
+            // selected precision. Non-dyadic tests require exact
+            // production MPFR operation-order parity instead.
+            if dyadic { same_outcome(&actual,&crate::reference(&p,&raw,bits).unwrap()); }
+            totals.nodes += engine.stats.nodes;
+            totals.hits += engine.stats.hits;
+            totals.splits += engine.stats.splits;
+            totals.branches += engine.stats.branches;
+            totals.free += engine.stats.free;
+        }
+    }
+    assert!(totals.hits>0 && totals.splits>0 && totals.branches>0 && totals.free>0);
+    println!("CANONICAL_REUSE_RANDOM_PASS counts=8192 independent_dyadic=4096 nodes={} hits={} splits={} branches={} free={}",totals.nodes,totals.hits,totals.splits,totals.branches,totals.free);
+}
+
+#[test]
+fn canonical_reuse_preserves_duplicate_representatives_after_closure() {
+    // 1 forces both [-1,2,3] and [2,3] to become equal, without
+    // deduplicating the post-closure materialization.
+    let source=normalize(vec![vec![1],vec![-1,2,3],vec![2,3],vec![-2,4]]);
+    for compact in [false,true] {
+        let mut state=TrailIndex::ranked_direct(source.clone(),4,&[1,2,3,4],compact);
+        let (ids,key)=state.fresh_boundary();
+        assert_eq!((ids.clone(),key.clone()),state.materialized_boundary());
+        let forced=state.ranked_closure(&ids,Instant::now()+Duration::from_secs(2)).unwrap().unwrap();
+        assert_eq!(forced,vec![1]);
+        let expected=state.materialize_ids(&ids);
+        assert_eq!(expected.iter().filter(|c|**c==vec![2,3]).count(),2);
+        assert_eq!(state.compact_materialized(&ids,key),expected);
+        state.rollback(0);
+        state.verify();
+        assert_eq!(state.residual(),source);
+    }
+}
+
+fn canonical_reuse_run(p:&Problem,bits:u32,mode:u8,trace:bool,budget:usize)
+    -> (Result<Outcome,String>,Option<super::WorkTrace>,usize,usize,usize) {
+    if mode==0 {return adaptive_ablation_run(p,bits,0,trace,budget);}
+    let mut e=ScopedTrail::new(p,bits,Instant::now()+Duration::from_secs(12));
+    // Global direct construction is the factor control; compact local
+    // indexing is deliberately held out of this factorial comparison.
+    e.policy=3;
+    e.fresh_shortcut=(mode-1)&1!=0;
+    e.reuse_residual=(mode-1)&2!=0;
+    e.max_nodes=budget;
+    e.trace=trace.then(super::WorkTrace::default);
+    e.profile=trace.then(PhaseProfile::default);
+    let out=e.fresh(p.clauses.clone(),(1..=p.n).collect(),0);
+    if let Some(q)=&e.profile {
+        println!("REUSE_PHASE mode={mode} init_ns={} boundary_ns={} cache_ns={} closure_ns={} residual_ns={} slots={} source_clauses={} fresh_shortcuts={} reused_residuals={} unchanged_residuals={}",q.init_ns,q.boundary_ns,q.cache_ns,q.closure_ns,q.residual_ns,q.slots,q.source_clauses,q.fresh_shortcuts,q.reused_residuals,q.unchanged_residuals);
+    }
+    (out,e.trace,e.stats.nodes,e.stats.indexes,e.bypasses)
+}
+
+#[test]
+#[ignore = "research-only canonical boundary and residual reuse factorial"]
+fn scoped_canonical_reuse_ablation() {
+    let digits:usize=std::env::var("RAWMOCS_TEST_DIGITS").unwrap().parse().unwrap();
+    let bits=match digits {30=>100,130=>432,_=>panic!("unsupported cohort")};
+    let original=std::fs::read_to_string(std::env::var("RAWMOCS_TEST_ORIGINAL").unwrap()).unwrap();
+    let mut chain="p cnf 8192 8206\nc t wmc\nc p weight 1 -0.5 0.25 0\nc p weight 8192 0.25 -0.125 0\n".to_owned();
+    for v in 2..=9 {chain.push_str(&format!("1 {v} 0\n-1 {v} 0\n"));}
+    for v in 2..8192 {chain.push_str(&format!("-{v} {} 0\n",v+1));}
+    let mut split="p cnf 4096 2048\nc t wmc\n".to_owned();
+    for v in 1..=4096 {split.push_str(&format!("c p weight -{v} 0 0 0\n"));}
+    for v in (1..=4096).step_by(2) {split.push_str(&format!("{v} {} 0\n",v+1));}
+    for (name,raw) in [("chain8192",chain),("split4096",split),("vqe8",original)] {
+        let p=crate::parse_large(std::io::Cursor::new(raw.as_bytes()),bits,Instant::now()+Duration::from_secs(12)).unwrap();
+        // Explicit bounded scout: derive the candidate budget from
+        // the completed baseline, never remove the recursion cap.
+        let (base,trace,nodes,_,_)=canonical_reuse_run(&p,bits,0,true,1_000_000);
+        let base=base.unwrap();
+        let trace=trace.unwrap().summary();
+        assert_eq!(nodes,trace.1);
+        let budget=nodes;
+        let mut admitted=[true,false,false,false,false];
+        println!("REUSE_TRACE case={name} digits={digits} mode=0 status=COMPLETE fingerprint={:016x} nodes={nodes} hits={} splits={} branches={} free={} indexes=0 bypasses=0 budget={budget}",trace.0,trace.2,trace.3,trace.4,trace.5);
+        println!("REUSE_PHASE_CASE case={name} digits={digits}");
+        for mode in 1..=4 {
+            let (out,tr,n,idx,by)=canonical_reuse_run(&p,bits,mode,true,budget);
+            match out {
+                Ok(out)=>{
+                    same_outcome(&base,&out);
+                    assert_eq!(tr.unwrap().summary(),trace,"trace mismatch {name} mode={mode}");
+                    assert_eq!(n,nodes);
+                    admitted[mode as usize]=true;
+                    println!("REUSE_TRACE case={name} digits={digits} mode={mode} status=COMPLETE fingerprint={:016x} nodes={n} hits={} splits={} branches={} free={} indexes={idx} bypasses={by} budget={budget}",trace.0,trace.2,trace.3,trace.4,trace.5);
+                }
+                Err(err)=>{
+                    assert!(err.contains("deadline")||err.contains("limit"),"{err}");
+                    println!("REUSE_TRACE case={name} digits={digits} mode={mode} status=CENSORED nodes={n} indexes={idx} bypasses={by} budget={budget} reason={}",err.replace(' ',"_"));
+                }
+            }
+        }
+        // All five modes have equal position exposure when admitted.
+        for (trial,order) in [[0,1,2,3,4],[1,2,3,4,0],[2,3,4,0,1],[3,4,0,1,2],[4,0,1,2,3],[4,3,2,1,0],[0,4,3,2,1],[1,0,4,3,2],[2,1,0,4,3],[3,2,1,0,4]].into_iter().enumerate() {
+            for mode in order {
+                if !admitted[mode as usize] {continue;}
+                let start=Instant::now();
+                let (out,_,n,_,_)=canonical_reuse_run(&p,bits,mode,false,budget);
+                let wall_ns=start.elapsed().as_nanos();
+                let out=out.unwrap();
+                assert_eq!(n,nodes);
+                same_outcome(&base,&out);
+                let sat=if out.sat {"SATISFIABLE"} else {"UNSATISFIABLE"};
+                let real=out.count.re.to_string_radix(10,Some(digits+4));
+                let imag=out.count.im.to_string_radix(10,Some(digits+4));
+                println!("REUSE_FULL_FINAL case={name} digits={digits} trial={trial} mode={mode} wall_ns={wall_ns} sat={sat} real={real} imag={imag}");
+            }
+        }
+    }
+}
+

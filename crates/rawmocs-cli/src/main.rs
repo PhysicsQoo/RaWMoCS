@@ -570,7 +570,9 @@ fn run() -> Result<(), String> {
         start + Duration::from_millis(timeout_ms.unwrap_or(45_000))
     };
     let (answer, route) = if large_general {
-        let answer = if std::env::var("RAWMOCS_RESEARCH_ROOT_DONATE").as_deref() == Ok("1") {
+        let donate = std::env::var("RAWMOCS_RESEARCH_ROOT_DONATE").as_deref() == Ok("1");
+        eprintln!("RAWMOCS_ROOT_OWNERSHIP donate={donate}");
+        let answer = if donate {
             general::solve_large_owned(problem, bits, deadline)?
         } else {
             general::solve_large(&problem, bits, deadline)?

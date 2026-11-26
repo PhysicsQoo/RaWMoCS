@@ -487,8 +487,12 @@ fn run() -> Result<(), String> {
             parse_start.elapsed().as_nanos()
         );
     }
-    let start = if large_general { parse_start } else { Instant::now() };
-    let deadline = start + Duration::from_millis(timeout_ms.unwrap_or(45_000));
+    let start = Instant::now();
+    let deadline = if large_general {
+        large_deadline
+    } else {
+        start + Duration::from_millis(timeout_ms.unwrap_or(45_000))
+    };
     let (answer, route) = solve_until(&problem, &raw, bits, &mode, deadline)?;
     if mode != "reference" && Instant::now() >= deadline {
         return Err("solver deadline".into());
@@ -584,6 +588,18 @@ mod tests {
         assert_eq!(
             parse_large(std::io::Cursor::new("p cnf 0 0\nc t wmc\n"), 100, Instant::now()).err().as_deref(),
             Some("source deadline")
+        );
+        let line = " ".repeat(999_999) + "\n";
+        let over_bytes = line.repeat(33);
+        assert_eq!(
+            parse_large(std::io::Cursor::new(over_bytes), 100, deadline).err().as_deref(),
+            Some("source bytes cap")
+        );
+        let row = "1 ".repeat(100_000) + "0\n";
+        let over_literals = "p cnf 1 41\nc t wmc\n".to_owned() + &row.repeat(41);
+        assert_eq!(
+            parse_large(std::io::Cursor::new(over_literals), 100, deadline).err().as_deref(),
+            Some("source literal cap")
         );
         let raw = "p cnf 4097 0\nc t wmc\n";
         assert!(parse_emitted(raw, 100).is_err());

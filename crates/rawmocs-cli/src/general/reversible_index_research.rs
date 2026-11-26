@@ -7,6 +7,69 @@ use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeSet, BinaryHeap};
 use std::time::{Duration, Instant};
 
+// Sparse-set frontier: O(1) membership, insertion and swap removal.
+// Canonical ordering is restored explicitly by canonical_ids; dense
+// storage order is NOT the unit propagation order or cache identity.
+#[derive(Debug)]
+enum Frontier {
+    Tree(BTreeSet<usize>),
+    Dense { ids: Vec<usize>, positions: Vec<usize> },
+}
+impl Frontier {
+    fn new(m: usize, dense: bool) -> Self {
+        if dense {
+            Self::Dense { ids: (0..m).collect(), positions: (0..m).collect() }
+        } else {
+            Self::Tree((0..m).collect())
+        }
+    }
+    fn insert(&mut self, cid: usize) {
+        match self {
+            Self::Tree(set) => { set.insert(cid); }
+            Self::Dense { ids, positions } => {
+                assert_eq!(positions[cid], usize::MAX);
+                positions[cid] = ids.len();
+                ids.push(cid);
+            }
+        }
+    }
+    fn remove(&mut self, cid: usize) {
+        match self {
+            Self::Tree(set) => { set.remove(&cid); }
+            Self::Dense { ids, positions } => {
+                let pos = positions[cid];
+                assert_ne!(pos, usize::MAX);
+                assert_eq!(ids.swap_remove(pos), cid);
+                if pos < ids.len() { positions[ids[pos]] = pos; }
+                positions[cid] = usize::MAX;
+            }
+        }
+    }
+    fn ids(&self) -> Vec<usize> {
+        match self {
+            Self::Tree(set) => set.iter().copied().collect(),
+            Self::Dense { ids, .. } => ids.clone(),
+        }
+    }
+    fn is_empty(&self) -> bool {
+        match self {
+            Self::Tree(set) => set.is_empty(),
+            Self::Dense { ids, .. } => ids.is_empty(),
+        }
+    }
+    fn verify(&self, satisfied: &[usize]) {
+        let mut ids = self.ids();
+        ids.sort_unstable();
+        assert_eq!(ids, (0..satisfied.len()).filter(|&i| satisfied[i] == 0).collect::<Vec<_>>());
+        if let Self::Dense { ids, positions } = self {
+            for (i, &cid) in ids.iter().enumerate() { assert_eq!(positions[cid], i); }
+            for (cid, &p) in positions.iter().enumerate() {
+                if satisfied[cid] != 0 { assert_eq!(p, usize::MAX); }
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 struct TrailIndex {
     clauses: Vec<Clause>,
@@ -15,7 +78,8 @@ struct TrailIndex {
     live: Vec<usize>,
     satisfied: Vec<usize>,
     trail: Vec<i32>,
-    active: BTreeSet<usize>,
+    active: Frontier,
+    transitions: bool,
     units: BTreeSet<usize>,
     conflicts: BTreeSet<usize>,
     touches: u64,
@@ -25,6 +89,9 @@ impl TrailIndex {
     // Input must be normalized once, with no duplicated literals or
     // tautologies. Keep stable IDs even when clauses become satisfied.
     fn new(clauses: Vec<Clause>, n: usize) -> Self {
+        Self::with_mode(clauses, n, false, false)
+    }
+    fn with_mode(clauses: Vec<Clause>, n: usize, dense: bool, transitions: bool) -> Self {
         let mut occurrence = vec![Vec::new(); 2 * n];
         let live: Vec<_> = clauses.iter().map(Vec::len).collect();
         let units = live.iter().enumerate().filter_map(|(i, &k)| (k == 1).then_some(i)).collect();
@@ -35,14 +102,36 @@ impl TrailIndex {
             }
         }
         let m = clauses.len();
-        let active = (0..m).collect();
+        let active = Frontier::new(m, dense);
         Self {
             clauses, occurrence, assigned: vec![0; n + 1], live,
-            satisfied: vec![0; m], trail: Vec::new(), active, units, conflicts, touches: 0,
+            satisfied: vec![0; m], trail: Vec::new(), active, transitions, units, conflicts, touches: 0,
         }
     }
 
-    fn refresh(&mut self, cid: usize) {
+    fn class(&self, cid: usize) -> u8 {
+        if self.satisfied[cid] != 0 { 2 }
+        else if self.live[cid] == 0 { 0 }
+        else if self.live[cid] == 1 { 1 }
+        else { 2 }
+    }
+
+    fn refresh(&mut self, cid: usize, before: u8) {
+        let after = self.class(cid);
+        if self.transitions {
+            if before == after { return; }
+            match before {
+                0 => { self.conflicts.remove(&cid); }
+                1 => { self.units.remove(&cid); }
+                _ => {}
+            }
+            match after {
+                0 => { self.conflicts.insert(cid); }
+                1 => { self.units.insert(cid); }
+                _ => {}
+            }
+            return;
+        }
         if self.satisfied[cid] == 0 && self.live[cid] == 1 {
             self.units.insert(cid);
         } else {
@@ -67,17 +156,19 @@ impl TrailIndex {
         let pos = occurrence_slot(lit);
         for k in 0..self.occurrence[pos].len() {
             let cid = self.occurrence[pos][k];
+            let before = self.class(cid);
             self.live[cid] -= 1;
             self.satisfied[cid] += 1;
-            if self.satisfied[cid] == 1 { self.active.remove(&cid); }
-            self.refresh(cid);
+            if self.satisfied[cid] == 1 { self.active.remove(cid); }
+            self.refresh(cid, before);
             self.touches += 1;
         }
         let neg = occurrence_slot(-lit);
         for k in 0..self.occurrence[neg].len() {
             let cid = self.occurrence[neg][k];
+            let before = self.class(cid);
             self.live[cid] -= 1;
-            self.refresh(cid);
+            self.refresh(cid, before);
             self.touches += 1;
         }
         self.conflicts.is_empty()
@@ -90,17 +181,19 @@ impl TrailIndex {
             let pos = occurrence_slot(lit);
             for k in 0..self.occurrence[pos].len() {
                 let cid = self.occurrence[pos][k];
+            let before = self.class(cid);
                 self.live[cid] += 1;
                 self.satisfied[cid] -= 1;
                 if self.satisfied[cid] == 0 { self.active.insert(cid); }
-                self.refresh(cid);
+                self.refresh(cid, before);
                 self.touches += 1;
             }
             let neg = occurrence_slot(-lit);
             for k in 0..self.occurrence[neg].len() {
                 let cid = self.occurrence[neg][k];
+            let before = self.class(cid);
                 self.live[cid] += 1;
-                self.refresh(cid);
+                self.refresh(cid, before);
                 self.touches += 1;
             }
             self.assigned[lit.unsigned_abs() as usize] = 0;
@@ -129,7 +222,7 @@ impl TrailIndex {
     // Only the active frontier is visited, not all original clauses.
     // Sorting is at node entry; never re-sort during ordered propagation.
     fn canonical_ids(&self) -> Vec<usize> {
-        let mut ids: Vec<_> = self.active.iter().copied().collect();
+        let mut ids = self.active.ids();
         ids.sort_unstable_by(|&a, &b| self.cmp_reduced(a, b).then(a.cmp(&b)));
         ids.dedup_by(|a, b| self.cmp_reduced(*a, *b) == Ordering::Equal);
         ids
@@ -186,7 +279,7 @@ impl TrailIndex {
             if sat == 0 && live == 1 { units.insert(i); }
             if sat == 0 && live == 0 { conflicts.insert(i); }
         }
-        assert_eq!(self.active, (0..self.clauses.len()).filter(|&i| self.satisfied[i] == 0).collect());
+        self.active.verify(&self.satisfied);
         assert_eq!(self.units, units);
         assert_eq!(self.conflicts, conflicts);
     }
@@ -220,7 +313,7 @@ fn reversible_index_random_nested_rollback() {
             source.push(c);
         }
         let source = normalize(source);
-        let mut state = TrailIndex::new(source.clone(), 12);
+        let mut state = TrailIndex::with_mode(source.clone(), 12, case % 2 == 0, (case / 2) % 2 == 0);
         for _ in 0..12 {
             let parent = state.checkpoint();
             let before = state.residual();
@@ -452,5 +545,99 @@ fn reversible_canonical_fixed_work() {
         let wall_ns = start.elapsed().as_nanos();
         if let Some(st) = state.as_ref() { st.verify(); assert!(st.trail.is_empty()); }
         println!("CANONICAL_FIXED_WORK trial={trial} reuse={reuse} branches=64 forced={work} wall_ns={wall_ns} boundary_ns={boundary_ns} closure_ns={closure_ns}");
+    }
+}
+
+#[test]
+fn frontier_modes_exact_nested_parity() {
+    let source = normalize(vec![vec![-3,2],vec![1],vec![2],vec![-1,4],vec![-2,5],vec![3,4],vec![-4,5]]);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    for dense in [false,true] {
+        for transitions in [false,true] {
+            let mut st = TrailIndex::with_mode(source.clone(),5,dense,transitions);
+            for lit in [3,-3,4,-4] {
+                st.apply(lit);
+                let checkpoint = st.checkpoint();
+                let canonical = normalize(st.residual());
+                let ids = st.canonical_ids();
+                assert_eq!(st.materialize_ids(&ids),canonical);
+                let expected = scan(canonical);
+                let actual = st.ranked_closure(&ids,deadline).unwrap().map(|f| (st.materialize_ids(&ids),f));
+                assert_eq!(actual,expected);
+                st.verify();
+                st.rollback(checkpoint);
+                st.verify();
+                st.rollback(0);
+                st.verify();
+                assert_eq!(st.residual(),source);
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "research-only balanced frontier/transition ablation"]
+fn frontier_transition_fixed_work() {
+    let n = 8192_i32;
+    let mut source = Vec::new();
+    for v in 2..=9 { source.push(vec![1,v]); source.push(vec![-1,v]); }
+    for v in 2..n { source.push(vec![-v,v+1]); }
+    let source = normalize(source);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let expected: Vec<_> = [1,-1].iter().map(|&lit| {
+        let mut c = source.clone();
+        assign_inplace(&mut c,lit);
+        let closed = indexed_units(normalize(c),n as usize,deadline).unwrap().unwrap();
+        assert!(closed.clauses.is_empty());
+        closed.forced
+    }).collect();
+    // Balanced cyclic and reverse orders. Four pairs of factors,
+    // plus per-branch rebuild as an end-to-end diagnostic control.
+    let orders = [[0,1,2,3,4],[4,3,2,1,0],[2,3,4,0,1],[1,0,4,3,2]];
+    for (trial,order) in orders.into_iter().enumerate() {
+        for mode in order {
+            let dense = mode == 2 || mode == 4;
+            let transitions = mode == 3 || mode == 4;
+            let start = Instant::now();
+            let mut state = (mode != 0).then(|| TrailIndex::with_mode(source.clone(),n as usize,dense,transitions));
+            let mut boundary_ns = 0_u128;
+            let mut closure_ns = 0_u128;
+            let mut work = 0;
+            for _ in 0..32 {
+                for (arm,lit) in [1,-1].into_iter().enumerate() {
+                    let boundary = Instant::now();
+                    let forced = if let Some(st) = state.as_mut() {
+                        assert!(st.apply(lit));
+                        let ids = st.canonical_ids();
+                        let key = st.materialize_ids(&ids);
+                        boundary_ns += boundary.elapsed().as_nanos();
+                        let closure = Instant::now();
+                        let forced = st.ranked_closure(&ids,deadline).unwrap().unwrap();
+                        assert!(st.active.is_empty());
+                        st.rollback(0);
+                        closure_ns += closure.elapsed().as_nanos();
+                        std::hint::black_box(key);
+                        forced
+                    } else {
+                        let mut clauses = source.clone();
+                        assign_inplace(&mut clauses,lit);
+                        let clauses = normalize(clauses);
+                        let key = clauses.clone();
+                        boundary_ns += boundary.elapsed().as_nanos();
+                        let closure = Instant::now();
+                        let closed = indexed_units(clauses,n as usize,deadline).unwrap().unwrap();
+                        assert!(closed.clauses.is_empty());
+                        closure_ns += closure.elapsed().as_nanos();
+                        std::hint::black_box(key);
+                        closed.forced
+                    };
+                    assert_eq!(forced,expected[arm]);
+                    work += forced.len();
+                }
+            }
+            let wall_ns = start.elapsed().as_nanos();
+            if let Some(st) = state.as_ref() { st.verify(); assert!(st.trail.is_empty()); }
+            println!("FRONTIER_FIXED_WORK trial={trial} mode={mode} branches=64 forced={work} wall_ns={wall_ns} boundary_ns={boundary_ns} closure_ns={closure_ns}");
+        }
     }
 }

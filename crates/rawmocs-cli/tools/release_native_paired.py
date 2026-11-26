@@ -7,7 +7,9 @@ rows, even if a solver exceeds the shared limit or fails the numeric witness.
 import argparse
 from fractions import Fraction
 from hashlib import sha256
+from itertools import permutations
 import json
+import os
 from pathlib import Path
 import re
 import statistics
@@ -63,6 +65,7 @@ def run(cmd, arm, prefix, bits, digits, ref, target):
              "--as=3221225472", "--fsize=16777216", "--", "/usr/bin/time",
              "-f", "%M", "-o", str(rss), *cmd],
             capture_output=True, text=True, timeout=LIMIT + 7,
+            env={k: v for k, v in os.environ.items() if k != "RAWMOCS_RESEARCH_DIRECT_BINARY"},
         )
     except subprocess.TimeoutExpired:
         return {**row, "status": "CENSORED_OUTER_TIMEOUT", "wall_ns_lower_bound": LIMIT * 10**9}
@@ -78,14 +81,14 @@ def run(cmd, arm, prefix, bits, digits, ref, target):
             pass
     if proc.returncode:
         row["status"] = ("CENSORED_TIME" if proc.returncode == 124 else
-                         "CENSORED_INTERNAL_TIMEOUT" if arm == "rawmocs" and proc.returncode == 4 else
+                         "CENSORED_INTERNAL_TIMEOUT" if arm != "gpmc" and proc.returncode == 4 else
                          "CENSORED_EXIT_OR_RESOURCE")
         return row
     try:
         row.update(parse(proc.stdout, arm))
         row["witness_upper"] = check_count(row, ref, target)
         assert row.get("peak_rss_kib", 0) > 0
-        if arm == "rawmocs":
+        if arm != "gpmc":
             assert re.findall(r"^RAWMOCS_COMPLETE route=prejoin digits=(\d+) bits=(\d+) ", proc.stderr, re.M) == [(str(digits), str(bits))]
             trace, = re.findall(r"^PREJOIN_COMPLETE residual=(\d+) cuts=(\d+) leaves=(\d+) width=(\d+) work=(\d+) peak=(\d+) joins=(\d+) plan_ns=(\d+)$", proc.stderr, re.M)
             row["plan_signature"] = list(map(int, trace[:7]))
@@ -107,6 +110,7 @@ def main():
     for name in ("corpus", "bin", "gpmc", "gpmc-source", "out"):
         ap.add_argument("--" + name, type=Path, required=True)
     ap.add_argument("--case", required=True, choices=[c[0] for c in CASES])
+    ap.add_argument("--baseline", type=Path, help="Frozen release binary for a third matched arm")
     a = ap.parse_args()
     assert subprocess.check_output(["git", "-C", str(a.gpmc_source), "rev-parse", "HEAD"], text=True).strip() == GPMC_PIN
     label, _, _, expected, bits = next(c for c in CASES if c[0] == a.case)
@@ -134,15 +138,24 @@ def main():
               "binary_sha256": {"gpmc": digest(a.gpmc), "rawmocs": digest(a.bin)},
               "trials": []}
 
+    arms = ARMS if a.baseline is None else (*ARMS, "baseline")
+    if a.baseline is not None:
+        report["binary_sha256"]["baseline"] = digest(a.baseline)
+        report["baseline_revision"] = "ef8d1ee606bed672ee9be62d189a2b3fbcc905a0"
+
     def save():
         (a.out / "paired.json").write_text(json.dumps(report, indent=2) + "\n")
 
     save()
     cmds = {"gpmc": [str(a.gpmc.resolve()), "-mode=1", f"-prec={digits}", str(cnf)],
             "rawmocs": [str(a.bin.resolve()), "--digits", str(digits), "--timeout-ms", str(LIMIT * 1000), str(cnf)]}
+    if a.baseline is not None:
+        cmds["baseline"] = [str(a.baseline.resolve()), *cmds["rawmocs"][1:]]
+    orders = list(permutations(arms))
     for trial in range(7):
-        # Reverse starting arm by cohort; never select the faster order.
-        order = ARMS if (trial + (bits == 432)) % 2 == 0 else ARMS[::-1]
+        # Exhaust all six orders for a triple; the seventh is predeclared.
+        # Offset by cohort precision, never by observed timings.
+        order = orders[(trial + (bits == 432)) % len(orders)]
         sample = {"trial": trial, "order": order, "rows": {}}
         report["trials"].append(sample)
         for arm in order:
@@ -155,21 +168,30 @@ def main():
             report["status"] = "INCONCLUSIVE"
             save()
             raise SystemExit("paired cohort censored or invalid; no speed ratio")
-    for arm in ARMS:
+    for arm in arms:
         rows = [t["rows"][arm] for t in report["trials"]]
         assert all((r["sat"], r["real"], r["imag"]) == (rows[0]["sat"], rows[0]["real"], rows[0]["imag"]) for r in rows)
-        if arm == "rawmocs":
+        if arm != "gpmc":
             assert all(r["plan_signature"] == rows[0]["plan_signature"] for r in rows)
-    vals = {arm: [t["rows"][arm]["wall_ns"] for t in report["trials"]] for arm in ARMS}
+    if a.baseline is not None:
+        for t in report["trials"]:
+            old, new = t["rows"]["baseline"], t["rows"]["rawmocs"]
+            assert old["stdout_sha256"] == new["stdout_sha256"], "frozen release count drift"
+            assert old["plan_signature"] == new["plan_signature"], "frozen release plan drift"
+    vals = {arm: [t["rows"][arm]["wall_ns"] for t in report["trials"]] for arm in arms}
     report["summary"] = {
         arm: {"p50_s": statistics.median(vals[arm]) / 1e9,
               "p90_s": p90(vals[arm]) / 1e9,
               "median_peak_rss_kib": statistics.median(t["rows"][arm]["peak_rss_kib"] for t in report["trials"])}
-        for arm in ARMS}
+        for arm in arms}
     report["summary"]["gpmc_over_rawmocs_p50"] = statistics.median(vals["gpmc"]) / statistics.median(vals["rawmocs"])
     report["summary"]["paired_ratio_median"] = statistics.median(g / r for g, r in zip(vals["gpmc"], vals["rawmocs"]))
     report["summary"]["rawmocs_paired_wins"] = sum(r < g for g, r in zip(vals["gpmc"], vals["rawmocs"]))
-    report["status"] = "SEVEN_MATCHED_PAIRS_PASS"
+    if a.baseline is not None:
+        report["summary"]["baseline_over_rawmocs_p50"] = statistics.median(vals["baseline"]) / statistics.median(vals["rawmocs"])
+        report["summary"]["baseline_paired_ratio_median"] = statistics.median(b / r for b, r in zip(vals["baseline"], vals["rawmocs"]))
+        report["summary"]["candidate_paired_wins"] = sum(r < b for b, r in zip(vals["baseline"], vals["rawmocs"]))
+    report["status"] = "SEVEN_MATCHED_PAIRS_PASS" if a.baseline is None else "SEVEN_MATCHED_TRIPLES_PASS"
     save()
     print("RELEASE_NATIVE_FINAL", label, json.dumps(report["summary"], sort_keys=True), flush=True)
 

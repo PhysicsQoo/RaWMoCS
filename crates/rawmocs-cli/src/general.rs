@@ -1016,6 +1016,22 @@ mod pivot_research {
     }
 
     #[test]
+    #[ignore = "bounded single-arm separator Simulation; independently checked by CI"]
+    fn original_separator_simulation_arm() {
+        let policy:u8=std::env::var("RAWMOCS_TEST_POLICY").unwrap().parse().unwrap();
+        assert!(policy==0 || policy==3);
+        let raw=std::fs::read_to_string(std::env::var("RAWMOCS_TEST_ORIGINAL").unwrap()).unwrap();
+        let bits=432;
+        let p=crate::parse_large(std::io::Cursor::new(raw.as_bytes()),bits,Instant::now()+Duration::from_secs(30)).unwrap();
+        let (out,r)=run(&p,bits,policy,Instant::now()+Duration::from_secs(30));
+        let out=out.unwrap();
+        let sat=if out.sat {"SATISFIABLE"} else {"UNSATISFIABLE"};
+        let real=out.count.re.to_string_radix(10,Some(134));
+        let imag=out.count.im.to_string_radix(10,Some(134));
+        println!("SEPARATOR_SIM policy={policy} nodes={} hits={} splits={} branches={} checks={} overrides={} sat={sat} real={real} imag={imag}",r.nodes,r.hits,r.splits,r.branches,r.separator_checks,r.separator_overrides);
+    }
+
+    #[test]
     #[ignore = "source-locked balanced General separator comparisons"]
     fn original_separator_balanced() {
         let digits:usize=std::env::var("RAWMOCS_TEST_DIGITS").unwrap().parse().unwrap();

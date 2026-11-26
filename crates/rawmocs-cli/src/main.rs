@@ -1,7 +1,8 @@
 //! First release candidate: full signed-complex WMC CLI.
 use num_rational::BigRational;
 use rug::Float;
-use std::io::Read;
+use std::borrow::Cow;
+use std::io::{BufRead, BufReader, Read};
 use std::time::{Duration, Instant};
 mod factor_prejoin;
 mod general;
@@ -82,21 +83,78 @@ fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
     if raw.is_empty() || raw.len() > 2_000_000 {
         return Err("invalid source bytes".into());
     }
-    let mut lines = raw.lines().filter(|s| !s.trim().is_empty());
-    let header: Vec<_> = lines
-        .next()
-        .ok_or("missing header")?
-        .split_whitespace()
-        .collect();
+    parse_records(
+        raw.lines()
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| Ok(Cow::Borrowed(s))),
+        bits,
+        false,
+    )
+}
+
+const LARGE_SOURCE_BYTES: u64 = 32_000_000;
+const LARGE_LINE_BYTES: u64 = 1_000_000;
+const LARGE_VARIABLES: usize = 65_536;
+const LARGE_CLAUSES: usize = 600_000;
+const LARGE_LITERALS: usize = 4_000_000;
+
+// Explicit experimental general route only. A bounded line reader never
+// materializes the full source or accepts a partial record at a byte cap.
+fn parse_large<R: BufRead>(
+    mut reader: R,
+    bits: u32,
+    deadline: Instant,
+) -> Result<Problem, String> {
+    let mut consumed = 0_u64;
+    let lines = std::iter::from_fn(move || loop {
+        if Instant::now() >= deadline {
+            return Some(Err("source deadline".into()));
+        }
+        let mut line = String::new();
+        let cap = (LARGE_SOURCE_BYTES - consumed + 1).min(LARGE_LINE_BYTES + 1);
+        let read = match reader.by_ref().take(cap).read_line(&mut line) {
+            Ok(n) => n as u64,
+            Err(e) => return Some(Err(format!("source read: {e}"))),
+        };
+        if read == 0 {
+            return None;
+        }
+        consumed += read;
+        if consumed > LARGE_SOURCE_BYTES {
+            return Some(Err("source bytes cap".into()));
+        }
+        if read > LARGE_LINE_BYTES {
+            return Some(Err("source line cap".into()));
+        }
+        if !line.trim().is_empty() {
+            return Some(Ok(Cow::Owned(line)));
+        }
+    });
+    parse_records(lines, bits, true)
+}
+
+fn parse_records<'a>(
+    mut lines: impl Iterator<Item = Result<Cow<'a, str>, String>>,
+    bits: u32,
+    large: bool,
+) -> Result<Problem, String> {
+    let header_line = lines.next().ok_or("missing header")??;
+    let header: Vec<_> = header_line.split_whitespace().collect();
     if header.len() != 4 || header[0] != "p" || header[1] != "cnf" {
         return Err("bad p cnf header".into());
     }
     let n: usize = header[2].parse().map_err(|_| "bad variable count")?;
     let declared: usize = header[3].parse().map_err(|_| "bad clause count")?;
-    if n > 4096 || declared > 50_000 {
+    let (max_n, max_clauses) = if large {
+        (LARGE_VARIABLES, LARGE_CLAUSES)
+    } else {
+        (4096, 50_000)
+    };
+    if n > max_n || declared > max_clauses {
         return Err("oversize CNF".into());
     }
-    match lines.next().map(str::trim) {
+    let marker = lines.next().transpose()?;
+    match marker.as_deref().map(str::trim) {
         Some("c t wmc") => {}
         Some(s) if s.starts_with("c t ") => return Err("unsupported input semantics".into()),
         _ => return Err("missing wmc marker".into()),
@@ -111,7 +169,9 @@ fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
     let mut assigned = vec![[false; 2]; n];
     let mut clauses = Vec::with_capacity(declared);
     let mut clause_started = false;
+    let mut literal_items = 0_usize;
     for line in lines {
+        let line = line?;
         let f: Vec<_> = line.split_whitespace().collect();
         if f.first() == Some(&"c") {
             if clause_started || f.len() != 7 || f[1..3] != ["p", "weight"] || f[6] != "0" {
@@ -141,6 +201,14 @@ fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
             if f.last() != Some(&"0") {
                 return Err("unterminated clause".into());
             }
+            if large {
+                literal_items = literal_items
+                    .checked_add(f.len() - 1)
+                    .ok_or("source literal cap")?;
+                if literal_items > LARGE_LITERALS {
+                    return Err("source literal cap".into());
+                }
+            }
             let mut clause = Vec::with_capacity(f.len() - 1);
             for token in &f[..f.len() - 1] {
                 let lit: i32 = token.parse().map_err(|_| "invalid clause")?;
@@ -166,7 +234,7 @@ fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
 }
 
 const MAX_SOURCE_BYTES: u64 = 2_000_000;
-const HELP: &str = "rawmocs --digits {30|60|100|130} [--solver auto|prejoin|general|reference] [--timeout-ms N] FILE\n\
+const HELP: &str = "rawmocs --digits {30|60|100|130} [--solver auto|prejoin|general|reference] [--timeout-ms N] [--large-general] FILE\n\
 Full signed complex WMC for QuPRS weighted CNF. Output is rounded MPFR, not a certified interval.\n\
 Exit 0: complete SAT and complex count. Nonzero: classified failure, empty stdout. Use an external process resource supervisor.";
 fn read_source(path: &std::ffi::OsStr) -> Result<String, String> {
@@ -301,8 +369,8 @@ fn solve_until(
 }
 fn failure(reason: &str) -> (&'static str, i32) {
     match reason {
-        "general deadline" | "prejoin deadline" | "solver deadline" => ("TIMEOUT", 4),
-        "source bytes cap" | "oversize CNF" | "general frame allocation" => ("RESOURCE_LIMIT", 5),
+        "general deadline" | "prejoin deadline" | "solver deadline" | "source deadline" => ("TIMEOUT", 4),
+        "source bytes cap" | "source line cap" | "source literal cap" | "oversize CNF" | "general frame allocation" => ("RESOURCE_LIMIT", 5),
         "unsupported input semantics" => ("UNSUPPORTED_INPUT", 3),
         "source clause cap"
         | "clause width cap"
@@ -347,6 +415,7 @@ fn run() -> Result<(), String> {
     let mut mode = "auto".to_owned();
     let mut timeout_ms = None;
     let mut mode_seen = false;
+    let mut large_general = false;
     loop {
         if file == "--solver" && !mode_seen {
             mode = args
@@ -354,6 +423,8 @@ fn run() -> Result<(), String> {
                 .and_then(|x| x.into_string().ok())
                 .ok_or("missing solver")?;
             mode_seen = true;
+        } else if file == "--large-general" && !large_general {
+            large_general = true;
         } else if file == "--timeout-ms" && timeout_ms.is_none() {
             let ms = args
                 .next()
@@ -373,15 +444,32 @@ fn run() -> Result<(), String> {
     if mode == "reference" && timeout_ms.is_some() {
         return Err("INPUT: reference uses external timeout only".into());
     }
-    let raw = read_source(&file).map_err(|e| {
+    if large_general && mode != "general" {
+        return Err("INPUT: --large-general requires --solver general".into());
+    }
+    let parse_start = Instant::now();
+    let large_deadline = parse_start + Duration::from_millis(timeout_ms.unwrap_or(45_000));
+    let raw = if large_general {
+        String::new()
+    } else {
+        read_source(&file).map_err(|e| {
         if e == "source bytes cap" {
             e
         } else {
             format!("INPUT: {e}")
         }
-    })?;
-    let problem = parse_emitted(&raw, bits).map_err(|e| {
-        if matches!(e.as_str(), "oversize CNF" | "unsupported input semantics") {
+        })?
+    };
+    let parsed = if large_general {
+        let reader = BufReader::new(
+            std::fs::File::open(&file).map_err(|e| format!("INPUT: {e}"))?,
+        );
+        parse_large(reader, bits, large_deadline)
+    } else {
+        parse_emitted(&raw, bits)
+    };
+    let problem = parsed.map_err(|e| {
+        if matches!(e.as_str(), "oversize CNF" | "unsupported input semantics" | "source bytes cap" | "source line cap" | "source literal cap" | "source deadline") {
             e
         } else {
             format!("INPUT: {e}")
@@ -390,7 +478,16 @@ fn run() -> Result<(), String> {
     if !matches!(mode.as_str(), "auto" | "prejoin" | "general" | "reference") {
         return Err("INPUT: invalid solver".into());
     }
-    let start = Instant::now();
+    if large_general {
+        eprintln!(
+            "RAWMOCS_SOURCE_ADMITTED variables={} clauses={} literals={} parse_ns={}",
+            problem.n,
+            problem.clauses.len(),
+            problem.clauses.iter().map(Vec::len).sum::<usize>(),
+            parse_start.elapsed().as_nanos()
+        );
+    }
+    let start = if large_general { parse_start } else { Instant::now() };
     let deadline = start + Duration::from_millis(timeout_ms.unwrap_or(45_000));
     let (answer, route) = solve_until(&problem, &raw, bits, &mode, deadline)?;
     if mode != "reference" && Instant::now() >= deadline {
@@ -443,6 +540,56 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn streamed_general_matches_small_parser() {
+        for bits in [100, 200, 333, 432] {
+            for raw in [
+                "p cnf 4 2\nc t wmc\nc p weight 1 -0.5 0.25 0\n1 2 0\n-1 3 0\n",
+                "p cnf 1 0\r\nc t wmc\r\nc p weight 1 -1 0 0",
+                "p cnf 0 1\nc t wmc\n0\n",
+                "p cnf 4 2\nc t wmc\n1 2 0\n3 4 0\n",
+            ] {
+                let deadline = Instant::now() + Duration::from_secs(30);
+                let p = parse_emitted(raw, bits).unwrap();
+                let q = parse_large(std::io::Cursor::new(raw), bits, deadline).unwrap();
+                assert_eq!(p.n, q.n);
+                assert_eq!(p.clauses, q.clauses);
+                let a = general::solve(&p, bits, deadline).unwrap();
+                let b = general::solve(&q, bits, deadline).unwrap();
+                assert_eq!(a.sat, b.sat);
+                assert_eq!(a.count.re, b.count.re);
+                assert_eq!(a.count.im, b.count.im);
+            }
+        }
+    }
+
+    #[test]
+    fn streamed_limits_and_invalid_records_fail_closed() {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        for raw in [
+            "p cnf 65537 0\nc t wmc\n",
+            "p cnf 1 600001\nc t wmc\n",
+            "p cnf 1 1\nc t wmc\n2 0\n",
+            "p cnf 1 1\nc t wmc\n1\n",
+            "p cnf 1 0\nc t pwmc\n",
+            "p cnf 1 0\nc t wmc\nc p weight 1 1 0 0\nc p weight 1 1 0 0\n",
+        ] {
+            assert!(parse_large(std::io::Cursor::new(raw), 100, deadline).is_err());
+        }
+        let long_line = " ".repeat(LARGE_LINE_BYTES as usize + 1);
+        assert_eq!(
+            parse_large(std::io::Cursor::new(long_line), 100, deadline).err().as_deref(),
+            Some("source line cap")
+        );
+        assert_eq!(
+            parse_large(std::io::Cursor::new("p cnf 0 0\nc t wmc\n"), 100, Instant::now()).err().as_deref(),
+            Some("source deadline")
+        );
+        let raw = "p cnf 4097 0\nc t wmc\n";
+        assert!(parse_emitted(raw, 100).is_err());
+        assert_eq!(parse_large(std::io::Cursor::new(raw), 100, deadline).unwrap().n, 4097);
+    }
+
     #[test]
     fn exact_reference_and_prejoin_agree() {
         for bits in [100, 200, 333, 432] {

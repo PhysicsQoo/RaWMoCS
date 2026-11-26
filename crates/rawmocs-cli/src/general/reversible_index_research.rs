@@ -142,6 +142,8 @@ struct TrailIndex {
     conflicts: BTreeSet<usize>,
     touches: u64,
     rank_scratch: Option<RankScratch>,
+    maintain_source_units: bool,
+    fuse_ranked_updates: bool,
 }
 
 impl TrailIndex {
@@ -164,7 +166,19 @@ impl TrailIndex {
         let active = Frontier::new(m, dense);
         Self {
             clauses, occurrence, assigned: vec![0; n + 1], live,
-            satisfied: vec![0; m], trail: Vec::new(), active, transitions, units, conflicts, touches: 0, rank_scratch: None,
+            satisfied: vec![0; m], trail: Vec::new(), active, transitions, units, conflicts, touches: 0, rank_scratch: None, maintain_source_units: true, fuse_ranked_updates: false,
+        }
+    }
+
+    // Ranked closure has its own queue in canonical rank order. It
+    // does not need the source-ID queue, which is only a test oracle.
+    fn ranked_only(&mut self, enabled: bool) {
+        assert!(self.trail.is_empty());
+        self.maintain_source_units = !enabled;
+        self.units.clear();
+        if !enabled {
+            self.units.extend(self.live.iter().enumerate()
+                .filter_map(|(i, &k)| (k == 1 && self.satisfied[i] == 0).then_some(i)));
         }
     }
 
@@ -181,20 +195,22 @@ impl TrailIndex {
             if before == after { return; }
             match before {
                 0 => { self.conflicts.remove(&cid); }
-                1 => { self.units.remove(&cid); }
+                1 if self.maintain_source_units => { self.units.remove(&cid); }
                 _ => {}
             }
             match after {
                 0 => { self.conflicts.insert(cid); }
-                1 => { self.units.insert(cid); }
+                1 if self.maintain_source_units => { self.units.insert(cid); }
                 _ => {}
             }
             return;
         }
-        if self.satisfied[cid] == 0 && self.live[cid] == 1 {
-            self.units.insert(cid);
-        } else {
-            self.units.remove(&cid);
+        if self.maintain_source_units {
+            if self.satisfied[cid] == 0 && self.live[cid] == 1 {
+                self.units.insert(cid);
+            } else {
+                self.units.remove(&cid);
+            }
         }
         if self.satisfied[cid] == 0 && self.live[cid] == 0 {
             self.conflicts.insert(cid);
@@ -206,6 +222,12 @@ impl TrailIndex {
     fn checkpoint(&self) -> usize { self.trail.len() }
 
     fn apply(&mut self, lit: i32) -> bool {
+        self.apply_with_units(lit, |_| {})
+    }
+
+    // Emit newly live units in the same negative-incidence order as
+    // the separate ranked scan. Finish every update on conflict.
+    fn apply_with_units(&mut self, lit: i32, mut on_unit: impl FnMut(usize)) -> bool {
         let v = lit.unsigned_abs() as usize;
         assert_eq!(self.assigned[v], 0);
         self.assigned[v] = if lit > 0 { 1 } else { -1 };
@@ -228,6 +250,9 @@ impl TrailIndex {
             let before = self.class(cid);
             self.live[cid] -= 1;
             self.refresh(cid, before);
+            if self.satisfied[cid] == 0 && self.live[cid] == 1 {
+                on_unit(cid);
+            }
             self.touches += 1;
         }
         self.conflicts.is_empty()
@@ -262,6 +287,7 @@ impl TrailIndex {
     // The caller owns the checkpoint. On deadline or conflict the state
     // remains reversible; never expose a partial count.
     fn propagate(&mut self, deadline: Instant) -> Result<Option<Vec<i32>>, &'static str> {
+        assert!(self.maintain_source_units, "source-order oracle disabled");
         let mut forced = Vec::new();
         loop {
             if Instant::now() >= deadline { return Err("deadline"); }
@@ -335,14 +361,21 @@ impl TrailIndex {
             let cid = ids[i];
             if self.satisfied[cid] != 0 || self.live[cid] != 1 { continue; }
             let lit = *self.clauses[cid].iter().find(|&&l| self.assigned[l.unsigned_abs() as usize] == 0).expect("live unit");
-            if !self.apply(lit) { return Ok(None); }
-            forced.push(lit);
-            for &j in &self.occurrence[occurrence_slot(-lit)] {
-                let r = if let Some(s) = scratch.as_ref() { s.get(j) } else { rank[j] };
-                if r != usize::MAX && self.satisfied[j] == 0 && self.live[j] == 1 {
-                    units.push(Reverse(r));
+            if self.fuse_ranked_updates {
+                if !self.apply_with_units(lit, |j| {
+                    let r = if let Some(s) = scratch.as_ref() { s.get(j) } else { rank[j] };
+                    if r != usize::MAX { units.push(Reverse(r)); }
+                }) { return Ok(None); }
+            } else {
+                if !self.apply(lit) { return Ok(None); }
+                for &j in &self.occurrence[occurrence_slot(-lit)] {
+                    let r = if let Some(s) = scratch.as_ref() { s.get(j) } else { rank[j] };
+                    if r != usize::MAX && self.satisfied[j] == 0 && self.live[j] == 1 {
+                        units.push(Reverse(r));
+                    }
                 }
             }
+            forced.push(lit);
         }
         Ok(Some(forced))
     }
@@ -365,7 +398,8 @@ impl TrailIndex {
             if sat == 0 && live == 0 { conflicts.insert(i); }
         }
         self.active.verify(&self.satisfied);
-        assert_eq!(self.units, units);
+        if self.maintain_source_units { assert_eq!(self.units, units); }
+        else { assert!(self.units.is_empty()); }
         assert_eq!(self.conflicts, conflicts);
     }
 }
@@ -936,4 +970,207 @@ fn rank_generation_dense_fixed_work() {
         assert_eq!(state.residual(),source);
         println!("RANK_GENERATION_DENSE_FINAL trial={trial} reuse={reuse} source={} active={} branches=64 forced={work} wall_ns={ns}",source.len(),parent.len());
     }
+}
+
+#[test]
+fn ranked_only_fused_random_nested_rollback() {
+    let mut seed = 0x12345678_u32;
+    let mut next = || { seed = seed.wrapping_mul(1664525).wrapping_add(1013904223); seed >> 8 };
+    let deadline = Instant::now() + Duration::from_secs(30);
+    for case in 0..2048 {
+        let mut source = Vec::new();
+        for _ in 0..18 {
+            let mut c = Vec::new();
+            for _ in 0..(if case % 4 == 0 { next() % 5 } else { 2 + next() % 3 }) {
+                let v = (next() % 12 + 1) as i32;
+                c.push(if next() % 2 == 0 { v } else { -v });
+            }
+            source.push(c);
+        }
+        let source = normalize(source);
+        let mut state = TrailIndex::with_mode(source.clone(), 12, (case / 4) % 2 == 0, (case / 8) % 2 == 0);
+        if (case / 16) % 2 == 0 { state.active = Frontier::bitmap(source.len()); }
+        if (case / 32) % 2 == 0 { state.rank_scratch = Some(RankScratch::new(source.len())); }
+        state.ranked_only((case / 64) % 2 == 0);
+        state.fuse_ranked_updates = (case / 128) % 2 == 0;
+        for _ in 0..12 {
+            let parent = state.checkpoint();
+            let before = state.residual();
+            // Alternate branches with nested assignments, including
+            // contradictory parents. Roll back every closure separately.
+            if let Some(v) = (1..=12).find(|&v| state.assigned[v] == 0) {
+                for sign in [1, -1] {
+                    let lit = sign * v as i32;
+                    state.apply(lit);
+                    state.verify();
+                    let after = state.residual();
+                    let expected = scan(after.clone());
+                    let indexed = indexed_units(after, 12, deadline).unwrap().map(|x| (x.clauses, x.forced));
+                    assert_eq!(indexed, expected);
+                    let child = state.checkpoint();
+                    let canonical = normalize(state.residual());
+                    let ids = state.canonical_ids();
+                    assert_eq!(state.materialize_ids(&ids), canonical);
+                    assert_eq!(state.materialized_boundary(), (ids.clone(), canonical.clone()));
+                    let expected = scan(canonical);
+                    let actual = state.ranked_closure(&ids, deadline).unwrap()
+                        .map(|forced| (state.materialize_ids(&ids), forced));
+                    assert_eq!(actual, expected);
+                    state.verify();
+                    state.rollback(child);
+                    state.verify();
+                    state.rollback(parent);
+                    state.verify();
+                    assert_eq!(state.residual(), before);
+                }
+                state.apply(if next() % 2 == 0 { v as i32 } else { -(v as i32) });
+            }
+        }
+        state.rollback(0);
+        state.verify();
+        assert_eq!(state.residual(), source);
+        assert!(state.assigned.iter().all(|&x| x == 0));
+    }
+}
+
+#[test]
+fn ranked_only_fused_conflict_and_deadline_restore() {
+    let source = normalize(vec![vec![1,2],vec![-1,2],vec![-2,3],vec![-3]]);
+    for ranked_only in [false,true] {
+        for fused in [false,true] {
+            let mut st = TrailIndex::with_mode(source.clone(),3,false,true);
+            st.active = Frontier::bitmap(source.len());
+            st.rank_scratch = Some(RankScratch::new(source.len()));
+            st.ranked_only(ranked_only);
+            st.fuse_ranked_updates = fused;
+            for lit in [1,-1] {
+                st.apply(lit);
+                let checkpoint = st.checkpoint();
+                let (ids,key) = st.materialized_boundary();
+                assert_eq!(st.ranked_closure(&ids,Instant::now()),Err("deadline"));
+                st.verify();
+                let expected = scan(key);
+                let actual = st.ranked_closure(&ids,Instant::now()+Duration::from_secs(2)).unwrap()
+                    .map(|forced| (st.materialize_ids(&ids),forced));
+                assert_eq!(actual,expected);
+                st.verify();
+                st.rollback(checkpoint);
+                st.verify();
+                st.rollback(0);
+                st.verify();
+                assert_eq!(st.residual(),source);
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "research-only ranked queue factorial diagnostic"]
+fn single_queue_sparse_fixed_work() {
+    // Large inactive prefix, and a small live chain. Set up the
+    // parent once; do not charge repeated root construction to either arm.
+    let n = 65536_i32;
+    let mut source = Vec::new();
+    for v in 2..=9 { source.push(vec![1,v]); source.push(vec![-1,v]); }
+    for v in 2..512 { source.push(vec![-v,v+1]); }
+    for v in 513..=n { source.push(vec![v]); }
+    let source = normalize(source);
+    let deadline = Instant::now() + Duration::from_secs(90);
+    let mut parent = source.clone();
+    parent.retain(|c| !(c.len()==1 && c[0]>512));
+    let expected: Vec<_> = [1,-1].iter().map(|&lit| {
+        let mut c = parent.clone();
+        assign_inplace(&mut c,lit);
+        let closed = indexed_units(normalize(c),n as usize,deadline).unwrap().unwrap();
+        assert!(closed.clauses.is_empty());
+        closed.forced
+    }).collect();
+    let orders = [[0,1,2,3],[1,2,3,0],[2,3,0,1],[3,0,1,2],[3,2,1,0],[0,3,2,1],[1,0,3,2],[2,1,0,3]];
+    for (trial,order) in orders.into_iter().enumerate() {
+      for mode in order {
+        let mut state = TrailIndex::with_mode(source.clone(),n as usize,false,true);
+        state.active = Frontier::bitmap(source.len());
+        state.rank_scratch = Some(RankScratch::new(source.len()));
+        state.ranked_only(mode & 1 != 0);
+        state.fuse_ranked_updates = mode & 2 != 0;
+        for v in 513..=n { assert!(state.apply(v)); }
+        let checkpoint = state.checkpoint();
+        assert_eq!(normalize(state.residual()),parent);
+        let start = Instant::now();
+        let mut work = 0;
+        for _ in 0..128 {
+            for (arm,lit) in [1,-1].into_iter().enumerate() {
+                assert!(state.apply(lit));
+                let (ids,key) = state.materialized_boundary();
+                let forced = state.ranked_closure(&ids,deadline).unwrap().unwrap();
+                assert_eq!(forced,expected[arm]);
+                assert!(state.active.is_empty());
+                work += forced.len();
+                state.rollback(checkpoint);
+                std::hint::black_box(key);
+            }
+        }
+        let ns = start.elapsed().as_nanos();
+        state.verify();
+        assert_eq!(normalize(state.residual()),parent);
+        state.rollback(0);
+        state.verify();
+        assert_eq!(state.residual(),source);
+        println!("SINGLE_QUEUE_FINAL cohort=sparse trial={trial} mode={mode} source={} active={} branches=256 forced={work} wall_ns={ns}",source.len(),parent.len());
+    }
+  }
+}
+
+#[test]
+#[ignore = "research-only ranked queue factorial diagnostic"]
+fn single_queue_dense_fixed_work() {
+    // Dense root control: no inactive prefix. Same canonical boundary,
+    // forced order, and bitmap state as the sparse sibling benchmark.
+    let n = 8192_i32;
+    let mut source = Vec::new();
+    for v in 2..=9 { source.push(vec![1,v]); source.push(vec![-1,v]); }
+    for v in 2..n { source.push(vec![-v,v+1]); }
+    let source = normalize(source);
+    let deadline = Instant::now() + Duration::from_secs(90);
+    let parent = source.clone();
+    let expected: Vec<_> = [1,-1].iter().map(|&lit| {
+        let mut c = parent.clone();
+        assign_inplace(&mut c,lit);
+        let closed = indexed_units(normalize(c),n as usize,deadline).unwrap().unwrap();
+        assert!(closed.clauses.is_empty());
+        closed.forced
+    }).collect();
+    let orders = [[0,1,2,3],[1,2,3,0],[2,3,0,1],[3,0,1,2],[3,2,1,0],[0,3,2,1],[1,0,3,2],[2,1,0,3]];
+    for (trial,order) in orders.into_iter().enumerate() {
+      for mode in order {
+        let mut state = TrailIndex::with_mode(source.clone(),n as usize,false,true);
+        state.active = Frontier::bitmap(source.len());
+        state.rank_scratch = Some(RankScratch::new(source.len()));
+        state.ranked_only(mode & 1 != 0);
+        state.fuse_ranked_updates = mode & 2 != 0;
+        let checkpoint = state.checkpoint();
+        assert_eq!(normalize(state.residual()),parent);
+        let start = Instant::now();
+        let mut work = 0;
+        for _ in 0..32 {
+            for (arm,lit) in [1,-1].into_iter().enumerate() {
+                assert!(state.apply(lit));
+                let (ids,key) = state.materialized_boundary();
+                let forced = state.ranked_closure(&ids,deadline).unwrap().unwrap();
+                assert_eq!(forced,expected[arm]);
+                assert!(state.active.is_empty());
+                work += forced.len();
+                state.rollback(checkpoint);
+                std::hint::black_box(key);
+            }
+        }
+        let ns = start.elapsed().as_nanos();
+        state.verify();
+        assert_eq!(normalize(state.residual()),parent);
+        state.rollback(0);
+        state.verify();
+        assert_eq!(state.residual(),source);
+        println!("SINGLE_QUEUE_FINAL cohort=dense trial={trial} mode={mode} source={} active={} branches=64 forced={work} wall_ns={ns}",source.len(),parent.len());
+    }
+  }
 }

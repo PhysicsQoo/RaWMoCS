@@ -507,11 +507,7 @@ pub(crate) fn solve(p: &Problem, bits: u32, deadline: Instant) -> Result<Outcome
     solve_mode(p, bits, deadline, false, None)
 }
 
-pub(crate) fn solve_large(
-    mut p: Problem,
-    bits: u32,
-    deadline: Instant,
-) -> Result<Outcome, String> {
+pub(crate) fn solve_large(mut p: Problem, bits: u32, deadline: Instant) -> Result<Outcome, String> {
     // The large route is terminal: the parser's clause vector is no
     // longer needed after solve. Weights and the declared scope remain
     // immutable for the entire search, as in the borrowed route.

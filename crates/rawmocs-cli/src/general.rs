@@ -504,14 +504,24 @@ impl Engine<'_> {
 }
 
 pub(crate) fn solve(p: &Problem, bits: u32, deadline: Instant) -> Result<Outcome, String> {
-    solve_mode(p, bits, deadline, false)
+    solve_mode(p, bits, deadline, false, None)
 }
 
-pub(crate) fn solve_large(p: &Problem, bits: u32, deadline: Instant) -> Result<Outcome, String> {
-    solve_mode(p, bits, deadline, true)
+pub(crate) fn solve_large(mut p: Problem, bits: u32, deadline: Instant) -> Result<Outcome, String> {
+    // The large route is terminal: the parser's clause vector is no
+    // longer needed after solve. Weights and the declared scope remain
+    // immutable for the entire search, as in the borrowed route.
+    let root = std::mem::take(&mut p.clauses);
+    solve_mode(&p, bits, deadline, true, Some(root))
 }
 
-fn solve_mode(p: &Problem, bits: u32, deadline: Instant, large: bool) -> Result<Outcome, String> {
+fn solve_mode(
+    p: &Problem,
+    bits: u32,
+    deadline: Instant,
+    large: bool,
+    root: Option<Vec<Clause>>,
+) -> Result<Outcome, String> {
     let mut engine = Engine {
         p,
         bits,
@@ -522,7 +532,8 @@ fn solve_mode(p: &Problem, bits: u32, deadline: Instant, large: bool) -> Result<
         frequency: vec![0; p.n + 1],
         parent: vec![0; p.n + 1],
     };
-    engine.count(p.clauses.clone(), (1..=p.n).collect())
+    let clauses = root.unwrap_or_else(|| p.clauses.clone());
+    engine.count(clauses, (1..=p.n).collect())
 }
 
 #[cfg(test)]
@@ -535,6 +546,27 @@ mod tests {
     use super::*;
     use crate::parse_emitted;
     use std::time::Duration;
+
+    #[test]
+    fn owned_large_root_matches_borrowed_root() {
+        for bits in [100, 200, 333, 432] {
+            for raw in [
+                "p cnf 4 2\nc t wmc\nc p weight 1 -0.5 0.25 0\n1 2 0\n-1 3 0\n",
+                "p cnf 4 2\nc t wmc\n1 2 0\n3 4 0\n",
+                "p cnf 1 2\nc t wmc\n1 0\n-1 0\n",
+                "p cnf 0 0\nc t wmc\n",
+                "p cnf 1 0\nc t wmc\nc p weight 1 -1 0 0\n",
+            ] {
+                let deadline = Instant::now() + Duration::from_secs(30);
+                let p = parse_emitted(raw, bits).unwrap();
+                let a = solve_mode(&p, bits, deadline, true, None).unwrap();
+                let b = solve_large(p, bits, deadline).unwrap();
+                assert_eq!(a.sat, b.sat);
+                assert_eq!(a.count.re, b.count.re);
+                assert_eq!(a.count.im, b.count.im);
+            }
+        }
+    }
 
     #[test]
     fn ordered_index_matches_scan_on_normalized_residuals() {
@@ -591,7 +623,7 @@ mod tests {
                 let deadline = Instant::now() + Duration::from_secs(30);
                 let p = crate::parse_large(std::io::Cursor::new(&raw), bits, deadline).unwrap();
                 let a = solve(&p, bits, deadline).unwrap();
-                let b = solve_large(&p, bits, deadline).unwrap();
+                let b = solve_large(p, bits, deadline).unwrap();
                 assert!(a.sat && b.sat);
                 assert_eq!(a.count.re, b.count.re);
                 assert_eq!(a.count.im, b.count.im);
@@ -611,7 +643,7 @@ mod tests {
         raw.push_str("-8192 0\n");
         let deadline = Instant::now() + Duration::from_secs(30);
         let p = crate::parse_large(std::io::Cursor::new(&raw), 100, deadline).unwrap();
-        let b = solve_large(&p, 100, deadline).unwrap();
+        let b = solve_large(p, 100, deadline).unwrap();
         assert!(!b.sat);
         assert_eq!(b.count.re, 0);
         assert_eq!(b.count.im, 0);

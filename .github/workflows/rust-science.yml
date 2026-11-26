@@ -14,11 +14,11 @@ on:
         required: true
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name == 'workflow_dispatch' && inputs.suite || 'fast' }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ ((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) && 'full' || 'fast' }}
   cancel-in-progress: true
 
 env:
-  SCIENCE_SUITE: ${{ github.event_name == 'workflow_dispatch' && inputs.suite == 'full' && 'full' || 'fast' }}
+  SCIENCE_SUITE: ${{ ((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) && 'full' || 'fast' }}
 
 permissions:
   contents: read
@@ -77,7 +77,7 @@ jobs:
         run: cargo test -p rawmocs-core --test a0_regressions -- --ignored --nocapture
 
   portability:
-    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || ((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]')))
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -224,7 +224,7 @@ jobs:
           retention-days: 30
 
   durable-source-rebuild:
-    name: ${{ github.event_name == 'workflow_dispatch' && inputs.suite == 'full' && 'Regenerate original CNF and independent interval without artifacts' || 'Replay seven source-locked independent witnesses' }}
+    name: ${{ ((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) && 'Regenerate original CNF and independent interval without artifacts' || 'Replay seven source-locked independent witnesses' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -320,7 +320,7 @@ jobs:
           retention-days: 30
 
   release-native-paired:
-    if: github.event_name == 'workflow_dispatch' && inputs.suite == 'full'
+    if: ((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]')))
     name: Release matched native GPMC (${{ matrix.case }})
     needs: durable-source-rebuild
     runs-on: ubuntu-24.04

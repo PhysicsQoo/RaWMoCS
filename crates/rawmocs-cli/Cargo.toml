@@ -8,6 +8,10 @@ publish = false
 # Keep the MPFR/GMP executable independent of the portable reference workspace.
 [workspace]
 
+[lib]
+name = "rawmocs_mpfr"
+path = "src/lib.rs"
+
 [[bin]]
 name = "rawmocs"
 path = "src/main.rs"

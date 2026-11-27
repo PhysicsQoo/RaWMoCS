@@ -1,0 +1,7 @@
+# v0.2.1 Shared MPFR core — first research slice
+
+The portable `rawmocs-core` reference implementation stays independent. The production MPFR parser, arithmetic, router and solver kernels move into the provisional `rawmocs_mpfr` library target within the existing CLI package; CLI and memory/file callers share one lifecycle. No algorithm, precision selector, admission cap or default route is intentionally changed. The existing CLI version remains 0.2.0 during research.
+
+This is not a stable crates.io API or a Python binding. The initial result transports the same rounded decimal strings as the CLI and separates failures from completed SAT/count results. Internal solver diagnostics may still go to stderr. The cooperative deadline retains the original default parse/solve boundary and reference limitation; hard OOM, cancellation and blocking-I/O isolation remain external-process responsibilities. Timing is captured before stdout transport rather than after it; it is not an end-to-end metric.
+
+Admission: existing CLI/source-locked tests, file/memory/CLI parity, SAT-zero versus UNSAT, invalid input and timeout/reentry. Then review typed options/errors, structured diagnostics, explicit cancellation semantics, precise high-precision representation, independent oracle and same-source/precision Native p50/p90/RSS regression against v0.2.0 plus CodSpeed. No release or QuPRS native integration until those gates pass.

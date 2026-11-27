@@ -73,11 +73,11 @@ explicit small-case diagnostic, not the auto fallback. An external process
 resource supervisor is still required for hard RSS and whole-process time.
 The heap frame guard is not a bound on all allocations.
 
-### Experimental opt-in structural routes (v0.2.0 candidate)
+### Experimental opt-in structural routes (since v0.2.0)
 
-These options describe the unreleased candidate source, not the published
-v0.1.1 binary. The default remains `auto`; the QuPRS adapter does not
-select the experimental routes automatically.
+These options were introduced in the published v0.2.0 source release.
+The default remains `auto`; the QuPRS adapter does not select the
+experimental routes automatically.
 
 | Solver mode | Admission and fallback |
 | --- | --- |
@@ -105,14 +105,14 @@ The successful route, working precision and solver time are reported in
 `RAWMOCS_COMPLETE`. The completion protocol is unchanged. The explicit
 large-input option remains restricted to `--solver general`.
 
-The candidate preserves the previously witnessed long-case performance
+The v0.2.0 release preserved the previously witnessed long-case performance
 within the specified regression gate. A genuine Frontier benefit has been
 observed on QAOA11 encodings; this is not a cross-family or long-case
 acceleration claim. Dense residuals may still reject the bounded plan
 (width 19, work 40,000,000, live cells 2,000,000). Neither experimental
 route is a new default. See the candidate's review and CI evidence in
 [PR #142](https://github.com/PhysicsQoo/RaWMoCS/pull/142).
-The release remains subject to its outstanding admission gates.
+See the [v0.2.0 release notes](releases/v0.2.0.md) for the admitted scope.
 
 ### Explicit large General mode
 
@@ -135,6 +135,19 @@ scan path. This is not an out-of-core solver or a hard process memory bound;
 use an external resource supervisor, including for blocking input. The
 Python adapter and auto mode do not select this option automatically.
 Admission and safe timeout are not proof of a completed count.
+
+### Shared Rust MPFR API (v0.2.1 candidate)
+
+The CLI and the `rawmocs_mpfr` library target in `crates/rawmocs-cli`
+use the same production solver. The typed source-distributed API supports
+file/text solves, explicit precision and solver modes, lossless stored-MPFR
+binary export, call-local diagnostics and cooperative cancellation. No
+failure is returned as a numerical count. Native calls do not emit CLI
+stdout/stderr. Use an external process for hard memory/time isolation.
+
+See the [Rust API contract](docs/rust-api.md) for dependency setup, examples,
+precision and failure semantics, and scope. This is not a crates.io release
+or a Python binding. v0.2.1 publication remains gated on exact-main CI.
 
 ### Opt-in QuPRS Python adapter
 
@@ -238,9 +251,9 @@ safety boundaries.
 
 MIT. See LICENSE.
 
-## Version roadmap and v0.2.0 admission
+## Version roadmap
 
-v0.2.0 is a scoped Structural WMC and Frontier feature candidate, not a universal GPMC speedup claim. Frontier and Separator remain explicit opt-in; Auto and the QuPRS GPMC default are unchanged. The new cross-family scalable WMC research gate (S4) is **deferred / not achieved** and moves to v0.3.0, with all negative evidence retained in [candidate review #142](https://github.com/PhysicsQoo/RaWMoCS/pull/142). All other correctness, independent witnesses, bounded resource/fallback safety, seven rotated four-arm native old-long regression (p50/p90 within 5%, RSS recorded), CodSpeed, exact-main science receipts, actual package and fixed-version QuPRS integration remain required before CI publication.
+Published v0.2.0 is a scoped Structural WMC and Frontier source release, not a universal GPMC speedup claim. Frontier and Separator remain explicit opt-in; Auto and the QuPRS GPMC default are unchanged. The new cross-family scalable WMC research gate (S4) is **deferred / not achieved** and moves to v0.3.0, with all negative evidence retained in [candidate review #142](https://github.com/PhysicsQoo/RaWMoCS/pull/142). v0.2.1 retains the existing release gates and additionally requires natural cancellation, matched native transport non-regression against v0.2.0 and extracted-source Rust consumer evidence before CI publication.
 
 | Planned version | Scope |
 | --- | --- |

@@ -7,6 +7,7 @@ import subprocess
 import sys
 
 from small_family_qualification import BASELINE, CASES, PIN, bounded, digest, git, validate_trial
+from regenerate_release import DIGITS
 
 LABELS = ("qpeinexact8", "grover4", "gf2_4")
 MODES = ("auto", "auto-frontier")
@@ -47,7 +48,8 @@ def run_case(a, label):
     refpath = root / "independent-reference.json"
     refpath.write_text(json.dumps(ref, indent=2) + "\n")
     reference_sha = digest(refpath)
-    digits, bits, target = (130, 432, 100) if label != "gf2_4" else (100, 333, 75)
+    bits = 432 if label != "gf2_4" else 333
+    digits, target = DIGITS[bits]
     report = {"label": label, "source_sha256": cnf_sha, "qasm_sha256": qasm_sha,
               "reference_sha256": reference_sha, "bits": bits, "digits": digits,
               "target_digits": target, "cohorts": []}

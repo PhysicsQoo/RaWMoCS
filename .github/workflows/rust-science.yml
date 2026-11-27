@@ -219,6 +219,36 @@ jobs:
       - name: Source archive and extracted-tree installation admission
         if: env.SCIENCE_SUITE == 'full' || env.SCIENCE_SUITE == 'rationalized' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v022-ci-rationalization') || (github.event_name == 'pull_request' && (startsWith(github.head_ref, 'release/prepare-') || (github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v021-shared-rust-core')))
         run: bash crates/rawmocs-cli/tools/package_source.sh .release-evidence/source-package
+      - name: Reject real multi-leaf solver arithmetic mutation
+        if: env.SCIENCE_SUITE == 'rationalized' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v022-ci-rationalization')
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=crates/rawmocs-cli/src/factor_prejoin.rs
+          original=$(mktemp)
+          cp "$source" "$original"
+          trap 'cp "$original" "$source"; rm -f "$original"' EXIT
+          mkdir -p .release-evidence/mutation
+          python3 - "$source" <<'PY'
+          from pathlib import Path
+          import sys
+          p = Path(sys.argv[1])
+          s = p.read_text()
+          old = "            a.re += &b.re;\n            a.im += &b.im;\n            Some(a)"
+          assert s.count(old) == 1
+          p.write_text(s.replace(old, old.replace("a.im +=", "a.im -="), 1))
+          PY
+          test_name=factor_prejoin::tests::prejoin_cut_planner_width_boundary
+          rc=0
+          cargo test --locked --release --manifest-path crates/rawmocs-cli/Cargo.toml --lib "$test_name" -- --exact > .release-evidence/mutation/mutant.log 2>&1 || rc=$?
+          test "$rc" -ne 0
+          grep -F "test $test_name ... FAILED" .release-evidence/mutation/mutant.log
+          grep -F "test result: FAILED. 0 passed; 1 failed" .release-evidence/mutation/mutant.log
+          cp "$original" "$source"
+          git diff --exit-code -- "$source"
+          cargo test --locked --release --manifest-path crates/rawmocs-cli/Cargo.toml --lib "$test_name" -- --exact > .release-evidence/mutation/restored.log 2>&1
+          grep -F "test $test_name ... ok" .release-evidence/mutation/restored.log
+          echo "SOLVER_MUTATION_REJECTED_AND_RESTORED $GITHUB_SHA" | tee .release-evidence/mutation/status.txt
       - name: Require unchanged tracked release candidate
         run: git diff --exit-code -- crates/rawmocs-cli
       - name: Archive candidate lock and immutable evidence

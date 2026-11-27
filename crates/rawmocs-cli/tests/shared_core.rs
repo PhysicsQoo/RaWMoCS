@@ -238,6 +238,22 @@ fn kernel_diagnostics_are_route_specific() {
     assert!(report.sat);
     assert!(report.diagnostics.prejoin.is_some());
     assert!(report.diagnostics.fallback.is_none());
+
+    // Independent analytic count: all 24 variables are forced positive,
+    // hence exactly one satisfying assignment of weight (10^256)^24.
+    // Compare decimal transport at a much wider precision than the solve,
+    // rather than accepting a successful route with an incorrect count.
+    let expected = rug::Float::with_val(
+        432,
+        rug::Integer::from_str_radix(&format!("1{}", "0".repeat(6144)), 10).unwrap(),
+    );
+    let mut error = rug::Float::with_val(432, rug::Float::parse(&report.real).unwrap());
+    error -= &expected;
+    error.abs_mut();
+    error /= &expected;
+    assert!(error < 1e-24, "frontier count mismatch: {error}");
+    let imag = rug::Float::with_val(432, rug::Float::parse(&report.imag).unwrap());
+    assert_eq!(imag, 0);
 }
 
 #[test]

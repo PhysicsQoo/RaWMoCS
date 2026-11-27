@@ -7,18 +7,18 @@ on:
   workflow_dispatch:
     inputs:
       suite:
-        description: 'fast: replay witnessed counts; full: regenerate, package and versioned matched native trials'
+        description: 'fast: replay; full: regenerate and native trials; rationalized: scoped v0.2.2 release rehearsal'
         type: choice
-        options: [fast, full]
+        options: [fast, full, rationalized]
         default: full
         required: true
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ (((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]'))) && 'full' || 'fast' }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ ((github.event_name == 'workflow_dispatch' && inputs.suite == 'rationalized') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-rationalized]') && !contains(github.event.head_commit.message, '[release-science]'))) && 'rationalized' || (((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]'))) && 'full' || 'fast' }}
   cancel-in-progress: true
 
 env:
-  SCIENCE_SUITE: ${{ (((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]'))) && 'full' || 'fast' }}
+  SCIENCE_SUITE: ${{ ((github.event_name == 'workflow_dispatch' && inputs.suite == 'rationalized') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-rationalized]') && !contains(github.event.head_commit.message, '[release-science]'))) && 'rationalized' || (((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]'))) && 'full' || 'fast' }}
 
 permissions:
   contents: read
@@ -38,6 +38,15 @@ jobs:
       - run: cargo test --workspace
       - name: Verify release gate rejects incomplete science receipts
         run: python3 scripts/test_release_source.py
+      - name: Verify v0.2.2 scope classification rejects unknown changes
+        run: python3 scripts/ci_scope_v022.py --self-test
+      - name: Observe v0.2.2 scope classification without changing admission
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v022-ci-rationalization'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin 6dc7affac2003f445fa9f896aafee76b969752e3 b6904f9b68f71e1a791c0607d087e7c1156b622e
+          python3 scripts/ci_scope_v022.py --revision "$GITHUB_SHA"
 
   a0-science:
     runs-on: ubuntu-latest
@@ -77,7 +86,7 @@ jobs:
         run: cargo test -p rawmocs-core --test a0_regressions -- --ignored --nocapture
 
   portability:
-    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || (((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]')))
+    if: ((github.event_name == 'workflow_dispatch' && inputs.suite == 'rationalized') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-rationalized]') && !contains(github.event.head_commit.message, '[release-science]'))) || github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || (((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]')))
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -208,8 +217,38 @@ jobs:
             --bin "$GITHUB_WORKSPACE/crates/rawmocs-cli/target/release/rawmocs" \
             --out "$GITHUB_WORKSPACE/.release-evidence/oom"
       - name: Source archive and extracted-tree installation admission
-        if: env.SCIENCE_SUITE == 'full' || (github.event_name == 'pull_request' && (startsWith(github.head_ref, 'release/prepare-') || (github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v021-shared-rust-core')))
+        if: env.SCIENCE_SUITE == 'full' || env.SCIENCE_SUITE == 'rationalized' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v022-ci-rationalization') || (github.event_name == 'pull_request' && (startsWith(github.head_ref, 'release/prepare-') || (github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v021-shared-rust-core')))
         run: bash crates/rawmocs-cli/tools/package_source.sh .release-evidence/source-package
+      - name: Reject real multi-leaf solver arithmetic mutation
+        if: env.SCIENCE_SUITE == 'rationalized' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v022-ci-rationalization')
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=crates/rawmocs-cli/src/factor_prejoin.rs
+          original=$(mktemp)
+          cp "$source" "$original"
+          trap 'cp "$original" "$source"; rm -f "$original"' EXIT
+          mkdir -p .release-evidence/mutation
+          python3 - "$source" <<'PY'
+          from pathlib import Path
+          import sys
+          p = Path(sys.argv[1])
+          s = p.read_text()
+          old = "            a.re += &b.re;\n            a.im += &b.im;\n            Some(a)"
+          assert s.count(old) == 1
+          p.write_text(s.replace(old, old.replace("a.im +=", "a.im -="), 1))
+          PY
+          test_name=factor_prejoin::tests::prejoin_cut_planner_width_boundary
+          rc=0
+          cargo test --locked --release --manifest-path crates/rawmocs-cli/Cargo.toml --lib "$test_name" -- --exact > .release-evidence/mutation/mutant.log 2>&1 || rc=$?
+          test "$rc" -ne 0
+          grep -F "test $test_name ... FAILED" .release-evidence/mutation/mutant.log
+          grep -F "test result: FAILED. 0 passed; 1 failed" .release-evidence/mutation/mutant.log
+          cp "$original" "$source"
+          git diff --exit-code -- "$source"
+          cargo test --locked --release --manifest-path crates/rawmocs-cli/Cargo.toml --lib "$test_name" -- --exact > .release-evidence/mutation/restored.log 2>&1
+          grep -F "test $test_name ... ok" .release-evidence/mutation/restored.log
+          echo "SOLVER_MUTATION_REJECTED_AND_RESTORED $GITHUB_SHA" | tee .release-evidence/mutation/status.txt
       - name: Require unchanged tracked release candidate
         run: git diff --exit-code -- crates/rawmocs-cli
       - name: Archive candidate lock and immutable evidence
@@ -225,16 +264,31 @@ jobs:
           retention-days: 30
 
   durable-source-rebuild:
-    name: ${{ (((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]'))) && 'Regenerate original CNF and independent interval without artifacts' || 'Replay seven source-locked independent witnesses' }}
+    name: ${{ (((github.event_name == 'workflow_dispatch' && inputs.suite == 'rationalized') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-rationalized]') && !contains(github.event.head_commit.message, '[release-science]'))) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v022-ci-rationalization')) && 'Rationalized release small-family science' || (((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]'))) && 'Regenerate original CNF and independent interval without artifacts' || 'Replay seven source-locked independent witnesses' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Admit rationalized release scope
+        id: shadow
+        if: env.SCIENCE_SUITE == 'rationalized' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v022-ci-rationalization')
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin 6dc7affac2003f445fa9f896aafee76b969752e3 b6904f9b68f71e1a791c0607d087e7c1156b622e
+          if [[ "$SCIENCE_SUITE" == rationalized ]]; then
+            test "$GITHUB_REF" = refs/heads/main
+            python3 -c 'import tomllib; assert tomllib.load(open("crates/rawmocs-cli/Cargo.toml", "rb"))["package"]["version"] == "0.2.2"'
+          fi
+          mkdir -p .fast-witness
+          python3 scripts/ci_scope_v022.py --revision "$GITHUB_SHA" | tee .fast-witness/shadow-scope.json
+          python3 -c 'import json; r=json.load(open(".fast-witness/shadow-scope.json")); assert r["scope"] == "CI_ONLY_CANDIDATE" and r["release_authorized"] is False'
+          echo 'small_only=true' >> "$GITHUB_OUTPUT"
       - name: Retrieve immutable previously regenerated corpus (fast only)
         id: corpus
-        if: env.SCIENCE_SUITE == 'fast'
+        if: env.SCIENCE_SUITE == 'fast' && steps.shadow.outputs.small_only != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -254,7 +308,7 @@ jobs:
             echo "available=false" >> "$GITHUB_OUTPUT"
           fi
       - uses: actions/checkout@v4
-        if: env.SCIENCE_SUITE == 'full' || steps.corpus.outputs.available != 'true'
+        if: env.SCIENCE_SUITE == 'full' || steps.corpus.outputs.available != 'true' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v022-ci-rationalization')
         with:
           repository: PhysicsQoo/QuPRS
           ref: 0b28736651b3740ed3b201edd2efdef3da541e0d
@@ -264,9 +318,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: crates/rawmocs-cli -> target
-          shared-key: witness-candidate
+          # The old witness key restores a 1394-byte cache and rebuilds
+          # GMP/MPFR. For the scoped shadow trial reuse the populated CLI
+          # dependency cache; never overwrite that cache from this job.
+          shared-key: ${{ steps.shadow.outputs.small_only == 'true' && 'release-cli' || 'witness-candidate' }}
+          save-if: ${{ steps.shadow.outputs.small_only != 'true' }}
       - uses: Swatinem/rust-cache@v2
-        if: env.SCIENCE_SUITE == 'full' || steps.corpus.outputs.available != 'true'
+        if: env.SCIENCE_SUITE == 'full' || steps.corpus.outputs.available != 'true' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v022-ci-rationalization')
         with:
           workspaces: .quprs-repro/rust -> target
           shared-key: witness-encoder
@@ -278,7 +336,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends libgmp-dev libmpfr-dev m4 make gcc pkg-config
           cargo build --locked --release --manifest-path crates/rawmocs-cli/Cargo.toml
       - name: Build pinned source encoder
-        if: env.SCIENCE_SUITE == 'full' || steps.corpus.outputs.available != 'true'
+        if: env.SCIENCE_SUITE == 'full' || steps.corpus.outputs.available != 'true' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v022-ci-rationalization')
         shell: bash
         run: |
           set -euo pipefail
@@ -290,16 +348,22 @@ jobs:
           cp "$repro/quprs_long_tail_source_bridge.rs" .quprs-repro/rust/quprs/examples/
           cargo build --locked --release --no-default-features --manifest-path .quprs-repro/rust/Cargo.toml -p quprs --example quprs_long_tail_source_bridge
       - name: Regenerate six source CNFs and verify seven cohorts
-        if: env.SCIENCE_SUITE == 'full' || steps.corpus.outputs.available != 'true'
+        if: steps.shadow.outputs.small_only != 'true' && (env.SCIENCE_SUITE == 'full' || steps.corpus.outputs.available != 'true')
         run: |
           set -euo pipefail
           python3 crates/rawmocs-cli/tools/regenerate_release.py --quprs .quprs-repro --exporter .quprs-repro/rust/target/release/examples/quprs_long_tail_source_bridge --bin crates/rawmocs-cli/target/release/rawmocs --out .release-rebuild
       - name: Replay pinned source-locked seven-cohort witness
-        if: env.SCIENCE_SUITE == 'fast' && steps.corpus.outputs.available == 'true'
+        if: steps.shadow.outputs.small_only != 'true' && env.SCIENCE_SUITE == 'fast' && steps.corpus.outputs.available == 'true'
         run: |
           set -euo pipefail
           python3 crates/rawmocs-cli/tools/replay_release.py --corpus .release-rebuild --bin crates/rawmocs-cli/target/release/rawmocs --out .fast-witness
+      - name: Qualify small source-locked family representatives (release)
+        if: steps.shadow.outputs.small_only == 'true'
+        run: |
+          set -euo pipefail
+          python3 crates/rawmocs-cli/tools/small_family_qualification.py --quprs .quprs-repro --exporter .quprs-repro/rust/target/release/examples/quprs_long_tail_source_bridge --bin crates/rawmocs-cli/target/release/rawmocs --out .fast-witness/small-family
       - name: Natural native cancellation on original source-locked CNFs
+        if: steps.shadow.outputs.small_only != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -344,7 +408,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
       - name: Archive fast regression provenance and receipts
-        if: always() && env.SCIENCE_SUITE == 'fast'
+        if: always() && env.SCIENCE_SUITE == 'fast' && steps.shadow.outputs.small_only != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: rawmocs-fast-witness-replay
@@ -353,6 +417,46 @@ jobs:
             .release-rebuild/regeneration.json
           include-hidden-files: true
           if-no-files-found: warn
+          retention-days: 30
+
+      - name: Verify rationalized evidence content and immutable reference tree
+        if: steps.shadow.outputs.small_only == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin c5b35ca7a98ff0d02d093caa48a88ea19be2d3e0
+          # The ancestry check needs the original commit history, not just
+          # shallow boundary objects.
+          git fetch --unshallow --no-tags origin
+          PYTHONPATH=scripts python3 - <<'PY'
+          import io, os, zipfile
+          from pathlib import Path
+          from ci_scope_v022 import inspect
+          from release_source import (verify_v022_reference_tree, verify_v022_small_archive,
+                                      verify_v022_baseline_receipts)
+          verify_v022_reference_tree()
+          verify_v022_baseline_receipts()
+          revision = os.environ["GITHUB_SHA"]
+          scope = inspect(revision)
+          buf = io.BytesIO()
+          root = Path(".fast-witness")
+          with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+              for path in sorted(root.rglob("*")):
+                  if path.is_file():
+                      z.write(path, path.relative_to(root).as_posix())
+          verify_v022_small_archive(revision, buf.getvalue(), scope)
+          print("RATIONALIZED_REFERENCE_AND_EVIDENCE_PASS", revision)
+          PY
+      - name: Archive rationalized release evidence
+        if: always() && steps.shadow.outputs.small_only == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rawmocs-v022-rationalized-evidence
+          path: .fast-witness/
+          include-hidden-files: true
+          if-no-files-found: error
           retention-days: 30
 
   release-native-paired:

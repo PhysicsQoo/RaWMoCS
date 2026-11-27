@@ -270,5 +270,223 @@ class ReleaseDraftTests(unittest.TestCase):
             verify_draft(corrupted, request, assets, None, notes)
 
 
+
+class RationalizedCandidateTests(unittest.TestCase):
+    def fixture(self):
+        from ci_scope_v022 import PUBLISHED, QUALIFIED
+        from release_source import REPO, V022_SCIENCE, V022_SKIPPED_JOB, V022_STEPS
+        revision = "a" * 40
+        request = {"version": "0.2.2", "revision": revision, "science_run": 123}
+        run_data = {
+            "id": 123, "repository": {"full_name": REPO},
+            "head_repository": {"full_name": REPO},
+            "path": ".github/workflows/rust-science.yml",
+            "head_branch": "main", "head_sha": revision,
+            "event": "workflow_dispatch", "status": "completed",
+            "conclusion": "success",
+        }
+        jobs = [
+            {"name": name, "status": "completed", "conclusion": "success",
+             "steps": [{"name": step, "conclusion": "success"}
+                       for step in sorted(V022_STEPS[name])]}
+            for name in sorted(V022_SCIENCE)
+        ]
+        jobs.append({"name": V022_SKIPPED_JOB, "status": "completed",
+                     "conclusion": "skipped", "steps": []})
+        scope = {"revision": revision, "qualified_reference": QUALIFIED,
+                 "published_reference": PUBLISHED, "scope": "CI_ONLY_CANDIDATE",
+                 "full_science_reasons": [], "release_authorized": False}
+        return request, run_data, {"total_count": len(jobs), "jobs": jobs}, scope
+
+    def test_candidate_contract_is_not_legacy_release_authorization(self):
+        from release_source import verify_run, verify_v022_rationalized_run
+        request, run_data, jobs, scope = self.fixture()
+        verify_v022_rationalized_run(request, run_data, jobs, scope)
+        with self.assertRaises(ValueError):
+            verify_run(request, run_data, jobs, "science")
+
+    def test_wrong_version_scope_or_revision(self):
+        from release_source import verify_v022_rationalized_run
+        for key, value in (
+            ("revision", "b" * 40), ("qualified_reference", "b" * 40),
+            ("published_reference", "b" * 40), ("scope", "FULL_SCIENCE"),
+            ("full_science_reasons", ["src/lib.rs"]), ("release_authorized", True),
+        ):
+            with self.subTest(key=key):
+                request, run_data, jobs, scope = self.fixture()
+                scope[key] = value
+                with self.assertRaises(ValueError):
+                    verify_v022_rationalized_run(request, run_data, jobs, scope)
+        for version in ("0.2.1", "0.2.3", "0.3.0"):
+            request, run_data, jobs, scope = self.fixture()
+            request["version"] = version
+            with self.assertRaises(ValueError):
+                verify_v022_rationalized_run(request, run_data, jobs, scope)
+
+    def test_wrong_run_identity_or_intent(self):
+        from release_source import verify_v022_rationalized_run
+        for key, value in (
+            ("id", 124), ("head_sha", "b" * 40),
+            ("head_branch", "research/v022-ci-rationalization"),
+            ("event", "pull_request"), ("event", "push"),
+            ("head_repository", {"full_name": "other/repo"}),
+            ("path", ".github/workflows/other.yml"),
+            ("status", "in_progress"), ("conclusion", "failure"),
+        ):
+            with self.subTest(key=key, value=value):
+                request, run_data, jobs, scope = self.fixture()
+                run_data[key] = value
+                with self.assertRaises(ValueError):
+                    verify_v022_rationalized_run(request, run_data, jobs, scope)
+
+    def test_marked_rationalized_push_and_full_priority(self):
+        from release_source import verify_v022_rationalized_run
+        request, run_data, jobs, scope = self.fixture()
+        run_data["event"] = "push"
+        run_data["head_commit"] = {"message": "Release [release-rationalized]"}
+        verify_v022_rationalized_run(request, run_data, jobs, scope)
+        run_data["head_commit"]["message"] += " [release-science]"
+        with self.assertRaises(ValueError):
+            verify_v022_rationalized_run(request, run_data, jobs, scope)
+
+    def test_required_steps_cannot_be_skipped_or_missing(self):
+        from release_source import V022_STEPS, verify_v022_rationalized_run
+        for name, required in V022_STEPS.items():
+            for step in required:
+                for conclusion in ("skipped", "failure", "missing"):
+                    with self.subTest(name=name, step=step, conclusion=conclusion):
+                        request, run_data, jobs, scope = self.fixture()
+                        job = next(j for j in jobs["jobs"] if j["name"] == name)
+                        if conclusion == "missing":
+                            job["steps"] = [s for s in job["steps"] if s["name"] != step]
+                        else:
+                            next(s for s in job["steps"] if s["name"] == step)["conclusion"] = conclusion
+                        with self.assertRaises(ValueError):
+                            verify_v022_rationalized_run(request, run_data, jobs, scope)
+
+    def test_duplicate_critical_step_rejected_but_setup_may_repeat(self):
+        from release_source import V022_SMALL_JOB, verify_v022_rationalized_run
+        request, run_data, jobs, scope = self.fixture()
+        job = next(j for j in jobs["jobs"] if j["name"] == V022_SMALL_JOB)
+        job["steps"] += [{"name": "Run actions/checkout@v4", "conclusion": "success"}] * 2
+        verify_v022_rationalized_run(request, run_data, jobs, scope)
+        job["steps"].append(copy.deepcopy(job["steps"][0]))
+        with self.assertRaises(ValueError):
+            verify_v022_rationalized_run(request, run_data, jobs, scope)
+
+    def test_wrong_job_set_or_status(self):
+        from release_source import V022_SMALL_JOB, V022_SKIPPED_JOB, verify_v022_rationalized_run
+        for name, conclusion in ((V022_SMALL_JOB, "skipped"), (V022_SKIPPED_JOB, "failure"),
+                                 (V022_SKIPPED_JOB, "success"), ("core", "cancelled")):
+            request, run_data, jobs, scope = self.fixture()
+            next(j for j in jobs["jobs"] if j["name"] == name)["conclusion"] = conclusion
+            with self.assertRaises(ValueError):
+                verify_v022_rationalized_run(request, run_data, jobs, scope)
+        request, run_data, jobs, scope = self.fixture()
+        jobs["jobs"].pop()
+        jobs["total_count"] -= 1
+        with self.assertRaises(ValueError):
+            verify_v022_rationalized_run(request, run_data, jobs, scope)
+
+
+
+class RationalizedArchiveTests(unittest.TestCase):
+    def fixture(self):
+        from release_source import V022_FAMILIES, V022_TRIALS, V022_FAULTS
+        revision = "a" * 40
+        scope = {"revision": revision, "scope": "CI_ONLY_CANDIDATE"}
+        files = {"shadow-scope.json": json.dumps(scope).encode()}
+        report = {"checkout": revision, "status": "NUMERIC_PASS",
+                  "quprs_revision": "0b28736651b3740ed3b201edd2efdef3da541e0d",
+                  "binary_sha256": "b" * 64, "exporter_sha256": "c" * 64, "cases": []}
+        for label in sorted(V022_FAMILIES):
+            prefix = "small-family/" + label + "/"
+            qasm, cnf = b"fixture qasm", b"fixture cnf"
+            reference = json.dumps({"source_sha256": digest(cnf), "bits": 550}).encode()
+            files[prefix + "extended_v022_" + label + ".qasm"] = qasm
+            files[prefix + "extended_v022_" + label + "-gpmc.cnf"] = cnf
+            files[prefix + "independent-reference.json"] = reference
+            row = {"label": label, "status": "NUMERIC_PASS",
+                   "qasm_sha256": digest(qasm), "cnf_sha256": digest(cnf),
+                   "reference_sha256": digest(reference), "trials": []}
+            for digits, bits, target, mode in sorted(V022_TRIALS):
+                t = {"digits": digits, "bits": bits, "target_digits": target,
+                     "mode": mode, "status": "PASS", "exit_code": 0,
+                     "route": "prejoin", "count": {"sat": True}}
+                if label == "qpeexact8" and mode == "auto" and bits == 200:
+                    t["rejected_receipt_faults"] = sorted(V022_FAULTS)
+                row["trials"].append(t)
+                stem = prefix + mode + "-" + str(bits)
+                files[stem + ".stdout"] = b"fixture stdout"
+                files[stem + ".stderr"] = b"fixture stderr"
+            report["cases"].append(row)
+        return revision, scope, report, files
+
+    def archive(self, report, files):
+        import zipfile
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            for name, content in files.items():
+                z.writestr(name, content)
+            z.writestr("small-family/qualification.json", json.dumps(report))
+        return buf.getvalue()
+
+    def test_archive_scope_and_complete_matrix(self):
+        from release_source import verify_v022_small_archive
+        revision, scope, report, files = self.fixture()
+        verify_v022_small_archive(revision, self.archive(report, files), scope)
+        for defect in ("wrong-sha", "missing-family", "duplicate-family", "missing-trial",
+                       "failed-trial", "missing-faults", "corrupt-source", "wrong-scope"):
+            with self.subTest(defect=defect):
+                revision, scope, report, files = self.fixture()
+                if defect == "wrong-sha":
+                    report["checkout"] = "b" * 40
+                elif defect == "missing-family":
+                    report["cases"].pop()
+                elif defect == "duplicate-family":
+                    report["cases"][-1] = copy.deepcopy(report["cases"][0])
+                elif defect == "missing-trial":
+                    report["cases"][0]["trials"].pop()
+                elif defect == "failed-trial":
+                    report["cases"][0]["trials"][0]["status"] = "NOT_ADMITTED"
+                elif defect == "missing-faults":
+                    for row in report["cases"]:
+                        for t in row["trials"]:
+                            t.pop("rejected_receipt_faults", None)
+                elif defect == "corrupt-source":
+                    files["small-family/qpeexact8/extended_v022_qpeexact8-gpmc.cnf"] = b"wrong"
+                else:
+                    files["shadow-scope.json"] = b"{}"
+                with self.assertRaises(ValueError):
+                    verify_v022_small_archive(revision, self.archive(report, files), scope)
+
+
+
+class RationalizedMutationTests(unittest.TestCase):
+    def test_mutation_requires_assertion_failure_and_restoration(self):
+        import zipfile
+        from release_source import verify_v022_mutation
+        revision = "a" * 40
+        name = "factor_prejoin::tests::prejoin_cut_planner_width_boundary"
+        files = {
+            "status.txt": "SOLVER_MUTATION_REJECTED_AND_RESTORED " + revision,
+            "mutant.log": f"test {name} ... FAILED\ntest result: FAILED. 0 passed; 1 failed",
+            "restored.log": f"test {name} ... ok\ntest result: ok. 1 passed; 0 failed",
+        }
+        for defect in (None, "status.txt", "mutant.log", "restored.log"):
+            with self.subTest(defect=defect):
+                buf = io.BytesIO()
+                with zipfile.ZipFile(buf, "w") as z:
+                    for path, content in files.items():
+                        z.writestr(".release-evidence/mutation/" + path,
+                                   content if path != defect else "compile error or wrong receipt")
+                with zipfile.ZipFile(io.BytesIO(buf.getvalue())) as z:
+                    if defect is None:
+                        verify_v022_mutation(z, revision)
+                    else:
+                        with self.assertRaises(ValueError):
+                            verify_v022_mutation(z, revision)
+
+
 if __name__ == "__main__":
     unittest.main()

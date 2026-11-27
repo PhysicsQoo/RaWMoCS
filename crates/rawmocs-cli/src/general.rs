@@ -105,6 +105,8 @@ struct Engine<'a> {
     deadline: Control<'a>,
     cache: HashMap<Key, Outcome>,
     cache_items: usize,
+    #[cfg(test)]
+    cache_hits: usize,
     large: bool,
     frequency: Vec<usize>,
     parent: Vec<usize>,
@@ -400,6 +402,10 @@ impl Engine<'_> {
         };
         let view: &dyn KeyView = &query;
         if let Some(hit) = self.cache.get(view) {
+            #[cfg(test)]
+            {
+                self.cache_hits += 1;
+            }
             return Ok(Step::Done(hit.clone()));
         }
         // Without eviction, both admission counters are monotone.
@@ -621,15 +627,6 @@ pub(crate) fn solve(p: &Problem, bits: u32, deadline: Instant) -> Result<Outcome
 }
 
 #[cfg(test)]
-pub(crate) fn solve_separator(
-    p: &Problem,
-    bits: u32,
-    deadline: Instant,
-) -> Result<Outcome, String> {
-    solve_policy(p, bits, deadline, false, None, true)
-}
-
-#[cfg(test)]
 pub(crate) fn solve_large(p: Problem, bits: u32, deadline: Instant) -> Result<Outcome, String> {
     solve_large_diagnostic(p, bits, deadline.into(), &mut SolveDiagnostics::legacy())
 }
@@ -703,6 +700,8 @@ fn solve_policy_diagnostic(
         deadline,
         cache: HashMap::new(),
         cache_items: 0,
+        #[cfg(test)]
+        cache_hits: 0,
         large,
         frequency: vec![0; p.n + 1],
         parent: vec![0; p.n + 1],
@@ -877,7 +876,17 @@ mod tests {
         for bits in [100, 200, 333, 432] {
             let p = crate::parse_emitted(&raw, bits).unwrap();
             let exact = crate::reference(&p, &raw, bits).unwrap();
-            let out = solve_separator(&p, bits, Instant::now() + Duration::from_secs(5)).unwrap();
+            let mut diagnostics = SolveDiagnostics::default();
+            let out = solve_diagnostic(
+                &p,
+                bits,
+                (Instant::now() + Duration::from_secs(5)).into(),
+                true,
+                &mut diagnostics,
+            )
+            .unwrap();
+            let stats = diagnostics.separator.as_ref().unwrap();
+            assert!(stats.checks > 0 && stats.overrides > 0);
             assert_eq!(out.sat, exact.sat);
             assert_eq!(out.count.re, exact.count.re);
             assert_eq!(out.count.im, exact.count.im);
@@ -1086,6 +1095,36 @@ mod tests {
         assert!(cache_can_admit(9999, 399999, 1));
         assert!(!cache_can_admit(10000, 0, 1));
         assert!(!cache_can_admit(9999, 399999, 2));
+
+        // Both polarities of the frequency-tie pivot 2 leave exactly the
+        // same forced residual (1), but carry different complex weights.
+        // Exercise an actual sibling cache hit, not only the key API.
+        let raw = "p cnf 2 2\nc t wmc\nc p weight 1 -0.5 0.25 0\nc p weight 2 0.25 -0.125 0\nc p weight -2 -0.125 0.5 0\n1 2 0\n1 -2 0\n";
+        for bits in [100, 200, 333, 432] {
+            let p = parse_emitted(raw, bits).unwrap();
+            let exact = crate::reference(&p, raw, bits).unwrap();
+            let mut engine = Engine {
+                p: &p,
+                bits,
+                deadline: (Instant::now() + Duration::from_secs(5)).into(),
+                cache: HashMap::new(),
+                cache_items: 0,
+                cache_hits: 0,
+                large: false,
+                frequency: vec![0; p.n + 1],
+                parent: vec![0; p.n + 1],
+                separator: None,
+            };
+            let mut diagnostics = SolveDiagnostics::default();
+            let out = engine
+                .count(p.clauses.clone(), (1..=p.n).collect(), &mut diagnostics)
+                .unwrap();
+            assert_eq!(engine.cache_hits, 1);
+            assert!(out.sat);
+            assert_eq!(out.sat, exact.sat);
+            assert_eq!(out.count.re, exact.count.re);
+            assert_eq!(out.count.im, exact.count.im);
+        }
     }
 
     #[test]

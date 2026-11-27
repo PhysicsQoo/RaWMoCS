@@ -134,7 +134,7 @@ def launch(arm, path, ref, profile=False):
 
 
 def main(stage):
-    ROOT.mkdir(exist_ok=True)
+    ROOT.mkdir(parents=True, exist_ok=True)
     path, = INPUT.rglob("*-gpmc.cnf")
     witness, = INPUT.rglob("prejoin-reference.json")
     receipt, = INPUT.rglob("prejoin-native-pilot.json")

@@ -270,5 +270,104 @@ class ReleaseDraftTests(unittest.TestCase):
             verify_draft(corrupted, request, assets, None, notes)
 
 
+
+class RationalizedCandidateTests(unittest.TestCase):
+    def fixture(self):
+        from ci_scope_v022 import PUBLISHED, QUALIFIED
+        from release_source import REPO, V022_SCIENCE, V022_SKIPPED_JOB, V022_STEPS
+        revision = "a" * 40
+        request = {"version": "0.2.2", "revision": revision, "science_run": 123}
+        run_data = {
+            "id": 123, "repository": {"full_name": REPO},
+            "head_repository": {"full_name": REPO},
+            "path": ".github/workflows/rust-science.yml",
+            "head_branch": "main", "head_sha": revision,
+            "event": "workflow_dispatch", "status": "completed",
+            "conclusion": "success",
+        }
+        jobs = [
+            {"name": name, "status": "completed", "conclusion": "success",
+             "steps": [{"name": step, "conclusion": "success"}
+                       for step in sorted(V022_STEPS[name])]}
+            for name in sorted(V022_SCIENCE)
+        ]
+        jobs.append({"name": V022_SKIPPED_JOB, "status": "completed",
+                     "conclusion": "skipped", "steps": []})
+        scope = {"revision": revision, "qualified_reference": QUALIFIED,
+                 "published_reference": PUBLISHED, "scope": "CI_ONLY_CANDIDATE",
+                 "full_science_reasons": [], "release_authorized": False}
+        return request, run_data, {"total_count": len(jobs), "jobs": jobs}, scope
+
+    def test_candidate_contract_is_not_legacy_release_authorization(self):
+        from release_source import verify_run, verify_v022_rationalized_run
+        request, run_data, jobs, scope = self.fixture()
+        verify_v022_rationalized_run(request, run_data, jobs, scope)
+        with self.assertRaises(ValueError):
+            verify_run(request, run_data, jobs, "science")
+
+    def test_wrong_version_scope_or_revision(self):
+        from release_source import verify_v022_rationalized_run
+        for key, value in (
+            ("revision", "b" * 40), ("qualified_reference", "b" * 40),
+            ("published_reference", "b" * 40), ("scope", "FULL_SCIENCE"),
+            ("full_science_reasons", ["src/lib.rs"]), ("release_authorized", True),
+        ):
+            with self.subTest(key=key):
+                request, run_data, jobs, scope = self.fixture()
+                scope[key] = value
+                with self.assertRaises(ValueError):
+                    verify_v022_rationalized_run(request, run_data, jobs, scope)
+        for version in ("0.2.1", "0.2.3", "0.3.0"):
+            request, run_data, jobs, scope = self.fixture()
+            request["version"] = version
+            with self.assertRaises(ValueError):
+                verify_v022_rationalized_run(request, run_data, jobs, scope)
+
+    def test_wrong_run_identity_or_intent(self):
+        from release_source import verify_v022_rationalized_run
+        for key, value in (
+            ("id", 124), ("head_sha", "b" * 40),
+            ("head_branch", "research/v022-ci-rationalization"),
+            ("event", "pull_request"), ("event", "push"),
+            ("head_repository", {"full_name": "other/repo"}),
+            ("path", ".github/workflows/other.yml"),
+            ("status", "in_progress"), ("conclusion", "failure"),
+        ):
+            with self.subTest(key=key, value=value):
+                request, run_data, jobs, scope = self.fixture()
+                run_data[key] = value
+                with self.assertRaises(ValueError):
+                    verify_v022_rationalized_run(request, run_data, jobs, scope)
+
+    def test_required_steps_cannot_be_skipped_or_missing(self):
+        from release_source import V022_STEPS, verify_v022_rationalized_run
+        for name, required in V022_STEPS.items():
+            for step in required:
+                for conclusion in ("skipped", "failure", "missing"):
+                    with self.subTest(name=name, step=step, conclusion=conclusion):
+                        request, run_data, jobs, scope = self.fixture()
+                        job = next(j for j in jobs["jobs"] if j["name"] == name)
+                        if conclusion == "missing":
+                            job["steps"] = [s for s in job["steps"] if s["name"] != step]
+                        else:
+                            next(s for s in job["steps"] if s["name"] == step)["conclusion"] = conclusion
+                        with self.assertRaises(ValueError):
+                            verify_v022_rationalized_run(request, run_data, jobs, scope)
+
+    def test_wrong_job_set_or_status(self):
+        from release_source import V022_SMALL_JOB, V022_SKIPPED_JOB, verify_v022_rationalized_run
+        for name, conclusion in ((V022_SMALL_JOB, "skipped"), (V022_SKIPPED_JOB, "failure"),
+                                 (V022_SKIPPED_JOB, "success"), ("core", "cancelled")):
+            request, run_data, jobs, scope = self.fixture()
+            next(j for j in jobs["jobs"] if j["name"] == name)["conclusion"] = conclusion
+            with self.assertRaises(ValueError):
+                verify_v022_rationalized_run(request, run_data, jobs, scope)
+        request, run_data, jobs, scope = self.fixture()
+        jobs["jobs"].pop()
+        jobs["total_count"] -= 1
+        with self.assertRaises(ValueError):
+            verify_v022_rationalized_run(request, run_data, jobs, scope)
+
+
 if __name__ == "__main__":
     unittest.main()

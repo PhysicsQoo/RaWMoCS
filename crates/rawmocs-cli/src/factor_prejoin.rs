@@ -1781,29 +1781,64 @@ mod tests {
         }
     }
 
-    // A real production planner cut at the width boundary, without
-    // materializing any of the expensive contraction tables.
+    // A selector-dependent clique forces a genuine planner cut at the
+    // width boundary, but each selected leaf contracts only unary factors.
     #[test]
     fn prejoin_cut_planner_width_boundary() {
         let n = WIDTH + 2;
         let nodes: Scope = (1..=n).collect();
-        let fs: Vec<_> = (1..=n)
+        let mut fs: Vec<_> = (2..=n)
             .flat_map(|v| (v + 1..=n).map(move |u| (v, u)))
             .map(|(v, u)| Factor {
-                scope: vec![v, u],
-                values: vec![None, Some(one()), Some(one()), Some(one())],
+                scope: vec![1, v, u],
+                values: (0..8)
+                    .map(|m| {
+                        let bit = if m & 1 == 0 { 2 } else { 4 };
+                        (m & bit != 0).then(one)
+                    })
+                    .collect(),
             })
             .collect();
+        fs.push(Factor {
+            scope: vec![1],
+            values: vec![
+                Some(one()),
+                Some((decimal("-2").unwrap(), decimal("3").unwrap())),
+            ],
+        });
         let d = Control::from(Instant::now() + Duration::from_secs(10));
         let retained = fs.iter().map(|f| f.values.len()).sum();
         assert!(plan(&fs, &nodes, (Some(0), false), retained, d)
             .unwrap()
             .is_none());
-        let (cuts, leaves, cost) = choose(&fs, &nodes, &Some(one()), &Cost::default(), d)
-            .unwrap();
-        assert_eq!(cuts.len(), 1);
+        let (cuts, leaves, cost) = choose(&fs, &nodes, &Some(one()), &Cost::default(), d).unwrap();
+        assert_eq!(cuts, vec![1]);
         assert_eq!(leaves.len(), 2);
-        assert!(cost.width <= WIDTH && cost.work <= WORK && cost.peak <= LIVE);
+        assert_eq!(cost.width, 0);
+        assert!(cost.work <= WORK && cost.peak <= LIVE);
+        for bits in [100, 200, 333, 432] {
+            let mut total = None;
+            for (m, leaf_plan) in leaves.iter().enumerate() {
+                let (leaf, scalar) = restrict(&fs, &Some(one()), &cuts, m).unwrap();
+                total = cadd(
+                    total,
+                    execute_diagnostic(
+                        leaf,
+                        scalar,
+                        leaf_plan,
+                        bits,
+                        d,
+                        &mut SolveDiagnostics::default(),
+                    )
+                    .unwrap(),
+                );
+            }
+            // Each selector polarity forces 19 of the 20 data variables;
+            // the remaining free variable contributes two assignments.
+            let count = total.unwrap();
+            assert_eq!(count.re, Float::with_val(bits, -2));
+            assert_eq!(count.im, Float::with_val(bits, 6));
+        }
     }
 
     #[test]

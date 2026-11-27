@@ -443,8 +443,10 @@ fn local_frontier_policy<const PROFILE: bool, const ADJ: bool>(
         // The opt-in frontier prepares the entire exact result, including
         // scalar folding, before touching ownership, queue, or live costs.
         let prepared = if stop_at_bit_cap {
-            let bucket = owners[v].iter().map(|id| &tables[id]);
-            let result = local_contract(bucket, &out, v, size).and_then(|mut f| {
+            // Resolve each stable owner once, in the original sorted order.
+            // References expire before the transaction mutates the tables.
+            let bucket: Vec<_> = owners[v].iter().map(|id| &tables[id]).collect();
+            let result = local_contract(bucket.iter().copied(), &out, v, size).and_then(|mut f| {
                 let folded = if f.scope.is_empty() {
                     Some(rscalar(scalar.clone(), f.values.pop().expect("scalar cell"))?)
                 } else {
@@ -474,7 +476,8 @@ fn local_frontier_policy<const PROFILE: bool, const ADJ: bool>(
         }
         tick(&mut phase, &mut times[2]);
         let ids = std::mem::take(&mut owners[v]);
-        let mut bucket = Vec::with_capacity(ids.len());
+        let already_prepared = prepared.is_some();
+        let mut bucket = if already_prepared { Vec::new() } else { Vec::with_capacity(ids.len()) };
         for id in ids {
             let f = tables.remove(&id).ok_or("local factor owner")?;
             live -= f.values.len();
@@ -486,7 +489,9 @@ fn local_frontier_policy<const PROFILE: bool, const ADJ: bool>(
                     return Err("local incidence drift".into());
                 }
             }
-            bucket.push(f);
+            if !already_prepared {
+                bucket.push(f);
+            }
         }
         if ADJ && !edges[v].is_empty() {
             return Err("local pivot edge drift".into());

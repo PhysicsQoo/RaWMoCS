@@ -56,3 +56,7 @@ before enabling an OIDC upload. Do not create a release request from a
 candidate receipt. S4 scalable WMC remains not achieved; changing its
 version scope requires an explicit decision. QuPRS optional integration
 is the next consumer admission; GPMC remains default.
+
+## Source-first candidate route
+
+Proposed initial distribution is sdist only, built from the exact locked source by the consumer. It does not grant clearance for binary distribution. The CI source inventory compares each regular sdist member (except generated PKG-INFO) with its tracked Git bytes, rejects compiled file suffixes and common native magic, and inventories the resolved dependency licenses. Ordinary candidate CI no longer uploads linked wheels; it retains their hashes, metadata and test evidence. Existing historical artifacts are not modified. This is a candidate policy pending review and exact-main publication admission. No change to existing full science requirements or S4 scope.

@@ -138,7 +138,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: rawmocs-python-${{ matrix.os }}
-          path: ${{ runner.temp }}/rawmocs-platform/
+          path: ${{ runner.temp }}/rawmocs-platform/package-candidate.json
           if-no-files-found: error
 
   python-manylinux:
@@ -184,7 +184,11 @@ jobs:
         if: always()
         with:
           name: rawmocs-manylinux-${{ matrix.arch }}
-          path: ${{ runner.temp }}/manylinux-evidence/
+          path: |
+            ${{ runner.temp }}/manylinux-evidence/*.json
+            ${{ runner.temp }}/manylinux-evidence/*.txt
+            ${{ runner.temp }}/manylinux-evidence/*.log
+            ${{ runner.temp }}/manylinux-evidence/*.sha256
           if-no-files-found: error
 
   release-cli:
@@ -233,6 +237,8 @@ jobs:
           python -m pip install --no-index "$RUNNER_TEMP"/rawmocs-wheels/*.whl
           RAWMOCS_TEST_CLI="$GITHUB_WORKSPACE/crates/rawmocs-cli/target/release/rawmocs" python -m unittest discover -s python/tests -v 2>&1 | tee .release-evidence/python/contract.log
           maturin sdist --out "$RUNNER_TEMP/rawmocs-sdist"
+          cargo metadata --locked --manifest-path crates/rawmocs-python/Cargo.toml --format-version 1 > .release-evidence/python/cargo-metadata.json
+          python scripts/python_source_inventory.py --sdist "$RUNNER_TEMP"/rawmocs-sdist/*.tar.gz --metadata .release-evidence/python/cargo-metadata.json --out .release-evidence/python/source-inventory.json
           sha256sum "$RUNNER_TEMP"/rawmocs-sdist/*.tar.gz | tee .release-evidence/python/sdist.sha256
           mkdir -p "$RUNNER_TEMP/rawmocs-clean-source"
           tar -xzf "$RUNNER_TEMP"/rawmocs-sdist/*.tar.gz -C "$RUNNER_TEMP/rawmocs-clean-source"
@@ -259,7 +265,6 @@ jobs:
           path: |
             .release-evidence/python/
             ${{ runner.temp }}/rawmocs-sdist/*.tar.gz
-            ${{ runner.temp }}/rawmocs-rebuilt/*.whl
           include-hidden-files: true
           if-no-files-found: error
       - name: Exercise executable success, SAT-zero and fail-closed contracts

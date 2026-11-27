@@ -566,7 +566,16 @@ fn run() -> Result<(), String> {
             format!("INPUT: {e}")
         }
     })?;
-    if !matches!(mode.as_str(), "auto" | "auto-frontier" | "auto-separator" | "prejoin" | "general" | "general-separator" | "reference") {
+    if !matches!(
+        mode.as_str(),
+        "auto"
+            | "auto-frontier"
+            | "auto-separator"
+            | "prejoin"
+            | "general"
+            | "general-separator"
+            | "reference"
+    ) {
         return Err("INPUT: invalid solver".into());
     }
     if large_general {
@@ -805,7 +814,10 @@ mod tests {
     fn auto_separator_preserves_prejoin_and_fallback_contract() {
         for (raw, expected_route) in [
             ("p cnf 2 1\nc t wmc\n1 2 0\n", "prejoin"),
-            ("p cnf 10 1\nc t wmc\n1 2 3 4 5 6 7 8 9 10 0\n", "general-separator"),
+            (
+                "p cnf 10 1\nc t wmc\n1 2 3 4 5 6 7 8 9 10 0\n",
+                "general-separator",
+            ),
             ("p cnf 0 0\nc t wmc\n", "general-separator"),
         ] {
             for bits in [100, 200, 333, 432] {

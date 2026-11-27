@@ -412,11 +412,11 @@ fn solve_until(
     let auto = mode == "auto" || separator || frontier;
     if mode == "general-separator" || (separator && p.n == 0) {
         return general::solve_diagnostic(p, bits, deadline, true, diagnostics)
-                .map(|a| (a, "general-separator"));
+            .map(|a| (a, "general-separator"));
     }
     if mode == "general" || ((mode == "auto" || frontier) && p.n == 0) {
         return general::solve_diagnostic(p, bits, deadline, false, diagnostics)
-                .map(|a| (a, "general"));
+            .map(|a| (a, "general"));
     }
     if !auto && mode != "prejoin" {
         return Err("invalid solver".into());
@@ -456,10 +456,10 @@ fn solve_until(
             });
             if separator {
                 general::solve_diagnostic(p, bits, deadline, true, diagnostics)
-                .map(|a| (a, "general-separator"))
+                    .map(|a| (a, "general-separator"))
             } else {
                 general::solve_diagnostic(p, bits, deadline, false, diagnostics)
-                .map(|a| (a, "general"))
+                    .map(|a| (a, "general"))
             }
         }
         Err(reason) => Err(reason),

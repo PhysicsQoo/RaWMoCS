@@ -284,7 +284,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: crates/rawmocs-cli -> target
-          shared-key: witness-candidate
+          # The old witness key restores a 1394-byte cache and rebuilds
+          # GMP/MPFR. For the scoped shadow trial reuse the populated CLI
+          # dependency cache; never overwrite that cache from this job.
+          shared-key: ${{ steps.shadow.outputs.small_only == 'true' && 'release-cli' || 'witness-candidate' }}
+          save-if: ${{ steps.shadow.outputs.small_only != 'true' }}
       - uses: Swatinem/rust-cache@v2
         if: env.SCIENCE_SUITE == 'full' || steps.corpus.outputs.available != 'true' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v022-ci-rationalization')
         with:

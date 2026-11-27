@@ -1747,8 +1747,63 @@ mod tests {
                 assert_eq!(on.im, Float::with_val(bits, 0.75));
                 assert_eq!(off.re.is_sign_negative(), on.re.is_sign_negative());
                 assert_eq!(off.im.is_sign_negative(), on.im.is_sign_negative());
+
+                // Reuse these same signed factors and their analytic count.
+                // Explicitly partition the support into two/four disjoint
+                // leaves, then execute and sum with the production routines.
+                // This is executor coverage, not an auto-planner selection.
+                for cuts in [vec![1], vec![1, 2]] {
+                    let remaining: Scope = (1..=2).filter(|v| !cuts.contains(v)).collect();
+                    let mut total = None;
+                    for m in 0..(1usize << cuts.len()) {
+                        let (leaf, scalar) = restrict(&fs, &Some(one()), &cuts, m).unwrap();
+                        let leaf_plan = super::plan(&leaf, &remaining, (Some(0), false), 0, d)
+                            .unwrap()
+                            .unwrap();
+                        total = cadd(
+                            total,
+                            execute_diagnostic(
+                                leaf,
+                                scalar,
+                                &leaf_plan,
+                                bits,
+                                d,
+                                &mut SolveDiagnostics::default(),
+                            )
+                            .unwrap(),
+                        );
+                    }
+                    let count = total.unwrap();
+                    assert_eq!(count.re, Float::with_val(bits, -0.25));
+                    assert_eq!(count.im, Float::with_val(bits, 0.75));
+                }
             }
         }
+    }
+
+    // A real production planner cut at the width boundary, without
+    // materializing any of the expensive contraction tables.
+    #[test]
+    fn prejoin_cut_planner_width_boundary() {
+        let n = WIDTH + 2;
+        let nodes: Scope = (1..=n).collect();
+        let fs: Vec<_> = (1..=n)
+            .flat_map(|v| (v + 1..=n).map(move |u| (v, u)))
+            .map(|(v, u)| Factor {
+                scope: vec![v, u],
+                values: vec![None, Some(one()), Some(one()), Some(one())],
+            })
+            .collect();
+        let d = Control::from(Instant::now() + Duration::from_secs(10));
+        let retained = fs.iter().map(|f| f.values.len()).sum();
+        assert!(plan(&fs, &nodes, (Some(0), false), retained, d)
+            .unwrap()
+            .is_none());
+        let (cuts, leaves, cost) = choose(&fs, &nodes, &Some(one()), &Cost::default(), d)
+            .unwrap();
+        assert_eq!(cuts.len(), 1);
+        assert_eq!(leaves.len(), 2);
+        assert!(cost.width <= WIDTH && cost.work <= WORK && cost.peak <= LIVE);
     }
 
     #[test]

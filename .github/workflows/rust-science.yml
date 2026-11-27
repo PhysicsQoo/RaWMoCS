@@ -671,3 +671,75 @@ jobs:
           path: .release-pairs/
           if-no-files-found: warn
           retention-days: 30
+
+  native-memory-m0:
+    name: M0 repeated Rust library and Python allocation attribution
+    if: github.event_name == 'pull_request' && github.head_ref == 'research/python-api'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/rawmocs-cli -> target
+          key: native-memory-m0
+      - name: Source-locked witness and allocation tools
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p .m0-evidence .m0-input
+          gh api repos/PhysicsQoo/RaWMoCS/actions/artifacts/14999026030/zip > "$RUNNER_TEMP/m0.zip"
+          echo "a11704d97a21c7642054c31caaa733e734a0505860fb63a1acd94b22a906ee9f  $RUNNER_TEMP/m0.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/m0.zip" -d .m0-input
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends heaptrack libgmp-dev libmpfr-dev m4 make gcc pkg-config
+          heaptrack --version > .m0-evidence/heaptrack-version.txt 2>&1
+          ldd --version > .m0-evidence/glibc-version.txt
+      - name: Build symbolized baseline library and binding without solver changes
+        env:
+          CARGO_PROFILE_RELEASE_DEBUG: '1'
+          CARGO_TARGET_DIR: ${{ github.workspace }}/crates/rawmocs-cli/target
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD > .m0-evidence/revision.txt
+          cargo build --locked --release --manifest-path crates/rawmocs-cli/Cargo.toml --example m0_repeat
+          python -m pip install maturin==1.8.3
+          maturin build --locked --release --interpreter python --compatibility linux --out "$RUNNER_TEMP/m0-wheel"
+          python -m pip install --no-index "$RUNNER_TEMP"/m0-wheel/*.whl
+          sha256sum crates/rawmocs-cli/target/release/examples/m0_repeat "$RUNNER_TEMP"/m0-wheel/*.whl > .m0-evidence/binaries.sha256
+          python -m pip freeze > .m0-evidence/dependencies.txt
+      - name: Repeated native and binding baseline (12 solves each)
+        env:
+          PYTHONPATH: ${{ github.workspace }}/crates/rawmocs-cli/tools
+          PYTHONHASHSEED: '0'
+        run: |
+          set -euo pipefail
+          timeout -k 2s 180s prlimit --as=3221225472 -- python crates/rawmocs-cli/tools/m0_memory.py repeat
+      - name: Allocation stacks, allocation volume and peak live attribution
+        env:
+          PYTHONPATH: ${{ github.workspace }}/crates/rawmocs-cli/tools
+          PYTHONHASHSEED: '0'
+        run: |
+          set -euo pipefail
+          timeout -k 2s 420s python crates/rawmocs-cli/tools/m0_memory.py profile
+          for arm in rust python; do
+            mapfile -t profiles < <(find .m0-evidence -maxdepth 1 -type f \( -name "profile-$arm*.gz" -o -name "profile-$arm*.zst" \))
+            test "${#profiles[@]}" -eq 1
+            heaptrack_print "${profiles[0]}" > ".m0-evidence/heaptrack-$arm.txt"
+            test -s ".m0-evidence/heaptrack-$arm.txt"
+            head -n 100 ".m0-evidence/heaptrack-$arm.txt"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rawmocs-m0-native-memory
+          path: .m0-evidence/
+          include-hidden-files: true
+          if-no-files-found: error

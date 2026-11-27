@@ -172,7 +172,7 @@ def main(stage):
         print("M0_REPEAT_FINAL", json.dumps(summary), flush=True)
     else:
         prior = json.loads((ROOT / "repeat-summary.json").read_text())
-        arms = ("rust",) if stage == "profile-rust" else ("rust", "python")
+        arms = {"profile": ("rust", "python"), "profile-rust": ("rust",), "profile-python": ("python",)}[stage]
         rows = {a: launch(a, path, ref, profile=True) for a in arms}
         assert all(signature(row) == prior["signature"] for rs in rows.values() for row in rs)
         print("M0_PROFILE_WITNESS_PASS", flush=True)
@@ -180,7 +180,7 @@ def main(stage):
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("stage", choices=("repeat", "profile", "repeat-rust", "repeat-python", "profile-rust", "worker"))
+    p.add_argument("stage", choices=("repeat", "profile", "repeat-rust", "repeat-python", "profile-rust", "profile-python", "worker"))
     p.add_argument("path", nargs="?", type=Path)
     a = p.parse_args()
     if a.stage == "worker":

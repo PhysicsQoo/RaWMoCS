@@ -801,6 +801,8 @@ jobs:
         with:
           workspaces: crates/rawmocs-python -> target
       - name: Build baseline and candidate from the same source
+        env:
+          CARGO_PROFILE_RELEASE_DEBUG: '1'
         run: |
           set -euo pipefail
           python -m pip install maturin==1.8.3
@@ -822,7 +824,7 @@ jobs:
           if-no-files-found: error
 
   native-memory-python:
-    name: M1 Python retention / ${{ matrix.case }}
+    name: M1 idle-RSS attribution / ${{ matrix.case }}
     needs: native-memory-wheels
     if: github.event_name == 'pull_request' && github.head_ref == 'research/python-api'
     runs-on: ubuntu-24.04
@@ -831,12 +833,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - case: qpeinexact22
-            artifact: '14999026030'
-            zip_sha: a11704d97a21c7642054c31caaa733e734a0505860fb63a1acd94b22a906ee9f
-            cnf_sha: 6fb69626195bee5b89ed3503ae8b1b4801d9267e7bd5ff3684af152afcd885e1
-            witness_sha: e59e2741a69dbb13b4f6d0b44562ac689541c4bcf7c43da476006ec8f1b87512
-            order: 'baseline candidate'
           - case: grover6
             artifact: '14993988130'
             zip_sha: b222c21a0177876d6fdd4e915ac7359a94f2058ac7846ca33b0c00946fb7054e
@@ -875,7 +871,14 @@ jobs:
           unzip -q "$RUNNER_TEMP/m1-input.zip" -d .m0-input
           cp .m1-wheels/SHA256SUMS .m1-python-evidence/
           cp .m1-wheels/revision.txt .m1-python-evidence/
-      - name: Same-runner repeated Python library comparison
+      - name: Install profiling tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends heaptrack
+          heaptrack --version > .m1-python-evidence/heaptrack-version.txt 2>&1
+          ldd --version > .m1-python-evidence/glibc-version.txt
+      - name: Two independent order-reversed Python cohorts and allocation profiles
         env:
           M0_CNF_SHA: ${{ matrix.cnf_sha }}
           M0_REF_SHA: ${{ matrix.witness_sha }}
@@ -885,13 +888,30 @@ jobs:
         run: |
           set -euo pipefail
           unset GLIBC_TUNABLES MALLOC_MMAP_THRESHOLD_ MALLOC_TRIM_THRESHOLD_ MALLOC_TOP_PAD_ MALLOC_MMAP_MAX_ MALLOC_ARENA_MAX LD_PRELOAD
-          for arm in $ARM_ORDER; do
+          for arm in baseline candidate; do
             python -m venv "$RUNNER_TEMP/$arm"
             "$RUNNER_TEMP/$arm/bin/python" -m pip install --no-index .m1-wheels/"$arm"/*.whl
-            export M0_EVIDENCE_DIR="$GITHUB_WORKSPACE/.m1-python-evidence/$arm"
-            timeout -k 2s 150s prlimit --as=3221225472 -- "$RUNNER_TEMP/$arm/bin/python" crates/rawmocs-cli/tools/m0_memory.py repeat-python
           done
-          python crates/rawmocs-cli/tools/m1_python_compare.py
+          for block in 0 1; do
+            order="$ARM_ORDER"
+            if [ "$block" = 1 ]; then
+              read -r first second <<< "$ARM_ORDER"
+              order="$second $first"
+            fi
+            for arm in $order; do
+              export M0_EVIDENCE_DIR="$GITHUB_WORKSPACE/.m1-python-evidence/block-$block/$arm"
+              timeout -k 2s 75s prlimit --as=3221225472 -- "$RUNNER_TEMP/$arm/bin/python" crates/rawmocs-cli/tools/m0_memory.py repeat-python
+            done
+          done
+          # Profile separate fresh processes, after all uninstrumented samples.
+          for arm in $ARM_ORDER; do
+            export M0_EVIDENCE_DIR="$GITHUB_WORKSPACE/.m1-python-evidence/block-1/$arm"
+            timeout -k 2s 75s "$RUNNER_TEMP/$arm/bin/python" crates/rawmocs-cli/tools/m0_memory.py profile-python
+            mapfile -t profiles < <(find "$M0_EVIDENCE_DIR" -maxdepth 1 -type f \( -name 'profile-python*.gz' -o -name 'profile-python*.zst' \))
+            test "${#profiles[@]}" -eq 1
+            heaptrack_print "${profiles[0]}" > "$M0_EVIDENCE_DIR/heaptrack-python.txt"
+          done
+          python crates/rawmocs-cli/tools/m1_idle_compare.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:

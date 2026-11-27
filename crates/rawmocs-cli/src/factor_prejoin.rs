@@ -82,11 +82,51 @@ fn checked(x: R) -> Result<R, String> {
     }
     Ok(x)
 }
-fn rmul_full(a: &R, b: &R) -> Result<R, String> {
+fn rmul_full_reference(a: &R, b: &R) -> Result<R, String> {
     checked((
         Rational::from(&a.0 * &b.0) - Rational::from(&a.1 * &b.1),
         Rational::from(&a.0 * &b.1) + Rational::from(&a.1 * &b.0),
     ))
+}
+// Use a common denominator only when each pair has nested denominators.
+// Integer intermediates are exact; canonicalization and the original final
+// bit-cap check are applied before returning either component.
+fn common_integer_pair(x: &R) -> Option<(Integer, Integer, Integer)> {
+    let r = x.0.denom();
+    let i = x.1.denom();
+    if r == i {
+        return Some((x.0.numer().clone(), x.1.numer().clone(), r.clone()));
+    }
+    if r > i && Integer::from(r % i) == 0 {
+        let scale = Integer::from(r / i);
+        return Some((x.0.numer().clone(), Integer::from(x.1.numer() * &scale), r.clone()));
+    }
+    if i > r && Integer::from(i % r) == 0 {
+        let scale = Integer::from(i / r);
+        return Some((Integer::from(x.0.numer() * &scale), x.1.numer().clone(), i.clone()));
+    }
+    None
+}
+
+fn rmul_common_denominator(a: &R, b: &R) -> Option<Result<R, String>> {
+    // Small rationals benefit from GMP's existing canonical arithmetic.
+    // Never expand non-nested pairs or bypass input/final bit caps.
+    if [&a.0, &a.1, &b.0, &b.1].iter().all(|r| r.denom().significant_bits() < 512) {
+        return None;
+    }
+    if [&a.0, &a.1, &b.0, &b.1].iter().any(|r| r.numer().significant_bits().max(r.denom().significant_bits()) > EXACT_BITS) {
+        return None;
+    }
+    let (ar, ai, ad) = common_integer_pair(a)?;
+    let (br, bi, bd) = common_integer_pair(b)?;
+    let den = Integer::from(&ad * &bd);
+    let re = Integer::from(&ar * &br) - Integer::from(&ai * &bi);
+    let im = Integer::from(&ar * &bi) + Integer::from(&ai * &br);
+    Some(checked((Rational::from((re, den.clone())), Rational::from((im, den)))))
+}
+
+fn rmul_full(a: &R, b: &R) -> Result<R, String> {
+    rmul_common_denominator(a, b).unwrap_or_else(|| rmul_full_reference(a, b))
 }
 // Exact axes and Boolean support depend on exact rational equality.
 // Shortcuts only for algebraic identities, never rounded MPFR comparisons.
@@ -1725,6 +1765,48 @@ mod tests {
         assert_eq!(fill_count(&[0u64; 64], u64::MAX), 2016);
     }
     #[test]
+    fn common_denominator_matches_reference_and_final_bit_cap() {
+        let mut values = vec![
+            (Rational::from((2, 3)), Rational::from((3, 5))),
+            (Rational::from(1), Rational::from(-2)),
+        ];
+        for exp in [160u32, 200, 500, 1000, 2500, 4900] {
+            let den = Integer::from(10).pow(exp);
+            let smaller = Integer::from(10).pow(exp - 3);
+            for (r, i) in [(7, -11), (-13, 17), (19, 23), (7, 7)] {
+                values.push((Rational::from((Integer::from(r), den.clone())),
+                             Rational::from((Integer::from(i), smaller.clone()))));
+                values.push((Rational::from((Integer::from(i), smaller.clone())),
+                             Rational::from((Integer::from(r), den.clone()))));
+                values.push((Rational::from((Integer::from(r), den.clone())),
+                             Rational::from((Integer::from(i), den.clone()))));
+            }
+        }
+        let mut hits = 0;
+        let mut rejects = 0;
+        for a in &values {
+            for b in &values {
+                let reference = rmul_full_reference(a, b);
+                if let Some(got) = rmul_common_denominator(a, b) {
+                    hits += 1;
+                    if got.is_err() { rejects += 1; }
+                    assert_eq!(got, reference);
+                }
+                assert_eq!(rmul_full(a, b), reference);
+            }
+        }
+        assert!(hits > 1000 && rejects > 0);
+        let nonnested = (Rational::from((Integer::from(1), Integer::from(2).pow(600))),
+                         Rational::from((Integer::from(1), Integer::from(5).pow(600))));
+        assert!(rmul_common_denominator(&nonnested, &values[1]).is_none());
+        let a = (Rational::from((Integer::from(1), Integer::from(10).pow(200))),
+                 Rational::from((Integer::from(1), Integer::from(10).pow(200))));
+        let b = (a.0.clone(), -a.1.clone());
+        let got = rmul_common_denominator(&a, &b).unwrap().unwrap();
+        assert_eq!(got.1, 0);
+        assert_eq!(got, rmul_full_reference(&a, &b).unwrap());
+    }
+    #[test]
     fn exact_rational_identity_shortcuts_match_full_formula() {
         let values = [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1), (2, 3), (-3, 2)];
         let mut x: Vec<R> = values
@@ -1754,7 +1836,7 @@ mod tests {
         }
         for a in &x {
             for b in &x {
-                assert_eq!(rmul(a, b).unwrap(), rmul_full(a, b).unwrap());
+                assert_eq!(rmul(a, b).unwrap(), rmul_full_reference(a, b).unwrap());
             }
         }
         // A supported exact zero is still Some, not Boolean impossibility.

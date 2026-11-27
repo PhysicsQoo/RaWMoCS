@@ -6,6 +6,7 @@ from email.parser import BytesParser
 import hashlib
 import io
 import json
+import os
 from pathlib import Path, PurePosixPath
 import re
 import subprocess
@@ -123,6 +124,7 @@ def audit_sdist(path, ident):
                 "unexpected sdist root")
         require(all(m.isfile() or m.isdir() for m in members), "unexpected sdist member type")
         def read(name):
+            require(prefix + name in tar.getnames(), "missing sdist member: " + name)
             member = tar.getmember(prefix + name)
             require(member.isfile(), "not regular: " + name)
             return tar.extractfile(member).read()
@@ -142,9 +144,12 @@ def main():
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     ident = identity()
+    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT,
+                                       text=True).strip()
+    require(re.fullmatch(r"[0-9a-f]{40}", revision), "invalid source revision")
+    require(revision == os.environ.get("GITHUB_SHA"), "CI source revision mismatch")
     receipt = {"schema": 1, "status": "PACKAGE_CANDIDATE_INTEGRITY_PASS",
-               "revision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT,
-                                                   text=True).strip(),
+               "revision": revision,
                "identity": ident, "wheel": audit_wheel(args.wheel, ident, args.platform),
                "distribution_authorized": False,
                "publication_authorized": False}

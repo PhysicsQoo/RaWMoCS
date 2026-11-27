@@ -12,3 +12,4 @@ requires-python = ">=3.10"
 manifest-path = "crates/rawmocs-python/Cargo.toml"
 python-source = "python"
 module-name = "rawmocs._native"
+include = [{ path = "LICENSE", format = "sdist" }]

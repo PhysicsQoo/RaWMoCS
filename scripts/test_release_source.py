@@ -26,6 +26,12 @@ def fixture(version="0.1.1"):
                             "Seven order-rotated same-precision native quadruples"}
             else:
                 required = {"Seven order-rotated same-precision native triples"}
+        if tuple(map(int, version.split('.'))) >= (0, 2, 1) and name.startswith("Regenerate original"):
+            required = set(required) | {
+                "Natural native cancellation on original source-locked CNFs",
+                "R6 seven-round native transport regression against published v0.2.0",
+                "Archive shared-core full science evidence",
+            }
         jobs.append({"name": name, "status": "completed", "conclusion": "success",
                      "steps": [{"name": s, "conclusion": "success"} for s in required]})
     return request, run, {"total_count": len(jobs), "jobs": jobs}
@@ -68,6 +74,31 @@ class ReleaseScienceTests(unittest.TestCase):
         _, _, old = fixture("0.1.1")
         with self.assertRaises(ValueError):
             verify_run(req, run, old, "science")
+
+    def test_v021_requires_exact_main_shared_core_evidence(self):
+        verify_run(*fixture("0.2.1"), "science")
+        for missing in (
+            "Natural native cancellation on original source-locked CNFs",
+            "R6 seven-round native transport regression against published v0.2.0",
+            "Archive shared-core full science evidence",
+        ):
+            for conclusion in ("skipped", "missing"):
+                req, run, jobs = fixture("0.2.1")
+                job = next(j for j in jobs["jobs"] if j["name"].startswith("Regenerate original"))
+                if conclusion == "missing":
+                    job["steps"] = [s for s in job["steps"] if s["name"] != missing]
+                else:
+                    next(s for s in job["steps"] if s["name"] == missing)["conclusion"] = conclusion
+                with self.subTest(step=missing, conclusion=conclusion), self.assertRaises(ValueError):
+                    verify_run(req, run, jobs, "science")
+        req, run, jobs = fixture("0.2.1")
+        for overrides in ({"head_sha": "b" * 40}, {"event": "pull_request"}):
+            with self.subTest(overrides=overrides), self.assertRaises(ValueError):
+                verify_run(req, {**run, **overrides}, jobs, "science")
+        _, _, legacy_jobs = fixture("0.2.0")
+        with self.assertRaises(ValueError):
+            verify_run(req, run, legacy_jobs, "science")
+        verify_run(*fixture("0.2.0"), "science")
 
     def test_published_legacy_gate(self):
         verify_run(*fixture("0.1.0"), "science")

@@ -142,6 +142,34 @@ jobs:
           python -VV | tee .release-evidence/python/python-version.txt
           python -m pip install --no-index "$RUNNER_TEMP"/rawmocs-wheels/*.whl
           RAWMOCS_TEST_CLI="$GITHUB_WORKSPACE/crates/rawmocs-cli/target/release/rawmocs" python -m unittest discover -s python/tests -v 2>&1 | tee .release-evidence/python/contract.log
+          maturin sdist --out "$RUNNER_TEMP/rawmocs-sdist"
+          sha256sum "$RUNNER_TEMP"/rawmocs-sdist/*.tar.gz | tee .release-evidence/python/sdist.sha256
+          mkdir -p "$RUNNER_TEMP/rawmocs-clean-source"
+          tar -xzf "$RUNNER_TEMP"/rawmocs-sdist/*.tar.gz -C "$RUNNER_TEMP/rawmocs-clean-source"
+          (
+            cd "$RUNNER_TEMP/rawmocs-clean-source"/rawmocs-*
+            test -f crates/rawmocs-python/Cargo.lock
+            test -f crates/rawmocs-cli/Cargo.toml
+            maturin build --locked --release --interpreter python --compatibility linux --out "$RUNNER_TEMP/rawmocs-rebuilt"
+          )
+          python3 -m venv "$RUNNER_TEMP/rawmocs-clean-install"
+          "$RUNNER_TEMP/rawmocs-clean-install/bin/python" -m pip install --no-index "$RUNNER_TEMP"/rawmocs-rebuilt/*.whl
+          (
+            cd "$RUNNER_TEMP"
+            "$RUNNER_TEMP/rawmocs-clean-install/bin/python" -I -m unittest discover -s "$GITHUB_WORKSPACE/python/tests" -v
+          ) 2>&1 | tee .release-evidence/python/clean-source-contract.log
+          sha256sum "$RUNNER_TEMP"/rawmocs-rebuilt/*.whl | tee .release-evidence/python/rebuilt-wheel.sha256
+      - name: Archive Python packaging evidence
+        if: always() && github.event_name == 'pull_request' && github.head_ref == 'research/python-api'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rawmocs-python-packaging
+          path: |
+            .release-evidence/python/
+            ${{ runner.temp }}/rawmocs-sdist/*.tar.gz
+            ${{ runner.temp }}/rawmocs-rebuilt/*.whl
+          include-hidden-files: true
+          if-no-files-found: error
       - name: Exercise executable success, SAT-zero and fail-closed contracts
         shell: bash
         run: |

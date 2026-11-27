@@ -165,14 +165,21 @@ def source_fixture(version):
     prefix = f"rawmocs-{version}/"
     lock = b"version = 4\n"
     stream = io.BytesIO()
+    shared = tuple(map(int, version.split("."))) >= (0, 2, 1)
+    manifest = f'[package]\nversion = "{version}"\n'
+    if shared:
+        manifest += '[lib]\nname = "rawmocs_mpfr"\n'
+    files = [
+        ("LICENSE", b"fixture license"),
+        ("crates/rawmocs-cli/Cargo.lock", lock),
+        ("crates/rawmocs-cli/Cargo.toml", manifest.encode()),
+    ]
+    if shared:
+        files += [("crates/rawmocs-cli/src/lib.rs", b"fixture library"),
+                  ("crates/rawmocs-cli/tools/external_consumer.rs", b"fixture consumer")]
     with tarfile.open(fileobj=stream, mode="w:gz", format=tarfile.PAX_FORMAT,
                       pax_headers={"comment": revision}) as tar:
-        for name, data in (
-            ("LICENSE", b"fixture license"),
-            ("crates/rawmocs-cli/Cargo.lock", lock),
-            ("crates/rawmocs-cli/Cargo.toml",
-             f'[package]\nversion = "{version}"\n'.encode()),
-        ):
+        for name, data in files:
             member = tarfile.TarInfo(prefix + name)
             member.size = len(data)
             tar.addfile(member, io.BytesIO(data))
@@ -188,6 +195,9 @@ def source_fixture(version):
     }
     if version != "0.1.0":
         receipt["large_general_controls"] = ["analytic", "default-cap", "parse-deadline"]
+    if shared:
+        receipt["rust_consumer_controls"] = ["file-text", "SAT-zero", "UNSAT", "MPFR-binary", "diagnostics",
+                 "invalid-input", "timeout", "cancel", "reentry", "quiet-stdio", "locked-offline"]
     return {"version": version, "revision": revision, "source_sha256": sha}, {
         archive: data,
         "SHA256SUMS": f"{sha}  {archive}\n".encode(),
@@ -200,6 +210,20 @@ class ReleaseSourceTests(unittest.TestCase):
         for version in ("0.1.0", "0.1.1"):
             with self.subTest(version=version):
                 verify_assets(*source_fixture(version))
+
+    def test_v021_requires_extracted_consumer_evidence(self):
+        verify_assets(*source_fixture("0.2.1"))
+        for bad in (None, ["file-text"]):
+            request, assets = source_fixture("0.2.1")
+            receipt = json.loads(assets["source-package.json"])
+            if bad is None:
+                del receipt["rust_consumer_controls"]
+            else:
+                receipt["rust_consumer_controls"] = bad
+            assets["source-package.json"] = json.dumps(receipt).encode()
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "missing extracted Rust consumer"):
+                verify_assets(request, assets)
+        verify_assets(*source_fixture("0.2.0"))
 
     def test_new_receipt_requires_large_route_controls(self):
         request, assets = source_fixture("0.1.1")

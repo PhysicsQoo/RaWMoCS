@@ -224,10 +224,11 @@ def verify_v022_rationalized_run(r, run_data, jobs, recomputed_scope):
             require(j["conclusion"] == "skipped", "unexpected native research status")
             continue
         require(j["conclusion"] == "success", f"failed job {j['name']}")
-        steps = {s["name"]: s["conclusion"] for s in j["steps"]}
-        require(len(steps) == len(j["steps"]), "duplicate step names")
-        require(all(steps.get(s) == "success" for s in V022_STEPS[j["name"]]),
-                f"missing or failed required step {j['name']}")
+        # Repeated setup-action names are normal in GitHub jobs. Each
+        # admission-critical step, however, must occur exactly once.
+        require(all([s["conclusion"] for s in j["steps"] if s["name"] == name]
+                    == ["success"] for name in V022_STEPS[j["name"]]),
+                f"missing, duplicate or failed required step {j['name']}")
         require(not any(s["conclusion"] in ("failure", "cancelled", "timed_out")
                         for s in j["steps"]), f"failed step in {j['name']}")
 

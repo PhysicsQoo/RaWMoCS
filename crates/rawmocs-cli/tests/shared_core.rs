@@ -155,8 +155,11 @@ fn binary_count_and_call_local_diagnostics() {
     }
 
     let wide = format!(
-        "p cnf 21 1\nc t wmc\n{} 0\n",
-        (1..=21).map(|v| v.to_string()).collect::<Vec<_>>().join(" ")
+        "p cnf 10 1\nc t wmc\n{} 0\n",
+        (1..=10)
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join(" ")
     );
     let fallback = solve_text(&wide, SolveOptions::default()).unwrap();
     let info = fallback.diagnostics.fallback.as_ref().unwrap();
@@ -176,4 +179,63 @@ fn binary_count_and_call_local_diagnostics() {
     let fresh = solve_text(raw, SolveOptions::default()).unwrap();
     assert!(fresh.diagnostics.streaming_source.is_none());
     assert!(fresh.diagnostics.fallback.is_none());
+}
+
+#[test]
+fn kernel_diagnostics_are_route_specific() {
+    let raw = "p cnf 2 1\nc t wmc\n1 2 0\n";
+    for mode in [SolverMode::General, SolverMode::GeneralSeparator] {
+        let report = solve_text(
+            raw,
+            SolveOptions {
+                mode,
+                ..SolveOptions::default()
+            },
+        )
+        .unwrap();
+        assert!(report.diagnostics.general.is_some());
+        assert_eq!(
+            report.diagnostics.separator.is_some(),
+            mode == SolverMode::GeneralSeparator
+        );
+        assert!(report.diagnostics.prejoin.is_none());
+    }
+    let report = solve_text(
+        raw,
+        SolveOptions {
+            mode: SolverMode::Prejoin,
+            ..SolveOptions::default()
+        },
+    )
+    .unwrap();
+    let stats = report.diagnostics.prejoin.as_ref().unwrap();
+    assert!(stats.leaves > 0);
+    assert!(report.diagnostics.general.is_none());
+    assert!(report.diagnostics.frontier_stop.is_none());
+
+    // Unequal literal weights avoid scalar reduction at initial factor
+    // insertion. Multiplication of forced positive weights crosses the
+    // existing 16384-bit cap during transactional local elimination.
+    let mut frontier = String::from("p cnf 24 24\nc t wmc\n");
+    for v in 1..=24 {
+        frontier.push_str(&format!("c p weight {v} 1e256 0\n"));
+    }
+    for v in 1..=24 {
+        frontier.push_str(&format!("{v} 0\n"));
+    }
+    let report = solve_text(
+        &frontier,
+        SolveOptions {
+            mode: SolverMode::AutoFrontier,
+            ..SolveOptions::default()
+        },
+    )
+    .unwrap();
+    let stop = report.diagnostics.frontier_stop.as_ref().unwrap();
+    assert!(stop.steps > 0 && stop.remaining > 0);
+    assert_eq!(stop.steps + stop.remaining, 24);
+    assert_eq!(report.route, rawmocs_mpfr::SolveRoute::Prejoin);
+    assert!(report.sat);
+    assert!(report.diagnostics.prejoin.is_some());
+    assert!(report.diagnostics.fallback.is_none());
 }

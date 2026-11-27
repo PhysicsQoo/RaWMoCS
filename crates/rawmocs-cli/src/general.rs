@@ -2,7 +2,7 @@
 //! Research source: 379b47242cbd9b4a1e597afc6377cbaf0ac13bce,
 //! benchmarks/mpfr_research/src/main.rs (Engine::count, normalize,
 //! assign, split_components). Preserve chronological order and exact cache equality.
-use crate::{Clause, Outcome, Problem, C};
+use crate::{Clause, GeneralStats, Outcome, Problem, SeparatorStats, SolveDiagnostics, C};
 use std::borrow::Borrow;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap};
@@ -525,7 +525,12 @@ impl Engine<'_> {
         )?;
         Ok(Step::Enter(yes, child))
     }
-    fn count(&mut self, clauses: Vec<Clause>, scope: Vec<usize>) -> Result<Outcome, String> {
+    fn count(
+        &mut self,
+        clauses: Vec<Clause>,
+        scope: Vec<usize>,
+        diagnostics: &mut SolveDiagnostics,
+    ) -> Result<Outcome, String> {
         // Heap-resident continuations preserve the recursive control's
         // positive-before-negative and component aggregation order.
         let mut stack = Vec::new();
@@ -538,7 +543,12 @@ impl Engine<'_> {
                 Step::Enter(clauses, scope) => self.enter(clauses, scope, &mut stack)?,
                 Step::Done(out) => match stack.pop() {
                     None => {
-                        eprintln!("RAWMOCS_GENERAL_COMPLETE max_frames={peak_frames}");
+                        diagnostics.general = Some(GeneralStats {
+                            max_frames: peak_frames,
+                        });
+                        if diagnostics.legacy_stderr {
+                            eprintln!("RAWMOCS_GENERAL_COMPLETE max_frames={peak_frames}");
+                        }
                         return Ok(out);
                     }
                     Some(Frame::Yes {
@@ -613,11 +623,12 @@ impl Engine<'_> {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn solve(p: &Problem, bits: u32, deadline: Instant) -> Result<Outcome, String> {
     solve_mode(p, bits, deadline, false, None)
 }
 
-/// Opt-in only: does not change auto, general, or streaming routes.
+#[cfg(test)]
 pub(crate) fn solve_separator(
     p: &Problem,
     bits: u32,
@@ -626,14 +637,35 @@ pub(crate) fn solve_separator(
     solve_policy(p, bits, deadline, false, None, true)
 }
 
-pub(crate) fn solve_large(mut p: Problem, bits: u32, deadline: Instant) -> Result<Outcome, String> {
+#[cfg(test)]
+pub(crate) fn solve_large(p: Problem, bits: u32, deadline: Instant) -> Result<Outcome, String> {
+    solve_large_diagnostic(p, bits, deadline, &mut SolveDiagnostics::legacy())
+}
+
+pub(crate) fn solve_diagnostic(
+    p: &Problem,
+    bits: u32,
+    deadline: Instant,
+    separator: bool,
+    diagnostics: &mut SolveDiagnostics,
+) -> Result<Outcome, String> {
+    solve_policy_diagnostic(p, bits, deadline, false, None, separator, diagnostics)
+}
+
+pub(crate) fn solve_large_diagnostic(
+    mut p: Problem,
+    bits: u32,
+    deadline: Instant,
+    diagnostics: &mut SolveDiagnostics,
+) -> Result<Outcome, String> {
     // The large route is terminal: the parser's clause vector is no
     // longer needed after solve. Weights and the declared scope remain
     // immutable for the entire search, as in the borrowed route.
     let root = std::mem::take(&mut p.clauses);
-    solve_mode(&p, bits, deadline, true, Some(root))
+    solve_policy_diagnostic(&p, bits, deadline, true, Some(root), false, diagnostics)
 }
 
+#[cfg(test)]
 fn solve_mode(
     p: &Problem,
     bits: u32,
@@ -644,6 +676,7 @@ fn solve_mode(
     solve_policy(p, bits, deadline, large, root, false)
 }
 
+#[cfg(test)]
 fn solve_policy(
     p: &Problem,
     bits: u32,
@@ -651,6 +684,26 @@ fn solve_policy(
     large: bool,
     root: Option<Vec<Clause>>,
     separator: bool,
+) -> Result<Outcome, String> {
+    solve_policy_diagnostic(
+        p,
+        bits,
+        deadline,
+        large,
+        root,
+        separator,
+        &mut SolveDiagnostics::legacy(),
+    )
+}
+
+fn solve_policy_diagnostic(
+    p: &Problem,
+    bits: u32,
+    deadline: Instant,
+    large: bool,
+    root: Option<Vec<Clause>>,
+    separator: bool,
+    diagnostics: &mut SolveDiagnostics,
 ) -> Result<Outcome, String> {
     let mut engine = Engine {
         p,
@@ -669,13 +722,19 @@ fn solve_policy(
         }),
     };
     let clauses = root.unwrap_or_else(|| p.clauses.clone());
-    let result = engine.count(clauses, (1..=p.n).collect());
+    let result = engine.count(clauses, (1..=p.n).collect(), diagnostics);
     if result.is_ok() {
         if let Some(r) = engine.separator {
-            eprintln!(
-                "RAWMOCS_SEPARATOR_COMPLETE checks={} overrides={}",
-                r.checks, r.overrides
-            );
+            diagnostics.separator = Some(SeparatorStats {
+                checks: r.checks,
+                overrides: r.overrides,
+            });
+            if diagnostics.legacy_stderr {
+                eprintln!(
+                    "RAWMOCS_SEPARATOR_COMPLETE checks={} overrides={}",
+                    r.checks, r.overrides
+                );
+            }
         }
     }
     result

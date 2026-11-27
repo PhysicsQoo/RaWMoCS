@@ -411,18 +411,20 @@ fn solve_until(
     let frontier = mode == "auto-frontier";
     let auto = mode == "auto" || separator || frontier;
     if mode == "general-separator" || (separator && p.n == 0) {
-        return general::solve_separator(p, bits, deadline).map(|a| (a, "general-separator"));
+        return general::solve_diagnostic(p, bits, deadline, true, diagnostics)
+                .map(|a| (a, "general-separator"));
     }
     if mode == "general" || ((mode == "auto" || frontier) && p.n == 0) {
-        return general::solve(p, bits, deadline).map(|a| (a, "general"));
+        return general::solve_diagnostic(p, bits, deadline, false, diagnostics)
+                .map(|a| (a, "general"));
     }
     if !auto && mode != "prejoin" {
         return Err("invalid solver".into());
     }
     let planned = if frontier {
-        factor_prejoin::solve_frontier(p, raw, bits, deadline)
+        factor_prejoin::solve_diagnostic(p, raw, bits, deadline, true, diagnostics)
     } else {
-        factor_prejoin::solve_until(p, raw, bits, deadline)
+        factor_prejoin::solve_diagnostic(p, raw, bits, deadline, false, diagnostics)
     };
     match planned {
         Ok(a) => Ok((a, "prejoin")),
@@ -441,7 +443,9 @@ fn solve_until(
                         | "prejoin planning budget"
                 ) =>
         {
-            eprintln!("RAWMOCS_FALLBACK reason={reason}");
+            if diagnostics.legacy_stderr {
+                eprintln!("RAWMOCS_FALLBACK reason={reason}");
+            }
             diagnostics.fallback = Some(FallbackInfo {
                 reason,
                 route: if separator {
@@ -451,9 +455,11 @@ fn solve_until(
                 },
             });
             if separator {
-                general::solve_separator(p, bits, deadline).map(|a| (a, "general-separator"))
+                general::solve_diagnostic(p, bits, deadline, true, diagnostics)
+                .map(|a| (a, "general-separator"))
             } else {
-                general::solve(p, bits, deadline).map(|a| (a, "general"))
+                general::solve_diagnostic(p, bits, deadline, false, diagnostics)
+                .map(|a| (a, "general"))
             }
         }
         Err(reason) => Err(reason),
@@ -711,12 +717,73 @@ pub struct SourceAdmission {
     pub parse_ns: u128,
 }
 
-/// Call-local diagnostics, also retained on failure. Kernel-specific stderr
-/// metrics remain unchanged until the next diagnostic migration.
+/// Completed General search statistics.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct GeneralStats {
+    pub max_frames: usize,
+}
+
+/// Completed Separator search statistics.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct SeparatorStats {
+    pub checks: usize,
+    pub overrides: usize,
+}
+
+/// Transactional exact-local stop; not a completed count.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct FrontierStop {
+    pub steps: usize,
+    pub remaining: usize,
+}
+
+/// Completed prejoin execution statistics; a later finite-result check may fail.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PrejoinStats {
+    pub residual: usize,
+    pub cuts: usize,
+    pub leaves: usize,
+    pub width: usize,
+    pub work: usize,
+    pub peak: usize,
+    pub joins: usize,
+    pub plan_ns: u128,
+    pub local_ns: u128,
+    pub choose_ns: u128,
+    pub restrict_ns: u128,
+    pub execute_ns: u128,
+}
+
+/// Aggregate direct-binary execution metrics from completed plan leaves.
+#[derive(Debug, Default)]
+pub struct BinaryStats {
+    pub leaves: usize,
+    pub ops: usize,
+    pub visits: usize,
+    pub join_visits: usize,
+}
+
+/// Call-local diagnostics, also retained on failure. Missing metrics mean
+/// the corresponding stage did not emit its completion event.
 #[derive(Debug, Default)]
 pub struct SolveDiagnostics {
     pub fallback: Option<FallbackInfo>,
     pub streaming_source: Option<SourceAdmission>,
+    pub general: Option<GeneralStats>,
+    pub separator: Option<SeparatorStats>,
+    pub frontier_stop: Option<FrontierStop>,
+    pub prejoin: Option<PrejoinStats>,
+    pub binary: Option<BinaryStats>,
+    legacy_stderr: bool,
+}
+
+impl SolveDiagnostics {
+    fn legacy() -> Self {
+        Self {
+            legacy_stderr: true,
+            ..Self::default()
+        }
+    }
 }
 
 /// Complete, rounded MPFR result. Boolean satisfiability is independent of count.
@@ -750,7 +817,7 @@ impl SolveReport {
 pub struct SolveFailure {
     pub kind: FailureKind,
     reason: String,
-    pub diagnostics: SolveDiagnostics,
+    pub diagnostics: Box<SolveDiagnostics>,
 }
 
 impl SolveFailure {
@@ -764,7 +831,7 @@ impl SolveFailure {
         Self {
             kind,
             reason,
-            diagnostics: SolveDiagnostics::default(),
+            diagnostics: Box::default(),
         }
     }
 
@@ -800,12 +867,20 @@ pub fn solve_file(
     path: &std::ffi::OsStr,
     options: SolveOptions,
 ) -> Result<SolveReport, SolveFailure> {
-    solve_source(Source::File(path), options.into())
+    solve_source(
+        Source::File(path),
+        options.into(),
+        SolveDiagnostics::default(),
+    )
 }
 
 /// Solve an emitted weighted CNF already held by the caller.
 pub fn solve_text(raw: &str, options: SolveOptions) -> Result<SolveReport, SolveFailure> {
-    solve_source(Source::Text(raw), options.into())
+    solve_source(
+        Source::Text(raw),
+        options.into(),
+        SolveDiagnostics::default(),
+    )
 }
 
 /// CLI-only compatibility boundary: preserves legacy validation/error precedence.
@@ -825,14 +900,15 @@ pub fn solve_file_cli(
             timeout_ms,
             large_general,
         },
+        SolveDiagnostics::legacy(),
     )
 }
 
 fn solve_source(
     source: Source<'_>,
     options: RawOptions<'_>,
+    mut diagnostics: SolveDiagnostics,
 ) -> Result<SolveReport, SolveFailure> {
-    let mut diagnostics = SolveDiagnostics::default();
     match solve_source_inner(source, options, &mut diagnostics) {
         Ok(mut report) => {
             report.diagnostics = diagnostics;
@@ -840,7 +916,7 @@ fn solve_source(
         }
         Err(reason) => {
             let mut error = SolveFailure::from_reason(reason);
-            error.diagnostics = diagnostics;
+            error.diagnostics = Box::new(diagnostics);
             Err(error)
         }
     }
@@ -935,10 +1011,12 @@ fn solve_source_inner(
             literals: problem.clauses.iter().map(Vec::len).sum::<usize>(),
             parse_ns: parse_start.elapsed().as_nanos(),
         };
-        eprintln!(
-            "RAWMOCS_SOURCE_ADMITTED variables={} clauses={} literals={} parse_ns={}",
-            admission.variables, admission.clauses, admission.literals, admission.parse_ns
-        );
+        if diagnostics.legacy_stderr {
+            eprintln!(
+                "RAWMOCS_SOURCE_ADMITTED variables={} clauses={} literals={} parse_ns={}",
+                admission.variables, admission.clauses, admission.literals, admission.parse_ns
+            );
+        }
         diagnostics.streaming_source = Some(admission);
     }
     let start = Instant::now();
@@ -948,7 +1026,10 @@ fn solve_source_inner(
         start + Duration::from_millis(timeout_ms.unwrap_or(45_000))
     };
     let (answer, route) = if large_general {
-        (general::solve_large(problem, bits, deadline)?, "general")
+        (
+            general::solve_large_diagnostic(problem, bits, deadline, diagnostics)?,
+            "general",
+        )
     } else {
         solve_until(&problem, &raw, bits, mode, deadline, diagnostics)?
     };

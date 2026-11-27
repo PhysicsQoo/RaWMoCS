@@ -3,7 +3,7 @@
 //! Diagnostic command surface removed; numerical/planner kernel unchanged.
 #[cfg(test)]
 use crate::parse_emitted;
-use crate::{Outcome, Problem, C};
+use crate::{FrontierStop, Outcome, PrejoinStats, Problem, SolveDiagnostics, C};
 use rug::{ops::Pow, Assign, Float, Integer, Rational};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
@@ -290,9 +290,11 @@ fn local_contract<'a>(
         values: vals,
     }))
 }
+#[cfg(test)]
 fn local(p: &Problem, raw: &str, d: Instant) -> Result<Local, String> {
     local_frontier(p, raw, d, true, true)
 }
+#[cfg(test)]
 fn local_frontier(
     p: &Problem,
     raw: &str,
@@ -304,6 +306,7 @@ fn local_frontier(
 }
 // Native-only phase attribution. Prefix replay is a research diagnostic and
 // must never be accepted as a completed residual or WMC result.
+#[cfg(test)]
 fn local_frontier_probe<const PROFILE: bool, const ADJ: bool>(
     p: &Problem,
     raw: &str,
@@ -315,6 +318,7 @@ fn local_frontier_probe<const PROFILE: bool, const ADJ: bool>(
     local_frontier_policy::<PROFILE, ADJ>(p, raw, d, incremental, widen, step_cap, false)
 }
 
+#[cfg(test)]
 fn local_frontier_policy<const PROFILE: bool, const ADJ: bool>(
     p: &Problem,
     raw: &str,
@@ -324,6 +328,40 @@ fn local_frontier_policy<const PROFILE: bool, const ADJ: bool>(
     step_cap: Option<usize>,
     stop_at_bit_cap: bool,
 ) -> Result<Local, String> {
+    local_frontier_diagnostic::<PROFILE, ADJ>(
+        p,
+        raw,
+        d,
+        LocalPolicy {
+            incremental,
+            widen,
+            step_cap,
+            stop_at_bit_cap,
+        },
+        &mut SolveDiagnostics::legacy(),
+    )
+}
+
+struct LocalPolicy {
+    incremental: bool,
+    widen: bool,
+    step_cap: Option<usize>,
+    stop_at_bit_cap: bool,
+}
+
+fn local_frontier_diagnostic<const PROFILE: bool, const ADJ: bool>(
+    p: &Problem,
+    raw: &str,
+    d: Instant,
+    policy: LocalPolicy,
+    diagnostics: &mut SolveDiagnostics,
+) -> Result<Local, String> {
+    let LocalPolicy {
+        incremental,
+        widen,
+        step_cap,
+        stop_at_bit_cap,
+    } = policy;
     let started = if PROFILE { Some(Instant::now()) } else { None };
     let mut phase = started;
     let mut times = [0u128; 6];
@@ -520,7 +558,13 @@ fn local_frontier_policy<const PROFILE: bool, const ADJ: bool>(
             match result {
                 Ok(result) => Some(result),
                 Err(reason) if reason == "exact local bit cap" => {
-                    eprintln!("PREJOIN_FRONTIER_STOP steps={steps} remaining={} reason=exact local bit cap", nodes.len());
+                    diagnostics.frontier_stop = Some(FrontierStop {
+                        steps,
+                        remaining: nodes.len(),
+                    });
+                    if diagnostics.legacy_stderr {
+                        eprintln!("PREJOIN_FRONTIER_STOP steps={steps} remaining={} reason=exact local bit cap", nodes.len());
+                    }
                     break;
                 }
                 Err(reason) => return Err(reason),
@@ -593,7 +637,9 @@ fn local_frontier_policy<const PROFILE: bool, const ADJ: bool>(
     }
     if PROFILE {
         tick(&mut phase, &mut times[2]);
-        eprintln!("LOCAL_PROFILE_NS init={} index={} select={} detach={} contract={} reinsert={} steps={} remaining={} work={} peak={}",times[0],times[1],times[2],times[3],times[4],times[5],steps,nodes.len(),cost.work,cost.peak);
+        if diagnostics.legacy_stderr {
+            eprintln!("LOCAL_PROFILE_NS init={} index={} select={} detach={} contract={} reinsert={} steps={} remaining={} work={} peak={}",times[0],times[1],times[2],times[3],times[4],times[5],steps,nodes.len(),cost.work,cost.peak);
+        }
     }
     if step_cap.is_none() && nodes.len() > RESIDUAL_CAP {
         return Err("residual variable cap".into());
@@ -1070,6 +1116,7 @@ fn cadd(a: Cell<C>, b: Cell<C>) -> Cell<C> {
         (a, None) | (None, a) => a,
     }
 }
+#[cfg(test)]
 fn execute(
     fs: Vec<Factor<R>>,
     scalar: Cell<R>,
@@ -1077,21 +1124,44 @@ fn execute(
     bits: u32,
     d: Instant,
 ) -> Result<Cell<C>, String> {
+    execute_diagnostic(fs, scalar, p, bits, d, &mut SolveDiagnostics::legacy())
+}
+
+fn execute_diagnostic(
+    fs: Vec<Factor<R>>,
+    scalar: Cell<R>,
+    p: &Plan,
+    bits: u32,
+    d: Instant,
+    diagnostics: &mut SolveDiagnostics,
+) -> Result<Cell<C>, String> {
     // Admission candidate: exercise the measured direct kernel by default.
     // Keep an explicit same-binary reference arm until the science gate passes.
     if std::env::var("RAWMOCS_RESEARCH_DIRECT_BINARY").as_deref() != Ok("0") {
-        execute_impl::<true>(fs, scalar, p, bits, d)
+        execute_impl_diagnostic::<true>(fs, scalar, p, bits, d, diagnostics)
     } else {
-        execute_impl::<false>(fs, scalar, p, bits, d)
+        execute_impl_diagnostic::<false>(fs, scalar, p, bits, d, diagnostics)
     }
 }
 
+#[cfg(test)]
 fn execute_impl<const BINARY: bool>(
     fs: Vec<Factor<R>>,
     scalar: Cell<R>,
     p: &Plan,
     bits: u32,
     d: Instant,
+) -> Result<Cell<C>, String> {
+    execute_impl_diagnostic::<BINARY>(fs, scalar, p, bits, d, &mut SolveDiagnostics::legacy())
+}
+
+fn execute_impl_diagnostic<const BINARY: bool>(
+    fs: Vec<Factor<R>>,
+    scalar: Cell<R>,
+    p: &Plan,
+    bits: u32,
+    d: Instant,
+    diagnostics: &mut SolveDiagnostics,
 ) -> Result<Cell<C>, String> {
     let mut tables: BTreeMap<usize, Factor<C>> = fs
         .into_iter()
@@ -1231,9 +1301,16 @@ fn execute_impl<const BINARY: bool>(
         return Err("plan replay drift".into());
     }
     if BINARY {
-        eprintln!(
-            "PREJOIN_RESEARCH_BINARY ops={binary_ops} visits={binary_visits} join_visits={binary_join_visits}"
-        );
+        let stats = diagnostics.binary.get_or_insert_with(Default::default);
+        stats.leaves += 1;
+        stats.ops += binary_ops;
+        stats.visits += binary_visits;
+        stats.join_visits += binary_join_visits;
+        if diagnostics.legacy_stderr {
+            eprintln!(
+                "PREJOIN_RESEARCH_BINARY ops={binary_ops} visits={binary_visits} join_visits={binary_join_visits}"
+            );
+        }
     }
     let mut out = mpfr(scalar, bits);
     for f in tables.into_values() {
@@ -1252,32 +1329,23 @@ fn execute_impl<const BINARY: bool>(
 }
 #[cfg(test)]
 pub(crate) fn solve(p: &Problem, raw: &str, bits: u32) -> Result<Outcome, String> {
-    solve_until(p, raw, bits, Instant::now() + Duration::from_secs(45))
-}
-pub(crate) fn solve_until(
-    p: &Problem,
-    raw: &str,
-    bits: u32,
-    d: Instant,
-) -> Result<Outcome, String> {
-    solve_policy(p, raw, bits, d, false)
-}
-
-pub(crate) fn solve_frontier(
-    p: &Problem,
-    raw: &str,
-    bits: u32,
-    d: Instant,
-) -> Result<Outcome, String> {
-    solve_policy(p, raw, bits, d, true)
+    solve_diagnostic(
+        p,
+        raw,
+        bits,
+        Instant::now() + Duration::from_secs(45),
+        false,
+        &mut SolveDiagnostics::legacy(),
+    )
 }
 
-fn solve_policy(
+pub(crate) fn solve_diagnostic(
     p: &Problem,
     raw: &str,
     bits: u32,
     d: Instant,
     frontier: bool,
+    diagnostics: &mut SolveDiagnostics,
 ) -> Result<Outcome, String> {
     let start = Instant::now();
     let planning_budget = (d.saturating_duration_since(start) * 2 / 3).min(Duration::from_secs(30));
@@ -1289,11 +1357,18 @@ fn solve_policy(
             e
         }
     };
-    let (fs, nodes, scalar, local) = if frontier {
-        local_frontier_policy::<false, true>(p, raw, pd, true, true, None, true)
-    } else {
-        local(p, raw, pd)
-    }
+    let (fs, nodes, scalar, local) = local_frontier_diagnostic::<false, true>(
+        p,
+        raw,
+        pd,
+        LocalPolicy {
+            incremental: true,
+            widen: true,
+            step_cap: None,
+            stop_at_bit_cap: frontier,
+        },
+        diagnostics,
+    )
     .map_err(planning_error)?;
     let local_ns = start.elapsed().as_nanos();
     let phase = Instant::now();
@@ -1308,11 +1383,27 @@ fn solve_policy(
         let (f, s) = restrict(&fs, &scalar, &cuts, m)?;
         restrict_ns += phase.elapsed().as_nanos();
         let phase = Instant::now();
-        out = cadd(out, execute(f, s, plan, bits, d)?);
+        out = cadd(out, execute_diagnostic(f, s, plan, bits, d, diagnostics)?);
         execute_ns += phase.elapsed().as_nanos();
     }
-    eprintln!("PREJOIN_PHASE_NS local={local_ns} choose={choose_ns} restrict={restrict_ns} execute={execute_ns}");
-    eprintln!("PREJOIN_COMPLETE residual={} cuts={} leaves={} width={} work={} peak={} joins={} plan_ns={}",nodes.len(),cuts.len(),plans.len(),cost.width,cost.work,cost.peak,cost.joins,plan_ns);
+    diagnostics.prejoin = Some(PrejoinStats {
+        residual: nodes.len(),
+        cuts: cuts.len(),
+        leaves: plans.len(),
+        width: cost.width,
+        work: cost.work,
+        peak: cost.peak,
+        joins: cost.joins,
+        plan_ns,
+        local_ns,
+        choose_ns,
+        restrict_ns,
+        execute_ns,
+    });
+    if diagnostics.legacy_stderr {
+        eprintln!("PREJOIN_PHASE_NS local={local_ns} choose={choose_ns} restrict={restrict_ns} execute={execute_ns}");
+        eprintln!("PREJOIN_COMPLETE residual={} cuts={} leaves={} width={} work={} peak={} joins={} plan_ns={}",nodes.len(),cuts.len(),plans.len(),cost.width,cost.work,cost.peak,cost.joins,plan_ns);
+    }
     match out {
         None => Ok(Outcome::unsat(bits)),
         Some(count) if count.re.is_finite() && count.im.is_finite() => {

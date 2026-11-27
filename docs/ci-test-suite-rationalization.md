@@ -85,3 +85,9 @@ qualification uses the pinned plan signatures. The new analytic assertion
 must pass CI before its evidence is admitted. Remaining gap: measured
 fault-detection coverage, minimal true cut witness (if required by previous
 suite), and proof of equivalent routine scope; no blanket removal yet.
+
+## C2 follow-up: existing Separator witness
+
+[Science run 45980898701](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/45980898701): 8/8 executed jobs passed; long GPMC job intentionally skipped under the existing fast policy. The witness log reports 24/24 small-family rows, all Prejoin; CodSpeed 3/3 and metadata 1/1 passed. The analytic Frontier count assertion passed as part of the CLI job. The witness artifact is 15188897894 (API ZIP digest sha256:8242e7a99ab73b6066d65178e77540283c45c618213911640fab372d4a39f8fa; not independently downloaded in this check).
+
+The existing eight-variable signed Separator fixture now requires actual search diagnostics `checks > 0 && overrides > 0` at all four precisions in addition to the independent reference counts. This is an assertion on the existing solve, not another expensive case. The direct pivot checks remain. The new assertion is pending CI; a failed assertion means the fixture is not yet a genuine end-to-end substitute, not permission to weaken it. Multi-leaf Prejoin and real cache hit evidence remain open; no release policy is relaxed.

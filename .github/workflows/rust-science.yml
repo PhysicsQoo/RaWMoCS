@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       suite:
-        description: 'fast: replay; full: regenerate and native trials; rationalized: scoped v0.2.2 release rehearsal; memory-attribution: replay M0 on Python research branch'
+        description: 'fast: replay; full: regenerate and native trials; rationalized: scoped v0.2.2 release rehearsal; memory-attribution: replay M0; memory-python-scout: explicit M2 research replay only'
         type: choice
-        options: [fast, full, rationalized, memory-attribution, memory-rust-scout]
+        options: [fast, full, rationalized, memory-attribution, memory-rust-scout, memory-python-scout]
         default: full
         required: true
 
@@ -786,7 +786,8 @@ jobs:
 
   native-memory-wheels:
     name: M2 matched Python wheels and contracts
-    if: github.event_name == 'pull_request' && github.head_ref == 'research/python-api'
+    # Historical research, not a release or routine PR gate.
+    if: github.event_name == 'workflow_dispatch' && inputs.suite == 'memory-python-scout'
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     steps:
@@ -827,7 +828,7 @@ jobs:
   native-memory-python:
     name: M2 factor buffer scout / ${{ matrix.case }}
     needs: native-memory-wheels
-    if: github.event_name == 'pull_request' && github.head_ref == 'research/python-api'
+    if: github.event_name == 'workflow_dispatch' && inputs.suite == 'memory-python-scout'
     runs-on: ubuntu-24.04
     timeout-minutes: 8
     strategy:

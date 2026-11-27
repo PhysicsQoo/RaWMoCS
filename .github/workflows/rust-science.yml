@@ -785,7 +785,7 @@ jobs:
           if-no-files-found: error
 
   native-memory-wheels:
-    name: M1 matched Python wheels and contracts
+    name: M2 matched Python wheels and contracts
     if: github.event_name == 'pull_request' && github.head_ref == 'research/python-api'
     runs-on: ubuntu-24.04
     timeout-minutes: 12
@@ -806,12 +806,13 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install maturin==1.8.3
-          mkdir -p .m1-wheels/{baseline,candidate}
+          mkdir -p .m1-wheels/{baseline,candidate,m2}
           maturin build --locked --release --interpreter python --compatibility linux --out .m1-wheels/baseline
           maturin build --locked --release --interpreter python --compatibility linux --features m1-last-use-reuse --out .m1-wheels/candidate
-          (cd .m1-wheels; sha256sum baseline/*.whl candidate/*.whl > SHA256SUMS)
+          maturin build --locked --release --interpreter python --compatibility linux --features m2-buffer-reuse --out .m1-wheels/m2
+          (cd .m1-wheels; sha256sum baseline/*.whl candidate/*.whl m2/*.whl > SHA256SUMS)
           git rev-parse HEAD > .m1-wheels/revision.txt
-          for arm in baseline candidate; do
+          for arm in baseline candidate m2; do
             python -m venv "$RUNNER_TEMP/$arm"
             "$RUNNER_TEMP/$arm/bin/python" -m pip install --no-index .m1-wheels/"$arm"/*.whl
             "$RUNNER_TEMP/$arm/bin/python" -I -m unittest discover -s python/tests -v 2>&1 | tee ".m1-wheels/$arm-contract.log"
@@ -824,7 +825,7 @@ jobs:
           if-no-files-found: error
 
   native-memory-python:
-    name: M1 idle-RSS attribution / ${{ matrix.case }}
+    name: M2 factor buffer scout / ${{ matrix.case }}
     needs: native-memory-wheels
     if: github.event_name == 'pull_request' && github.head_ref == 'research/python-api'
     runs-on: ubuntu-24.04
@@ -833,18 +834,24 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - case: qpeinexact22
+            artifact: '14999026030'
+            zip_sha: a11704d97a21c7642054c31caaa733e734a0505860fb63a1acd94b22a906ee9f
+            cnf_sha: 6fb69626195bee5b89ed3503ae8b1b4801d9267e7bd5ff3684af152afcd885e1
+            witness_sha: e59e2741a69dbb13b4f6d0b44562ac689541c4bcf7c43da476006ec8f1b87512
+            order: 'baseline candidate m2'
           - case: grover6
             artifact: '14993988130'
             zip_sha: b222c21a0177876d6fdd4e915ac7359a94f2058ac7846ca33b0c00946fb7054e
             cnf_sha: a9757cd5bd730b6f769d2970e3a16ac66fee7157b55f81208c0a7c2cece0023b
             witness_sha: de23841cd2fbafe653cf3206e768b45f6eb8634380abdce867f0c70b1c786bf3
-            order: 'candidate baseline'
+            order: 'candidate m2 baseline'
           - case: qnn12
             artifact: '14995474269'
             zip_sha: d6a4bde601b0e7a5f0ff08370606d1c031fc75ae1177e894548e811092f7ac94
             cnf_sha: 079f86a832056412d015759dd20a556a998ab4d596bea774a9ff5ebaed3484b7
             witness_sha: 07635afae84795a1bc4846ceaad3dd46bc47d4284d9afb32df8ac918625df630
-            order: 'baseline candidate'
+            order: 'm2 baseline candidate'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -871,14 +878,7 @@ jobs:
           unzip -q "$RUNNER_TEMP/m1-input.zip" -d .m0-input
           cp .m1-wheels/SHA256SUMS .m1-python-evidence/
           cp .m1-wheels/revision.txt .m1-python-evidence/
-      - name: Install profiling tools
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends heaptrack
-          heaptrack --version > .m1-python-evidence/heaptrack-version.txt 2>&1
-          ldd --version > .m1-python-evidence/glibc-version.txt
-      - name: Two independent order-reversed Python cohorts and allocation profiles
+      - name: Three-arm same-runner factor buffer scout
         env:
           M0_CNF_SHA: ${{ matrix.cnf_sha }}
           M0_REF_SHA: ${{ matrix.witness_sha }}
@@ -888,34 +888,19 @@ jobs:
         run: |
           set -euo pipefail
           unset GLIBC_TUNABLES MALLOC_MMAP_THRESHOLD_ MALLOC_TRIM_THRESHOLD_ MALLOC_TOP_PAD_ MALLOC_MMAP_MAX_ MALLOC_ARENA_MAX LD_PRELOAD
-          for arm in baseline candidate; do
+          for arm in baseline candidate m2; do
             python -m venv "$RUNNER_TEMP/$arm"
             "$RUNNER_TEMP/$arm/bin/python" -m pip install --no-index .m1-wheels/"$arm"/*.whl
           done
-          for block in 0 1; do
-            order="$ARM_ORDER"
-            if [ "$block" = 1 ]; then
-              read -r first second <<< "$ARM_ORDER"
-              order="$second $first"
-            fi
-            for arm in $order; do
-              export M0_EVIDENCE_DIR="$GITHUB_WORKSPACE/.m1-python-evidence/block-$block/$arm"
-              timeout -k 2s 75s prlimit --as=3221225472 -- "$RUNNER_TEMP/$arm/bin/python" crates/rawmocs-cli/tools/m0_memory.py repeat-python
-            done
-          done
-          # Profile separate fresh processes, after all uninstrumented samples.
           for arm in $ARM_ORDER; do
-            export M0_EVIDENCE_DIR="$GITHUB_WORKSPACE/.m1-python-evidence/block-1/$arm"
-            timeout -k 2s 75s "$RUNNER_TEMP/$arm/bin/python" crates/rawmocs-cli/tools/m0_memory.py profile-python
-            mapfile -t profiles < <(find "$M0_EVIDENCE_DIR" -maxdepth 1 -type f \( -name 'profile-python*.gz' -o -name 'profile-python*.zst' \))
-            test "${#profiles[@]}" -eq 1
-            heaptrack_print "${profiles[0]}" > "$M0_EVIDENCE_DIR/heaptrack-python.txt"
+            export M0_EVIDENCE_DIR="$GITHUB_WORKSPACE/.m1-python-evidence/$arm"
+            timeout -k 2s 120s prlimit --as=3221225472 -- "$RUNNER_TEMP/$arm/bin/python" crates/rawmocs-cli/tools/m0_memory.py repeat-python
           done
-          python crates/rawmocs-cli/tools/m1_idle_compare.py
+          python crates/rawmocs-cli/tools/m2_buffer_compare.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: rawmocs-m1-python-${{ matrix.case }}
+          name: rawmocs-m2-python-${{ matrix.case }}
           path: .m1-python-evidence/
           include-hidden-files: true
           if-no-files-found: warn

@@ -14,6 +14,7 @@ crate-type = ["cdylib"]
 [features]
 # Forward the research-only core feature; ordinary wheels remain unchanged.
 m1-last-use-reuse = ["rawmocs_mpfr/m1-last-use-reuse"]
+m2-buffer-reuse = ["m1-last-use-reuse", "rawmocs_mpfr/m2-buffer-reuse"]
 
 [dependencies]
 pyo3 = { version = "=0.23.5", features = ["extension-module"] }

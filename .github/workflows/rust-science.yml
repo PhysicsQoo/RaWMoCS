@@ -38,6 +38,8 @@ jobs:
       - run: cargo test --workspace
       - name: Verify Python package integrity rejects malformed artifacts
         run: python3 scripts/test_python_package_candidate.py
+      - name: Verify R6-Light parity controls
+        run: python3 crates/rawmocs-cli/tools/test_native_transport_light.py
       - name: Verify release gate rejects incomplete science receipts
         run: |
           python3 scripts/test_release_source.py
@@ -455,7 +457,7 @@ jobs:
             echo "available=false" >> "$GITHUB_OUTPUT"
           fi
       - uses: actions/checkout@v4
-        if: env.SCIENCE_SUITE == 'full' || steps.corpus.outputs.available != 'true' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v022-ci-rationalization')
+        if: env.SCIENCE_SUITE == 'full' || steps.corpus.outputs.available != 'true' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v022-ci-rationalization') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'maintenance/parallel-release-ci' && env.SCIENCE_SUITE == 'fast')
         with:
           repository: PhysicsQoo/QuPRS
           ref: 0b28736651b3740ed3b201edd2efdef3da541e0d
@@ -471,7 +473,7 @@ jobs:
           shared-key: ${{ steps.shadow.outputs.small_only == 'true' && 'release-cli' || 'witness-candidate' }}
           save-if: ${{ steps.shadow.outputs.small_only != 'true' }}
       - uses: Swatinem/rust-cache@v2
-        if: env.SCIENCE_SUITE == 'full' || steps.corpus.outputs.available != 'true' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v022-ci-rationalization')
+        if: env.SCIENCE_SUITE == 'full' || steps.corpus.outputs.available != 'true' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v022-ci-rationalization') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'maintenance/parallel-release-ci' && env.SCIENCE_SUITE == 'fast')
         with:
           workspaces: .quprs-repro/rust -> target
           shared-key: witness-encoder
@@ -483,7 +485,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends libgmp-dev libmpfr-dev m4 make gcc pkg-config
           cargo build --locked --release --manifest-path crates/rawmocs-cli/Cargo.toml
       - name: Build pinned source encoder
-        if: env.SCIENCE_SUITE == 'full' || steps.corpus.outputs.available != 'true' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v022-ci-rationalization')
+        if: env.SCIENCE_SUITE == 'full' || steps.corpus.outputs.available != 'true' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v022-ci-rationalization') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'maintenance/parallel-release-ci' && env.SCIENCE_SUITE == 'fast')
         shell: bash
         run: |
           set -euo pipefail
@@ -509,6 +511,13 @@ jobs:
         run: |
           set -euo pipefail
           python3 crates/rawmocs-cli/tools/small_family_qualification.py --quprs .quprs-repro --exporter .quprs-repro/rust/target/release/examples/quprs_long_tail_source_bridge --bin crates/rawmocs-cli/target/release/rawmocs --out .fast-witness/small-family
+      - name: R6-Light small original-family native transport rehearsal
+        if: (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'maintenance/parallel-release-ci' && env.SCIENCE_SUITE == 'fast')
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --manifest-path crates/rawmocs-cli/Cargo.toml --example native_transport_probe
+          python3 crates/rawmocs-cli/tools/native_transport_light.py --quprs .quprs-repro --exporter .quprs-repro/rust/target/release/examples/quprs_long_tail_source_bridge --bin crates/rawmocs-cli/target/release/rawmocs --probe crates/rawmocs-cli/target/release/examples/native_transport_probe --out .fast-witness/r6-light
       - name: Natural native cancellation on original source-locked CNFs
         if: steps.shadow.outputs.small_only != 'true'
         shell: bash

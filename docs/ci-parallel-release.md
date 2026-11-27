@@ -29,3 +29,7 @@ must default to full science. A source/package-only proposal must retain
 small original-family numerical checks, independent witness, API/failure
 and source installation checks; never allow an unqualified fast run to
 authorize a release.
+
+## R6-Light first (shadow rehearsal)
+
+Use previously qualified original QPE Inexact 8, Grover 4 and GF2^4, identical pinned QASM/CNF, fresh independent 550-bit witnesses and the matching original family precision (432/432/333 bits). Compare current CLI, native file, native text once in auto and auto-frontier: 18 solves instead of 168. Verify exact output, plan signature and independent numerical interval. Record walltime for diagnosis only; no single-trial regression verdict. The maintenance PR fast run rehearses this alongside existing witness/cancellation checks; it does not yet replace any required release step. Seven offline receipt controls reject missing/extra/failed arms and count/plan/protocol drift. After actual success, qualify scope-aware promotion against the published release; keep full R6 and the parallel topology for explicit core/transport changes. Do not claim a measured CI reduction from solve count alone.

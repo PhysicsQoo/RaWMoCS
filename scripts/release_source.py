@@ -81,6 +81,17 @@ def load_request():
     return r
 
 
+def native_policy(version, candidate_frontier=False):
+    """Versioned release floor; candidate opt-in is never a main receipt."""
+    require(re.fullmatch(r"\d+\.\d+\.\d+", version), "invalid policy version")
+    quadruples = candidate_frontier or tuple(map(int, version.split("."))) >= (0, 2, 0)
+    return {
+        "quadruples": quadruples,
+        "baseline": ("b3d02b2720c2fae5231c0ed5cf44950164a5780d" if quadruples
+                     else "ef8d1ee606bed672ee9be62d189a2b3fbcc905a0"),
+    }
+
+
 def verify_run(r, run_data, jobs, kind):
     expected = SCIENCE if kind == "science" else CODSPEED
     workflow = "rust-science.yml" if kind == "science" else "codspeed.yml"
@@ -107,7 +118,11 @@ def verify_run(r, run_data, jobs, kind):
         # Preserve the published v0.1.0 receipt, but never let a future
         # release claim a two-arm or skipped routine gate as full admission.
         if j["name"].startswith("Release matched native GPMC (") and r["version"] != "0.1.0":
-            required_steps = {"Seven order-rotated same-precision native triples"}
+            if native_policy(r["version"])["quadruples"]:
+                required_steps = {"Select versioned native admission policy",
+                                  "Seven order-rotated same-precision native quadruples"}
+            else:
+                required_steps = {"Seven order-rotated same-precision native triples"}
         require(all(steps.get(s) == "success" for s in required_steps),
                 f"missing or failed required step {j['name']}")
         require(not any(s["conclusion"] in ("failure", "cancelled", "timed_out") for s in j["steps"]),

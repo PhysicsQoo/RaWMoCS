@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       suite:
-        description: 'fast: replay witnessed counts; full: regenerate, package and matched native triples'
+        description: 'fast: replay witnessed counts; full: regenerate, package and versioned matched native trials'
         type: choice
         options: [fast, full]
         default: full
@@ -323,8 +323,7 @@ jobs:
     if: (((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]')))
     name: Release matched native GPMC (${{ matrix.case }})
     env:
-      FRONTIER_ADMISSION: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]')) && 'true' || 'false' }}
-      BASELINE_REVISION: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]')) && 'b3d02b2720c2fae5231c0ed5cf44950164a5780d' || 'ef8d1ee606bed672ee9be62d189a2b3fbcc905a0' }}
+      FRONTIER_CANDIDATE: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]')) && 'true' || 'false' }}
     needs: durable-source-rebuild
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -336,6 +335,25 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Select versioned native admission policy
+        id: native-policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os,sys,tomllib
+          sys.path.insert(0,"scripts")
+          from release_source import native_policy
+          with open("crates/rawmocs-cli/Cargo.toml","rb") as f:
+              version=tomllib.load(f)["package"]["version"]
+          policy=native_policy(version,os.environ["FRONTIER_CANDIDATE"]=="true")
+          with open(os.environ["GITHUB_OUTPUT"],"a") as f:
+              print("baseline="+policy["baseline"],file=f)
+              print("quadruples="+str(policy["quadruples"]).lower(),file=f)
+          with open(os.environ["GITHUB_ENV"],"a") as f:
+              print("BASELINE_REVISION="+policy["baseline"],file=f)
+          print("NATIVE_ADMISSION_POLICY",version,policy,flush=True)
+          PY
       - uses: actions/download-artifact@v4
         with:
           name: rawmocs-v010-durable-rebuild
@@ -349,7 +367,7 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.BASELINE_REVISION }}
+          ref: ${{ steps.native-policy.outputs.baseline }}
           path: .rawmocs-reference
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
@@ -370,15 +388,18 @@ jobs:
           cargo build --locked --release --manifest-path crates/rawmocs-cli/Cargo.toml
           test "$(git -C .rawmocs-reference rev-parse HEAD)" = "$BASELINE_REVISION"
           cargo build --locked --release --manifest-path .rawmocs-reference/crates/rawmocs-cli/Cargo.toml
-      - name: ${{ env.FRONTIER_ADMISSION == 'true' && 'Seven order-rotated same-precision native quadruples' || 'Seven order-rotated same-precision native triples' }}
+      - name: Seven order-rotated same-precision native triples
+        if: steps.native-policy.outputs.quadruples == 'false'
         shell: bash
         run: |
           set -euo pipefail
-          extra=()
-          if [[ "$FRONTIER_ADMISSION" == true ]]; then
-            extra+=(--baseline-revision "$BASELINE_REVISION" --candidate-frontier --max-regression-pct 5)
-          fi
-          python3 crates/rawmocs-cli/tools/release_native_paired.py "${extra[@]}" --case "${{ matrix.case }}" --corpus .release-rebuild --gpmc-source .gpmc-release --gpmc .gpmc-release/build/gpmc --bin crates/rawmocs-cli/target/release/rawmocs --baseline .rawmocs-reference/crates/rawmocs-cli/target/release/rawmocs --out ".release-pairs/${{ matrix.case }}"
+          python3 crates/rawmocs-cli/tools/release_native_paired.py --case "${{ matrix.case }}" --corpus .release-rebuild --gpmc-source .gpmc-release --gpmc .gpmc-release/build/gpmc --bin crates/rawmocs-cli/target/release/rawmocs --baseline .rawmocs-reference/crates/rawmocs-cli/target/release/rawmocs --out ".release-pairs/${{ matrix.case }}"
+      - name: Seven order-rotated same-precision native quadruples
+        if: steps.native-policy.outputs.quadruples == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 crates/rawmocs-cli/tools/release_native_paired.py --baseline-revision "$BASELINE_REVISION" --candidate-frontier --max-regression-pct 5 --case "${{ matrix.case }}" --corpus .release-rebuild --gpmc-source .gpmc-release --gpmc .gpmc-release/build/gpmc --bin crates/rawmocs-cli/target/release/rawmocs --baseline .rawmocs-reference/crates/rawmocs-cli/target/release/rawmocs --out ".release-pairs/${{ matrix.case }}"
       - name: Archive all attempted pairs and censored evidence
         if: always()
         uses: actions/upload-artifact@v4

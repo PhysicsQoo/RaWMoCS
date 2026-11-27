@@ -132,7 +132,10 @@ fn run_cases(dir: &Path, cli: bool) {
     ] {
         std::fs::write(&path, raw).unwrap();
         assert_eq!(solve_text(raw, options).unwrap_err().kind, kind);
-        assert_eq!(solve_file(path.as_os_str(), options).unwrap_err().kind, kind);
+        assert_eq!(
+            solve_file(path.as_os_str(), options).unwrap_err().kind,
+            kind
+        );
     }
 }
 
@@ -165,6 +168,8 @@ fn main() {
     );
     run_cases(&dir, true);
     std::fs::remove_dir_all(&dir).unwrap();
-    println!("NATIVE_STDIO_ISOLATION_PASS stdout=0 stderr=0 success=6 failure=3 file_and_text=true");
+    println!(
+        "NATIVE_STDIO_ISOLATION_PASS stdout=0 stderr=0 success=6 failure=3 file_and_text=true"
+    );
     println!("CLI_DIAGNOSTIC_COMPATIBILITY_PASS cases=6");
 }

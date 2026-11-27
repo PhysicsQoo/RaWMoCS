@@ -266,9 +266,8 @@ fn cooperative_cancellation_is_distinct_and_call_local() {
         assert!(err.diagnostics.fallback.is_none());
     }
     std::thread::scope(|scope| {
-        let cancelled = scope.spawn(|| {
-            solve_text_cancellable(raw, SolveOptions::default(), &token).unwrap_err()
-        });
+        let cancelled = scope
+            .spawn(|| solve_text_cancellable(raw, SolveOptions::default(), &token).unwrap_err());
         let independent = scope.spawn(|| {
             let fresh = CancellationToken::new();
             solve_text_cancellable(raw, SolveOptions::default(), &fresh).unwrap()

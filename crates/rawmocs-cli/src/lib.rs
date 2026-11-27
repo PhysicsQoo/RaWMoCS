@@ -13,6 +13,16 @@ mod general;
 #[derive(Debug, Default)]
 pub struct CancellationToken {
     cancelled: AtomicBool,
+    #[cfg(test)]
+    checkpoint_probe: std::sync::Mutex<Option<CheckpointProbe>>,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct CheckpointProbe {
+    reason: &'static str,
+    reached: std::sync::mpsc::SyncSender<()>,
+    resume: std::sync::mpsc::Receiver<()>,
 }
 
 impl CancellationToken {
@@ -26,6 +36,22 @@ impl CancellationToken {
 
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    fn pause_at_checkpoint(&self, reason: &'static str) {
+        let probe = {
+            let mut slot = self.checkpoint_probe.lock().unwrap();
+            if slot.as_ref().is_some_and(|probe| probe.reason == reason) {
+                slot.take()
+            } else {
+                None
+            }
+        };
+        if let Some(probe) = probe {
+            probe.reached.send(()).unwrap();
+            probe.resume.recv_timeout(Duration::from_secs(10)).unwrap();
+        }
     }
 }
 
@@ -45,6 +71,10 @@ struct Control<'a> {
 
 impl Control<'_> {
     fn check(self, timeout: &'static str) -> Result<(), String> {
+        #[cfg(test)]
+        if let Some(token) = self.token {
+            token.pause_at_checkpoint(timeout);
+        }
         check_cancel(self.token)?;
         if Instant::now() >= self.deadline {
             Err(timeout.into())
@@ -1223,6 +1253,67 @@ mod tests {
                 .as_deref(),
             Some("solver cancelled")
         );
+    }
+
+    #[test]
+    fn in_flight_cancellation_at_real_checkpoints() {
+        let small = "p cnf 2 1\nc t wmc\n1 2 0\n";
+        let wide = "p cnf 10 1\nc t wmc\n1 2 3 4 5 6 7 8 9 10 0\n";
+        let cases = [
+            (small, SolverMode::General, true, "source deadline", false),
+            (small, SolverMode::General, false, "general deadline", false),
+            (
+                small,
+                SolverMode::GeneralSeparator,
+                false,
+                "general deadline",
+                false,
+            ),
+            (small, SolverMode::Prejoin, false, "prejoin deadline", false),
+            (
+                small,
+                SolverMode::AutoFrontier,
+                false,
+                "prejoin deadline",
+                false,
+            ),
+            (wide, SolverMode::Auto, false, "general deadline", true),
+        ];
+        for (raw, mode, large_general, reason, fallback) in cases {
+            let token = CancellationToken::new();
+            let (reached_tx, reached_rx) = std::sync::mpsc::sync_channel(0);
+            let (resume_tx, resume_rx) = std::sync::mpsc::sync_channel(0);
+            *token.checkpoint_probe.lock().unwrap() = Some(CheckpointProbe {
+                reason,
+                reached: reached_tx,
+                resume: resume_rx,
+            });
+            let options = SolveOptions {
+                mode,
+                large_general,
+                ..SolveOptions::default()
+            };
+            let (error, latency) = std::thread::scope(|scope| {
+                let worker = scope.spawn(|| solve_text_cancellable(raw, options, &token));
+                reached_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+                let start = Instant::now();
+                token.cancel();
+                resume_tx.send(()).unwrap();
+                let error = worker.join().unwrap().unwrap_err();
+                (error, start.elapsed())
+            });
+            assert_eq!(error.kind, FailureKind::Cancelled);
+            assert_eq!(error.diagnostics.fallback.is_some(), fallback);
+            assert!(token.checkpoint_probe.lock().unwrap().is_none());
+            assert!(solve_text(raw, options).unwrap().sat);
+            println!(
+                "IN_FLIGHT_CHECKPOINT_PASS mode={} stage={} fallback={} latency_ns={}",
+                mode.as_str(),
+                reason,
+                fallback,
+                latency.as_nanos()
+            );
+        }
     }
 
     #[test]

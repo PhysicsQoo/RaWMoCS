@@ -5,7 +5,10 @@ fn shared_file_memory_cli_parity() {
     let cases = [
         ("p cnf 1 0\nc t wmc\nc p weight 1 -1 0 0\n", true),
         ("p cnf 1 2\nc t wmc\n1 0\n-1 0\n", false),
-        ("p cnf 2 1\nc t wmc\nc p weight 1 -0.125 0.25 0\n1 2 0\n", true),
+        (
+            "p cnf 2 1\nc t wmc\nc p weight 1 -0.125 0.25 0\n1 2 0\n",
+            true,
+        ),
     ];
     let path = std::env::temp_dir().join(format!("rawmocs-shared-{}.cnf", std::process::id()));
     for (raw, sat) in cases {
@@ -43,8 +46,10 @@ fn shared_file_memory_cli_parity() {
                     String::from_utf8(output.stdout).unwrap(),
                     format!("s {expected_sat}\nc r mpfr {} {}\n", a.real, a.imag)
                 );
-                assert!(String::from_utf8_lossy(&output.stderr)
-                    .contains(&format!("route={} digits={} bits={}", a.route, digits, a.bits)));
+                assert!(String::from_utf8_lossy(&output.stderr).contains(&format!(
+                    "route={} digits={} bits={}",
+                    a.route, digits, a.bits
+                )));
             }
         }
     }

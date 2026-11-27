@@ -125,6 +125,18 @@ jobs:
           cargo test --locked --release --manifest-path "$manifest"
           cargo test --locked --release --manifest-path "$manifest" --lib in_flight_cancellation_at_real_checkpoints -- --nocapture
           cargo build --locked --release --manifest-path "$manifest"
+      - name: Prototype Python native wheel and API contract
+        if: github.event_name == 'pull_request' && github.head_ref == 'research/python-api'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/rawmocs-python"
+          source "$RUNNER_TEMP/rawmocs-python/bin/activate"
+          python -m pip install maturin==1.8.3
+          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/crates/rawmocs-cli/target"
+          maturin build --release --interpreter python --compatibility linux --out "$RUNNER_TEMP/rawmocs-wheels"
+          python -m pip install --no-index "$RUNNER_TEMP"/rawmocs-wheels/*.whl
+          RAWMOCS_TEST_CLI="$GITHUB_WORKSPACE/crates/rawmocs-cli/target/release/rawmocs" python -m unittest discover -s python/tests -v
       - name: Exercise executable success, SAT-zero and fail-closed contracts
         shell: bash
         run: |

@@ -1,5 +1,5 @@
 //! Command-line transport for the shared MPFR production solver.
-use rawmocs_mpfr::{precision_bits, solve_file, SolveFailure, SolveOptions};
+use rawmocs_mpfr::{precision_bits, solve_file_cli, SolveFailure};
 
 const HELP: &str = "rawmocs --digits {30|60|100|130} [--solver auto|auto-frontier|auto-separator|prejoin|general|general-separator|reference] [--timeout-ms N] [--large-general] FILE\n\
 Full signed complex WMC for QuPRS weighted CNF. Output is rounded MPFR, not a certified interval.\n\
@@ -55,16 +55,8 @@ fn run() -> Result<(), String> {
     if args.next().is_some() {
         return Err("unexpected arguments".into());
     }
-    let answer = solve_file(
-        &file,
-        SolveOptions {
-            digits,
-            mode: &mode,
-            timeout_ms,
-            large_general,
-        },
-    )
-    .map_err(|e| e.reason)?;
+    let answer = solve_file_cli(&file, digits, &mode, timeout_ms, large_general)
+        .map_err(SolveFailure::into_reason)?;
     let sat = if answer.sat {
         "SATISFIABLE"
     } else {
@@ -74,7 +66,10 @@ fn run() -> Result<(), String> {
     println!("s {sat}\nc r mpfr {real} {imag}");
     eprintln!(
         "RAWMOCS_COMPLETE route={} digits={} bits={} solve_ns={}",
-        answer.route, answer.digits, answer.bits, answer.solve_ns
+        answer.route.as_str(),
+        answer.precision.digits(),
+        answer.precision.bits(),
+        answer.solve_ns
     );
     Ok(())
 }
@@ -93,7 +88,7 @@ fn main() {
             ("INVALID_INPUT", 2)
         } else {
             let error = SolveFailure::from_reason(reason.clone());
-            (error.kind, error.exit_code)
+            (error.kind.as_str(), error.exit_code())
         };
         eprintln!("RAWMOCS_FAILURE kind={kind}: {reason}");
         std::process::exit(code);

@@ -443,17 +443,15 @@ fn solve_until(
         Err(reason) => Err(reason),
     }
 }
-fn failure(reason: &str) -> (&'static str, i32) {
+fn failure(reason: &str) -> FailureKind {
     match reason {
-        "general deadline" | "prejoin deadline" | "solver deadline" | "source deadline" => {
-            ("TIMEOUT", 4)
-        }
+        "general deadline" | "prejoin deadline" | "solver deadline" | "source deadline" => FailureKind::Timeout,
         "source bytes cap"
         | "source line cap"
         | "source literal cap"
         | "oversize CNF"
-        | "general frame allocation" => ("RESOURCE_LIMIT", 5),
-        "unsupported input semantics" => ("UNSUPPORTED_INPUT", 3),
+        | "general frame allocation" => FailureKind::ResourceLimit,
+        "unsupported input semantics" => FailureKind::UnsupportedInput,
         "source clause cap"
         | "clause width cap"
         | "initial cells cap"
@@ -462,37 +460,191 @@ fn failure(reason: &str) -> (&'static str, i32) {
         | "residual variable cap"
         | "no bounded prejoin plan"
         | "plan mask cap"
-        | "prejoin planning budget" => ("ROUTE_REJECTED", 6),
-        _ => ("INTERNAL_ERROR", 7),
+        | "prejoin planning budget" => FailureKind::RouteRejected,
+        _ => FailureKind::InternalError,
     }
 }
-/// Requested precision selectors shared by CLI and library.
-pub fn precision_bits(digits: u32) -> Option<u32> {
-    match digits {
-        30 => Some(100),
-        60 => Some(200),
-        100 => Some(333),
-        130 => Some(432),
-        _ => None,
+/// Supported requested decimal precision and its MPFR working bits.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Precision {
+    #[default]
+    Digits30,
+    Digits60,
+    Digits100,
+    Digits130,
+}
+
+impl Precision {
+    pub const fn digits(self) -> u32 {
+        match self {
+            Self::Digits30 => 30,
+            Self::Digits60 => 60,
+            Self::Digits100 => 100,
+            Self::Digits130 => 130,
+        }
+    }
+
+    pub const fn bits(self) -> u32 {
+        match self {
+            Self::Digits30 => 100,
+            Self::Digits60 => 200,
+            Self::Digits100 => 333,
+            Self::Digits130 => 432,
+        }
+    }
+
+    pub const fn from_digits(digits: u32) -> Option<Self> {
+        match digits {
+            30 => Some(Self::Digits30),
+            60 => Some(Self::Digits60),
+            100 => Some(Self::Digits100),
+            130 => Some(Self::Digits130),
+            _ => None,
+        }
     }
 }
 
+/// Requested solver mode; Frontier and Separator remain explicit opt-ins.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SolverMode {
+    #[default]
+    Auto,
+    AutoFrontier,
+    AutoSeparator,
+    Prejoin,
+    General,
+    GeneralSeparator,
+    Reference,
+}
+
+impl SolverMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::AutoFrontier => "auto-frontier",
+            Self::AutoSeparator => "auto-separator",
+            Self::Prejoin => "prejoin",
+            Self::General => "general",
+            Self::GeneralSeparator => "general-separator",
+            Self::Reference => "reference",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "auto" => Some(Self::Auto),
+            "auto-frontier" => Some(Self::AutoFrontier),
+            "auto-separator" => Some(Self::AutoSeparator),
+            "prejoin" => Some(Self::Prejoin),
+            "general" => Some(Self::General),
+            "general-separator" => Some(Self::GeneralSeparator),
+            "reference" => Some(Self::Reference),
+            _ => None,
+        }
+    }
+}
+
+/// Actual completed route, which may differ from the requested solver mode.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SolveRoute {
+    Prejoin,
+    General,
+    GeneralSeparator,
+    Reference,
+}
+
+impl SolveRoute {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Prejoin => "prejoin",
+            Self::General => "general",
+            Self::GeneralSeparator => "general-separator",
+            Self::Reference => "reference",
+        }
+    }
+
+    fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "prejoin" => Some(Self::Prejoin),
+            "general" => Some(Self::General),
+            "general-separator" => Some(Self::GeneralSeparator),
+            "reference" => Some(Self::Reference),
+            _ => None,
+        }
+    }
+}
+
+/// Classified failure. A failure cannot contain a numerical result.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FailureKind {
+    InvalidInput,
+    UnsupportedInput,
+    Timeout,
+    ResourceLimit,
+    RouteRejected,
+    InternalError,
+}
+
+impl FailureKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidInput => "INVALID_INPUT",
+            Self::UnsupportedInput => "UNSUPPORTED_INPUT",
+            Self::Timeout => "TIMEOUT",
+            Self::ResourceLimit => "RESOURCE_LIMIT",
+            Self::RouteRejected => "ROUTE_REJECTED",
+            Self::InternalError => "INTERNAL_ERROR",
+        }
+    }
+
+    pub const fn exit_code(self) -> i32 {
+        match self {
+            Self::InvalidInput => 2,
+            Self::UnsupportedInput => 3,
+            Self::Timeout => 4,
+            Self::ResourceLimit => 5,
+            Self::RouteRejected => 6,
+            Self::InternalError => 7,
+        }
+    }
+}
+
+impl std::fmt::Display for FailureKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Requested precision selectors shared by CLI and library.
+pub fn precision_bits(digits: u32) -> Option<u32> {
+    Precision::from_digits(digits).map(Precision::bits)
+}
+
 /// Provisional in-process API; not a hard resource-isolated worker.
-#[derive(Clone, Copy, Debug)]
-pub struct SolveOptions<'a> {
-    pub digits: u32,
-    pub mode: &'a str,
+/// None preserves the existing default deadline (reference uses external timeout).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SolveOptions {
+    pub precision: Precision,
+    pub mode: SolverMode,
     pub timeout_ms: Option<u64>,
     pub large_general: bool,
 }
 
-impl Default for SolveOptions<'_> {
-    fn default() -> Self {
+#[derive(Clone, Copy)]
+struct RawOptions<'a> {
+    digits: u32,
+    mode: &'a str,
+    timeout_ms: Option<u64>,
+    large_general: bool,
+}
+
+impl From<SolveOptions> for RawOptions<'static> {
+    fn from(options: SolveOptions) -> Self {
         Self {
-            digits: 30,
-            mode: "auto",
-            timeout_ms: None,
-            large_general: false,
+            digits: options.precision.digits(),
+            mode: options.mode.as_str(),
+            timeout_ms: options.timeout_ms,
+            large_general: options.large_general,
         }
     }
 }
@@ -504,32 +656,39 @@ pub struct SolveReport {
     pub sat: bool,
     pub real: String,
     pub imag: String,
-    pub route: &'static str,
-    pub digits: u32,
-    pub bits: u32,
+    pub route: SolveRoute,
+    pub precision: Precision,
     pub solve_ns: u128,
 }
 
 /// A failed solve carries no numerical count.
 #[derive(Debug)]
 pub struct SolveFailure {
-    pub kind: &'static str,
-    pub exit_code: i32,
-    pub reason: String,
+    pub kind: FailureKind,
+    reason: String,
 }
 
 impl SolveFailure {
+    #[doc(hidden)]
     pub fn from_reason(reason: String) -> Self {
-        let (kind, exit_code) = if reason.starts_with("INPUT:") {
-            ("INVALID_INPUT", 2)
+        let kind = if reason.starts_with("INPUT:") {
+            FailureKind::InvalidInput
         } else {
             failure(&reason)
         };
-        Self {
-            kind,
-            exit_code,
-            reason,
-        }
+        Self { kind, reason }
+    }
+
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+
+    pub fn into_reason(self) -> String {
+        self.reason
+    }
+
+    pub const fn exit_code(&self) -> i32 {
+        self.kind.exit_code()
     }
 }
 
@@ -550,24 +709,46 @@ enum Source<'a> {
 /// Solve an emitted weighted CNF file using the existing bounded source admission.
 pub fn solve_file(
     path: &std::ffi::OsStr,
-    options: SolveOptions<'_>,
+    options: SolveOptions,
 ) -> Result<SolveReport, SolveFailure> {
-    solve_source(Source::File(path), options).map_err(SolveFailure::from_reason)
+    solve_source(Source::File(path), options.into()).map_err(SolveFailure::from_reason)
 }
 
 /// Solve an emitted weighted CNF already held by the caller.
-pub fn solve_text(raw: &str, options: SolveOptions<'_>) -> Result<SolveReport, SolveFailure> {
-    solve_source(Source::Text(raw), options).map_err(SolveFailure::from_reason)
+pub fn solve_text(raw: &str, options: SolveOptions) -> Result<SolveReport, SolveFailure> {
+    solve_source(Source::Text(raw), options.into()).map_err(SolveFailure::from_reason)
 }
 
-fn solve_source(source: Source<'_>, options: SolveOptions<'_>) -> Result<SolveReport, String> {
-    let SolveOptions {
+/// CLI-only compatibility boundary: preserves legacy validation/error precedence.
+#[doc(hidden)]
+pub fn solve_file_cli(
+    path: &std::ffi::OsStr,
+    digits: u32,
+    mode: &str,
+    timeout_ms: Option<u64>,
+    large_general: bool,
+) -> Result<SolveReport, SolveFailure> {
+    solve_source(
+        Source::File(path),
+        RawOptions {
+            digits,
+            mode,
+            timeout_ms,
+            large_general,
+        },
+    )
+    .map_err(SolveFailure::from_reason)
+}
+
+fn solve_source(source: Source<'_>, options: RawOptions<'_>) -> Result<SolveReport, String> {
+    let RawOptions {
         digits,
         mode,
         timeout_ms,
         large_general,
     } = options;
-    let bits = precision_bits(digits).ok_or("INPUT: unsupported digits")?;
+    let precision = Precision::from_digits(digits).ok_or("INPUT: unsupported digits")?;
+    let bits = precision.bits();
     if timeout_ms.is_some_and(|ms| ms > 86_400_000) {
         return Err("INPUT: invalid timeout-ms (expected 0..86400000)".into());
     }
@@ -676,9 +857,8 @@ fn solve_source(source: Source<'_>, options: SolveOptions<'_>) -> Result<SolveRe
         sat: answer.sat,
         real,
         imag,
-        route,
-        digits,
-        bits,
+        route: SolveRoute::from_name(route).ok_or("invalid internal route")?,
+        precision,
         solve_ns: start.elapsed().as_nanos(),
     })
 }

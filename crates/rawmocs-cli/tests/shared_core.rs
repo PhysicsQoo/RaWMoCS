@@ -1,4 +1,4 @@
-use rawmocs_mpfr::{solve_file, solve_text, SolveOptions};
+use rawmocs_mpfr::{solve_file, solve_text, FailureKind, Precision, SolveOptions, SolverMode};
 
 #[test]
 fn shared_file_memory_cli_parity() {
@@ -13,10 +13,15 @@ fn shared_file_memory_cli_parity() {
     let path = std::env::temp_dir().join(format!("rawmocs-shared-{}.cnf", std::process::id()));
     for (raw, sat) in cases {
         std::fs::write(&path, raw).unwrap();
-        for mode in ["auto", "general", "auto-frontier", "auto-separator"] {
-            for digits in [30, 130] {
+        for mode in [
+            SolverMode::Auto,
+            SolverMode::General,
+            SolverMode::AutoFrontier,
+            SolverMode::AutoSeparator,
+        ] {
+            for precision in [Precision::Digits30, Precision::Digits130] {
                 let options = SolveOptions {
-                    digits,
+                    precision,
                     mode,
                     timeout_ms: Some(20_000),
                     large_general: false,
@@ -25,15 +30,15 @@ fn shared_file_memory_cli_parity() {
                 let b = solve_text(raw, options).unwrap();
                 assert_eq!(a.sat, sat);
                 assert_eq!(
-                    (a.sat, &a.real, &a.imag, a.route, a.bits),
-                    (b.sat, &b.real, &b.imag, b.route, b.bits)
+                    (a.sat, &a.real, &a.imag, a.route, a.precision),
+                    (b.sat, &b.real, &b.imag, b.route, b.precision)
                 );
                 let output = std::process::Command::new(env!("CARGO_BIN_EXE_rawmocs"))
                     .args([
                         "--digits",
-                        &digits.to_string(),
+                        &precision.digits().to_string(),
                         "--solver",
-                        mode,
+                        mode.as_str(),
                         "--timeout-ms",
                         "20000",
                     ])
@@ -48,7 +53,9 @@ fn shared_file_memory_cli_parity() {
                 );
                 assert!(String::from_utf8_lossy(&output.stderr).contains(&format!(
                     "route={} digits={} bits={}",
-                    a.route, digits, a.bits
+                    a.route.as_str(),
+                    precision.digits(),
+                    precision.bits()
                 )));
             }
         }
@@ -60,7 +67,8 @@ fn shared_file_memory_cli_parity() {
 fn library_failure_has_no_count_and_reentry_succeeds() {
     let raw = "p cnf 1 0\nc t wmc\n";
     let invalid = solve_text("not a CNF", SolveOptions::default()).unwrap_err();
-    assert_eq!((invalid.kind, invalid.exit_code), ("INVALID_INPUT", 2));
+    assert_eq!(invalid.kind, FailureKind::InvalidInput);
+    assert_eq!(invalid.exit_code(), 2);
     let timeout = solve_text(
         raw,
         SolveOptions {
@@ -69,7 +77,53 @@ fn library_failure_has_no_count_and_reentry_succeeds() {
         },
     )
     .unwrap_err();
-    assert_eq!((timeout.kind, timeout.exit_code), ("TIMEOUT", 4));
+    assert_eq!(timeout.kind, FailureKind::Timeout);
+    assert_eq!(timeout.exit_code(), 4);
     let answer = solve_text(raw, SolveOptions::default()).unwrap();
     assert!(answer.sat);
+}
+
+#[test]
+fn typed_selectors_and_failure_contract() {
+    for (digits, bits) in [(30, 100), (60, 200), (100, 333), (130, 432)] {
+        let precision = Precision::from_digits(digits).unwrap();
+        assert_eq!((precision.digits(), precision.bits()), (digits, bits));
+    }
+    assert_eq!(Precision::from_digits(31), None);
+    for name in [
+        "auto",
+        "auto-frontier",
+        "auto-separator",
+        "prejoin",
+        "general",
+        "general-separator",
+        "reference",
+    ] {
+        assert_eq!(SolverMode::from_name(name).unwrap().as_str(), name);
+    }
+    assert_eq!(SolverMode::from_name("unknown"), None);
+    let raw = "p cnf 1 0\nc t wmc\n";
+    for options in [
+        SolveOptions {
+            timeout_ms: Some(86_400_001),
+            ..SolveOptions::default()
+        },
+        SolveOptions {
+            mode: SolverMode::Reference,
+            timeout_ms: Some(1),
+            ..SolveOptions::default()
+        },
+        SolveOptions {
+            large_general: true,
+            ..SolveOptions::default()
+        },
+    ] {
+        let err = solve_text(raw, options).unwrap_err();
+        assert_eq!(err.kind, FailureKind::InvalidInput);
+        assert_eq!(err.exit_code(), 2);
+        assert!(err.reason().starts_with("INPUT:"));
+    }
+    let unsupported = solve_text("p cnf 1 0\nc t pmc\n", SolveOptions::default()).unwrap_err();
+    assert_eq!(unsupported.kind, FailureKind::UnsupportedInput);
+    assert_eq!(unsupported.exit_code(), 3);
 }

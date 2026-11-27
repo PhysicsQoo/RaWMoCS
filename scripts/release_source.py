@@ -164,6 +164,11 @@ def verify_assets(r, assets):
         require(receipt.get("large_general_controls") ==
                 ["analytic", "default-cap", "parse-deadline"],
                 "missing installed large General evidence")
+    if tuple(map(int, v.split("."))) >= (0, 2, 1):
+        require(receipt.get("rust_consumer_controls") ==
+                ["file-text", "SAT-zero", "UNSAT", "MPFR-binary", "diagnostics",
+                 "invalid-input", "timeout", "cancel", "reentry", "quiet-stdio", "locked-offline"],
+                "missing extracted Rust consumer evidence")
     prefix = f"rawmocs-{v}/"
     with tarfile.open(fileobj=io.BytesIO(assets[archive]), mode="r:gz") as tar:
         members = tar.getmembers()
@@ -180,8 +185,14 @@ def verify_assets(r, assets):
 
         require(bool(read("LICENSE")), "missing license")
         require(digest(read("crates/rawmocs-cli/Cargo.lock")) == receipt["cargo_lock_sha256"], "lock mismatch")
-        require(tomllib.loads(read("crates/rawmocs-cli/Cargo.toml").decode())["package"]["version"] == v,
-                "manifest version mismatch")
+        manifest = tomllib.loads(read("crates/rawmocs-cli/Cargo.toml").decode())
+        require(manifest["package"]["version"] == v, "manifest version mismatch")
+        if tuple(map(int, v.split("."))) >= (0, 2, 1):
+            require(manifest.get("lib", {}).get("name") == "rawmocs_mpfr",
+                    "missing shared MPFR library target")
+            require(bool(read("crates/rawmocs-cli/src/lib.rs")), "missing shared MPFR library source")
+            require(bool(read("crates/rawmocs-cli/tools/external_consumer.rs")),
+                    "missing downstream consumer source")
 
 
 def prepare(r):

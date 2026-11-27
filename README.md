@@ -73,6 +73,47 @@ explicit small-case diagnostic, not the auto fallback. An external process
 resource supervisor is still required for hard RSS and whole-process time.
 The heap frame guard is not a bound on all allocations.
 
+### Experimental opt-in structural routes (v0.2.0 candidate)
+
+These options describe the unreleased candidate source, not the published
+v0.1.1 binary. The default remains `auto`; the QuPRS adapter does not
+select the experimental routes automatically.
+
+| Solver mode | Admission and fallback |
+| --- | --- |
+| `auto` (default) | Original bounded Prejoin; recognized admission rejection falls back to General. |
+| `auto-frontier` | Experimental transactional exact-local stop on the bit cap, followed by bounded Prejoin on the retained factors; recognized admission rejection falls back to General on the original problem. |
+| `auto-separator` | Original Prejoin; recognized admission rejection falls back to the experimental separator General route. |
+| `prejoin` | Explicit bounded Prejoin; admission rejection returns exit 6, without fallback. |
+| `general` | Explicit General search. |
+| `general-separator` | Explicit experimental separator General search. |
+| `reference` | Small exact-rational diagnostic; requires external timeout supervision. |
+
+Zero-variable auto inputs use the corresponding General route directly.
+Recognized admission rejection is distinct from timeout or internal error;
+those failures are not retried as a different solver. Auto fallbacks use
+the original problem and the remaining shared solver deadline.
+
+```sh
+rawmocs --digits 130 --solver auto-frontier --timeout-ms 20000 input.cnf
+rawmocs --digits 130 --solver general-separator --timeout-ms 20000 input.cnf
+```
+
+A successful Frontier stop is reported on stderr as
+`PREJOIN_FRONTIER_STOP`, and recognized fallback as `RAWMOCS_FALLBACK`.
+The successful route, working precision and solver time are reported in
+`RAWMOCS_COMPLETE`. The completion protocol is unchanged. The explicit
+large-input option remains restricted to `--solver general`.
+
+The candidate preserves the previously witnessed long-case performance
+within the specified regression gate. A genuine Frontier benefit has been
+observed on QAOA11 encodings; this is not a cross-family or long-case
+acceleration claim. Dense residuals may still reject the bounded plan
+(width 19, work 40,000,000, live cells 2,000,000). Neither experimental
+route is a new default. See the candidate's review and CI evidence in
+[PR #142](https://github.com/PhysicsQoo/RaWMoCS/pull/142).
+The release remains subject to its outstanding admission gates.
+
 ### Explicit large General mode
 
 The CLI supports bounded streaming admission when explicitly selecting

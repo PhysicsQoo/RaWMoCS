@@ -254,7 +254,7 @@ jobs:
             echo "available=false" >> "$GITHUB_OUTPUT"
           fi
       - uses: actions/checkout@v4
-        if: env.SCIENCE_SUITE == 'full' || steps.corpus.outputs.available != 'true'
+        if: env.SCIENCE_SUITE == 'full' || steps.corpus.outputs.available != 'true' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v022-ci-rationalization')
         with:
           repository: PhysicsQoo/QuPRS
           ref: 0b28736651b3740ed3b201edd2efdef3da541e0d
@@ -266,7 +266,7 @@ jobs:
           workspaces: crates/rawmocs-cli -> target
           shared-key: witness-candidate
       - uses: Swatinem/rust-cache@v2
-        if: env.SCIENCE_SUITE == 'full' || steps.corpus.outputs.available != 'true'
+        if: env.SCIENCE_SUITE == 'full' || steps.corpus.outputs.available != 'true' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v022-ci-rationalization')
         with:
           workspaces: .quprs-repro/rust -> target
           shared-key: witness-encoder
@@ -278,7 +278,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends libgmp-dev libmpfr-dev m4 make gcc pkg-config
           cargo build --locked --release --manifest-path crates/rawmocs-cli/Cargo.toml
       - name: Build pinned source encoder
-        if: env.SCIENCE_SUITE == 'full' || steps.corpus.outputs.available != 'true'
+        if: env.SCIENCE_SUITE == 'full' || steps.corpus.outputs.available != 'true' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v022-ci-rationalization')
         shell: bash
         run: |
           set -euo pipefail
@@ -299,6 +299,11 @@ jobs:
         run: |
           set -euo pipefail
           python3 crates/rawmocs-cli/tools/replay_release.py --corpus .release-rebuild --bin crates/rawmocs-cli/target/release/rawmocs --out .fast-witness
+      - name: Qualify small source-locked family representatives (research only)
+        if: (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v022-ci-rationalization')
+        run: |
+          set -euo pipefail
+          python3 crates/rawmocs-cli/tools/small_family_qualification.py --quprs .quprs-repro --exporter .quprs-repro/rust/target/release/examples/quprs_long_tail_source_bridge --bin crates/rawmocs-cli/target/release/rawmocs --out .fast-witness/small-family
       - name: Natural native cancellation on original source-locked CNFs
         shell: bash
         run: |

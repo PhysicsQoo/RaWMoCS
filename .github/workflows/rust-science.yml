@@ -7,18 +7,18 @@ on:
   workflow_dispatch:
     inputs:
       suite:
-        description: 'fast: replay witnessed counts; full: regenerate, package and versioned matched native trials'
+        description: 'fast: replay; full: regenerate and native trials; rationalized: scoped v0.2.2 release rehearsal'
         type: choice
-        options: [fast, full]
+        options: [fast, full, rationalized]
         default: full
         required: true
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ (((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]'))) && 'full' || 'fast' }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ (github.event_name == 'workflow_dispatch' && inputs.suite == 'rationalized') && 'rationalized' || (((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]'))) && 'full' || 'fast' }}
   cancel-in-progress: true
 
 env:
-  SCIENCE_SUITE: ${{ (((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]'))) && 'full' || 'fast' }}
+  SCIENCE_SUITE: ${{ (github.event_name == 'workflow_dispatch' && inputs.suite == 'rationalized') && 'rationalized' || (((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]'))) && 'full' || 'fast' }}
 
 permissions:
   contents: read
@@ -217,7 +217,7 @@ jobs:
             --bin "$GITHUB_WORKSPACE/crates/rawmocs-cli/target/release/rawmocs" \
             --out "$GITHUB_WORKSPACE/.release-evidence/oom"
       - name: Source archive and extracted-tree installation admission
-        if: env.SCIENCE_SUITE == 'full' || (github.event_name == 'pull_request' && (startsWith(github.head_ref, 'release/prepare-') || (github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v021-shared-rust-core')))
+        if: env.SCIENCE_SUITE == 'full' || env.SCIENCE_SUITE == 'rationalized' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v022-ci-rationalization') || (github.event_name == 'pull_request' && (startsWith(github.head_ref, 'release/prepare-') || (github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v021-shared-rust-core')))
         run: bash crates/rawmocs-cli/tools/package_source.sh .release-evidence/source-package
       - name: Require unchanged tracked release candidate
         run: git diff --exit-code -- crates/rawmocs-cli
@@ -234,20 +234,24 @@ jobs:
           retention-days: 30
 
   durable-source-rebuild:
-    name: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v022-ci-rationalization') && 'Shadow small-family replacement trial' || (((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]'))) && 'Regenerate original CNF and independent interval without artifacts' || 'Replay seven source-locked independent witnesses' }}
+    name: ${{ ((github.event_name == 'workflow_dispatch' && inputs.suite == 'rationalized') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v022-ci-rationalization')) && 'Rationalized release small-family science' || (((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]'))) && 'Regenerate original CNF and independent interval without artifacts' || 'Replay seven source-locked independent witnesses' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Admit shadow replacement scope
+      - name: Admit rationalized release scope
         id: shadow
-        if: (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v022-ci-rationalization')
+        if: env.SCIENCE_SUITE == 'rationalized' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v022-ci-rationalization')
         shell: bash
         run: |
           set -euo pipefail
           git fetch --no-tags --depth=1 origin 6dc7affac2003f445fa9f896aafee76b969752e3 b6904f9b68f71e1a791c0607d087e7c1156b622e
+          if [[ "$SCIENCE_SUITE" == rationalized ]]; then
+            test "$GITHUB_REF" = refs/heads/main
+            python3 -c 'import tomllib; assert tomllib.load(open("crates/rawmocs-cli/Cargo.toml", "rb"))["package"]["version"] == "0.2.2"'
+          fi
           mkdir -p .fast-witness
           python3 scripts/ci_scope_v022.py --revision "$GITHUB_SHA" | tee .fast-witness/shadow-scope.json
           python3 -c 'import json; r=json.load(open(".fast-witness/shadow-scope.json")); assert r["scope"] == "CI_ONLY_CANDIDATE" and r["release_authorized"] is False'
@@ -323,8 +327,8 @@ jobs:
         run: |
           set -euo pipefail
           python3 crates/rawmocs-cli/tools/replay_release.py --corpus .release-rebuild --bin crates/rawmocs-cli/target/release/rawmocs --out .fast-witness
-      - name: Qualify small source-locked family representatives (research only)
-        if: (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v022-ci-rationalization')
+      - name: Qualify small source-locked family representatives (release)
+        if: steps.shadow.outputs.small_only == 'true'
         run: |
           set -euo pipefail
           python3 crates/rawmocs-cli/tools/small_family_qualification.py --quprs .quprs-repro --exporter .quprs-repro/rust/target/release/examples/quprs_long_tail_source_bridge --bin crates/rawmocs-cli/target/release/rawmocs --out .fast-witness/small-family
@@ -385,11 +389,11 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-      - name: Archive shadow small-family evidence (not release admission)
+      - name: Archive rationalized release evidence
         if: always() && steps.shadow.outputs.small_only == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: rawmocs-v022-shadow-small-family
+          name: rawmocs-v022-rationalized-evidence
           path: .fast-witness/
           include-hidden-files: true
           if-no-files-found: error

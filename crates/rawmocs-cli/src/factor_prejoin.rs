@@ -1239,9 +1239,7 @@ fn execute_impl_diagnostic<const BINARY: bool>(
         // No retained excess capacity, no shrink or extra table allocation.
         #[cfg(feature = "m2-buffer-reuse")]
         let buffer_donor = donor.filter(|&i| {
-            pivots[i] == 0
-                && bucket[i].values.len() == size
-                && bucket[i].values.capacity() == size
+            pivots[i] == 0 && bucket[i].values.len() == size && bucket[i].values.capacity() == size
         });
         let direct = BINARY && bucket.len() == 2;
         if direct {

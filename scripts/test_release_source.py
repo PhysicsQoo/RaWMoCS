@@ -26,6 +26,12 @@ def fixture(version="0.1.1"):
                             "Seven order-rotated same-precision native quadruples"}
             else:
                 required = {"Seven order-rotated same-precision native triples"}
+        if tuple(map(int, version.split('.'))) >= (0, 2, 1) and name.startswith("Regenerate original"):
+            required = set(required) | {
+                "Natural native cancellation on original source-locked CNFs",
+                "R6 seven-round native transport regression against published v0.2.0",
+                "Archive shared-core full science evidence",
+            }
         jobs.append({"name": name, "status": "completed", "conclusion": "success",
                      "steps": [{"name": s, "conclusion": "success"} for s in required]})
     return request, run, {"total_count": len(jobs), "jobs": jobs}
@@ -68,6 +74,31 @@ class ReleaseScienceTests(unittest.TestCase):
         _, _, old = fixture("0.1.1")
         with self.assertRaises(ValueError):
             verify_run(req, run, old, "science")
+
+    def test_v021_requires_exact_main_shared_core_evidence(self):
+        verify_run(*fixture("0.2.1"), "science")
+        for missing in (
+            "Natural native cancellation on original source-locked CNFs",
+            "R6 seven-round native transport regression against published v0.2.0",
+            "Archive shared-core full science evidence",
+        ):
+            for conclusion in ("skipped", "missing"):
+                req, run, jobs = fixture("0.2.1")
+                job = next(j for j in jobs["jobs"] if j["name"].startswith("Regenerate original"))
+                if conclusion == "missing":
+                    job["steps"] = [s for s in job["steps"] if s["name"] != missing]
+                else:
+                    next(s for s in job["steps"] if s["name"] == missing)["conclusion"] = conclusion
+                with self.subTest(step=missing, conclusion=conclusion), self.assertRaises(ValueError):
+                    verify_run(req, run, jobs, "science")
+        req, run, jobs = fixture("0.2.1")
+        for overrides in ({"head_sha": "b" * 40}, {"event": "pull_request"}):
+            with self.subTest(overrides=overrides), self.assertRaises(ValueError):
+                verify_run(req, {**run, **overrides}, jobs, "science")
+        _, _, legacy_jobs = fixture("0.2.0")
+        with self.assertRaises(ValueError):
+            verify_run(req, run, legacy_jobs, "science")
+        verify_run(*fixture("0.2.0"), "science")
 
     def test_published_legacy_gate(self):
         verify_run(*fixture("0.1.0"), "science")
@@ -134,14 +165,21 @@ def source_fixture(version):
     prefix = f"rawmocs-{version}/"
     lock = b"version = 4\n"
     stream = io.BytesIO()
+    shared = tuple(map(int, version.split("."))) >= (0, 2, 1)
+    manifest = f'[package]\nversion = "{version}"\n'
+    if shared:
+        manifest += '[lib]\nname = "rawmocs_mpfr"\n'
+    files = [
+        ("LICENSE", b"fixture license"),
+        ("crates/rawmocs-cli/Cargo.lock", lock),
+        ("crates/rawmocs-cli/Cargo.toml", manifest.encode()),
+    ]
+    if shared:
+        files += [("crates/rawmocs-cli/src/lib.rs", b"fixture library"),
+                  ("crates/rawmocs-cli/tools/external_consumer.rs", b"fixture consumer")]
     with tarfile.open(fileobj=stream, mode="w:gz", format=tarfile.PAX_FORMAT,
                       pax_headers={"comment": revision}) as tar:
-        for name, data in (
-            ("LICENSE", b"fixture license"),
-            ("crates/rawmocs-cli/Cargo.lock", lock),
-            ("crates/rawmocs-cli/Cargo.toml",
-             f'[package]\nversion = "{version}"\n'.encode()),
-        ):
+        for name, data in files:
             member = tarfile.TarInfo(prefix + name)
             member.size = len(data)
             tar.addfile(member, io.BytesIO(data))
@@ -157,6 +195,9 @@ def source_fixture(version):
     }
     if version != "0.1.0":
         receipt["large_general_controls"] = ["analytic", "default-cap", "parse-deadline"]
+    if shared:
+        receipt["rust_consumer_controls"] = ["file-text", "SAT-zero", "UNSAT", "MPFR-binary", "diagnostics",
+                 "invalid-input", "timeout", "cancel", "reentry", "quiet-stdio", "locked-offline"]
     return {"version": version, "revision": revision, "source_sha256": sha}, {
         archive: data,
         "SHA256SUMS": f"{sha}  {archive}\n".encode(),
@@ -169,6 +210,20 @@ class ReleaseSourceTests(unittest.TestCase):
         for version in ("0.1.0", "0.1.1"):
             with self.subTest(version=version):
                 verify_assets(*source_fixture(version))
+
+    def test_v021_requires_extracted_consumer_evidence(self):
+        verify_assets(*source_fixture("0.2.1"))
+        for bad in (None, ["file-text"]):
+            request, assets = source_fixture("0.2.1")
+            receipt = json.loads(assets["source-package.json"])
+            if bad is None:
+                del receipt["rust_consumer_controls"]
+            else:
+                receipt["rust_consumer_controls"] = bad
+            assets["source-package.json"] = json.dumps(receipt).encode()
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "missing extracted Rust consumer"):
+                verify_assets(request, assets)
+        verify_assets(*source_fixture("0.2.0"))
 
     def test_new_receipt_requires_large_route_controls(self):
         request, assets = source_fixture("0.1.1")

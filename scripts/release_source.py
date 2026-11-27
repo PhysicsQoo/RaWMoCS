@@ -92,6 +92,19 @@ def native_policy(version, candidate_frontier=False):
     }
 
 
+def shared_core_steps(version, name):
+    """Keep historical receipts valid; new shared-core releases need exact-main evidence."""
+    if tuple(map(int, version.split("."))) < (0, 2, 1):
+        return set()
+    if name == "Regenerate original CNF and independent interval without artifacts":
+        return {
+            "Natural native cancellation on original source-locked CNFs",
+            "R6 seven-round native transport regression against published v0.2.0",
+            "Archive shared-core full science evidence",
+        }
+    return set()
+
+
 def verify_run(r, run_data, jobs, kind):
     expected = SCIENCE if kind == "science" else CODSPEED
     workflow = "rust-science.yml" if kind == "science" else "codspeed.yml"
@@ -123,6 +136,8 @@ def verify_run(r, run_data, jobs, kind):
                                   "Seven order-rotated same-precision native quadruples"}
             else:
                 required_steps = {"Seven order-rotated same-precision native triples"}
+        if kind == "science":
+            required_steps = set(required_steps) | shared_core_steps(r["version"], j["name"])
         require(all(steps.get(s) == "success" for s in required_steps),
                 f"missing or failed required step {j['name']}")
         require(not any(s["conclusion"] in ("failure", "cancelled", "timed_out") for s in j["steps"]),
@@ -149,6 +164,11 @@ def verify_assets(r, assets):
         require(receipt.get("large_general_controls") ==
                 ["analytic", "default-cap", "parse-deadline"],
                 "missing installed large General evidence")
+    if tuple(map(int, v.split("."))) >= (0, 2, 1):
+        require(receipt.get("rust_consumer_controls") ==
+                ["file-text", "SAT-zero", "UNSAT", "MPFR-binary", "diagnostics",
+                 "invalid-input", "timeout", "cancel", "reentry", "quiet-stdio", "locked-offline"],
+                "missing extracted Rust consumer evidence")
     prefix = f"rawmocs-{v}/"
     with tarfile.open(fileobj=io.BytesIO(assets[archive]), mode="r:gz") as tar:
         members = tar.getmembers()
@@ -165,8 +185,14 @@ def verify_assets(r, assets):
 
         require(bool(read("LICENSE")), "missing license")
         require(digest(read("crates/rawmocs-cli/Cargo.lock")) == receipt["cargo_lock_sha256"], "lock mismatch")
-        require(tomllib.loads(read("crates/rawmocs-cli/Cargo.toml").decode())["package"]["version"] == v,
-                "manifest version mismatch")
+        manifest = tomllib.loads(read("crates/rawmocs-cli/Cargo.toml").decode())
+        require(manifest["package"]["version"] == v, "manifest version mismatch")
+        if tuple(map(int, v.split("."))) >= (0, 2, 1):
+            require(manifest.get("lib", {}).get("name") == "rawmocs_mpfr",
+                    "missing shared MPFR library target")
+            require(bool(read("crates/rawmocs-cli/src/lib.rs")), "missing shared MPFR library source")
+            require(bool(read("crates/rawmocs-cli/tools/external_consumer.rs")),
+                    "missing downstream consumer source")
 
 
 def prepare(r):

@@ -103,6 +103,41 @@ rc=0
 test "$rc" -eq 4
 test ! -s "$out/large-deadline.stdout"
 grep -F 'RAWMOCS_FAILURE kind=TIMEOUT: source deadline' "$out/large-deadline.stderr"
+# Build an independent consumer outside both the repository and extracted tree.
+# Seed its lock with the package's exact dependencies, adding only the root.
+consumer="$tmp/consumer"
+mkdir -p "$consumer/src"
+cp "$src/crates/rawmocs-cli/tools/external_consumer.rs" "$consumer/src/main.rs"
+cat > "$consumer/Cargo.toml" <<EOF
+[package]
+name = "rawmocs-api-consumer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rawmocs_mpfr = { package = "rawmocs-cli", path = "../rawmocs-$version/crates/rawmocs-cli" }
+EOF
+python3 - "$src/crates/rawmocs-cli/Cargo.lock" "$consumer/Cargo.lock" <<'PY'
+from pathlib import Path
+import sys
+source, dest = map(Path, sys.argv[1:])
+lock = source.read_text()
+anchor = '[[package]]\nname = "rawmocs-cli"\n'
+assert lock.count(anchor) == 1
+root = '[[package]]\nname = "rawmocs-api-consumer"\nversion = "0.1.0"\ndependencies = [\n "rawmocs-cli",\n]\n\n'
+dest.write_text(lock.replace(anchor, root + anchor))
+PY
+cp "$consumer/Cargo.lock" "$tmp/consumer-original.lock"
+env CARGO_TARGET_DIR="$tmp/target" timeout -k 10s 1200s cargo build --locked --offline --release \
+  --manifest-path "$consumer/Cargo.toml" > "$out/consumer-build.stdout" 2> "$out/consumer-build.stderr"
+cmp "$consumer/Cargo.lock" "$tmp/consumer-original.lock"
+cmp "$src/crates/rawmocs-cli/Cargo.lock" "$root/crates/rawmocs-cli/Cargo.lock"
+timeout -k 2s 30s "$tmp/target/release/rawmocs-api-consumer" "$tmp/sat-zero.cnf" \
+  > "$out/consumer.stdout" 2> "$out/consumer.stderr"
+test ! -s "$out/consumer.stderr"
+test "$(cat "$out/consumer.stdout")" = EXTRACTED_RUST_CONSUMER_PASS
+cat "$out/consumer.stdout"
+cp "$consumer/Cargo.lock" "$out/consumer-Cargo.lock"
 rustc -Vv > "$out/rustc.txt"
 cargo -V > "$out/cargo.txt"
 ldd "$bin" > "$out/linked-libraries.txt"
@@ -127,6 +162,8 @@ receipt = {
     "deterministic_archive": True,
     "controls": ["version", "help", "SAT-zero", "UNSAT", "general", "timeout"],
     "large_general_controls": ["analytic", "default-cap", "parse-deadline"],
+    "rust_consumer_controls": ["file-text", "SAT-zero", "UNSAT", "MPFR-binary", "diagnostics",
+                               "invalid-input", "timeout", "cancel", "reentry", "quiet-stdio", "locked-offline"],
     "redistributed_binary": False,
     "offline_build": False,
 }

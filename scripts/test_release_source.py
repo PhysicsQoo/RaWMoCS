@@ -339,6 +339,16 @@ class RationalizedCandidateTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     verify_v022_rationalized_run(request, run_data, jobs, scope)
 
+    def test_marked_rationalized_push_and_full_priority(self):
+        from release_source import verify_v022_rationalized_run
+        request, run_data, jobs, scope = self.fixture()
+        run_data["event"] = "push"
+        run_data["head_commit"] = {"message": "Release [release-rationalized]"}
+        verify_v022_rationalized_run(request, run_data, jobs, scope)
+        run_data["head_commit"]["message"] += " [release-science]"
+        with self.assertRaises(ValueError):
+            verify_v022_rationalized_run(request, run_data, jobs, scope)
+
     def test_required_steps_cannot_be_skipped_or_missing(self):
         from release_source import V022_STEPS, verify_v022_rationalized_run
         for name, required in V022_STEPS.items():

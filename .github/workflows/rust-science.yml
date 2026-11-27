@@ -389,6 +389,32 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+      - name: Verify rationalized evidence content and immutable reference tree
+        if: steps.shadow.outputs.small_only == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin c5b35ca7a98ff0d02d093caa48a88ea19be2d3e0
+          # The ancestry check needs the original commit history, not just
+          # shallow boundary objects.
+          git fetch --unshallow --no-tags origin
+          PYTHONPATH=scripts python3 - <<'PY'
+          import io, os, zipfile
+          from pathlib import Path
+          from ci_scope_v022 import inspect
+          from release_source import verify_v022_reference_tree, verify_v022_small_archive
+          verify_v022_reference_tree()
+          revision = os.environ["GITHUB_SHA"]
+          scope = inspect(revision)
+          buf = io.BytesIO()
+          root = Path(".fast-witness")
+          with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+              for path in sorted(root.rglob("*")):
+                  if path.is_file():
+                      z.write(path, path.relative_to(root).as_posix())
+          verify_v022_small_archive(revision, buf.getvalue(), scope)
+          print("RATIONALIZED_REFERENCE_AND_EVIDENCE_PASS", revision)
+          PY
       - name: Archive rationalized release evidence
         if: always() && steps.shadow.outputs.small_only == 'true'
         uses: actions/upload-artifact@v4

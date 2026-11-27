@@ -379,5 +379,77 @@ class RationalizedCandidateTests(unittest.TestCase):
             verify_v022_rationalized_run(request, run_data, jobs, scope)
 
 
+
+class RationalizedArchiveTests(unittest.TestCase):
+    def fixture(self):
+        from release_source import V022_FAMILIES, V022_TRIALS, V022_FAULTS
+        revision = "a" * 40
+        scope = {"revision": revision, "scope": "CI_ONLY_CANDIDATE"}
+        files = {"shadow-scope.json": json.dumps(scope).encode()}
+        report = {"checkout": revision, "status": "NUMERIC_PASS",
+                  "quprs_revision": "0b28736651b3740ed3b201edd2efdef3da541e0d",
+                  "binary_sha256": "b" * 64, "exporter_sha256": "c" * 64, "cases": []}
+        for label in sorted(V022_FAMILIES):
+            prefix = "small-family/" + label + "/"
+            qasm, cnf = b"fixture qasm", b"fixture cnf"
+            reference = json.dumps({"source_sha256": digest(cnf), "bits": 550}).encode()
+            files[prefix + "extended_v022_" + label + ".qasm"] = qasm
+            files[prefix + "extended_v022_" + label + "-gpmc.cnf"] = cnf
+            files[prefix + "independent-reference.json"] = reference
+            row = {"label": label, "status": "NUMERIC_PASS",
+                   "qasm_sha256": digest(qasm), "cnf_sha256": digest(cnf),
+                   "reference_sha256": digest(reference), "trials": []}
+            for digits, bits, target, mode in sorted(V022_TRIALS):
+                t = {"digits": digits, "bits": bits, "target_digits": target,
+                     "mode": mode, "status": "PASS", "exit_code": 0,
+                     "route": "prejoin", "count": {"sat": True}}
+                if label == "qpeexact8" and mode == "auto" and bits == 200:
+                    t["rejected_receipt_faults"] = sorted(V022_FAULTS)
+                row["trials"].append(t)
+                stem = prefix + mode + "-" + str(bits)
+                files[stem + ".stdout"] = b"fixture stdout"
+                files[stem + ".stderr"] = b"fixture stderr"
+            report["cases"].append(row)
+        return revision, scope, report, files
+
+    def archive(self, report, files):
+        import zipfile
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            for name, content in files.items():
+                z.writestr(name, content)
+            z.writestr("small-family/qualification.json", json.dumps(report))
+        return buf.getvalue()
+
+    def test_archive_scope_and_complete_matrix(self):
+        from release_source import verify_v022_small_archive
+        revision, scope, report, files = self.fixture()
+        verify_v022_small_archive(revision, self.archive(report, files), scope)
+        for defect in ("wrong-sha", "missing-family", "duplicate-family", "missing-trial",
+                       "failed-trial", "missing-faults", "corrupt-source", "wrong-scope"):
+            with self.subTest(defect=defect):
+                revision, scope, report, files = self.fixture()
+                if defect == "wrong-sha":
+                    report["checkout"] = "b" * 40
+                elif defect == "missing-family":
+                    report["cases"].pop()
+                elif defect == "duplicate-family":
+                    report["cases"][-1] = copy.deepcopy(report["cases"][0])
+                elif defect == "missing-trial":
+                    report["cases"][0]["trials"].pop()
+                elif defect == "failed-trial":
+                    report["cases"][0]["trials"][0]["status"] = "NOT_ADMITTED"
+                elif defect == "missing-faults":
+                    for row in report["cases"]:
+                        for t in row["trials"]:
+                            t.pop("rejected_receipt_faults", None)
+                elif defect == "corrupt-source":
+                    files["small-family/qpeexact8/extended_v022_qpeexact8-gpmc.cnf"] = b"wrong"
+                else:
+                    files["shadow-scope.json"] = b"{}"
+                with self.assertRaises(ValueError):
+                    verify_v022_small_archive(revision, self.archive(report, files), scope)
+
+
 if __name__ == "__main__":
     unittest.main()

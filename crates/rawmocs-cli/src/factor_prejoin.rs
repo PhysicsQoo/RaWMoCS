@@ -1188,7 +1188,8 @@ fn execute_impl_diagnostic<const BINARY: bool>(
     let (mut left, mut right) = (C::one(bits), C::one(bits));
     for op in &p.ops {
         deadline(d)?;
-        let bucket: Vec<_> = op
+        #[allow(unused_mut)]
+        let mut bucket: Vec<_> = op
             .ids
             .iter()
             .map(|i| tables.remove(i).ok_or("execution owner"))
@@ -1222,6 +1223,17 @@ fn execute_impl_diagnostic<const BINARY: bool>(
             }
             flips.push(b);
         }
+        // A factor covering every output variable has a unique input cell
+        // (or two cells for its pivot) for each output assignment. Only after
+        // both branches have been evaluated may these cells be moved.
+        #[cfg(feature = "m1-last-use-reuse")]
+        let donor = bucket.iter().position(|f| {
+            f.scope
+                .iter()
+                .copied()
+                .filter(|&v| Some(v) != op.pivot)
+                .eq(op.out.iter().copied())
+        });
         let direct = BINARY && bucket.len() == 2;
         if direct {
             binary_ops += 1;
@@ -1254,16 +1266,40 @@ fn execute_impl_diagnostic<const BINARY: bool>(
             };
             let a = branch(false, &mut left);
             let b = op.pivot.is_some() && branch(true, &mut right);
-            values.push(match (a, b) {
+            let result = match (a, b) {
                 (true, true) => {
                     left.re += &right.re;
                     left.im += &right.im;
-                    Some(recycle_copy(&mut recycle, &left))
+                    Some(&left)
                 }
-                (true, false) => Some(recycle_copy(&mut recycle, &left)),
-                (false, true) => Some(recycle_copy(&mut recycle, &right)),
+                (true, false) => Some(&left),
+                (false, true) => Some(&right),
                 _ => None,
-            });
+            };
+            values.push(result.map(|x| {
+                #[cfg(feature = "m1-last-use-reuse")]
+                if recycle.is_empty() {
+                    if let Some(i) = donor {
+                        let j = indices[i];
+                        // Both branch reads are finished. No later output
+                        // assignment can read either of these donor cells.
+                        let cells = &mut bucket[i].values;
+                        let owned = cells[j].take().or_else(|| {
+                            if pivots[i] != 0 {
+                                cells[j | pivots[i]].take()
+                            } else {
+                                None
+                            }
+                        });
+                        if let Some(mut y) = owned {
+                            y.re.assign(&x.re);
+                            y.im.assign(&x.im);
+                            return y;
+                        }
+                    }
+                }
+                recycle_copy(&mut recycle, x)
+            }));
             if m + 1 < size {
                 let bit = (m + 1).trailing_zeros() as usize;
                 for (i, x) in indices.iter_mut().enumerate() {

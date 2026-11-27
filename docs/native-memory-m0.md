@@ -26,3 +26,20 @@ Large factor table buffers, MPFR limb allocation and the input parse / planning
 path remain hypotheses to inspect against the profiler. Preserve the existing
 32 MiB raw growth and 5% median WallTime gates for eventual remediation;
 no admission, release or QuPRS default change is authorized by this experiment.
+
+## First measured attribution and M1 scout
+
+CI 46027029314 (artifact 15212144219) reproduced retention without Python:
+Rust raw RSS growth 142568 KiB, Python 32784 KiB; live proxy growth only
+512/64 bytes. Heaptrack allocation calls 14547574/14562439, peak heap
+179.11/183.15 MB. Both have 10279414 GMP allocation calls and identical
+largest two stacks (3729266 calls each, `recycle_copy -> C::clone ->
+Float::clone -> mpfr_init2`). These identify allocation churn, not proof
+that any one stack causes all retained RSS. The new default-off feature
+`m1-last-use-reuse` tries moving an owned cell from a consumed factor only
+when it covers every output variable, both branches have already read it,
+and the existing pool is empty. The projection is injective across output
+assignments; support, arithmetic order, precision, logical peak/work caps
+and fallback semantics remain unchanged. The same-runner Rust scout checks
+binary witness, calls, raw RSS, HWM and median time; no promotion from one
+cohort. Python and cross-family tests follow only if this scout merits it.

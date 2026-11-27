@@ -736,6 +736,34 @@ jobs:
             test -s ".m0-evidence/heaptrack-$arm.txt"
             head -n 100 ".m0-evidence/heaptrack-$arm.txt"
           done
+      - name: Build opt-in last-use candidate and exercise exact Rust contracts
+        env:
+          CARGO_PROFILE_RELEASE_DEBUG: '1'
+          CARGO_TARGET_DIR: ${{ github.workspace }}/crates/rawmocs-cli/target
+        run: |
+          set -euo pipefail
+          mkdir -p .m0-evidence/m1
+          cp crates/rawmocs-cli/target/release/examples/m0_repeat .m0-evidence/m1/baseline
+          cargo test --locked --release --manifest-path crates/rawmocs-cli/Cargo.toml --features m1-last-use-reuse --lib
+          cargo build --locked --release --manifest-path crates/rawmocs-cli/Cargo.toml --features m1-last-use-reuse --example m0_repeat
+          cp crates/rawmocs-cli/target/release/examples/m0_repeat .m0-evidence/m1/candidate
+          sha256sum .m0-evidence/m1/baseline .m0-evidence/m1/candidate > .m0-evidence/m1/binaries.sha256
+      - name: Matched opt-in M1 Rust-only diagnostic
+        env:
+          PYTHONPATH: ${{ github.workspace }}/crates/rawmocs-cli/tools
+          PYTHONHASHSEED: '0'
+        run: |
+          set -euo pipefail
+          for arm in baseline candidate; do
+            export M0_EVIDENCE_DIR="$GITHUB_WORKSPACE/.m0-evidence/m1/$arm-evidence"
+            export M0_RUST_BIN="$GITHUB_WORKSPACE/.m0-evidence/m1/$arm"
+            timeout -k 2s 100s prlimit --as=3221225472 -- python crates/rawmocs-cli/tools/m0_memory.py repeat-rust
+            timeout -k 2s 200s python crates/rawmocs-cli/tools/m0_memory.py profile-rust
+            mapfile -t profiles < <(find "$M0_EVIDENCE_DIR" -maxdepth 1 -type f \( -name 'profile-rust*.gz' -o -name 'profile-rust*.zst' \))
+            test "${#profiles[@]}" -eq 1
+            heaptrack_print "${profiles[0]}" > "$M0_EVIDENCE_DIR/heaptrack-rust.txt"
+          done
+          python crates/rawmocs-cli/tools/m1_compare.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:

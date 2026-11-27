@@ -21,6 +21,10 @@ name = "native_stdio"
 path = "tests/native_stdio.rs"
 harness = false
 
+[features]
+# Research-only opt-in; default solver behavior is unchanged.
+m1-last-use-reuse = []
+
 [dependencies]
 rug = { version = "=1.30.0", default-features = false, features = ["integer", "rational", "float", "std"] }
 num-rational = "0.4"

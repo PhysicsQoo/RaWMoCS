@@ -17,8 +17,8 @@ from release_transfer import check_count
 
 CNF_SHA = "6fb69626195bee5b89ed3503ae8b1b4801d9267e7bd5ff3684af152afcd885e1"
 REF_SHA = "e59e2741a69dbb13b4f6d0b44562ac689541c4bcf7c43da476006ec8f1b87512"
-ROOT = Path(".m0-evidence").resolve()
-BIN = Path("crates/rawmocs-cli/target/release/examples/m0_repeat").resolve()
+ROOT = Path(os.environ.get("M0_EVIDENCE_DIR", ".m0-evidence")).resolve()
+BIN = Path(os.environ.get("M0_RUST_BIN", "crates/rawmocs-cli/target/release/examples/m0_repeat")).resolve()
 FIELDS = ("sat", "real", "imag", "route", "bits", "real_sig", "real_exp",
           "real_negative_zero", "imag_sig", "imag_exp", "imag_negative_zero",
           "wall_ns", "glibc_inuse_bytes", "glibc_mmap_bytes",
@@ -150,8 +150,9 @@ def main(stage):
     assert cohort["working_digits"] == 130 and cohort["target_digits"] == 100
     assert all(t["rows"][a]["status"] == "COMPLETED" and t["rows"][a]["witness"]["pass"]
                for t in cohort["trials"] for a in ("gpmc", "prejoin"))
-    if stage == "repeat":
-        rows = {a: launch(a, path, ref) for a in ("rust", "python")}
+    if stage in ("repeat", "repeat-rust"):
+        arms = ("rust",) if stage == "repeat-rust" else ("rust", "python")
+        rows = {a: launch(a, path, ref) for a in arms}
         expected = signature(rows["rust"][0])
         assert all(signature(row) == expected for rs in rows.values() for row in rs)
         summary = {}
@@ -170,14 +171,15 @@ def main(stage):
         print("M0_REPEAT_FINAL", json.dumps(summary), flush=True)
     else:
         prior = json.loads((ROOT / "repeat-summary.json").read_text())
-        rows = {a: launch(a, path, ref, profile=True) for a in ("rust", "python")}
+        arms = ("rust",) if stage == "profile-rust" else ("rust", "python")
+        rows = {a: launch(a, path, ref, profile=True) for a in arms}
         assert all(signature(row) == prior["signature"] for rs in rows.values() for row in rs)
         print("M0_PROFILE_WITNESS_PASS", flush=True)
 
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("stage", choices=("repeat", "profile", "worker"))
+    p.add_argument("stage", choices=("repeat", "profile", "repeat-rust", "profile-rust", "worker"))
     p.add_argument("path", nargs="?", type=Path)
     a = p.parse_args()
     if a.stage == "worker":

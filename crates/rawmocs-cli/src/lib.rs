@@ -445,7 +445,9 @@ fn solve_until(
 }
 fn failure(reason: &str) -> FailureKind {
     match reason {
-        "general deadline" | "prejoin deadline" | "solver deadline" | "source deadline" => FailureKind::Timeout,
+        "general deadline" | "prejoin deadline" | "solver deadline" | "source deadline" => {
+            FailureKind::Timeout
+        }
         "source bytes cap"
         | "source line cap"
         | "source literal cap"

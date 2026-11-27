@@ -67,6 +67,55 @@ def bounded(argv, seconds, root, name):
     return result, time.monotonic_ns() - start
 
 
+def validate_trial(stdout, stderr, digits, bits, target, ref, expected_plan):
+    lines = stdout.splitlines()
+    assert len(lines) == 2 and lines[0] in ("s SATISFIABLE", "s UNSATISFIABLE")
+    fields = lines[1].split()
+    assert len(fields) == 5 and fields[:3] == ["c", "r", "mpfr"]
+    (route, reported_digits, reported_bits), = re.findall(
+        r"^RAWMOCS_COMPLETE route=([^ ]+) digits=(\d+) bits=(\d+) ", stderr, re.M)
+    assert (int(reported_digits), int(reported_bits)) == (digits, bits)
+    count = {"sat": lines[0] == "s SATISFIABLE", "real": fields[3], "imag": fields[4]}
+    upper = check_count(count, ref, target)
+    traces = [line for line in stderr.splitlines()
+              if line.startswith(("PREJOIN_", "FRONTIER_", "SEPARATOR_", "GENERAL_"))]
+    plan, = re.findall(
+        r"^PREJOIN_COMPLETE residual=(\d+) cuts=(\d+) leaves=(\d+) width=(\d+) work=(\d+) peak=(\d+) joins=(\d+) plan_ns=\d+$",
+        stderr, re.M)
+    plan = tuple(map(int, plan))
+    assert route == "prejoin" and plan == expected_plan, "C1 baseline route/plan changed"
+    assert count["sat"], "C1 SAT support changed"
+    return route, count, upper, plan, traces
+
+
+def reject_corrupted_trial(stdout, stderr, digits, bits, target, ref, expected_plan):
+    """Inject faults into one real receipt; this is validator coverage, not solver mutation."""
+    lines = stdout.splitlines()
+    fields = lines[1].split()
+    faults = {
+        "sat": (stdout.replace("s SATISFIABLE", "s UNSATISFIABLE", 1), stderr),
+        "real": (lines[0] + "\n" + " ".join(fields[:3] + [str(10**1000), fields[4]]) + "\n", stderr),
+        "imag": (lines[0] + "\n" + " ".join(fields[:4] + [str(10**1000)]) + "\n", stderr),
+        "digits": (stdout, re.sub(r"(RAWMOCS_COMPLETE route=\S+ digits=)\d+", r"\g<1>1", stderr, count=1)),
+        "bits": (stdout, re.sub(r"(RAWMOCS_COMPLETE route=\S+ digits=\d+ bits=)\d+", r"\g<1>1", stderr, count=1)),
+        "route": (stdout, stderr.replace("RAWMOCS_COMPLETE route=prejoin ", "RAWMOCS_COMPLETE route=general ", 1)),
+        "cut": (stdout, re.sub(r"(PREJOIN_COMPLETE residual=\d+ cuts=)\d+", r"\g<1>1", stderr, count=1)),
+        "missing_plan": (stdout, re.sub(r"^PREJOIN_COMPLETE .*?$", "", stderr, count=1, flags=re.M)),
+        "missing_completion": (stdout, re.sub(r"^RAWMOCS_COMPLETE .*?$", "", stderr, count=1, flags=re.M)),
+    }
+    rejected = []
+    for name, (bad_stdout, bad_stderr) in faults.items():
+        assert (bad_stdout, bad_stderr) != (stdout, stderr), ("fault injection did not change receipt", name)
+        try:
+            validate_trial(bad_stdout, bad_stderr, digits, bits, target, ref, expected_plan)
+        except (AssertionError, ValueError):
+            rejected.append(name)
+        else:
+            raise AssertionError(("corrupted receipt accepted", name))
+    print("SMALL_FAMILY_RECEIPT_FAULTS_REJECTED", len(rejected), len(faults), flush=True)
+    return rejected
+
+
 def qualify(args, label, rel, blob, row, save):
     root = args.out / label
     root.mkdir()
@@ -105,24 +154,12 @@ def qualify(args, label, rel, blob, row, save):
         trial.update(wall_ns=elapsed, exit_code=result.returncode)
         try:
             assert result.returncode == 0, ("solver", result.returncode)
-            lines = result.stdout.splitlines()
-            assert len(lines) == 2 and lines[0] in ("s SATISFIABLE", "s UNSATISFIABLE")
-            fields = lines[1].split()
-            assert len(fields) == 5 and fields[:3] == ["c", "r", "mpfr"]
-            (route, reported_digits, reported_bits), = re.findall(
-                r"^RAWMOCS_COMPLETE route=([^ ]+) digits=(\d+) bits=(\d+) ", result.stderr, re.M)
-            assert (int(reported_digits), int(reported_bits)) == (digits, bits)
-            count = {"sat": lines[0] == "s SATISFIABLE", "real": fields[3], "imag": fields[4]}
-            upper = check_count(count, ref, target)
+            route, count, upper, plan, traces = validate_trial(
+                result.stdout, result.stderr, digits, bits, target, ref, expected_plan)
             assert digest(cnf) == source
-            traces = [line for line in result.stderr.splitlines()
-                      if line.startswith(("PREJOIN_", "FRONTIER_", "SEPARATOR_", "GENERAL_"))]
-            plan, = re.findall(
-                r"^PREJOIN_COMPLETE residual=(\d+) cuts=(\d+) leaves=(\d+) width=(\d+) work=(\d+) peak=(\d+) joins=(\d+) plan_ns=\d+$",
-                result.stderr, re.M)
-            plan = tuple(map(int, plan))
-            assert route == "prejoin" and plan == expected_plan, "C1 baseline route/plan changed"
-            assert count["sat"], "C1 SAT support changed"
+            if label == "qpeexact8" and mode == "auto" and bits == 200:
+                trial["rejected_receipt_faults"] = reject_corrupted_trial(
+                    result.stdout, result.stderr, digits, bits, target, ref, expected_plan)
             trial.update(status="PASS", route=route, count=count, witness_upper=upper,
                          plan_signature=plan, traces=traces)
         except (AssertionError, ValueError) as exc:

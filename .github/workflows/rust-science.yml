@@ -127,10 +127,16 @@ jobs:
           source "$RUNNER_TEMP/rawmocs-platform-env/bin/activate"
           python -m pip install --no-index "$RUNNER_TEMP"/rawmocs-platform/*.whl
           python -I -m unittest discover -s python/tests -v
+          platform='linux_aarch64'
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            arch=$(uname -m)
+            platform="macosx_[0-9]+_[0-9]+_$arch"
+          fi
+          python scripts/python_package_candidate.py --wheel "$RUNNER_TEMP"/rawmocs-platform/*.whl --platform "$platform" --out "$RUNNER_TEMP/rawmocs-platform/package-candidate.json"
       - uses: actions/upload-artifact@v4
         with:
           name: rawmocs-python-${{ matrix.os }}
-          path: ${{ runner.temp }}/rawmocs-platform/*.whl
+          path: ${{ runner.temp }}/rawmocs-platform/
           if-no-files-found: error
 
   python-manylinux:
@@ -153,6 +159,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/manylinux-evidence"
           docker run --rm -v "$GITHUB_WORKSPACE:/io:ro" -v "$RUNNER_TEMP/manylinux-evidence:/out" quay.io/pypa/manylinux_2_28_${{ matrix.arch }} bash -euxc '
+            set -euo pipefail
             cp -a /io /tmp/source
             cd /tmp/source
             export PATH=/opt/python/cp312-cp312/bin:$HOME/.cargo/bin:$PATH
@@ -167,6 +174,7 @@ jobs:
             cd /tmp
             /tmp/installed/bin/python -I -m unittest discover -s /tmp/source/python/tests -v 2>&1 | tee /out/contract.log
             sha256sum /out/*.whl > /out/wheel.sha256
+            python /tmp/source/scripts/python_package_candidate.py --wheel /out/*.whl --platform manylinux_2_28_${{ matrix.arch }} --out /out/package-candidate.json
           '
       - uses: actions/upload-artifact@v4
         if: always()
@@ -237,6 +245,8 @@ jobs:
             "$RUNNER_TEMP/rawmocs-clean-install/bin/python" -I -m unittest discover -s "$GITHUB_WORKSPACE/python/tests" -v
           ) 2>&1 | tee .release-evidence/python/clean-source-contract.log
           sha256sum "$RUNNER_TEMP"/rawmocs-rebuilt/*.whl | tee .release-evidence/python/rebuilt-wheel.sha256
+          python scripts/python_package_candidate.py --wheel "$RUNNER_TEMP"/rawmocs-wheels/*.whl --platform linux_x86_64 --sdist "$RUNNER_TEMP"/rawmocs-sdist/*.tar.gz --out .release-evidence/python/package-candidate.json
+          python scripts/python_package_candidate.py --wheel "$RUNNER_TEMP"/rawmocs-rebuilt/*.whl --platform linux_x86_64 --out .release-evidence/python/rebuilt-package-candidate.json
       - name: Archive Python packaging evidence
         if: always() && github.event_name == 'pull_request' && github.head_ref == 'research/python-api'
         uses: actions/upload-artifact@v4

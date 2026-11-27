@@ -33,7 +33,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Test release admission and draft-resume controls
-        run: python3 scripts/test_release_source.py
+        run: |
+          python3 scripts/test_release_source.py
+          python3 scripts/test_release_python_source.py
       - name: Verify workflow evidence and exact source archive
         env:
           GH_TOKEN: ${{ github.token }}

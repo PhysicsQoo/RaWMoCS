@@ -39,7 +39,9 @@ jobs:
       - name: Verify Python package integrity rejects malformed artifacts
         run: python3 scripts/test_python_package_candidate.py
       - name: Verify release gate rejects incomplete science receipts
-        run: python3 scripts/test_release_source.py
+        run: |
+          python3 scripts/test_release_source.py
+          python3 scripts/test_release_python_source.py
       - name: Verify v0.2.2 scope classification rejects unknown changes
         run: python3 scripts/ci_scope_v022.py --self-test
       - name: Observe v0.2.2 scope classification without changing admission

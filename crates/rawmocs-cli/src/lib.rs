@@ -21,7 +21,7 @@ pub struct CancellationToken {
 #[derive(Debug)]
 struct CheckpointProbe {
     reason: &'static str,
-    reached: std::sync::mpsc::SyncSender<()>,
+    reached: std::sync::mpsc::Sender<()>,
     resume: std::sync::mpsc::Receiver<()>,
 }
 
@@ -1281,7 +1281,7 @@ mod tests {
         ];
         for (raw, mode, large_general, reason, fallback) in cases {
             let token = CancellationToken::new();
-            let (reached_tx, reached_rx) = std::sync::mpsc::sync_channel(0);
+            let (reached_tx, reached_rx) = std::sync::mpsc::channel();
             let (resume_tx, resume_rx) = std::sync::mpsc::sync_channel(0);
             *token.checkpoint_probe.lock().unwrap() = Some(CheckpointProbe {
                 reason,

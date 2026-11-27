@@ -218,7 +218,7 @@ fn kernel_diagnostics_are_route_specific() {
     // existing 16384-bit cap during transactional local elimination.
     let mut frontier = String::from("p cnf 24 24\nc t wmc\n");
     for v in 1..=24 {
-        frontier.push_str(&format!("c p weight {v} 1e256 0\n"));
+        frontier.push_str(&format!("c p weight {v} 1e256 0 0\n"));
     }
     for v in 1..=24 {
         frontier.push_str(&format!("{v} 0\n"));

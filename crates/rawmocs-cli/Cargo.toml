@@ -16,6 +16,11 @@ path = "src/lib.rs"
 name = "rawmocs"
 path = "src/main.rs"
 
+[[test]]
+name = "native_stdio"
+path = "tests/native_stdio.rs"
+harness = false
+
 [dependencies]
 rug = { version = "=1.30.0", default-features = false, features = ["integer", "rational", "float", "std"] }
 num-rational = "0.4"

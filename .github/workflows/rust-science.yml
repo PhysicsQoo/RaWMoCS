@@ -421,6 +421,8 @@ jobs:
 
       - name: Verify rationalized evidence content and immutable reference tree
         if: steps.shadow.outputs.small_only == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -432,8 +434,10 @@ jobs:
           import io, os, zipfile
           from pathlib import Path
           from ci_scope_v022 import inspect
-          from release_source import verify_v022_reference_tree, verify_v022_small_archive
+          from release_source import (verify_v022_reference_tree, verify_v022_small_archive,
+                                      verify_v022_baseline_receipts)
           verify_v022_reference_tree()
+          verify_v022_baseline_receipts()
           revision = os.environ["GITHUB_SHA"]
           scope = inspect(revision)
           buf = io.BytesIO()

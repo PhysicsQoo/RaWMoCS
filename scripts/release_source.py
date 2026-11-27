@@ -144,6 +144,94 @@ def verify_run(r, run_data, jobs, kind):
                 f"failed step in {j['name']}")
 
 
+
+# Candidate contract only: prepare() deliberately does not call this until
+# the exact-main rationalized workflow and fault-detection gate are admitted.
+V022_SMALL_JOB = "Rationalized release small-family science"
+V022_SKIPPED_JOB = "Release matched native GPMC (${{ matrix.case }})"
+V022_SCIENCE = frozenset(
+    name for name in SCIENCE
+    if not name.startswith("Release matched native GPMC (")
+    and not name.startswith("Regenerate original")
+) | {V022_SMALL_JOB}
+V022_STEPS = {
+    "core": {"Run cargo fmt --all -- --check",
+             "Run cargo clippy --workspace --all-targets -- -D warnings",
+             "Run cargo test --workspace",
+             "Verify release gate rejects incomplete science receipts",
+             "Verify v0.2.2 scope classification rejects unknown changes"},
+    "a0-science": {
+        "Independent original A0 reference (48 complex, 620 properties, cache, rewrite safety)",
+        "New solver versus source-pinned Full WMC fixtures and exhaustive baseline"},
+    "First release CLI and source-locked transfer gate": {
+        *STEPS["First release CLI and source-locked transfer gate"],
+        "Build and test candidate with resolved dependency lock",
+        "Exercise executable success, SAT-zero and fail-closed contracts",
+        "Deep general search and external process lifecycle",
+        "Require unchanged tracked release candidate",
+        "Archive candidate lock and immutable evidence"},
+    V022_SMALL_JOB: {
+        "Admit rationalized release scope",
+        "Build fresh locked candidate",
+        "Build pinned source encoder",
+        "Qualify small source-locked family representatives (release)",
+        "Archive rationalized release evidence"},
+}
+for _name in V022_SCIENCE:
+    if _name.startswith("portability ("):
+        V022_STEPS[_name] = {"Run cargo test --workspace"}
+
+
+def verify_v022_rationalized_run(r, run_data, jobs, recomputed_scope):
+    """Check the proposed exact-main receipt; not an active release policy.
+
+    Scope must be independently recomputed from local immutable Git objects
+    by the eventual caller, not read from an uploaded receipt or the request.
+    Source-package and artifact checks remain separate and mandatory.
+    """
+    from ci_scope_v022 import PUBLISHED, QUALIFIED
+
+    require(r["version"] == "0.2.2", "rationalized policy is v0.2.2 only")
+    require(re.fullmatch(r"[0-9a-f]{40}", r["revision"]), "invalid revision")
+    require(recomputed_scope["revision"] == r["revision"]
+            and recomputed_scope["qualified_reference"] == QUALIFIED
+            and recomputed_scope["published_reference"] == PUBLISHED
+            and recomputed_scope["scope"] == "CI_ONLY_CANDIDATE"
+            and recomputed_scope["full_science_reasons"] == []
+            and recomputed_scope["release_authorized"] is False,
+            "unqualified exact revision scope")
+    require(run_data["id"] == r["science_run"], "wrong run ID")
+    require(run_data["repository"]["full_name"] == REPO
+            and run_data["head_repository"]["full_name"] == REPO,
+            "wrong source repository")
+    require(run_data["path"].split("@", 1)[0] == ".github/workflows/rust-science.yml",
+            "wrong workflow")
+    require(run_data["head_branch"] == "main" and run_data["head_sha"] == r["revision"],
+            "wrong run revision")
+    require(run_data["event"] == "workflow_dispatch" or (
+        run_data["event"] == "push"
+        and "[release-rationalized]" in (run_data.get("head_commit") or {}).get("message", "")),
+        "explicit rationalized release intent required")
+    require(run_data["status"] == "completed" and run_data["conclusion"] == "success",
+            "run not successful")
+    expected = V022_SCIENCE | {V022_SKIPPED_JOB}
+    require(jobs["total_count"] == len(jobs["jobs"]) == len(expected)
+            and {j["name"] for j in jobs["jobs"]} == expected,
+            "missing or unexpected jobs")
+    for j in jobs["jobs"]:
+        require(j["status"] == "completed", "incomplete job")
+        if j["name"] == V022_SKIPPED_JOB:
+            require(j["conclusion"] == "skipped", "unexpected native research status")
+            continue
+        require(j["conclusion"] == "success", f"failed job {j['name']}")
+        steps = {s["name"]: s["conclusion"] for s in j["steps"]}
+        require(len(steps) == len(j["steps"]), "duplicate step names")
+        require(all(steps.get(s) == "success" for s in V022_STEPS[j["name"]]),
+                f"missing or failed required step {j['name']}")
+        require(not any(s["conclusion"] in ("failure", "cancelled", "timed_out")
+                        for s in j["steps"]), f"failed step in {j['name']}")
+
+
 def verify_assets(r, assets):
     v = r["version"]
     archive = f"rawmocs-{v}-source.tar.gz"

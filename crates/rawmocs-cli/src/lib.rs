@@ -3,9 +3,70 @@ use num_rational::BigRational;
 use rug::Float;
 use std::borrow::Cow;
 use std::io::{BufRead, BufReader, Read};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 mod factor_prejoin;
 mod general;
+
+/// One-shot cooperative cancellation flag. A fresh token is required for
+/// an independent request. Sharing a token intentionally cancels all users.
+#[derive(Debug, Default)]
+pub struct CancellationToken {
+    cancelled: AtomicBool,
+}
+
+impl CancellationToken {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Relaxed)
+    }
+}
+
+fn check_cancel(token: Option<&CancellationToken>) -> Result<(), String> {
+    if token.is_some_and(CancellationToken::is_cancelled) {
+        Err("solver cancelled".into())
+    } else {
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Control<'a> {
+    deadline: Instant,
+    token: Option<&'a CancellationToken>,
+}
+
+impl Control<'_> {
+    fn check(self, timeout: &'static str) -> Result<(), String> {
+        check_cancel(self.token)?;
+        if Instant::now() >= self.deadline {
+            Err(timeout.into())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn with_deadline(self, deadline: Instant) -> Self {
+        Self { deadline, ..self }
+    }
+}
+
+#[cfg(test)]
+impl From<Instant> for Control<'_> {
+    fn from(deadline: Instant) -> Self {
+        Self {
+            deadline,
+            token: None,
+        }
+    }
+}
 
 type Clause = Vec<i32>;
 
@@ -81,7 +142,17 @@ impl Outcome {
 }
 // Keep the legacy default parser independent from the explicitly selected
 // streaming route; differential tests guard their common record semantics.
+#[cfg(test)]
 fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
+    parse_emitted_control(raw, bits, None)
+}
+
+fn parse_emitted_control(
+    raw: &str,
+    bits: u32,
+    token: Option<&CancellationToken>,
+) -> Result<Problem, String> {
+    check_cancel(token)?;
     if raw.is_empty() || raw.len() > 2_000_000 {
         return Err("invalid source bytes".into());
     }
@@ -115,6 +186,7 @@ fn parse_emitted(raw: &str, bits: u32) -> Result<Problem, String> {
     let mut clauses = Vec::with_capacity(declared);
     let mut clause_started = false;
     for line in lines {
+        check_cancel(token)?;
         let f: Vec<_> = line.split_whitespace().collect();
         if f.first() == Some(&"c") {
             if clause_started || f.len() != 7 || f[1..3] != ["p", "weight"] || f[6] != "0" {
@@ -176,11 +248,20 @@ const LARGE_LITERALS: usize = 4_000_000;
 
 // Explicit experimental general route only. A bounded line reader never
 // materializes the full source or accepts a partial record at a byte cap.
-fn parse_large<R: BufRead>(mut reader: R, bits: u32, deadline: Instant) -> Result<Problem, String> {
+#[cfg(test)]
+fn parse_large<R: BufRead>(reader: R, bits: u32, deadline: Instant) -> Result<Problem, String> {
+    parse_large_control(reader, bits, deadline.into())
+}
+
+fn parse_large_control<R: BufRead>(
+    mut reader: R,
+    bits: u32,
+    control: Control<'_>,
+) -> Result<Problem, String> {
     let mut consumed = 0_u64;
     let lines = std::iter::from_fn(move || loop {
-        if Instant::now() >= deadline {
-            return Some(Err("source deadline".into()));
+        if let Err(reason) = control.check("source deadline") {
+            return Some(Err(reason));
         }
         let mut line = String::new();
         let cap = (LARGE_SOURCE_BYTES - consumed + 1).min(LARGE_LINE_BYTES + 1);
@@ -389,7 +470,7 @@ fn solve(p: &Problem, raw: &str, bits: u32, mode: &str) -> Result<(Outcome, &'st
         raw,
         bits,
         mode,
-        Instant::now() + Duration::from_secs(45),
+        (Instant::now() + Duration::from_secs(45)).into(),
         &mut SolveDiagnostics::default(),
     )
 }
@@ -398,12 +479,10 @@ fn solve_until(
     raw: &str,
     bits: u32,
     mode: &str,
-    deadline: Instant,
+    deadline: Control<'_>,
     diagnostics: &mut SolveDiagnostics,
 ) -> Result<(Outcome, &'static str), String> {
-    if Instant::now() >= deadline {
-        return Err("solver deadline".into());
-    }
+    deadline.check("solver deadline")?;
     if mode == "reference" {
         return reference(p, raw, bits).map(|a| (a, "reference"));
     }
@@ -467,6 +546,7 @@ fn solve_until(
 }
 fn failure(reason: &str) -> FailureKind {
     match reason {
+        "solver cancelled" => FailureKind::Cancelled,
         "general deadline" | "prejoin deadline" | "solver deadline" | "source deadline" => {
             FailureKind::Timeout
         }
@@ -604,6 +684,7 @@ pub enum FailureKind {
     InvalidInput,
     UnsupportedInput,
     Timeout,
+    Cancelled,
     ResourceLimit,
     RouteRejected,
     InternalError,
@@ -615,6 +696,7 @@ impl FailureKind {
             Self::InvalidInput => "INVALID_INPUT",
             Self::UnsupportedInput => "UNSUPPORTED_INPUT",
             Self::Timeout => "TIMEOUT",
+            Self::Cancelled => "CANCELLED",
             Self::ResourceLimit => "RESOURCE_LIMIT",
             Self::RouteRejected => "ROUTE_REJECTED",
             Self::InternalError => "INTERNAL_ERROR",
@@ -626,6 +708,7 @@ impl FailureKind {
             Self::InvalidInput => 2,
             Self::UnsupportedInput => 3,
             Self::Timeout => 4,
+            Self::Cancelled => 8,
             Self::ResourceLimit => 5,
             Self::RouteRejected => 6,
             Self::InternalError => 7,
@@ -871,6 +954,7 @@ pub fn solve_file(
         Source::File(path),
         options.into(),
         SolveDiagnostics::default(),
+        None,
     )
 }
 
@@ -880,6 +964,36 @@ pub fn solve_text(raw: &str, options: SolveOptions) -> Result<SolveReport, Solve
         Source::Text(raw),
         options.into(),
         SolveDiagnostics::default(),
+        None,
+    )
+}
+
+/// Cooperative cancellation for file input; blocking OS I/O cannot be interrupted.
+pub fn solve_file_cancellable(
+    path: &std::ffi::OsStr,
+    options: SolveOptions,
+    token: &CancellationToken,
+) -> Result<SolveReport, SolveFailure> {
+    solve_source(
+        Source::File(path),
+        options.into(),
+        SolveDiagnostics::default(),
+        Some(token),
+    )
+}
+
+/// Cooperative cancellation for memory input. Reference mode only checks
+/// at the solve boundary, not within the independent exact reference solver.
+pub fn solve_text_cancellable(
+    raw: &str,
+    options: SolveOptions,
+    token: &CancellationToken,
+) -> Result<SolveReport, SolveFailure> {
+    solve_source(
+        Source::Text(raw),
+        options.into(),
+        SolveDiagnostics::default(),
+        Some(token),
     )
 }
 
@@ -901,6 +1015,7 @@ pub fn solve_file_cli(
             large_general,
         },
         SolveDiagnostics::legacy(),
+        None,
     )
 }
 
@@ -908,8 +1023,9 @@ fn solve_source(
     source: Source<'_>,
     options: RawOptions<'_>,
     mut diagnostics: SolveDiagnostics,
+    token: Option<&CancellationToken>,
 ) -> Result<SolveReport, SolveFailure> {
-    match solve_source_inner(source, options, &mut diagnostics) {
+    match solve_source_inner(source, options, &mut diagnostics, token) {
         Ok(mut report) => {
             report.diagnostics = diagnostics;
             Ok(report)
@@ -926,7 +1042,9 @@ fn solve_source_inner(
     source: Source<'_>,
     options: RawOptions<'_>,
     diagnostics: &mut SolveDiagnostics,
+    token: Option<&CancellationToken>,
 ) -> Result<SolveReport, String> {
+    check_cancel(token)?;
     let RawOptions {
         digits,
         mode,
@@ -945,7 +1063,10 @@ fn solve_source_inner(
         return Err("INPUT: --large-general requires --solver general".into());
     }
     let parse_start = Instant::now();
-    let large_deadline = parse_start + Duration::from_millis(timeout_ms.unwrap_or(45_000));
+    let large_deadline = Control {
+        deadline: parse_start + Duration::from_millis(timeout_ms.unwrap_or(45_000)),
+        token,
+    };
     let raw = if large_general {
         Cow::Borrowed("")
     } else {
@@ -965,17 +1086,20 @@ fn solve_source_inner(
             }
         }
     };
+    check_cancel(token)?;
     let parsed = if large_general {
         match source {
             Source::File(path) => {
                 let reader =
                     BufReader::new(std::fs::File::open(path).map_err(|e| format!("INPUT: {e}"))?);
-                parse_large(reader, bits, large_deadline)
+                parse_large_control(reader, bits, large_deadline)
             }
-            Source::Text(text) => parse_large(std::io::Cursor::new(text), bits, large_deadline),
+            Source::Text(text) => {
+                parse_large_control(std::io::Cursor::new(text), bits, large_deadline)
+            }
         }
     } else {
-        parse_emitted(&raw, bits)
+        parse_emitted_control(&raw, bits, token)
     };
     let problem = parsed.map_err(|e| {
         if matches!(
@@ -986,12 +1110,14 @@ fn solve_source_inner(
                 | "source line cap"
                 | "source literal cap"
                 | "source deadline"
+                | "solver cancelled"
         ) {
             e
         } else {
             format!("INPUT: {e}")
         }
     })?;
+    check_cancel(token)?;
     if !matches!(
         mode,
         "auto"
@@ -1023,7 +1149,10 @@ fn solve_source_inner(
     let deadline = if large_general {
         large_deadline
     } else {
-        start + Duration::from_millis(timeout_ms.unwrap_or(45_000))
+        Control {
+            deadline: start + Duration::from_millis(timeout_ms.unwrap_or(45_000)),
+            token,
+        }
     };
     let (answer, route) = if large_general {
         (
@@ -1033,8 +1162,9 @@ fn solve_source_inner(
     } else {
         solve_until(&problem, &raw, bits, mode, deadline, diagnostics)?
     };
-    if mode != "reference" && Instant::now() >= deadline {
-        return Err("solver deadline".into());
+    check_cancel(token)?;
+    if mode != "reference" {
+        deadline.check("solver deadline")?;
     }
     if !answer.count.re.is_finite() || !answer.count.im.is_finite() {
         return Err("nonfinite result".into());
@@ -1048,6 +1178,7 @@ fn solve_source_inner(
         .count
         .im
         .to_string_radix(10, Some(digits as usize + 4));
+    check_cancel(token)?;
     Ok(SolveReport {
         sat: answer.sat,
         real,
@@ -1063,6 +1194,36 @@ fn solve_source_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancellation_checkpoints_preempt_timeout() {
+        let token = CancellationToken::new();
+        let control = Control {
+            deadline: Instant::now(),
+            token: Some(&token),
+        };
+        assert_eq!(
+            control.check("source deadline").unwrap_err(),
+            "source deadline"
+        );
+        token.cancel();
+        assert_eq!(
+            control.check("source deadline").unwrap_err(),
+            "solver cancelled"
+        );
+        assert_eq!(
+            parse_large_control(std::io::Cursor::new("p cnf 0 0\nc t wmc\n"), 100, control)
+                .err()
+                .as_deref(),
+            Some("solver cancelled")
+        );
+        assert_eq!(
+            parse_emitted_control("p cnf 0 0\nc t wmc\n", 100, Some(&token))
+                .err()
+                .as_deref(),
+            Some("solver cancelled")
+        );
+    }
 
     #[test]
     fn stored_mpfr_binary_is_lossless() {

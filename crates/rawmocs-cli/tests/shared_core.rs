@@ -239,3 +239,42 @@ fn kernel_diagnostics_are_route_specific() {
     assert!(report.diagnostics.prejoin.is_some());
     assert!(report.diagnostics.fallback.is_none());
 }
+
+#[test]
+fn cooperative_cancellation_is_distinct_and_call_local() {
+    use rawmocs_mpfr::{solve_text_cancellable, CancellationToken};
+
+    let raw = "p cnf 2 1\nc t wmc\n1 2 0\n";
+    let token = CancellationToken::new();
+    token.cancel();
+    for mode in [
+        SolverMode::Auto,
+        SolverMode::AutoFrontier,
+        SolverMode::AutoSeparator,
+        SolverMode::Prejoin,
+        SolverMode::General,
+        SolverMode::GeneralSeparator,
+        SolverMode::Reference,
+    ] {
+        let options = SolveOptions {
+            mode,
+            ..SolveOptions::default()
+        };
+        let err = solve_text_cancellable(raw, options, &token).unwrap_err();
+        assert_eq!(err.kind, FailureKind::Cancelled);
+        assert_eq!(err.exit_code(), 8);
+        assert!(err.diagnostics.fallback.is_none());
+    }
+    std::thread::scope(|scope| {
+        let cancelled = scope.spawn(|| {
+            solve_text_cancellable(raw, SolveOptions::default(), &token).unwrap_err()
+        });
+        let independent = scope.spawn(|| {
+            let fresh = CancellationToken::new();
+            solve_text_cancellable(raw, SolveOptions::default(), &fresh).unwrap()
+        });
+        assert_eq!(cancelled.join().unwrap().kind, FailureKind::Cancelled);
+        assert!(independent.join().unwrap().sat);
+    });
+    assert!(solve_text(raw, SolveOptions::default()).unwrap().sat);
+}

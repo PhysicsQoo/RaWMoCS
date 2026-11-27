@@ -3,7 +3,7 @@
 //! Diagnostic command surface removed; numerical/planner kernel unchanged.
 #[cfg(test)]
 use crate::parse_emitted;
-use crate::{FrontierStop, Outcome, PrejoinStats, Problem, SolveDiagnostics, C};
+use crate::{Control, FrontierStop, Outcome, PrejoinStats, Problem, SolveDiagnostics, C};
 use rug::{ops::Pow, Assign, Float, Integer, Rational};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
@@ -29,12 +29,8 @@ struct Cost {
     peak: usize,
     joins: usize,
 }
-fn deadline(d: Instant) -> Result<(), String> {
-    if Instant::now() >= d {
-        Err("prejoin deadline".into())
-    } else {
-        Ok(())
-    }
+fn deadline(d: Control<'_>) -> Result<(), String> {
+    d.check("prejoin deadline")
 }
 pub(crate) fn decimal(s: &str) -> Result<Rational, String> {
     if s.len() > 128 {
@@ -291,14 +287,14 @@ fn local_contract<'a>(
     }))
 }
 #[cfg(test)]
-fn local(p: &Problem, raw: &str, d: Instant) -> Result<Local, String> {
+fn local(p: &Problem, raw: &str, d: Control<'_>) -> Result<Local, String> {
     local_frontier(p, raw, d, true, true)
 }
 #[cfg(test)]
 fn local_frontier(
     p: &Problem,
     raw: &str,
-    d: Instant,
+    d: Control<'_>,
     incremental: bool,
     widen: bool,
 ) -> Result<Local, String> {
@@ -310,7 +306,7 @@ fn local_frontier(
 fn local_frontier_probe<const PROFILE: bool, const ADJ: bool>(
     p: &Problem,
     raw: &str,
-    d: Instant,
+    d: Control<'_>,
     incremental: bool,
     widen: bool,
     step_cap: Option<usize>,
@@ -322,7 +318,7 @@ fn local_frontier_probe<const PROFILE: bool, const ADJ: bool>(
 fn local_frontier_policy<const PROFILE: bool, const ADJ: bool>(
     p: &Problem,
     raw: &str,
-    d: Instant,
+    d: Control<'_>,
     incremental: bool,
     widen: bool,
     step_cap: Option<usize>,
@@ -352,7 +348,7 @@ struct LocalPolicy {
 fn local_frontier_diagnostic<const PROFILE: bool, const ADJ: bool>(
     p: &Problem,
     raw: &str,
-    d: Instant,
+    d: Control<'_>,
     policy: LocalPolicy,
     diagnostics: &mut SolveDiagnostics,
 ) -> Result<Local, String> {
@@ -763,7 +759,7 @@ fn plan(
     nodes: &Scope,
     policy: (Option<usize>, bool),
     retained: usize,
-    d: Instant,
+    d: Control<'_>,
 ) -> Result<Option<Plan>, String> {
     if nodes.len() <= 64 {
         plan_words::<1>(fs, nodes, policy, retained, d)
@@ -776,7 +772,7 @@ fn plan_words<const N: usize>(
     nodes: &Scope,
     policy: (Option<usize>, bool),
     retained: usize,
-    d: Instant,
+    d: Control<'_>,
 ) -> Result<Option<Plan>, String> {
     plan_words_impl::<N, true>(fs, nodes, policy, retained, d)
 }
@@ -785,7 +781,7 @@ fn plan_words_impl<const N: usize, const MASK_PAIRS: bool>(
     nodes: &Scope,
     policy: (Option<usize>, bool),
     retained: usize,
-    d: Instant,
+    d: Control<'_>,
 ) -> Result<Option<Plan>, String> {
     let mut scopes: BTreeMap<usize, Scope> = fs
         .iter()
@@ -942,7 +938,7 @@ fn choose(
     nodes: &Scope,
     scalar: &Cell<R>,
     local: &Cost,
-    d: Instant,
+    d: Control<'_>,
 ) -> Result<Selected, String> {
     let retained = fs.iter().map(|f| f.values.len()).sum::<usize>();
     let mut high: Vec<_> = nodes.iter().copied().collect();
@@ -1122,7 +1118,7 @@ fn execute(
     scalar: Cell<R>,
     p: &Plan,
     bits: u32,
-    d: Instant,
+    d: Control<'_>,
 ) -> Result<Cell<C>, String> {
     execute_diagnostic(fs, scalar, p, bits, d, &mut SolveDiagnostics::legacy())
 }
@@ -1132,7 +1128,7 @@ fn execute_diagnostic(
     scalar: Cell<R>,
     p: &Plan,
     bits: u32,
-    d: Instant,
+    d: Control<'_>,
     diagnostics: &mut SolveDiagnostics,
 ) -> Result<Cell<C>, String> {
     // Admission candidate: exercise the measured direct kernel by default.
@@ -1150,7 +1146,7 @@ fn execute_impl<const BINARY: bool>(
     scalar: Cell<R>,
     p: &Plan,
     bits: u32,
-    d: Instant,
+    d: Control<'_>,
 ) -> Result<Cell<C>, String> {
     execute_impl_diagnostic::<BINARY>(fs, scalar, p, bits, d, &mut SolveDiagnostics::legacy())
 }
@@ -1160,7 +1156,7 @@ fn execute_impl_diagnostic<const BINARY: bool>(
     scalar: Cell<R>,
     p: &Plan,
     bits: u32,
-    d: Instant,
+    d: Control<'_>,
     diagnostics: &mut SolveDiagnostics,
 ) -> Result<Cell<C>, String> {
     let mut tables: BTreeMap<usize, Factor<C>> = fs
@@ -1333,7 +1329,7 @@ pub(crate) fn solve(p: &Problem, raw: &str, bits: u32) -> Result<Outcome, String
         p,
         raw,
         bits,
-        Instant::now() + Duration::from_secs(45),
+        (Instant::now() + Duration::from_secs(45)).into(),
         false,
         &mut SolveDiagnostics::legacy(),
     )
@@ -1343,15 +1339,16 @@ pub(crate) fn solve_diagnostic(
     p: &Problem,
     raw: &str,
     bits: u32,
-    d: Instant,
+    d: Control<'_>,
     frontier: bool,
     diagnostics: &mut SolveDiagnostics,
 ) -> Result<Outcome, String> {
     let start = Instant::now();
-    let planning_budget = (d.saturating_duration_since(start) * 2 / 3).min(Duration::from_secs(30));
-    let pd = start + planning_budget;
+    let planning_budget =
+        (d.deadline.saturating_duration_since(start) * 2 / 3).min(Duration::from_secs(30));
+    let pd = d.with_deadline(start + planning_budget);
     let planning_error = |e: String| {
-        if e == "prejoin deadline" && Instant::now() < d {
+        if e == "prejoin deadline" && Instant::now() < d.deadline {
             "prejoin planning budget".into()
         } else {
             e
@@ -1497,7 +1494,7 @@ mod tests {
         let raw = std::fs::read_to_string(std::env::var("RAWMOCS_TEST_ORIGINAL").unwrap()).unwrap();
         let bits = 432;
         let p = parse_emitted(&raw, bits).unwrap();
-        let d = Instant::now() + Duration::from_secs(30);
+        let d = Control::from(Instant::now() + Duration::from_secs(30));
         let start = Instant::now();
         let original = local(&p, &raw, d);
         match original {
@@ -1737,7 +1734,7 @@ mod tests {
                 extra: 0,
             };
             for bits in [100, 200, 333, 432] {
-                let d = Instant::now() + Duration::from_secs(5);
+                let d = Control::from(Instant::now() + Duration::from_secs(5));
                 let off = execute_impl::<false>(fs.clone(), Some(one()), &plan, bits, d)
                     .unwrap()
                     .unwrap();
@@ -1782,7 +1779,7 @@ mod tests {
     }
     #[test]
     fn multiword_plan_matches_single_word_and_crosses_boundaries() {
-        let d = Instant::now() + Duration::from_secs(10);
+        let d = Control::from(Instant::now() + Duration::from_secs(10));
         let make = |n: usize| -> Vec<Factor<R>> {
             (1..n)
                 .map(|i| Factor {
@@ -1840,7 +1837,7 @@ mod tests {
     fn local_probe_preserves_complete_frontier_and_can_stop_early() {
         let raw = "p cnf 6 3\nc t wmc\nc p weight 1 -2 3 0\n1 2 0\n-2 3 0\n4 5 0\n";
         let p = parse_emitted(raw, 200).unwrap();
-        let d = Instant::now() + Duration::from_secs(5);
+        let d = Control::from(Instant::now() + Duration::from_secs(5));
         let full = local_frontier(&p, raw, d, true, true).unwrap();
         assert_eq!(
             full,
@@ -1891,7 +1888,7 @@ mod tests {
                         scope,
                     });
                 }
-                let d = Instant::now() + Duration::from_secs(10);
+                let d = Control::from(Instant::now() + Duration::from_secs(10));
                 for p in [Some(0), Some(4), None] {
                     for reverse in [true, false] {
                         let a =
@@ -2073,7 +2070,7 @@ mod tests {
                 raw.push_str("0\n");
             }
             let p = parse_emitted(&raw, 100).unwrap();
-            let d = Instant::now() + Duration::from_secs(5);
+            let d = Control::from(Instant::now() + Duration::from_secs(5));
             assert_eq!(
                 local_frontier(&p, &raw, d, false, false).unwrap(),
                 local_frontier(&p, &raw, d, true, false).unwrap()
@@ -2090,7 +2087,7 @@ mod tests {
             raw.push_str("0\n");
         }
         let p = parse_emitted(&raw, 100).unwrap();
-        let d = Instant::now() + Duration::from_secs(5);
+        let d = Control::from(Instant::now() + Duration::from_secs(5));
         assert!(local_frontier(&p, &raw, d, true, false).is_err());
         let a = local_frontier(&p, &raw, d, true, true).unwrap();
         let b = local_frontier(&p, &raw, d, false, true).unwrap();

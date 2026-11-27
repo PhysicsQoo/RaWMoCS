@@ -2,11 +2,12 @@
 //! Research source: 379b47242cbd9b4a1e597afc6377cbaf0ac13bce,
 //! benchmarks/mpfr_research/src/main.rs (Engine::count, normalize,
 //! assign, split_components). Preserve chronological order and exact cache equality.
-use crate::{Clause, GeneralStats, Outcome, Problem, SeparatorStats, SolveDiagnostics, C};
+use crate::{Clause, Control, GeneralStats, Outcome, Problem, SeparatorStats, SolveDiagnostics, C};
 use std::borrow::Borrow;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap};
 use std::hash::{Hash, Hasher};
+#[cfg(test)]
 use std::time::Instant;
 
 #[derive(Hash, Eq, PartialEq)]
@@ -101,7 +102,7 @@ fn push(stack: &mut Vec<Frame>, frame: Frame) -> Result<(), String> {
 struct Engine<'a> {
     p: &'a Problem,
     bits: u32,
-    deadline: Instant,
+    deadline: Control<'a>,
     cache: HashMap<Key, Outcome>,
     cache_items: usize,
     large: bool,
@@ -254,15 +255,9 @@ fn occurrence_slot(lit: i32) -> usize {
 fn indexed_units(
     clauses: Vec<Clause>,
     n: usize,
-    deadline: Instant,
+    deadline: Control<'_>,
 ) -> Result<Option<Closure>, String> {
-    let check = || {
-        if Instant::now() >= deadline {
-            Err("general deadline".to_owned())
-        } else {
-            Ok(())
-        }
-    };
+    let check = || deadline.check("general deadline");
     check()?;
     let mut occurrences = vec![Vec::<usize>::new(); 2 * n];
     let mut lengths = Vec::with_capacity(clauses.len());
@@ -367,10 +362,7 @@ fn components_with_parent(
 }
 impl Engine<'_> {
     fn check(&self) -> Result<(), String> {
-        if Instant::now() >= self.deadline {
-            return Err("general deadline".into());
-        }
-        Ok(())
+        self.deadline.check("general deadline")
     }
     fn weight(&self, v: usize, positive: bool) -> &C {
         let w = &self.p.weights[v - 1];
@@ -639,13 +631,13 @@ pub(crate) fn solve_separator(
 
 #[cfg(test)]
 pub(crate) fn solve_large(p: Problem, bits: u32, deadline: Instant) -> Result<Outcome, String> {
-    solve_large_diagnostic(p, bits, deadline, &mut SolveDiagnostics::legacy())
+    solve_large_diagnostic(p, bits, deadline.into(), &mut SolveDiagnostics::legacy())
 }
 
 pub(crate) fn solve_diagnostic(
     p: &Problem,
     bits: u32,
-    deadline: Instant,
+    deadline: Control<'_>,
     separator: bool,
     diagnostics: &mut SolveDiagnostics,
 ) -> Result<Outcome, String> {
@@ -655,7 +647,7 @@ pub(crate) fn solve_diagnostic(
 pub(crate) fn solve_large_diagnostic(
     mut p: Problem,
     bits: u32,
-    deadline: Instant,
+    deadline: Control<'_>,
     diagnostics: &mut SolveDiagnostics,
 ) -> Result<Outcome, String> {
     // The large route is terminal: the parser's clause vector is no
@@ -688,7 +680,7 @@ fn solve_policy(
     solve_policy_diagnostic(
         p,
         bits,
-        deadline,
+        deadline.into(),
         large,
         root,
         separator,
@@ -699,7 +691,7 @@ fn solve_policy(
 fn solve_policy_diagnostic(
     p: &Problem,
     bits: u32,
-    deadline: Instant,
+    deadline: Control<'_>,
     large: bool,
     root: Option<Vec<Clause>>,
     separator: bool,
@@ -931,7 +923,7 @@ mod tests {
                 clauses.push(clause);
             }
             let mut scan = normalize(clauses);
-            let indexed = indexed_units(scan.clone(), 8, deadline).unwrap();
+            let indexed = indexed_units(scan.clone(), 8, deadline.into()).unwrap();
             let mut forced = Vec::new();
             let expected = loop {
                 if scan.iter().any(Vec::is_empty) {

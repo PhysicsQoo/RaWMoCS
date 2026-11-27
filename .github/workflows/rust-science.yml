@@ -120,7 +120,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install maturin==1.8.3
-          cargo generate-lockfile --manifest-path crates/rawmocs-python/Cargo.toml
+          test -f crates/rawmocs-python/Cargo.lock
           python -c 'import hashlib,pathlib; assert hashlib.sha256(pathlib.Path("crates/rawmocs-python/Cargo.lock").read_bytes()).hexdigest() == "17b67a9734a301b6ed6c726b585245f823f18d35a3904e4d0b56ac657aa90236"'
           maturin build --locked --release --interpreter python --out "$RUNNER_TEMP/rawmocs-platform" ${{ runner.os == 'Linux' && '--compatibility linux' || '' }}
           python -m venv "$RUNNER_TEMP/rawmocs-platform-env"
@@ -169,7 +169,7 @@ jobs:
           source "$RUNNER_TEMP/rawmocs-python/bin/activate"
           python -m pip install maturin==1.8.3
           export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/crates/rawmocs-cli/target"
-          cargo generate-lockfile --manifest-path crates/rawmocs-python/Cargo.toml
+          test -f crates/rawmocs-python/Cargo.lock
           python -c 'import hashlib,pathlib; assert hashlib.sha256(pathlib.Path("crates/rawmocs-python/Cargo.lock").read_bytes()).hexdigest() == "17b67a9734a301b6ed6c726b585245f823f18d35a3904e4d0b56ac657aa90236"'
           maturin build --locked --release --interpreter python --compatibility linux --out "$RUNNER_TEMP/rawmocs-wheels"
           mkdir -p .release-evidence/python

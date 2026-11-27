@@ -127,3 +127,53 @@ fn typed_selectors_and_failure_contract() {
     assert_eq!(unsupported.kind, FailureKind::UnsupportedInput);
     assert_eq!(unsupported.exit_code(), 3);
 }
+
+#[test]
+fn binary_count_and_call_local_diagnostics() {
+    let raw = "p cnf 1 1\nc t wmc\nc p weight 1 -0.125 0.25 0\n1 0\n";
+    let options = SolveOptions {
+        precision: Precision::Digits130,
+        mode: SolverMode::General,
+        large_general: true,
+        ..SolveOptions::default()
+    };
+    let result = solve_text(raw, options).unwrap();
+    assert!(result.sat);
+    let admission = result.diagnostics.streaming_source.as_ref().unwrap();
+    assert_eq!(
+        (admission.variables, admission.clauses, admission.literals),
+        (1, 1, 1)
+    );
+    assert!(result.diagnostics.fallback.is_none());
+    for (value, expected) in [(result.real_mpfr(), -0.125), (result.imag_mpfr(), 0.25)] {
+        let binary = value.binary();
+        let integer = rug::Integer::from_str_radix(&binary.significand, 10).unwrap();
+        let mut restored = rug::Float::with_val(binary.precision_bits, integer);
+        restored <<= binary.exponent2;
+        assert_eq!(restored, expected);
+        assert_eq!(binary.precision_bits, 432);
+    }
+
+    let wide = format!(
+        "p cnf 21 1\nc t wmc\n{} 0\n",
+        (1..=21).map(|v| v.to_string()).collect::<Vec<_>>().join(" ")
+    );
+    let fallback = solve_text(&wide, SolveOptions::default()).unwrap();
+    let info = fallback.diagnostics.fallback.as_ref().unwrap();
+    assert_eq!(info.route, rawmocs_mpfr::SolveRoute::General);
+    assert_eq!(info.reason, "clause width cap");
+    assert!(fallback.diagnostics.streaming_source.is_none());
+
+    let failed = solve_text(
+        raw,
+        SolveOptions {
+            timeout_ms: Some(0),
+            ..options
+        },
+    )
+    .unwrap_err();
+    assert_eq!(failed.kind, FailureKind::Timeout);
+    let fresh = solve_text(raw, SolveOptions::default()).unwrap();
+    assert!(fresh.diagnostics.streaming_source.is_none());
+    assert!(fresh.diagnostics.fallback.is_none());
+}

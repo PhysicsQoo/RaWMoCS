@@ -384,7 +384,14 @@ fn reference(p: &Problem, raw: &str, bits: u32) -> Result<Outcome, String> {
 }
 #[cfg(test)]
 fn solve(p: &Problem, raw: &str, bits: u32, mode: &str) -> Result<(Outcome, &'static str), String> {
-    solve_until(p, raw, bits, mode, Instant::now() + Duration::from_secs(45))
+    solve_until(
+        p,
+        raw,
+        bits,
+        mode,
+        Instant::now() + Duration::from_secs(45),
+        &mut SolveDiagnostics::default(),
+    )
 }
 fn solve_until(
     p: &Problem,
@@ -392,6 +399,7 @@ fn solve_until(
     bits: u32,
     mode: &str,
     deadline: Instant,
+    diagnostics: &mut SolveDiagnostics,
 ) -> Result<(Outcome, &'static str), String> {
     if Instant::now() >= deadline {
         return Err("solver deadline".into());
@@ -434,6 +442,14 @@ fn solve_until(
                 ) =>
         {
             eprintln!("RAWMOCS_FALLBACK reason={reason}");
+            diagnostics.fallback = Some(FallbackInfo {
+                reason,
+                route: if separator {
+                    SolveRoute::GeneralSeparator
+                } else {
+                    SolveRoute::General
+                },
+            });
             if separator {
                 general::solve_separator(p, bits, deadline).map(|a| (a, "general-separator"))
             } else {
@@ -651,8 +667,61 @@ impl From<SolveOptions> for RawOptions<'static> {
     }
 }
 
+/// Lossless representation of a finite *stored MPFR value*, not an exact
+/// mathematical count. The value is significand times two to exponent2.
+/// Signed zero is retained separately; zero has canonical exponent zero.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct MpfrBinary {
+    pub significand: String,
+    pub exponent2: i32,
+    pub precision_bits: u32,
+    pub negative_zero: bool,
+}
+
+/// Owns the already-computed MPFR value; no decimal reparse or f64 conversion.
+#[derive(Debug)]
+pub struct MpfrValue(Float);
+
+impl MpfrValue {
+    pub fn binary(&self) -> MpfrBinary {
+        let (integer, exponent2) = self.0.to_integer_exp().expect("finite result invariant");
+        MpfrBinary {
+            significand: integer.to_string(),
+            exponent2: if self.0.is_zero() { 0 } else { exponent2 },
+            precision_bits: self.0.prec(),
+            negative_zero: self.0.is_zero() && self.0.is_sign_negative(),
+        }
+    }
+}
+
+/// A recognized router rejection that triggered General fallback.
+/// The route is attempted, not a guarantee of completion.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct FallbackInfo {
+    pub reason: String,
+    pub route: SolveRoute,
+}
+
+/// Source statistics for the explicitly admitted streaming route.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct SourceAdmission {
+    pub variables: usize,
+    pub clauses: usize,
+    pub literals: usize,
+    pub parse_ns: u128,
+}
+
+/// Call-local diagnostics, also retained on failure. Kernel-specific stderr
+/// metrics remain unchanged until the next diagnostic migration.
+#[derive(Debug, Default)]
+pub struct SolveDiagnostics {
+    pub fallback: Option<FallbackInfo>,
+    pub streaming_source: Option<SourceAdmission>,
+}
+
 /// Complete, rounded MPFR result. Boolean satisfiability is independent of count.
 /// Decimal strings use the existing CLI transport precision, not a certified interval.
+/// The original finite values are retained for lossless binary export on demand.
 #[derive(Debug)]
 pub struct SolveReport {
     pub sat: bool,
@@ -661,6 +730,19 @@ pub struct SolveReport {
     pub route: SolveRoute,
     pub precision: Precision,
     pub solve_ns: u128,
+    real_mpfr: MpfrValue,
+    imag_mpfr: MpfrValue,
+    pub diagnostics: SolveDiagnostics,
+}
+
+impl SolveReport {
+    pub fn real_mpfr(&self) -> &MpfrValue {
+        &self.real_mpfr
+    }
+
+    pub fn imag_mpfr(&self) -> &MpfrValue {
+        &self.imag_mpfr
+    }
 }
 
 /// A failed solve carries no numerical count.
@@ -668,6 +750,7 @@ pub struct SolveReport {
 pub struct SolveFailure {
     pub kind: FailureKind,
     reason: String,
+    pub diagnostics: SolveDiagnostics,
 }
 
 impl SolveFailure {
@@ -678,7 +761,11 @@ impl SolveFailure {
         } else {
             failure(&reason)
         };
-        Self { kind, reason }
+        Self {
+            kind,
+            reason,
+            diagnostics: SolveDiagnostics::default(),
+        }
     }
 
     pub fn reason(&self) -> &str {
@@ -713,12 +800,12 @@ pub fn solve_file(
     path: &std::ffi::OsStr,
     options: SolveOptions,
 ) -> Result<SolveReport, SolveFailure> {
-    solve_source(Source::File(path), options.into()).map_err(SolveFailure::from_reason)
+    solve_source(Source::File(path), options.into())
 }
 
 /// Solve an emitted weighted CNF already held by the caller.
 pub fn solve_text(raw: &str, options: SolveOptions) -> Result<SolveReport, SolveFailure> {
-    solve_source(Source::Text(raw), options.into()).map_err(SolveFailure::from_reason)
+    solve_source(Source::Text(raw), options.into())
 }
 
 /// CLI-only compatibility boundary: preserves legacy validation/error precedence.
@@ -739,10 +826,31 @@ pub fn solve_file_cli(
             large_general,
         },
     )
-    .map_err(SolveFailure::from_reason)
 }
 
-fn solve_source(source: Source<'_>, options: RawOptions<'_>) -> Result<SolveReport, String> {
+fn solve_source(
+    source: Source<'_>,
+    options: RawOptions<'_>,
+) -> Result<SolveReport, SolveFailure> {
+    let mut diagnostics = SolveDiagnostics::default();
+    match solve_source_inner(source, options, &mut diagnostics) {
+        Ok(mut report) => {
+            report.diagnostics = diagnostics;
+            Ok(report)
+        }
+        Err(reason) => {
+            let mut error = SolveFailure::from_reason(reason);
+            error.diagnostics = diagnostics;
+            Err(error)
+        }
+    }
+}
+
+fn solve_source_inner(
+    source: Source<'_>,
+    options: RawOptions<'_>,
+    diagnostics: &mut SolveDiagnostics,
+) -> Result<SolveReport, String> {
     let RawOptions {
         digits,
         mode,
@@ -821,13 +929,17 @@ fn solve_source(source: Source<'_>, options: RawOptions<'_>) -> Result<SolveRepo
         return Err("INPUT: invalid solver".into());
     }
     if large_general {
+        let admission = SourceAdmission {
+            variables: problem.n,
+            clauses: problem.clauses.len(),
+            literals: problem.clauses.iter().map(Vec::len).sum::<usize>(),
+            parse_ns: parse_start.elapsed().as_nanos(),
+        };
         eprintln!(
             "RAWMOCS_SOURCE_ADMITTED variables={} clauses={} literals={} parse_ns={}",
-            problem.n,
-            problem.clauses.len(),
-            problem.clauses.iter().map(Vec::len).sum::<usize>(),
-            parse_start.elapsed().as_nanos()
+            admission.variables, admission.clauses, admission.literals, admission.parse_ns
         );
+        diagnostics.streaming_source = Some(admission);
     }
     let start = Instant::now();
     let deadline = if large_general {
@@ -838,7 +950,7 @@ fn solve_source(source: Source<'_>, options: RawOptions<'_>) -> Result<SolveRepo
     let (answer, route) = if large_general {
         (general::solve_large(problem, bits, deadline)?, "general")
     } else {
-        solve_until(&problem, &raw, bits, mode, deadline)?
+        solve_until(&problem, &raw, bits, mode, deadline, diagnostics)?
     };
     if mode != "reference" && Instant::now() >= deadline {
         return Err("solver deadline".into());
@@ -862,11 +974,34 @@ fn solve_source(source: Source<'_>, options: RawOptions<'_>) -> Result<SolveRepo
         route: SolveRoute::from_name(route).ok_or("invalid internal route")?,
         precision,
         solve_ns: start.elapsed().as_nanos(),
+        real_mpfr: MpfrValue(answer.count.re),
+        imag_mpfr: MpfrValue(answer.count.im),
+        diagnostics: SolveDiagnostics::default(),
     })
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stored_mpfr_binary_is_lossless() {
+        for bits in [100, 200, 333, 432] {
+            for text in ["0", "-0", "0.1", "-0.125", "1e1000", "-1e-1000"] {
+                let original = Float::with_val(bits, Float::parse(text).unwrap());
+                let binary = MpfrValue(original.clone()).binary();
+                let integer = rug::Integer::from_str_radix(&binary.significand, 10).unwrap();
+                let mut restored = Float::with_val(binary.precision_bits, integer);
+                restored <<= binary.exponent2;
+                if binary.negative_zero {
+                    restored = Float::with_val(bits, rug::float::Special::NegZero);
+                }
+                assert_eq!(restored, original);
+                assert_eq!(restored.is_sign_negative(), original.is_sign_negative());
+                assert_eq!(binary.precision_bits, bits);
+            }
+        }
+    }
+
     #[test]
     fn streamed_general_matches_small_parser() {
         for bits in [100, 200, 333, 432] {

@@ -370,7 +370,7 @@ jobs:
           cargo build --locked --release --manifest-path crates/rawmocs-cli/Cargo.toml
           test "$(git -C .rawmocs-reference rev-parse HEAD)" = "$BASELINE_REVISION"
           cargo build --locked --release --manifest-path .rawmocs-reference/crates/rawmocs-cli/Cargo.toml
-      - name: Seven order-rotated same-precision native cohorts
+      - name: ${{ env.FRONTIER_ADMISSION == 'true' && 'Seven order-rotated same-precision native quadruples' || 'Seven order-rotated same-precision native triples' }}
         shell: bash
         run: |
           set -euo pipefail

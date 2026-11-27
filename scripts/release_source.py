@@ -175,6 +175,7 @@ V022_STEPS = {
         "Build fresh locked candidate",
         "Build pinned source encoder",
         "Qualify small source-locked family representatives (release)",
+        "Verify rationalized evidence content and immutable reference tree",
         "Archive rationalized release evidence"},
 }
 for _name in V022_SCIENCE:

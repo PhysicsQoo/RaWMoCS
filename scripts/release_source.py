@@ -92,6 +92,19 @@ def native_policy(version, candidate_frontier=False):
     }
 
 
+def shared_core_steps(version, name):
+    """Keep historical receipts valid; new shared-core releases need exact-main evidence."""
+    if tuple(map(int, version.split("."))) < (0, 2, 1):
+        return set()
+    if name == "Regenerate original CNF and independent interval without artifacts":
+        return {
+            "Natural native cancellation on original source-locked CNFs",
+            "R6 seven-round native transport regression against published v0.2.0",
+            "Archive shared-core full science evidence",
+        }
+    return set()
+
+
 def verify_run(r, run_data, jobs, kind):
     expected = SCIENCE if kind == "science" else CODSPEED
     workflow = "rust-science.yml" if kind == "science" else "codspeed.yml"
@@ -123,6 +136,8 @@ def verify_run(r, run_data, jobs, kind):
                                   "Seven order-rotated same-precision native quadruples"}
             else:
                 required_steps = {"Seven order-rotated same-precision native triples"}
+        if kind == "science":
+            required_steps = set(required_steps) | shared_core_steps(r["version"], j["name"])
         require(all(steps.get(s) == "success" for s in required_steps),
                 f"missing or failed required step {j['name']}")
         require(not any(s["conclusion"] in ("failure", "cancelled", "timed_out") for s in j["steps"]),

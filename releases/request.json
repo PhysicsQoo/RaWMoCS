@@ -1,10 +1,10 @@
 {
-  "version": "0.1.1",
-  "revision": "b3d02b2720c2fae5231c0ed5cf44950164a5780d",
-  "science_run": 45777355938,
-  "codspeed_run": 45777355934,
-  "artifact_id": 15096457942,
-  "artifact_digest": "sha256:3533761ba814b96059b1e682d65eacf3a9bcc56f1ef0d86804d08dc9602232fe",
-  "source_sha256": "4d048543f609cf80490a05442c5bbb0876a9a4409f5537378c450780d1315d37",
-  "notes": "releases/v0.1.1.md"
+  "version": "0.2.0",
+  "revision": "e553bc7bd739ca912036d8fa9f3a1ddfe8d8859c",
+  "science_run": 45950107610,
+  "codspeed_run": 45950107552,
+  "artifact_id": 15176338953,
+  "artifact_digest": "sha256:4b9671ed60b8a9d6c603dc4a5220386f28bc36bfa6ca0aeee327448febeb7a7e",
+  "source_sha256": "6fea59b400352ec3a5198e1a438b27e462516998431451170fee7b466af0cc5e",
+  "notes": "releases/v0.2.0.md"
 }

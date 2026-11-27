@@ -14,11 +14,11 @@ on:
         required: true
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ ((github.event_name == 'workflow_dispatch' && inputs.suite == 'rationalized') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-rationalized]') && !contains(github.event.head_commit.message, '[release-science]'))) && 'rationalized' || (((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]'))) && 'full' || 'fast' }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ ((github.event_name == 'workflow_dispatch' && inputs.suite == 'rationalized') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-rationalized]') && !contains(github.event.head_commit.message, '[release-science]'))) && 'rationalized' || (((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) || ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]')) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'maintenance/parallel-release-ci' && contains(github.event.pull_request.title, '[parallel-full]')))) && 'full' || 'fast' }}
   cancel-in-progress: true
 
 env:
-  SCIENCE_SUITE: ${{ ((github.event_name == 'workflow_dispatch' && inputs.suite == 'rationalized') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-rationalized]') && !contains(github.event.head_commit.message, '[release-science]'))) && 'rationalized' || (((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]'))) && 'full' || 'fast' }}
+  SCIENCE_SUITE: ${{ ((github.event_name == 'workflow_dispatch' && inputs.suite == 'rationalized') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-rationalized]') && !contains(github.event.head_commit.message, '[release-science]'))) && 'rationalized' || (((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) || ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]')) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'maintenance/parallel-release-ci' && contains(github.event.pull_request.title, '[parallel-full]')))) && 'full' || 'fast' }}
 
 permissions:
   contents: read
@@ -90,7 +90,7 @@ jobs:
         run: cargo test -p rawmocs-core --test a0_regressions -- --ignored --nocapture
 
   portability:
-    if: ((github.event_name == 'workflow_dispatch' && inputs.suite == 'rationalized') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-rationalized]') && !contains(github.event.head_commit.message, '[release-science]'))) || github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || (((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]')))
+    if: ((github.event_name == 'workflow_dispatch' && inputs.suite == 'rationalized') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-rationalized]') && !contains(github.event.head_commit.message, '[release-science]'))) || github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || (((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) || ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]')) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'maintenance/parallel-release-ci' && contains(github.event.pull_request.title, '[parallel-full]'))))
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -411,7 +411,7 @@ jobs:
           retention-days: 30
 
   durable-source-rebuild:
-    name: ${{ (((github.event_name == 'workflow_dispatch' && inputs.suite == 'rationalized') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-rationalized]') && !contains(github.event.head_commit.message, '[release-science]'))) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v022-ci-rationalization')) && 'Rationalized release small-family science' || (((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]'))) && 'Regenerate original CNF and independent interval without artifacts' || 'Replay seven source-locked independent witnesses' }}
+    name: ${{ (((github.event_name == 'workflow_dispatch' && inputs.suite == 'rationalized') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-rationalized]') && !contains(github.event.head_commit.message, '[release-science]'))) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v022-ci-rationalization')) && 'Rationalized release small-family science' || (((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) || ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]')) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'maintenance/parallel-release-ci' && contains(github.event.pull_request.title, '[parallel-full]')))) && 'Regenerate original CNF and independent interval without artifacts' || 'Replay seven source-locked independent witnesses' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -518,29 +518,29 @@ jobs:
           mkdir -p .fast-witness
           python3 crates/rawmocs-cli/tools/native_cancel_admission.py --corpus .release-rebuild --probe crates/rawmocs-cli/target/release/examples/native_cancel_probe --out .fast-witness/native-cancel
       - uses: actions/checkout@v4
-        if: env.SCIENCE_SUITE == 'full' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v021-shared-rust-core')
+        if: env.SCIENCE_SUITE != 'full' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v021-shared-rust-core'
         with:
           ref: e553bc7bd739ca912036d8fa9f3a1ddfe8d8859c
           path: .rawmocs-v020
           persist-credentials: false
       - uses: Swatinem/rust-cache@v2
-        if: env.SCIENCE_SUITE == 'full' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v021-shared-rust-core')
+        if: env.SCIENCE_SUITE != 'full' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v021-shared-rust-core'
         with:
           workspaces: .rawmocs-v020/crates/rawmocs-cli -> target
           shared-key: native-v020-baseline
       - name: R6 seven-round native transport regression against published v0.2.0
-        if: env.SCIENCE_SUITE == 'full' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v021-shared-rust-core')
+        if: env.SCIENCE_SUITE != 'full' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v021-shared-rust-core'
         shell: bash
         run: |
           set -euo pipefail
           cargo build --locked --release --manifest-path .rawmocs-v020/crates/rawmocs-cli/Cargo.toml
           cargo build --locked --release --manifest-path crates/rawmocs-cli/Cargo.toml --example native_transport_probe
           python3 crates/rawmocs-cli/tools/native_transport_admission.py --corpus .release-rebuild --baseline-source .rawmocs-v020 --baseline .rawmocs-v020/crates/rawmocs-cli/target/release/rawmocs --bin crates/rawmocs-cli/target/release/rawmocs --probe crates/rawmocs-cli/target/release/examples/native_transport_probe --out .fast-witness/native-transport
-      - name: Archive shared-core full science evidence
-        if: always() && env.SCIENCE_SUITE == 'full'
+      - name: Archive cancellation evidence for parallel transport
+        if: env.SCIENCE_SUITE == 'full'
         uses: actions/upload-artifact@v4
         with:
-          name: rawmocs-shared-core-full-evidence
+          name: rawmocs-full-cancellation-evidence
           path: .fast-witness/
           include-hidden-files: true
           if-no-files-found: error
@@ -606,8 +606,64 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  release-native-transport:
+    if: (((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) || ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]')) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'maintenance/parallel-release-ci' && contains(github.event.pull_request.title, '[parallel-full]'))))
+    name: Release shared-core native transport (parallel)
+    needs: durable-source-rebuild
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: rawmocs-v010-durable-rebuild
+          path: .release-rebuild
+      - uses: actions/download-artifact@v4
+        with:
+          name: rawmocs-full-cancellation-evidence
+          path: .fast-witness
+      - uses: actions/checkout@v4
+        with:
+          ref: e553bc7bd739ca912036d8fa9f3a1ddfe8d8859c
+          path: .rawmocs-v020
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/rawmocs-cli -> target
+          shared-key: witness-candidate
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .rawmocs-v020/crates/rawmocs-cli -> target
+          shared-key: native-v020-baseline
+      - name: Prepare locked native dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgmp-dev libmpfr-dev m4 make gcc pkg-config
+          cargo build --locked --release --manifest-path crates/rawmocs-cli/Cargo.toml
+      - name: R6 seven-round native transport regression against published v0.2.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --manifest-path .rawmocs-v020/crates/rawmocs-cli/Cargo.toml
+          cargo build --locked --release --manifest-path crates/rawmocs-cli/Cargo.toml --example native_transport_probe
+          python3 crates/rawmocs-cli/tools/native_transport_admission.py --corpus .release-rebuild --baseline-source .rawmocs-v020 --baseline .rawmocs-v020/crates/rawmocs-cli/target/release/rawmocs --bin crates/rawmocs-cli/target/release/rawmocs --probe crates/rawmocs-cli/target/release/examples/native_transport_probe --out .fast-witness/native-transport
+      - name: Archive shared-core full science evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rawmocs-shared-core-full-evidence
+          path: .fast-witness/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
   release-native-paired:
-    if: (((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]')))
+    if: (((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) || ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]')) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'maintenance/parallel-release-ci' && contains(github.event.pull_request.title, '[parallel-full]'))))
     name: Release matched native GPMC (${{ matrix.case }})
     env:
       FRONTIER_CANDIDATE: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]')) && 'true' || 'false' }}

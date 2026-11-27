@@ -120,5 +120,57 @@ class SourceAssetTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "source inventory identity"):
             verify_python_assets(r, assets)
 
+
+class ParallelTransportGate(unittest.TestCase):
+    def candidate(self):
+        r, run, jobs = candidate()
+        source = next(j for j in jobs["jobs"] if j["name"] ==
+                      "Regenerate original CNF and independent interval without artifacts")
+        moved = {"R6 seven-round native transport regression against published v0.2.0",
+                 "Archive shared-core full science evidence"}
+        transport = [x for x in source["steps"] if x["name"] in moved]
+        source["steps"] = [x for x in source["steps"] if x["name"] not in moved]
+        source["steps"] += [{"name": n, "conclusion": "success"} for n in
+                            ("Archive cancellation evidence for parallel transport",
+                             "Archive regeneration evidence")]
+        transport.append({"name": "Prepare locked native dependencies", "conclusion": "success"})
+        jobs["jobs"].append({"name": "Release shared-core native transport (parallel)",
+                             "status": "completed", "conclusion": "success", "steps": transport})
+        jobs["total_count"] = len(jobs["jobs"])
+        return r, run, jobs
+
+    def test_parallel_full(self):
+        verify_run(*self.candidate(), "science")
+
+    def test_missing_transport_job(self):
+        r, run, jobs = self.candidate()
+        jobs["jobs"].pop()
+        jobs["total_count"] -= 1
+        with self.assertRaises(ValueError):
+            verify_run(r, run, jobs, "science")
+
+    def test_failed_or_skipped_transport(self):
+        for conclusion in ("failure", "skipped"):
+            r, run, jobs = self.candidate()
+            jobs["jobs"][-1]["conclusion"] = conclusion
+            with self.assertRaises(ValueError):
+                verify_run(r, run, jobs, "science")
+
+    def test_missing_transport_step(self):
+        r, run, jobs = self.candidate()
+        jobs["jobs"][-1]["steps"].pop(0)
+        with self.assertRaises(ValueError):
+            verify_run(r, run, jobs, "science")
+
+    def test_missing_cancellation_archive(self):
+        r, run, jobs = self.candidate()
+        source = next(j for j in jobs["jobs"] if j["name"] ==
+                      "Regenerate original CNF and independent interval without artifacts")
+        source["steps"] = [x for x in source["steps"] if x["name"] !=
+                           "Archive cancellation evidence for parallel transport"]
+        with self.assertRaises(ValueError):
+            verify_run(r, run, jobs, "science")
+
+
 if __name__ == "__main__":
     unittest.main()

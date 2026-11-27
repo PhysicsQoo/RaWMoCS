@@ -112,10 +112,17 @@ def shared_core_steps(version, name):
 def verify_run(r, run_data, jobs, kind):
     expected = SCIENCE if kind == "science" else CODSPEED
     skipped = set()
+    parallel_transport = False
     if kind == "science" and r["version"] == "0.3.0":
         from release_python_source import PYTHON_JOBS, RESEARCH_SKIPS
         expected = expected | PYTHON_JOBS | RESEARCH_SKIPS
         skipped = RESEARCH_SKIPS
+        # Both exact historical and split layouts require the same full science.
+        # The new topology must have the dedicated successful R6 job.
+        parallel_transport = any(j["name"] == "Release shared-core native transport (parallel)"
+                                 for j in jobs["jobs"])
+        if parallel_transport:
+            expected = expected | {"Release shared-core native transport (parallel)"}
     workflow = "rust-science.yml" if kind == "science" else "codspeed.yml"
     require(run_data["id"] == r[kind + "_run"], "wrong run ID")
     require(run_data["repository"]["full_name"] == REPO
@@ -153,6 +160,14 @@ def verify_run(r, run_data, jobs, kind):
             if r["version"] == "0.3.0":
                 from release_python_source import PYTHON_STEPS
                 required_steps |= PYTHON_STEPS.get(j["name"], set())
+                if parallel_transport:
+                    transport = {"R6 seven-round native transport regression against published v0.2.0",
+                                 "Archive shared-core full science evidence"}
+                    if j["name"] == "Regenerate original CNF and independent interval without artifacts":
+                        required_steps = (required_steps - transport) | {
+                            "Archive cancellation evidence for parallel transport", "Archive regeneration evidence"}
+                    elif j["name"] == "Release shared-core native transport (parallel)":
+                        required_steps |= transport | {"Prepare locked native dependencies"}
         require(all(steps.get(s) == "success" for s in required_steps),
                 f"missing or failed required step {j['name']}")
         require(not any(s["conclusion"] in ("failure", "cancelled", "timed_out") for s in j["steps"]),

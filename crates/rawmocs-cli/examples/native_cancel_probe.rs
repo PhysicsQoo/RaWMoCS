@@ -51,8 +51,14 @@ fn main() {
     let recovered = solve_file_cancellable(&path, options, &fresh).unwrap();
     assert_eq!(baseline.sat, recovered.sat);
     assert_eq!(baseline.route, recovered.route);
-    assert_eq!(baseline.real_mpfr().binary(), recovered.real_mpfr().binary());
-    assert_eq!(baseline.imag_mpfr().binary(), recovered.imag_mpfr().binary());
+    assert_eq!(
+        baseline.real_mpfr().binary(),
+        recovered.real_mpfr().binary()
+    );
+    assert_eq!(
+        baseline.imag_mpfr().binary(),
+        recovered.imag_mpfr().binary()
+    );
     println!("s SATISFIABLE");
     println!("c r mpfr {} {}", recovered.real, recovered.imag);
 }

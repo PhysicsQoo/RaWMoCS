@@ -52,7 +52,13 @@ jobs:
     if: >-
       vars.RAWMOCS_CODSPEED_ENABLED == 'true' &&
       (github.event_name != 'pull_request' ||
-       github.event.pull_request.head.repo.full_name == github.repository)
+       github.event.pull_request.head.repo.full_name == github.repository) &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' && contains(github.event.head_commit.message, '[release-science]')) ||
+       (github.event_name == 'pull_request' &&
+        (contains(github.event.pull_request.title, '[full-science]') ||
+         contains(github.event.pull_request.title, '[parallel-full]') ||
+         contains(github.event.pull_request.title, '[performance]'))))
     continue-on-error: true
     runs-on: ubuntu-24.04
     timeout-minutes: 30

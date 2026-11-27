@@ -7,10 +7,10 @@ on:
   workflow_dispatch:
     inputs:
       suite:
-        description: 'fast: replay; full: regenerate and native trials; rationalized: scoped v0.2.2 release rehearsal; memory-attribution: replay M0; memory-python-scout: explicit M2 research replay only'
+        description: 'fast: bounded same-family checks; full: explicit algorithm/native trials; rationalized: scoped v0.2.2 release rehearsal; memory-attribution: replay M0; memory-python-scout: explicit M2 research replay only'
         type: choice
         options: [fast, full, rationalized, memory-attribution, memory-rust-scout, memory-python-scout]
-        default: full
+        default: fast
         required: true
 
 concurrency:
@@ -28,8 +28,27 @@ jobs:
   core:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      scope: ${{ steps.scope.outputs.scope }}
+      python_contract: ${{ steps.scope.outputs.python_contract }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Classify exact change scope (ordinary CI, not release admission)
+        id: scope
+        env:
+          CI_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          python3 scripts/ci_scope.py --base "$CI_BASE" --revision "$GITHUB_SHA" --out "${RUNNER_TEMP}/ci-scope.json"
+      - name: Verify ordinary scope classifier
+        run: python3 scripts/test_ci_scope.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rawmocs-ci-scope
+          path: ${{ runner.temp }}/ci-scope.json
+          retention-days: 30
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -197,6 +216,7 @@ jobs:
 
   release-cli:
     name: First release CLI and source-locked transfer gate
+    needs: core
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -223,7 +243,7 @@ jobs:
           cargo test --locked --release --manifest-path "$manifest" --lib in_flight_cancellation_at_real_checkpoints -- --nocapture
           cargo build --locked --release --manifest-path "$manifest"
       - name: Prototype Python native wheel and API contract
-        if: (github.event_name == 'pull_request' && (github.head_ref == 'research/python-api' || github.head_ref == 'release/prepare-v030-source')) || (env.SCIENCE_SUITE == 'full' && github.ref == 'refs/heads/main')
+        if: (needs.core.outputs.python_contract == 'true' && env.SCIENCE_SUITE == 'fast') || ((github.event_name == 'pull_request' && (github.head_ref == 'research/python-api' || github.head_ref == 'release/prepare-v030-source')) || (env.SCIENCE_SUITE == 'full' && github.ref == 'refs/heads/main'))
         shell: bash
         run: |
           set -euo pipefail
@@ -265,7 +285,7 @@ jobs:
           python scripts/python_package_candidate.py --wheel "$RUNNER_TEMP"/rawmocs-rebuilt/*.whl --platform linux_x86_64 --out .release-evidence/python/rebuilt-package-candidate.json
           cp .release-evidence/python/{source-inventory,package-candidate,rebuilt-package-candidate}.json .release-evidence/python-source-release/
       - name: Archive Python packaging evidence
-        if: always() && ((github.event_name == 'pull_request' && (github.head_ref == 'research/python-api' || github.head_ref == 'release/prepare-v030-source')) || (env.SCIENCE_SUITE == 'full' && github.ref == 'refs/heads/main'))
+        if: always() && ((needs.core.outputs.python_contract == 'true' && env.SCIENCE_SUITE == 'fast') || ((github.event_name == 'pull_request' && (github.head_ref == 'research/python-api' || github.head_ref == 'release/prepare-v030-source')) || (env.SCIENCE_SUITE == 'full' && github.ref == 'refs/heads/main')))
         uses: actions/upload-artifact@v4
         with:
           name: rawmocs-python-packaging
@@ -413,7 +433,7 @@ jobs:
           retention-days: 30
 
   durable-source-rebuild:
-    name: ${{ (((github.event_name == 'workflow_dispatch' && inputs.suite == 'rationalized') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-rationalized]') && !contains(github.event.head_commit.message, '[release-science]'))) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v022-ci-rationalization')) && 'Rationalized release small-family science' || (((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) || ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]')) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'maintenance/parallel-release-ci' && contains(github.event.pull_request.title, '[parallel-full]')))) && 'Regenerate original CNF and independent interval without artifacts' || 'Replay seven source-locked independent witnesses' }}
+    name: ${{ (((github.event_name == 'workflow_dispatch' && inputs.suite == 'rationalized') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-rationalized]') && !contains(github.event.head_commit.message, '[release-science]'))) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v022-ci-rationalization')) && 'Rationalized release small-family science' || (((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) || ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]')) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'maintenance/parallel-release-ci' && contains(github.event.pull_request.title, '[parallel-full]')))) && 'Regenerate original CNF and independent interval without artifacts' || 'Routine small-family science and R6-Light' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -435,29 +455,8 @@ jobs:
           python3 scripts/ci_scope_v022.py --revision "$GITHUB_SHA" | tee .fast-witness/shadow-scope.json
           python3 -c 'import json; r=json.load(open(".fast-witness/shadow-scope.json")); assert r["scope"] == "CI_ONLY_CANDIDATE" and r["release_authorized"] is False'
           echo 'small_only=true' >> "$GITHUB_OUTPUT"
-      - name: Retrieve immutable previously regenerated corpus (fast only)
-        id: corpus
-        if: env.SCIENCE_SUITE == 'fast' && steps.shadow.outputs.small_only != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p .fast-witness
-          zip="$RUNNER_TEMP/rawmocs-corpus.zip"
-          endpoint="repos/PhysicsQoo/RaWMoCS/actions/artifacts/15084476883/zip"
-          if gh api "$endpoint" > "$zip"; then
-            echo '6ad6683a489057deffb6537c60600e13e38e0586f1dc4e40aa87a4e1da1c8e72  '"$zip" | sha256sum -c -
-            unzip -q "$zip" -d .release-rebuild
-            printf '%s\n' 'mode=PINNED_REPLAY' 'source_run=45748202558' 'source_revision=6fffa964fdfb2ba6dfe8f3a2144471a26721b885' 'artifact_id=15084476883' 'zip_sha256=6ad6683a489057deffb6537c60600e13e38e0586f1dc4e40aa87a4e1da1c8e72' > .fast-witness/provenance.txt
-            echo "available=true" >> "$GITHUB_OUTPUT"
-          else
-            rm -f "$zip"
-            echo "mode=INDEPENDENT_REBUILD_ARTIFACT_UNAVAILABLE" > .fast-witness/provenance.txt
-            echo "available=false" >> "$GITHUB_OUTPUT"
-          fi
       - uses: actions/checkout@v4
-        if: env.SCIENCE_SUITE == 'full' || steps.corpus.outputs.available != 'true' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v022-ci-rationalization') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'maintenance/parallel-release-ci' && env.SCIENCE_SUITE == 'fast')
+        if: env.SCIENCE_SUITE == 'full' || env.SCIENCE_SUITE == 'fast' || steps.shadow.outputs.small_only == 'true'
         with:
           repository: PhysicsQoo/QuPRS
           ref: 0b28736651b3740ed3b201edd2efdef3da541e0d
@@ -473,7 +472,7 @@ jobs:
           shared-key: ${{ steps.shadow.outputs.small_only == 'true' && 'release-cli' || 'witness-candidate' }}
           save-if: ${{ steps.shadow.outputs.small_only != 'true' }}
       - uses: Swatinem/rust-cache@v2
-        if: env.SCIENCE_SUITE == 'full' || steps.corpus.outputs.available != 'true' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v022-ci-rationalization') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'maintenance/parallel-release-ci' && env.SCIENCE_SUITE == 'fast')
+        if: env.SCIENCE_SUITE == 'full' || env.SCIENCE_SUITE == 'fast' || steps.shadow.outputs.small_only == 'true'
         with:
           workspaces: .quprs-repro/rust -> target
           shared-key: witness-encoder
@@ -485,7 +484,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends libgmp-dev libmpfr-dev m4 make gcc pkg-config
           cargo build --locked --release --manifest-path crates/rawmocs-cli/Cargo.toml
       - name: Build pinned source encoder
-        if: env.SCIENCE_SUITE == 'full' || steps.corpus.outputs.available != 'true' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v022-ci-rationalization') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'maintenance/parallel-release-ci' && env.SCIENCE_SUITE == 'fast')
+        if: env.SCIENCE_SUITE == 'full' || env.SCIENCE_SUITE == 'fast' || steps.shadow.outputs.small_only == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -497,54 +496,30 @@ jobs:
           cp "$repro/quprs_long_tail_source_bridge.rs" .quprs-repro/rust/quprs/examples/
           cargo build --locked --release --no-default-features --manifest-path .quprs-repro/rust/Cargo.toml -p quprs --example quprs_long_tail_source_bridge
       - name: Regenerate six source CNFs and verify seven cohorts
-        if: steps.shadow.outputs.small_only != 'true' && (env.SCIENCE_SUITE == 'full' || steps.corpus.outputs.available != 'true')
+        if: steps.shadow.outputs.small_only != 'true' && env.SCIENCE_SUITE == 'full'
         run: |
           set -euo pipefail
           python3 crates/rawmocs-cli/tools/regenerate_release.py --quprs .quprs-repro --exporter .quprs-repro/rust/target/release/examples/quprs_long_tail_source_bridge --bin crates/rawmocs-cli/target/release/rawmocs --out .release-rebuild
-      - name: Replay pinned source-locked seven-cohort witness
-        if: steps.shadow.outputs.small_only != 'true' && env.SCIENCE_SUITE == 'fast' && steps.corpus.outputs.available == 'true'
-        run: |
-          set -euo pipefail
-          python3 crates/rawmocs-cli/tools/replay_release.py --corpus .release-rebuild --bin crates/rawmocs-cli/target/release/rawmocs --out .fast-witness
       - name: Qualify small source-locked family representatives (release)
-        if: steps.shadow.outputs.small_only == 'true'
+        if: steps.shadow.outputs.small_only == 'true' || env.SCIENCE_SUITE == 'fast'
         run: |
           set -euo pipefail
           python3 crates/rawmocs-cli/tools/small_family_qualification.py --quprs .quprs-repro --exporter .quprs-repro/rust/target/release/examples/quprs_long_tail_source_bridge --bin crates/rawmocs-cli/target/release/rawmocs --out .fast-witness/small-family
       - name: R6-Light small original-family native transport rehearsal
-        if: (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'maintenance/parallel-release-ci' && env.SCIENCE_SUITE == 'fast')
+        if: env.SCIENCE_SUITE == 'fast' && steps.shadow.outputs.small_only != 'true'
         shell: bash
         run: |
           set -euo pipefail
           cargo build --locked --release --manifest-path crates/rawmocs-cli/Cargo.toml --example native_transport_probe
           python3 crates/rawmocs-cli/tools/native_transport_light.py --quprs .quprs-repro --exporter .quprs-repro/rust/target/release/examples/quprs_long_tail_source_bridge --bin crates/rawmocs-cli/target/release/rawmocs --probe crates/rawmocs-cli/target/release/examples/native_transport_probe --out .fast-witness/r6-light
       - name: Natural native cancellation on original source-locked CNFs
-        if: steps.shadow.outputs.small_only != 'true'
+        if: steps.shadow.outputs.small_only != 'true' && env.SCIENCE_SUITE == 'full'
         shell: bash
         run: |
           set -euo pipefail
           cargo build --locked --release --manifest-path crates/rawmocs-cli/Cargo.toml --example native_cancel_probe
           mkdir -p .fast-witness
           python3 crates/rawmocs-cli/tools/native_cancel_admission.py --corpus .release-rebuild --probe crates/rawmocs-cli/target/release/examples/native_cancel_probe --out .fast-witness/native-cancel
-      - uses: actions/checkout@v4
-        if: env.SCIENCE_SUITE != 'full' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v021-shared-rust-core'
-        with:
-          ref: e553bc7bd739ca912036d8fa9f3a1ddfe8d8859c
-          path: .rawmocs-v020
-          persist-credentials: false
-      - uses: Swatinem/rust-cache@v2
-        if: env.SCIENCE_SUITE != 'full' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v021-shared-rust-core'
-        with:
-          workspaces: .rawmocs-v020/crates/rawmocs-cli -> target
-          shared-key: native-v020-baseline
-      - name: R6 seven-round native transport regression against published v0.2.0
-        if: env.SCIENCE_SUITE != 'full' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v021-shared-rust-core'
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo build --locked --release --manifest-path .rawmocs-v020/crates/rawmocs-cli/Cargo.toml
-          cargo build --locked --release --manifest-path crates/rawmocs-cli/Cargo.toml --example native_transport_probe
-          python3 crates/rawmocs-cli/tools/native_transport_admission.py --corpus .release-rebuild --baseline-source .rawmocs-v020 --baseline .rawmocs-v020/crates/rawmocs-cli/target/release/rawmocs --bin crates/rawmocs-cli/target/release/rawmocs --probe crates/rawmocs-cli/target/release/examples/native_transport_probe --out .fast-witness/native-transport
       - name: Archive cancellation evidence for parallel transport
         if: env.SCIENCE_SUITE == 'full'
         uses: actions/upload-artifact@v4
@@ -563,14 +538,12 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 30
-      - name: Archive fast regression provenance and receipts
+      - name: Archive bounded routine science evidence
         if: always() && env.SCIENCE_SUITE == 'fast' && steps.shadow.outputs.small_only != 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: rawmocs-fast-witness-replay
-          path: |
-            .fast-witness/
-            .release-rebuild/regeneration.json
+          name: rawmocs-routine-small-family-evidence
+          path: .fast-witness/
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 30

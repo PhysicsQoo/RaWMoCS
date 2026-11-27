@@ -145,8 +145,8 @@ def verify_run(r, run_data, jobs, kind):
 
 
 
-# Candidate contract only: prepare() deliberately does not call this until
-# the exact-main rationalized workflow and fault-detection gate are admitted.
+# Version-specific rationalized contract; full science remains the default
+# and the only policy for all other versions.
 V022_SMALL_JOB = "Rationalized release small-family science"
 V022_SKIPPED_JOB = "Release matched native GPMC (${{ matrix.case }})"
 V022_SCIENCE = frozenset(
@@ -168,6 +168,7 @@ V022_STEPS = {
         "Build and test candidate with resolved dependency lock",
         "Exercise executable success, SAT-zero and fail-closed contracts",
         "Deep general search and external process lifecycle",
+        "Reject real multi-leaf solver arithmetic mutation",
         "Require unchanged tracked release candidate",
         "Archive candidate lock and immutable evidence"},
     V022_SMALL_JOB: {
@@ -184,7 +185,7 @@ for _name in V022_SCIENCE:
 
 
 def verify_v022_rationalized_run(r, run_data, jobs, recomputed_scope):
-    """Check the proposed exact-main receipt; not an active release policy.
+    """Check the exact-main rationalized receipt.
 
     Scope must be independently recomputed from local immutable Git objects
     by the eventual caller, not read from an uploaded receipt or the request.
@@ -209,10 +210,8 @@ def verify_v022_rationalized_run(r, run_data, jobs, recomputed_scope):
             "wrong workflow")
     require(run_data["head_branch"] == "main" and run_data["head_sha"] == r["revision"],
             "wrong run revision")
-    require(run_data["event"] == "workflow_dispatch" or (
-        run_data["event"] == "push"
-        and "[release-rationalized]" in (run_data.get("head_commit") or {}).get("message", "")),
-        "explicit rationalized release intent required")
+    require(run_data["event"] == "workflow_dispatch",
+            "explicit rationalized workflow dispatch required")
     require(run_data["status"] == "completed" and run_data["conclusion"] == "success",
             "run not successful")
     expected = V022_SCIENCE | {V022_SKIPPED_JOB}
@@ -309,6 +308,75 @@ def verify_v022_small_archive(revision, blob, scope):
                 "missing or duplicate receipt fault evidence")
 
 
+
+def verify_v022_baseline_receipts():
+    from ci_scope_v022 import QUALIFIED
+    for kind, run_id in (("science", V022_QUALIFICATION_SCIENCE),
+                         ("codspeed", V022_QUALIFICATION_CODSPEED)):
+        endpoint = f"repos/{REPO}/actions/runs/{run_id}"
+        receipt = api(endpoint)
+        require(receipt["id"] == run_id
+                and receipt["head_sha"] in (QUALIFIED, V022_TESTED_MERGE)
+                and receipt["repository"]["full_name"] == REPO
+                and receipt["head_repository"]["full_name"] == REPO
+                and receipt["event"] == "pull_request"
+                and receipt["status"] == "completed" and receipt["conclusion"] == "success"
+                and receipt["path"].split("@", 1)[0] ==
+                ".github/workflows/" + ("rust-science.yml" if kind == "science" else "codspeed.yml"),
+                "qualification run identity mismatch")
+        result = api(f"{endpoint}/attempts/{receipt['run_attempt']}/jobs?per_page=100")
+        expected = CODSPEED if kind == "codspeed" else (
+            V022_SCIENCE - {V022_SMALL_JOB} |
+            {"Replay seven source-locked independent witnesses", V022_SKIPPED_JOB})
+        require(result["total_count"] == len(result["jobs"]) == len(expected)
+                and {j["name"] for j in result["jobs"]} == expected,
+                "qualification job set mismatch")
+        for job in result["jobs"]:
+            require(job["status"] == "completed" and job["conclusion"] ==
+                    ("skipped" if job["name"] == V022_SKIPPED_JOB else "success"),
+                    "qualification job failed")
+
+
+def verify_v022_admission(r, run_data, jobs):
+    from ci_scope_v022 import PUBLISHED, QUALIFIED, inspect
+    # Fetch fixed Git objects only. Never execute code from an artifact.
+    subprocess.run(["git", "fetch", "--no-tags", "origin", PUBLISHED,
+                    QUALIFIED, V022_TESTED_MERGE], check=True)
+    verify_v022_reference_tree()
+    scope = inspect(r["revision"])
+    verify_v022_rationalized_run(r, run_data, jobs, scope)
+    verify_v022_baseline_receipts()
+    listing = api(f"repos/{REPO}/actions/runs/{r['science_run']}/artifacts?per_page=100")
+    require(listing["total_count"] == len(listing["artifacts"]), "truncated evidence listing")
+    candidates = [a for a in listing["artifacts"]
+                  if a["name"] == "rawmocs-v022-rationalized-evidence"]
+    require(len(candidates) == 1, "missing or ambiguous rationalized artifact")
+    artifact_id = candidates[0]["id"]
+    endpoint = f"repos/{REPO}/actions/artifacts/{artifact_id}"
+    artifact = api(endpoint)
+    require(artifact["id"] == artifact_id and artifact["name"] == candidates[0]["name"]
+            and not artifact["expired"] and artifact["digest"] == candidates[0]["digest"]
+            and artifact["workflow_run"]["id"] == r["science_run"]
+            and artifact["workflow_run"]["head_sha"] == r["revision"],
+            "rationalized artifact provenance mismatch")
+    blob = run("gh", "api", endpoint + "/zip")
+    require("sha256:" + digest(blob) == artifact["digest"], "rationalized ZIP digest mismatch")
+    verify_v022_small_archive(r["revision"], blob, scope)
+
+
+def verify_v022_mutation(z, revision):
+    root = ".release-evidence/mutation/"
+    test = "factor_prejoin::tests::prejoin_cut_planner_width_boundary"
+    require(z.read(root + "status.txt").decode().strip() ==
+            "SOLVER_MUTATION_REJECTED_AND_RESTORED " + revision, "wrong mutation revision")
+    mutant = z.read(root + "mutant.log").decode()
+    restored = z.read(root + "restored.log").decode()
+    require(f"test {test} ... FAILED" in mutant and "test result: FAILED. 0 passed; 1 failed" in mutant,
+            "mutation not rejected by the target assertion")
+    require(f"test {test} ... ok" in restored and "test result: ok. 1 passed; 0 failed" in restored,
+            "restored solver test did not pass")
+
+
 def verify_assets(r, assets):
     v = r["version"]
     archive = f"rawmocs-{v}-source.tar.gz"
@@ -366,11 +434,17 @@ def prepare(r):
     subprocess.run(["git", "merge-base", "--is-ancestor", r["revision"], main], check=True)
     manifest = run("git", "show", r["revision"] + ":crates/rawmocs-cli/Cargo.toml").decode()
     require(tomllib.loads(manifest)["package"]["version"] == r["version"], "target version mismatch")
+    rationalized = False
     for kind in ("science", "codspeed"):
         endpoint = f"repos/{REPO}/actions/runs/{r[kind + '_run']}"
         run_data = api(endpoint)
         jobs = api(f"{endpoint}/attempts/{run_data['run_attempt']}/jobs?per_page=100")
-        verify_run(r, run_data, jobs, kind)
+        if kind == "science" and r["version"] == "0.2.2" and any(
+                j["name"] == V022_SMALL_JOB for j in jobs["jobs"]):
+            verify_v022_admission(r, run_data, jobs)
+            rationalized = True
+        else:
+            verify_run(r, run_data, jobs, kind)
     endpoint = f"repos/{REPO}/actions/artifacts/{r['artifact_id']}"
     artifact = api(endpoint)
     require(artifact["id"] == r["artifact_id"] and artifact["name"] == "rawmocs-v010-candidate-evidence"
@@ -383,6 +457,8 @@ def prepare(r):
     with zipfile.ZipFile(io.BytesIO(blob)) as z:
         require(len(z.namelist()) == len(set(z.namelist())), "duplicate ZIP member")
         assets = {name: z.read(".release-evidence/source-package/" + name) for name in names}
+        if rationalized:
+            verify_v022_mutation(z, r["revision"])
     verify_assets(r, assets)
     print("RELEASE_ADMISSION_PASS", r["revision"], r["version"], flush=True)
     return assets

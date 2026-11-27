@@ -38,6 +38,15 @@ jobs:
       - run: cargo test --workspace
       - name: Verify release gate rejects incomplete science receipts
         run: python3 scripts/test_release_source.py
+      - name: Verify v0.2.2 scope classification rejects unknown changes
+        run: python3 scripts/ci_scope_v022.py --self-test
+      - name: Observe v0.2.2 scope classification without changing admission
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v022-ci-rationalization'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin 6dc7affac2003f445fa9f896aafee76b969752e3 b6904f9b68f71e1a791c0607d087e7c1156b622e
+          python3 scripts/ci_scope_v022.py --revision "$GITHUB_SHA"
 
   a0-science:
     runs-on: ubuntu-latest

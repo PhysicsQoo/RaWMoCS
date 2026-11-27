@@ -299,6 +299,13 @@ jobs:
         run: |
           set -euo pipefail
           python3 crates/rawmocs-cli/tools/replay_release.py --corpus .release-rebuild --bin crates/rawmocs-cli/target/release/rawmocs --out .fast-witness
+      - name: Natural native cancellation on original source-locked CNFs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --manifest-path crates/rawmocs-cli/Cargo.toml --example native_cancel_probe
+          mkdir -p .fast-witness
+          python3 crates/rawmocs-cli/tools/native_cancel_admission.py --corpus .release-rebuild --probe crates/rawmocs-cli/target/release/examples/native_cancel_probe --out .fast-witness/native-cancel
       - name: Archive regeneration evidence
         if: always() && env.SCIENCE_SUITE == 'full'
         uses: actions/upload-artifact@v4

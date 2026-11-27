@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       suite:
-        description: 'fast: replay; full: regenerate and native trials; rationalized: scoped v0.2.2 release rehearsal'
+        description: 'fast: replay; full: regenerate and native trials; rationalized: scoped v0.2.2 release rehearsal; memory-attribution: replay M0; memory-python-scout: explicit M2 research replay only'
         type: choice
-        options: [fast, full, rationalized]
+        options: [fast, full, rationalized, memory-attribution, memory-rust-scout, memory-python-scout]
         default: full
         required: true
 
@@ -36,8 +36,12 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      - name: Verify Python package integrity rejects malformed artifacts
+        run: python3 scripts/test_python_package_candidate.py
       - name: Verify release gate rejects incomplete science receipts
-        run: python3 scripts/test_release_source.py
+        run: |
+          python3 scripts/test_release_source.py
+          python3 scripts/test_release_python_source.py
       - name: Verify v0.2.2 scope classification rejects unknown changes
         run: python3 scripts/ci_scope_v022.py --self-test
       - name: Observe v0.2.2 scope classification without changing admission
@@ -98,6 +102,97 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --workspace
 
+  python-portability:
+    if: (github.event_name == 'pull_request' && (github.head_ref == 'research/python-api' || github.head_ref == 'release/prepare-v030-source')) || (github.ref == 'refs/heads/main' && ((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[release-science]'))))
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04-arm, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/rawmocs-python -> target
+      - name: Build and test native platform wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install maturin==1.8.3
+          test -f crates/rawmocs-python/Cargo.lock
+          git show HEAD:crates/rawmocs-python/Cargo.lock | cmp - crates/rawmocs-python/Cargo.lock
+          maturin build --locked --release --interpreter python --out "$RUNNER_TEMP/rawmocs-platform" ${{ runner.os == 'Linux' && '--compatibility linux' || '' }}
+          python -m venv "$RUNNER_TEMP/rawmocs-platform-env"
+          source "$RUNNER_TEMP/rawmocs-platform-env/bin/activate"
+          python -m pip install --no-index "$RUNNER_TEMP"/rawmocs-platform/*.whl
+          python -I -m unittest discover -s python/tests -v
+          platform='linux_aarch64'
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            arch=$(uname -m)
+            platform="macosx_[0-9]+_[0-9]+_$arch"
+          fi
+          python scripts/python_package_candidate.py --wheel "$RUNNER_TEMP"/rawmocs-platform/*.whl --platform "$platform" --out "$RUNNER_TEMP/rawmocs-platform/package-candidate.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rawmocs-python-${{ matrix.os }}
+          path: ${{ runner.temp }}/rawmocs-platform/package-candidate.json
+          if-no-files-found: error
+
+  python-manylinux:
+    if: (github.event_name == 'pull_request' && (github.head_ref == 'research/python-api' || github.head_ref == 'release/prepare-v030-source')) || (github.ref == 'refs/heads/main' && ((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[release-science]'))))
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: x86_64
+          - os: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build manylinux candidate and inspect dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/manylinux-evidence"
+          docker run --rm -e GITHUB_SHA -v "$GITHUB_WORKSPACE:/io:ro" -v "$RUNNER_TEMP/manylinux-evidence:/out" quay.io/pypa/manylinux_2_28_${{ matrix.arch }} bash -euxc '
+            set -euo pipefail
+            cp -a /io /tmp/source
+            cd /tmp/source
+            git config --global --add safe.directory /tmp/source
+            test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+            export PATH=/opt/python/cp312-cp312/bin:$HOME/.cargo/bin:$PATH
+            curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+            python -m pip install maturin==1.8.3 auditwheel
+            git show HEAD:crates/rawmocs-python/Cargo.lock | cmp - crates/rawmocs-python/Cargo.lock
+            maturin build --locked --release --interpreter python --compatibility manylinux_2_28 --out /out
+            auditwheel show /out/*.whl | tee /out/auditwheel.txt
+            cargo metadata --locked --manifest-path crates/rawmocs-python/Cargo.toml --format-version 1 > /out/cargo-metadata.json
+            python -m venv /tmp/installed
+            /tmp/installed/bin/python -m pip install --no-index /out/*.whl
+            cd /tmp
+            /tmp/installed/bin/python -I -m unittest discover -s /tmp/source/python/tests -v 2>&1 | tee /out/contract.log
+            sha256sum /out/*.whl > /out/wheel.sha256
+            python /tmp/source/scripts/python_package_candidate.py --wheel /out/*.whl --platform manylinux_2_28_${{ matrix.arch }} --out /out/package-candidate.json
+          '
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rawmocs-manylinux-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/manylinux-evidence/*.json
+            ${{ runner.temp }}/manylinux-evidence/*.txt
+            ${{ runner.temp }}/manylinux-evidence/*.log
+            ${{ runner.temp }}/manylinux-evidence/*.sha256
+          if-no-files-found: error
+
   release-cli:
     name: First release CLI and source-locked transfer gate
     runs-on: ubuntu-24.04
@@ -125,6 +220,58 @@ jobs:
           cargo test --locked --release --manifest-path "$manifest"
           cargo test --locked --release --manifest-path "$manifest" --lib in_flight_cancellation_at_real_checkpoints -- --nocapture
           cargo build --locked --release --manifest-path "$manifest"
+      - name: Prototype Python native wheel and API contract
+        if: (github.event_name == 'pull_request' && (github.head_ref == 'research/python-api' || github.head_ref == 'release/prepare-v030-source')) || (env.SCIENCE_SUITE == 'full' && github.ref == 'refs/heads/main')
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/rawmocs-python"
+          source "$RUNNER_TEMP/rawmocs-python/bin/activate"
+          python -m pip install maturin==1.8.3
+          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/crates/rawmocs-cli/target"
+          test -f crates/rawmocs-python/Cargo.lock
+          git show HEAD:crates/rawmocs-python/Cargo.lock | cmp - crates/rawmocs-python/Cargo.lock
+          maturin build --locked --release --interpreter python --compatibility linux --out "$RUNNER_TEMP/rawmocs-wheels"
+          mkdir -p .release-evidence/python
+          cp crates/rawmocs-python/Cargo.lock .release-evidence/python/Cargo.lock
+          sha256sum "$RUNNER_TEMP"/rawmocs-wheels/*.whl | tee .release-evidence/python/wheel.sha256
+          python -VV | tee .release-evidence/python/python-version.txt
+          python -m pip install --no-index "$RUNNER_TEMP"/rawmocs-wheels/*.whl
+          RAWMOCS_TEST_CLI="$GITHUB_WORKSPACE/crates/rawmocs-cli/target/release/rawmocs" python -m unittest discover -s python/tests -v 2>&1 | tee .release-evidence/python/contract.log
+          maturin sdist --out "$RUNNER_TEMP/rawmocs-sdist"
+          mkdir -p .release-evidence/python-source-release
+          cp "$RUNNER_TEMP"/rawmocs-sdist/*.tar.gz .release-evidence/python-source-release/
+          cargo metadata --locked --manifest-path crates/rawmocs-python/Cargo.toml --format-version 1 > .release-evidence/python/cargo-metadata.json
+          python scripts/python_source_inventory.py --sdist "$RUNNER_TEMP"/rawmocs-sdist/*.tar.gz --metadata .release-evidence/python/cargo-metadata.json --out .release-evidence/python/source-inventory.json
+          sha256sum "$RUNNER_TEMP"/rawmocs-sdist/*.tar.gz | tee .release-evidence/python/sdist.sha256
+          mkdir -p "$RUNNER_TEMP/rawmocs-clean-source"
+          tar -xzf "$RUNNER_TEMP"/rawmocs-sdist/*.tar.gz -C "$RUNNER_TEMP/rawmocs-clean-source"
+          (
+            cd "$RUNNER_TEMP/rawmocs-clean-source"/rawmocs-*
+            test -f crates/rawmocs-python/Cargo.lock
+            test -f crates/rawmocs-cli/Cargo.toml
+            maturin build --locked --release --interpreter python --compatibility linux --out "$RUNNER_TEMP/rawmocs-rebuilt"
+          )
+          python3 -m venv "$RUNNER_TEMP/rawmocs-clean-install"
+          "$RUNNER_TEMP/rawmocs-clean-install/bin/python" -m pip install --no-index "$RUNNER_TEMP"/rawmocs-rebuilt/*.whl
+          (
+            cd "$RUNNER_TEMP"
+            "$RUNNER_TEMP/rawmocs-clean-install/bin/python" -I -m unittest discover -s "$GITHUB_WORKSPACE/python/tests" -v
+          ) 2>&1 | tee .release-evidence/python/clean-source-contract.log
+          sha256sum "$RUNNER_TEMP"/rawmocs-rebuilt/*.whl | tee .release-evidence/python/rebuilt-wheel.sha256
+          python scripts/python_package_candidate.py --wheel "$RUNNER_TEMP"/rawmocs-wheels/*.whl --platform linux_x86_64 --sdist "$RUNNER_TEMP"/rawmocs-sdist/*.tar.gz --out .release-evidence/python/package-candidate.json
+          python scripts/python_package_candidate.py --wheel "$RUNNER_TEMP"/rawmocs-rebuilt/*.whl --platform linux_x86_64 --out .release-evidence/python/rebuilt-package-candidate.json
+          cp .release-evidence/python/{source-inventory,package-candidate,rebuilt-package-candidate}.json .release-evidence/python-source-release/
+      - name: Archive Python packaging evidence
+        if: always() && ((github.event_name == 'pull_request' && (github.head_ref == 'research/python-api' || github.head_ref == 'release/prepare-v030-source')) || (env.SCIENCE_SUITE == 'full' && github.ref == 'refs/heads/main'))
+        uses: actions/upload-artifact@v4
+        with:
+          name: rawmocs-python-packaging
+          path: |
+            .release-evidence/python/
+            ${{ runner.temp }}/rawmocs-sdist/*.tar.gz
+          include-hidden-files: true
+          if-no-files-found: error
       - name: Exercise executable success, SAT-zero and fail-closed contracts
         shell: bash
         run: |
@@ -548,3 +695,237 @@ jobs:
           path: .release-pairs/
           if-no-files-found: warn
           retention-days: 30
+
+  native-memory-m0:
+    name: Native memory research / M1 scout or manual M0 replay
+    if: github.event_name == 'workflow_dispatch' && (inputs.suite == 'memory-attribution' || inputs.suite == 'memory-rust-scout') && github.ref == 'refs/heads/research/python-api'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/rawmocs-cli -> target
+          key: native-memory-m0
+      - name: Source-locked witness and allocation tools
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p .m0-evidence .m0-input
+          gh api repos/PhysicsQoo/RaWMoCS/actions/artifacts/14999026030/zip > "$RUNNER_TEMP/m0.zip"
+          echo "a11704d97a21c7642054c31caaa733e734a0505860fb63a1acd94b22a906ee9f  $RUNNER_TEMP/m0.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/m0.zip" -d .m0-input
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends heaptrack libgmp-dev libmpfr-dev m4 make gcc pkg-config
+          heaptrack --version > .m0-evidence/heaptrack-version.txt 2>&1
+          ldd --version > .m0-evidence/glibc-version.txt
+      - name: Build symbolized baseline Rust library
+        env:
+          CARGO_PROFILE_RELEASE_DEBUG: '1'
+          CARGO_TARGET_DIR: ${{ github.workspace }}/crates/rawmocs-cli/target
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD > .m0-evidence/revision.txt
+          cargo build --locked --release --manifest-path crates/rawmocs-cli/Cargo.toml --example m0_repeat
+          sha256sum crates/rawmocs-cli/target/release/examples/m0_repeat > .m0-evidence/baseline.sha256
+      - name: Build symbolized Python binding for manual M0 replay
+        if: github.event_name == 'workflow_dispatch' && inputs.suite == 'memory-attribution'
+        env:
+          CARGO_PROFILE_RELEASE_DEBUG: '1'
+          CARGO_TARGET_DIR: ${{ github.workspace }}/crates/rawmocs-cli/target
+        run: |
+          set -euo pipefail
+          python -m pip install maturin==1.8.3
+          maturin build --locked --release --interpreter python --compatibility linux --out "$RUNNER_TEMP/m0-wheel"
+          python -m pip install --no-index "$RUNNER_TEMP"/m0-wheel/*.whl
+          sha256sum crates/rawmocs-cli/target/release/examples/m0_repeat "$RUNNER_TEMP"/m0-wheel/*.whl > .m0-evidence/binaries.sha256
+          python -m pip freeze > .m0-evidence/dependencies.txt
+      - name: Repeated native and binding baseline (12 solves each)
+        if: github.event_name == 'workflow_dispatch' && inputs.suite == 'memory-attribution'
+        env:
+          PYTHONPATH: ${{ github.workspace }}/crates/rawmocs-cli/tools
+          PYTHONHASHSEED: '0'
+        run: |
+          set -euo pipefail
+          timeout -k 2s 180s prlimit --as=3221225472 -- python crates/rawmocs-cli/tools/m0_memory.py repeat
+      - name: Allocation stacks, allocation volume and peak live attribution
+        if: github.event_name == 'workflow_dispatch' && inputs.suite == 'memory-attribution'
+        env:
+          PYTHONPATH: ${{ github.workspace }}/crates/rawmocs-cli/tools
+          PYTHONHASHSEED: '0'
+        run: |
+          set -euo pipefail
+          timeout -k 2s 420s python crates/rawmocs-cli/tools/m0_memory.py profile
+          for arm in rust python; do
+            mapfile -t profiles < <(find .m0-evidence -maxdepth 1 -type f \( -name "profile-$arm*.gz" -o -name "profile-$arm*.zst" \))
+            test "${#profiles[@]}" -eq 1
+            heaptrack_print "${profiles[0]}" > ".m0-evidence/heaptrack-$arm.txt"
+            test -s ".m0-evidence/heaptrack-$arm.txt"
+            head -n 100 ".m0-evidence/heaptrack-$arm.txt"
+          done
+      - name: Build opt-in last-use candidate and exercise exact Rust contracts
+        if: inputs.suite == 'memory-rust-scout'
+        env:
+          CARGO_PROFILE_RELEASE_DEBUG: '1'
+          CARGO_TARGET_DIR: ${{ github.workspace }}/crates/rawmocs-cli/target
+        run: |
+          set -euo pipefail
+          mkdir -p .m0-evidence/m1
+          cp crates/rawmocs-cli/target/release/examples/m0_repeat .m0-evidence/m1/baseline
+          cargo test --locked --release --manifest-path crates/rawmocs-cli/Cargo.toml --features m1-last-use-reuse --lib
+          cargo build --locked --release --manifest-path crates/rawmocs-cli/Cargo.toml --features m1-last-use-reuse --example m0_repeat
+          cp crates/rawmocs-cli/target/release/examples/m0_repeat .m0-evidence/m1/candidate
+          sha256sum .m0-evidence/m1/baseline .m0-evidence/m1/candidate > .m0-evidence/m1/binaries.sha256
+      - name: Matched opt-in M1 Rust-only diagnostic
+        if: inputs.suite == 'memory-rust-scout'
+        env:
+          PYTHONPATH: ${{ github.workspace }}/crates/rawmocs-cli/tools
+          PYTHONHASHSEED: '0'
+        run: |
+          set -euo pipefail
+          for arm in baseline candidate; do
+            export M0_EVIDENCE_DIR="$GITHUB_WORKSPACE/.m0-evidence/m1/$arm-evidence"
+            export M0_RUST_BIN="$GITHUB_WORKSPACE/.m0-evidence/m1/$arm"
+            timeout -k 2s 100s prlimit --as=3221225472 -- python crates/rawmocs-cli/tools/m0_memory.py repeat-rust
+            timeout -k 2s 200s python crates/rawmocs-cli/tools/m0_memory.py profile-rust
+            mapfile -t profiles < <(find "$M0_EVIDENCE_DIR" -maxdepth 1 -type f \( -name 'profile-rust*.gz' -o -name 'profile-rust*.zst' \))
+            test "${#profiles[@]}" -eq 1
+            heaptrack_print "${profiles[0]}" > "$M0_EVIDENCE_DIR/heaptrack-rust.txt"
+          done
+          python crates/rawmocs-cli/tools/m1_compare.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rawmocs-m0-native-memory
+          path: .m0-evidence/
+          include-hidden-files: true
+          if-no-files-found: error
+
+  native-memory-wheels:
+    name: M2 matched Python wheels and contracts
+    # Historical research, not a release or routine PR gate.
+    if: github.event_name == 'workflow_dispatch' && inputs.suite == 'memory-python-scout'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/rawmocs-python -> target
+      - name: Build baseline and candidate from the same source
+        env:
+          CARGO_PROFILE_RELEASE_DEBUG: '1'
+        run: |
+          set -euo pipefail
+          python -m pip install maturin==1.8.3
+          mkdir -p .m1-wheels/{baseline,candidate,m2}
+          maturin build --locked --release --interpreter python --compatibility linux --out .m1-wheels/baseline
+          maturin build --locked --release --interpreter python --compatibility linux --features m1-last-use-reuse --out .m1-wheels/candidate
+          maturin build --locked --release --interpreter python --compatibility linux --features m2-buffer-reuse --out .m1-wheels/m2
+          (cd .m1-wheels; sha256sum baseline/*.whl candidate/*.whl m2/*.whl > SHA256SUMS)
+          git rev-parse HEAD > .m1-wheels/revision.txt
+          for arm in baseline candidate m2; do
+            python -m venv "$RUNNER_TEMP/$arm"
+            "$RUNNER_TEMP/$arm/bin/python" -m pip install --no-index .m1-wheels/"$arm"/*.whl
+            "$RUNNER_TEMP/$arm/bin/python" -I -m unittest discover -s python/tests -v 2>&1 | tee ".m1-wheels/$arm-contract.log"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rawmocs-m1-local-wheels
+          path: .m1-wheels/
+          include-hidden-files: true
+          if-no-files-found: error
+
+  native-memory-python:
+    name: M2 factor buffer scout / ${{ matrix.case }}
+    needs: native-memory-wheels
+    if: github.event_name == 'workflow_dispatch' && inputs.suite == 'memory-python-scout'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - case: qpeinexact22
+            artifact: '14999026030'
+            zip_sha: a11704d97a21c7642054c31caaa733e734a0505860fb63a1acd94b22a906ee9f
+            cnf_sha: 6fb69626195bee5b89ed3503ae8b1b4801d9267e7bd5ff3684af152afcd885e1
+            witness_sha: e59e2741a69dbb13b4f6d0b44562ac689541c4bcf7c43da476006ec8f1b87512
+            order: 'baseline candidate m2'
+          - case: grover6
+            artifact: '14993988130'
+            zip_sha: b222c21a0177876d6fdd4e915ac7359a94f2058ac7846ca33b0c00946fb7054e
+            cnf_sha: a9757cd5bd730b6f769d2970e3a16ac66fee7157b55f81208c0a7c2cece0023b
+            witness_sha: de23841cd2fbafe653cf3206e768b45f6eb8634380abdce867f0c70b1c786bf3
+            order: 'candidate m2 baseline'
+          - case: qnn12
+            artifact: '14995474269'
+            zip_sha: d6a4bde601b0e7a5f0ff08370606d1c031fc75ae1177e894548e811092f7ac94
+            cnf_sha: 079f86a832056412d015759dd20a556a998ab4d596bea774a9ff5ebaed3484b7
+            witness_sha: 07635afae84795a1bc4846ceaad3dd46bc47d4284d9afb32df8ac918625df630
+            order: 'm2 baseline candidate'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: rawmocs-m1-local-wheels
+          path: .m1-wheels
+      - name: Verify source and recover immutable original witness
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT: ${{ matrix.artifact }}
+          ZIP_SHA: ${{ matrix.zip_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$(cat .m1-wheels/revision.txt)"
+          (cd .m1-wheels; sha256sum -c SHA256SUMS)
+          mkdir -p .m0-input .m1-python-evidence
+          gh api "repos/PhysicsQoo/RaWMoCS/actions/artifacts/$ARTIFACT/zip" > "$RUNNER_TEMP/m1-input.zip"
+          echo "$ZIP_SHA  $RUNNER_TEMP/m1-input.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/m1-input.zip" -d .m0-input
+          cp .m1-wheels/SHA256SUMS .m1-python-evidence/
+          cp .m1-wheels/revision.txt .m1-python-evidence/
+      - name: Three-arm same-runner factor buffer scout
+        env:
+          M0_CNF_SHA: ${{ matrix.cnf_sha }}
+          M0_REF_SHA: ${{ matrix.witness_sha }}
+          CASE: ${{ matrix.case }}
+          ARM_ORDER: ${{ matrix.order }}
+          PYTHONHASHSEED: '0'
+        run: |
+          set -euo pipefail
+          unset GLIBC_TUNABLES MALLOC_MMAP_THRESHOLD_ MALLOC_TRIM_THRESHOLD_ MALLOC_TOP_PAD_ MALLOC_MMAP_MAX_ MALLOC_ARENA_MAX LD_PRELOAD
+          for arm in baseline candidate m2; do
+            python -m venv "$RUNNER_TEMP/$arm"
+            "$RUNNER_TEMP/$arm/bin/python" -m pip install --no-index .m1-wheels/"$arm"/*.whl
+          done
+          for arm in $ARM_ORDER; do
+            export M0_EVIDENCE_DIR="$GITHUB_WORKSPACE/.m1-python-evidence/$arm"
+            timeout -k 2s 120s prlimit --as=3221225472 -- "$RUNNER_TEMP/$arm/bin/python" crates/rawmocs-cli/tools/m0_memory.py repeat-python
+          done
+          python crates/rawmocs-cli/tools/m2_buffer_compare.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rawmocs-m2-python-${{ matrix.case }}
+          path: .m1-python-evidence/
+          include-hidden-files: true
+          if-no-files-found: warn

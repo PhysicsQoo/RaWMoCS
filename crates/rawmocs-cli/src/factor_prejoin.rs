@@ -1188,7 +1188,8 @@ fn execute_impl_diagnostic<const BINARY: bool>(
     let (mut left, mut right) = (C::one(bits), C::one(bits));
     for op in &p.ops {
         deadline(d)?;
-        let bucket: Vec<_> = op
+        #[allow(unused_mut)]
+        let mut bucket: Vec<_> = op
             .ids
             .iter()
             .map(|i| tables.remove(i).ok_or("execution owner"))
@@ -1222,6 +1223,24 @@ fn execute_impl_diagnostic<const BINARY: bool>(
             }
             flips.push(b);
         }
+        // A factor covering every output variable has a unique input cell
+        // (or two cells for its pivot) for each output assignment. Only after
+        // both branches have been evaluated may these cells be moved.
+        #[cfg(feature = "m1-last-use-reuse")]
+        let donor = bucket.iter().position(|f| {
+            f.scope
+                .iter()
+                .copied()
+                .filter(|&v| Some(v) != op.pivot)
+                .eq(op.out.iter().copied())
+        });
+        // Exact-size pivot-independent donor: its index equals the output
+        // index. Both branch reads finish before that slot is overwritten.
+        // No retained excess capacity, no shrink or extra table allocation.
+        #[cfg(feature = "m2-buffer-reuse")]
+        let buffer_donor = donor.filter(|&i| {
+            pivots[i] == 0 && bucket[i].values.len() == size && bucket[i].values.capacity() == size
+        });
         let direct = BINARY && bucket.len() == 2;
         if direct {
             binary_ops += 1;
@@ -1230,7 +1249,14 @@ fn execute_impl_diagnostic<const BINARY: bool>(
                 binary_join_visits += size;
             }
         }
+        #[cfg(not(feature = "m2-buffer-reuse"))]
         let mut values = Vec::with_capacity(size);
+        #[cfg(feature = "m2-buffer-reuse")]
+        let mut values = if buffer_donor.is_some() {
+            Vec::new()
+        } else {
+            Vec::with_capacity(size)
+        };
         for m in 0..size {
             if m % 4096 == 0 {
                 deadline(d)?;
@@ -1254,16 +1280,51 @@ fn execute_impl_diagnostic<const BINARY: bool>(
             };
             let a = branch(false, &mut left);
             let b = op.pivot.is_some() && branch(true, &mut right);
-            values.push(match (a, b) {
+            let result = match (a, b) {
                 (true, true) => {
                     left.re += &right.re;
                     left.im += &right.im;
-                    Some(recycle_copy(&mut recycle, &left))
+                    Some(&left)
                 }
-                (true, false) => Some(recycle_copy(&mut recycle, &left)),
-                (false, true) => Some(recycle_copy(&mut recycle, &right)),
+                (true, false) => Some(&left),
+                (false, true) => Some(&right),
                 _ => None,
+            };
+            let cell = result.map(|x| {
+                #[cfg(feature = "m1-last-use-reuse")]
+                if recycle.is_empty() {
+                    if let Some(i) = donor {
+                        let j = indices[i];
+                        // Both branch reads are finished. No later output
+                        // assignment can read either of these donor cells.
+                        let cells = &mut bucket[i].values;
+                        let owned = cells[j].take().or_else(|| {
+                            if pivots[i] != 0 {
+                                cells[j | pivots[i]].take()
+                            } else {
+                                None
+                            }
+                        });
+                        if let Some(mut y) = owned {
+                            y.re.assign(&x.re);
+                            y.im.assign(&x.im);
+                            return y;
+                        }
+                    }
+                }
+                recycle_copy(&mut recycle, x)
             });
+            #[cfg(feature = "m2-buffer-reuse")]
+            if let Some(i) = buffer_donor {
+                debug_assert_eq!(indices[i], m);
+                // The old slot is dead even when the new result is absent.
+                // Drop it rather than adding another retained pool entry.
+                bucket[i].values[m] = cell;
+            } else {
+                values.push(cell);
+            }
+            #[cfg(not(feature = "m2-buffer-reuse"))]
+            values.push(cell);
             if m + 1 < size {
                 let bit = (m + 1).trailing_zeros() as usize;
                 for (i, x) in indices.iter_mut().enumerate() {
@@ -1272,6 +1333,15 @@ fn execute_impl_diagnostic<const BINARY: bool>(
             }
         }
         live = live + size - bucket.iter().map(|f| f.values.len()).sum::<usize>();
+        #[cfg(feature = "m2-buffer-reuse")]
+        if let Some(i) = buffer_donor {
+            values = std::mem::take(&mut bucket[i].values);
+            debug_assert_eq!(values.len(), size);
+            debug_assert_eq!(values.capacity(), size);
+            if diagnostics.legacy_stderr {
+                eprintln!("M2_BUFFER_REUSE cells={size}");
+            }
+        }
         // No references to consumed factors survive the operation.
         // Do not scan an entire dead table once the bounded pool is full.
         for f in bucket {

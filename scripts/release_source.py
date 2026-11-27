@@ -66,9 +66,13 @@ def digest(data):
 
 def load_request():
     r = json.loads(REQUEST.read_text())
-    require(set(r) == {"version", "revision", "science_run", "codspeed_run",
-                       "artifact_id", "artifact_digest", "source_sha256", "notes"},
-            "unexpected request fields")
+    fields = {"version", "revision", "science_run", "codspeed_run",
+              "artifact_id", "artifact_digest", "source_sha256", "notes"}
+    if r.get("version") == "0.3.0":
+        fields.add("python_source_sha256")
+        require(re.fullmatch(r"[0-9a-f]{64}", r.get("python_source_sha256", "")),
+                "invalid Python source digest")
+    require(set(r) == fields, "unexpected request fields")
     require(re.fullmatch(r"\d+\.\d+\.\d+", r["version"]), "stable version required")
     require(re.fullmatch(r"[0-9a-f]{40}", r["revision"]), "full revision required")
     for key in ("science_run", "codspeed_run", "artifact_id"):
@@ -107,6 +111,11 @@ def shared_core_steps(version, name):
 
 def verify_run(r, run_data, jobs, kind):
     expected = SCIENCE if kind == "science" else CODSPEED
+    skipped = set()
+    if kind == "science" and r["version"] == "0.3.0":
+        from release_python_source import PYTHON_JOBS, RESEARCH_SKIPS
+        expected = expected | PYTHON_JOBS | RESEARCH_SKIPS
+        skipped = RESEARCH_SKIPS
     workflow = "rust-science.yml" if kind == "science" else "codspeed.yml"
     require(run_data["id"] == r[kind + "_run"], "wrong run ID")
     require(run_data["repository"]["full_name"] == REPO
@@ -125,7 +134,10 @@ def verify_run(r, run_data, jobs, kind):
     require(jobs["total_count"] == len(jobs["jobs"]) == len(expected)
             and {j["name"] for j in jobs["jobs"]} == expected, "missing or unexpected jobs")
     for j in jobs["jobs"]:
-        require(j["status"] == "completed" and j["conclusion"] == "success", f"failed job {j['name']}")
+        require(j["status"] == "completed" and j["conclusion"] ==
+                ("skipped" if j["name"] in skipped else "success"), f"failed job {j['name']}")
+        if j["name"] in skipped:
+            continue
         steps = {s["name"]: s["conclusion"] for s in j["steps"]}
         required_steps = STEPS.get(j["name"], ())
         # Preserve the published v0.1.0 receipt, but never let a future
@@ -138,6 +150,9 @@ def verify_run(r, run_data, jobs, kind):
                 required_steps = {"Seven order-rotated same-precision native triples"}
         if kind == "science":
             required_steps = set(required_steps) | shared_core_steps(r["version"], j["name"])
+            if r["version"] == "0.3.0":
+                from release_python_source import PYTHON_STEPS
+                required_steps |= PYTHON_STEPS.get(j["name"], set())
         require(all(steps.get(s) == "success" for s in required_steps),
                 f"missing or failed required step {j['name']}")
         require(not any(s["conclusion"] in ("failure", "cancelled", "timed_out") for s in j["steps"]),
@@ -384,6 +399,10 @@ def verify_assets(r, assets):
     v = r["version"]
     archive = f"rawmocs-{v}-source.tar.gz"
     expected = {archive, "SHA256SUMS", "source-package.json"}
+    if v == "0.3.0":
+        from release_python_source import verify_python_assets, PYTHON_ASSETS
+        expected |= PYTHON_ASSETS
+        verify_python_assets(r, assets)
     require(set(assets) == expected, "unexpected assets")
     sha = digest(assets[archive])
     require(sha == r["source_sha256"], "source digest mismatch")
@@ -460,6 +479,10 @@ def prepare(r):
     with zipfile.ZipFile(io.BytesIO(blob)) as z:
         require(len(z.namelist()) == len(set(z.namelist())), "duplicate ZIP member")
         assets = {name: z.read(".release-evidence/source-package/" + name) for name in names}
+        if r["version"] == "0.3.0":
+            from release_python_source import PYTHON_ASSETS
+            assets.update({name: z.read(".release-evidence/python-source-release/" + name)
+                           for name in PYTHON_ASSETS})
         if rationalized:
             verify_v022_mutation(z, r["revision"])
     verify_assets(r, assets)

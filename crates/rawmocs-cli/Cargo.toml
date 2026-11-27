@@ -1,6 +1,6 @@
 [package]
 name = "rawmocs-cli"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
 publish = false
@@ -20,6 +20,11 @@ path = "src/main.rs"
 name = "native_stdio"
 path = "tests/native_stdio.rs"
 harness = false
+
+[features]
+# Research-only opt-in; default solver behavior is unchanged.
+m1-last-use-reuse = []
+m2-buffer-reuse = ["m1-last-use-reuse"]
 
 [dependencies]
 rug = { version = "=1.30.0", default-features = false, features = ["integer", "rational", "float", "std"] }

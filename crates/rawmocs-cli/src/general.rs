@@ -621,15 +621,6 @@ pub(crate) fn solve(p: &Problem, bits: u32, deadline: Instant) -> Result<Outcome
 }
 
 #[cfg(test)]
-pub(crate) fn solve_separator(
-    p: &Problem,
-    bits: u32,
-    deadline: Instant,
-) -> Result<Outcome, String> {
-    solve_policy(p, bits, deadline, false, None, true)
-}
-
-#[cfg(test)]
 pub(crate) fn solve_large(p: Problem, bits: u32, deadline: Instant) -> Result<Outcome, String> {
     solve_large_diagnostic(p, bits, deadline.into(), &mut SolveDiagnostics::legacy())
 }
@@ -877,7 +868,17 @@ mod tests {
         for bits in [100, 200, 333, 432] {
             let p = crate::parse_emitted(&raw, bits).unwrap();
             let exact = crate::reference(&p, &raw, bits).unwrap();
-            let out = solve_separator(&p, bits, Instant::now() + Duration::from_secs(5)).unwrap();
+            let mut diagnostics = SolveDiagnostics::default();
+            let out = solve_diagnostic(
+                &p,
+                bits,
+                (Instant::now() + Duration::from_secs(5)).into(),
+                true,
+                &mut diagnostics,
+            )
+            .unwrap();
+            let stats = diagnostics.separator.as_ref().unwrap();
+            assert!(stats.checks > 0 && stats.overrides > 0);
             assert_eq!(out.sat, exact.sat);
             assert_eq!(out.count.re, exact.count.re);
             assert_eq!(out.count.im, exact.count.im);

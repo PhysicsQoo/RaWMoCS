@@ -82,11 +82,70 @@ fn checked(x: R) -> Result<R, String> {
     }
     Ok(x)
 }
-fn rmul_full(a: &R, b: &R) -> Result<R, String> {
+fn rmul_full_reference(a: &R, b: &R) -> Result<R, String> {
     checked((
         Rational::from(&a.0 * &b.0) - Rational::from(&a.1 * &b.1),
         Rational::from(&a.0 * &b.1) + Rational::from(&a.1 * &b.0),
     ))
+}
+// Use a common denominator only when each pair has nested denominators.
+// Integer intermediates are exact; canonicalization and the original final
+// bit-cap check are applied before returning either component.
+fn common_integer_pair(x: &R) -> Option<(Integer, Integer, Integer)> {
+    let r = x.0.denom();
+    let i = x.1.denom();
+    if r == i {
+        return Some((x.0.numer().clone(), x.1.numer().clone(), r.clone()));
+    }
+    if r > i && Integer::from(r % i) == 0 {
+        let scale = Integer::from(r / i);
+        return Some((
+            x.0.numer().clone(),
+            Integer::from(x.1.numer() * &scale),
+            r.clone(),
+        ));
+    }
+    if i > r && Integer::from(i % r) == 0 {
+        let scale = Integer::from(i / r);
+        return Some((
+            Integer::from(x.0.numer() * &scale),
+            x.1.numer().clone(),
+            i.clone(),
+        ));
+    }
+    None
+}
+
+fn rmul_common_denominator(a: &R, b: &R) -> Option<Result<R, String>> {
+    // Small rationals benefit from GMP's existing canonical arithmetic.
+    // Never expand non-nested pairs or bypass input/final bit caps.
+    if [&a.0, &a.1, &b.0, &b.1]
+        .iter()
+        .all(|r| r.denom().significant_bits() < 512)
+    {
+        return None;
+    }
+    if [&a.0, &a.1, &b.0, &b.1].iter().any(|r| {
+        r.numer()
+            .significant_bits()
+            .max(r.denom().significant_bits())
+            > EXACT_BITS
+    }) {
+        return None;
+    }
+    let (ar, ai, ad) = common_integer_pair(a)?;
+    let (br, bi, bd) = common_integer_pair(b)?;
+    let den = Integer::from(&ad * &bd);
+    let re = Integer::from(&ar * &br) - Integer::from(&ai * &bi);
+    let im = Integer::from(&ar * &bi) + Integer::from(&ai * &br);
+    Some(checked((
+        Rational::from((re, den.clone())),
+        Rational::from((im, den)),
+    )))
+}
+
+fn rmul_full(a: &R, b: &R) -> Result<R, String> {
+    rmul_common_denominator(a, b).unwrap_or_else(|| rmul_full_reference(a, b))
 }
 // Exact axes and Boolean support depend on exact rational equality.
 // Shortcuts only for algebraic identities, never rounded MPFR comparisons.
@@ -200,6 +259,37 @@ fn edge_remove(edges: &mut EdgeCounts, scope: &[usize]) -> Result<(), String> {
     }
     Ok(())
 }
+fn local_contract<'a>(
+    bucket: impl Iterator<Item = &'a Factor<R>> + Clone,
+    out: &[usize],
+    v: usize,
+    size: usize,
+) -> Result<Factor<R>, String> {
+    let mut vals = Vec::with_capacity(size);
+    for m in 0..size {
+        let mut pair = [None, None];
+        for (j, positive) in [false, true].into_iter().enumerate() {
+            let mut x = Some(one());
+            for f in bucket.clone() {
+                let b = &f.values[mask(&f.scope, out, m, v, positive)];
+                x = match (x, b) {
+                    (Some(a), Some(b)) => Some(rmul(&a, b)?),
+                    _ => None,
+                };
+                if x.is_none() {
+                    break;
+                }
+            }
+            pair[j] = x;
+        }
+        let [a, b] = pair;
+        vals.push(radd(a, b)?);
+    }
+    Ok(reduce_axes(Factor {
+        scope: out.to_vec(),
+        values: vals,
+    }))
+}
 fn local(p: &Problem, raw: &str, d: Instant) -> Result<Local, String> {
     local_frontier(p, raw, d, true, true)
 }
@@ -221,6 +311,18 @@ fn local_frontier_probe<const PROFILE: bool, const ADJ: bool>(
     incremental: bool,
     widen: bool,
     step_cap: Option<usize>,
+) -> Result<Local, String> {
+    local_frontier_policy::<PROFILE, ADJ>(p, raw, d, incremental, widen, step_cap, false)
+}
+
+fn local_frontier_policy<const PROFILE: bool, const ADJ: bool>(
+    p: &Problem,
+    raw: &str,
+    d: Instant,
+    incremental: bool,
+    widen: bool,
+    step_cap: Option<usize>,
+    stop_at_bit_cap: bool,
 ) -> Result<Local, String> {
     let started = if PROFILE { Some(Instant::now()) } else { None };
     let mut phase = started;
@@ -391,20 +493,49 @@ fn local_frontier_probe<const PROFILE: bool, const ADJ: bool>(
                 break;
             }
         }
+        let out: Vec<_> = nb.iter().copied().collect();
+        let size = 1usize << out.len();
+        let mut proposed = cost.clone();
+        proposed.work += 2 * size * owners[v].len();
+        proposed.peak = proposed.peak.max(live + 2 * size);
+        proposed.width = proposed.width.max(out.len());
+        if proposed.work > LOCAL_WORK || proposed.peak > LIVE {
+            return Err("local budget".into());
+        }
+        // The opt-in frontier prepares the entire exact result, including
+        // scalar folding, before touching ownership, queue, or live costs.
+        let prepared = if stop_at_bit_cap {
+            let bucket = owners[v].iter().map(|id| &tables[id]);
+            let result = local_contract(bucket, &out, v, size).and_then(|mut f| {
+                let folded = if f.scope.is_empty() {
+                    Some(rscalar(
+                        scalar.clone(),
+                        f.values.pop().expect("scalar cell"),
+                    )?)
+                } else {
+                    None
+                };
+                Ok((f, folded))
+            });
+            match result {
+                Ok(result) => Some(result),
+                Err(reason) if reason == "exact local bit cap" => {
+                    eprintln!("PREJOIN_FRONTIER_STOP steps={steps} remaining={} reason=exact local bit cap", nodes.len());
+                    break;
+                }
+                Err(reason) => return Err(reason),
+            }
+        } else {
+            None
+        };
+        deadline(d)?;
+        cost = proposed;
         if incremental {
             for u in std::iter::once(v).chain(nb.iter().copied()) {
                 if !queue.remove(&keys[u].take().ok_or("local missing key")?) {
                     return Err("local queue drift".into());
                 }
             }
-        }
-        let out: Vec<_> = nb.iter().copied().collect();
-        let size = 1usize << out.len();
-        cost.work += 2 * size * owners[v].len();
-        cost.peak = cost.peak.max(live + 2 * size);
-        cost.width = cost.width.max(out.len());
-        if cost.work > LOCAL_WORK || cost.peak > LIVE {
-            return Err("local budget".into());
         }
         tick(&mut phase, &mut times[2]);
         let ids = std::mem::take(&mut owners[v]);
@@ -426,33 +557,16 @@ fn local_frontier_probe<const PROFILE: bool, const ADJ: bool>(
             return Err("local pivot edge drift".into());
         }
         tick(&mut phase, &mut times[3]);
-        let mut vals = Vec::with_capacity(size);
-        for m in 0..size {
-            let mut pair = [None, None];
-            for (j, positive) in [false, true].into_iter().enumerate() {
-                let mut x = Some(one());
-                for f in &bucket {
-                    let b = &f.values[mask(&f.scope, &out, m, v, positive)];
-                    x = match (x, b) {
-                        (Some(a), Some(b)) => Some(rmul(&a, b)?),
-                        _ => None,
-                    };
-                    if x.is_none() {
-                        break;
-                    }
-                }
-                pair[j] = x;
-            }
-            let [a, b] = pair;
-            vals.push(radd(a, b)?);
-        }
+        let (f, folded) = match prepared {
+            Some(result) => result,
+            None => (local_contract(bucket.iter(), &out, v, size)?, None),
+        };
         tick(&mut phase, &mut times[4]);
-        let f = reduce_axes(Factor {
-            scope: out,
-            values: vals,
-        });
         if f.scope.is_empty() {
-            scalar = rscalar(scalar.take(), f.values.into_iter().next().unwrap())?;
+            scalar = match folded {
+                Some(value) => value,
+                None => rscalar(scalar.take(), f.values.into_iter().next().unwrap())?,
+            };
         } else {
             live += f.values.len();
             for &u in &f.scope {
@@ -1146,6 +1260,25 @@ pub(crate) fn solve_until(
     bits: u32,
     d: Instant,
 ) -> Result<Outcome, String> {
+    solve_policy(p, raw, bits, d, false)
+}
+
+pub(crate) fn solve_frontier(
+    p: &Problem,
+    raw: &str,
+    bits: u32,
+    d: Instant,
+) -> Result<Outcome, String> {
+    solve_policy(p, raw, bits, d, true)
+}
+
+fn solve_policy(
+    p: &Problem,
+    raw: &str,
+    bits: u32,
+    d: Instant,
+    frontier: bool,
+) -> Result<Outcome, String> {
     let start = Instant::now();
     let planning_budget = (d.saturating_duration_since(start) * 2 / 3).min(Duration::from_secs(30));
     let pd = start + planning_budget;
@@ -1156,7 +1289,12 @@ pub(crate) fn solve_until(
             e
         }
     };
-    let (fs, nodes, scalar, local) = local(p, raw, pd).map_err(planning_error)?;
+    let (fs, nodes, scalar, local) = if frontier {
+        local_frontier_policy::<false, true>(p, raw, pd, true, true, None, true)
+    } else {
+        local(p, raw, pd)
+    }
+    .map_err(planning_error)?;
     let local_ns = start.elapsed().as_nanos();
     let phase = Instant::now();
     let (cuts, plans, cost) = choose(&fs, &nodes, &scalar, &local, pd).map_err(planning_error)?;
@@ -1258,6 +1396,156 @@ fn pair_scan(raw: &str, use_mask: bool) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Diagnostic only: re-run the exact local prefix with a bounded step cap.
+    // A failed contraction is never reused. Earlier successful prefixes keep
+    // all remaining factors, including weights, before MPFR execution.
+    #[test]
+    #[ignore = "source-locked frontier scout; no production policy changes"]
+    fn original_exact_frontier_scout() {
+        let raw = std::fs::read_to_string(std::env::var("RAWMOCS_TEST_ORIGINAL").unwrap()).unwrap();
+        let bits = 432;
+        let p = parse_emitted(&raw, bits).unwrap();
+        let d = Instant::now() + Duration::from_secs(30);
+        let start = Instant::now();
+        let original = local(&p, &raw, d);
+        match original {
+            Ok((fs, nodes, scalar, local_cost)) => {
+                println!(
+                    "FRONTIER_LOCAL_COMPLETE remaining={} factors={} work={} peak={} width={}",
+                    nodes.len(),
+                    fs.len(),
+                    local_cost.work,
+                    local_cost.peak,
+                    local_cost.width
+                );
+                match choose(&fs, &nodes, &scalar, &local_cost, d) {
+                    Ok((cuts, plans, cost)) => println!(
+                        "FRONTIER_ORIGINAL_PLAN cuts={} leaves={} width={} work={} peak={}",
+                        cuts.len(),
+                        plans.len(),
+                        cost.width,
+                        cost.work,
+                        cost.peak
+                    ),
+                    Err(reason) => println!("FRONTIER_ORIGINAL_REJECT reason={reason}"),
+                }
+                return;
+            }
+            Err(reason) if reason == "exact local bit cap" => {
+                println!("FRONTIER_ORIGINAL_REJECT reason={reason}");
+            }
+            Err(reason) => {
+                println!("FRONTIER_ORIGINAL_REJECT reason={reason}");
+                return;
+            }
+        }
+        let mut lo = 0usize;
+        let mut hi = p.n;
+        let initial =
+            local_frontier_probe::<false, true>(&p, &raw, d, true, true, Some(0)).unwrap();
+        assert_eq!(initial.1.len(), p.n);
+        // Success is monotone for deterministic capped prefixes until the
+        // first failed exact multiplication/addition. Keep a known-good cap.
+        while hi - lo > 1 {
+            let mid = lo + (hi - lo) / 2;
+            match local_frontier_probe::<false, true>(&p, &raw, d, true, true, Some(mid)) {
+                Ok(_) => lo = mid,
+                Err(reason) if reason == "exact local bit cap" => hi = mid,
+                Err(reason) => {
+                    println!("FRONTIER_SEARCH_STOP reason={reason}");
+                    return;
+                }
+            }
+        }
+        println!(
+            "FRONTIER_BOUND last_safe={lo} first_rejected={hi} search_ns={}",
+            start.elapsed().as_nanos()
+        );
+        assert!(
+            matches!(local_frontier_probe::<false,true>(&p,&raw,d,true,true,Some(hi)),Err(ref e) if e=="exact local bit cap")
+        );
+        let (fs, nodes, scalar, local_cost) =
+            local_frontier_probe::<false, true>(&p, &raw, d, true, true, Some(lo)).unwrap();
+        assert_eq!(nodes.len(), p.n - lo);
+        let max_bits = fs
+            .iter()
+            .flat_map(|f| f.values.iter())
+            .chain(std::iter::once(&scalar))
+            .filter_map(|x| x.as_ref())
+            .flat_map(|(a, b)| [a, b])
+            .map(|x| {
+                x.numer()
+                    .significant_bits()
+                    .max(x.denom().significant_bits())
+            })
+            .max()
+            .unwrap_or(0);
+        assert!(max_bits <= EXACT_BITS);
+        let tx = local_frontier_policy::<false, true>(&p, &raw, d, true, true, None, true).unwrap();
+        assert_eq!(tx.0, fs);
+        assert_eq!(tx.1, nodes);
+        assert_eq!(tx.2, scalar);
+        assert_eq!(tx.3, local_cost);
+        println!("FRONTIER_TRANSACTION_EXACT_MATCH");
+        println!(
+            "FRONTIER_SAFE remaining={} factors={} work={} peak={} width={} exact_bits={max_bits}",
+            nodes.len(),
+            fs.len(),
+            local_cost.work,
+            local_cost.peak,
+            local_cost.width
+        );
+        if nodes.len() > RESIDUAL_CAP {
+            println!("FRONTIER_PLAN_REJECT reason=residual variable cap");
+            return;
+        }
+        let (cuts, plans, cost) = match choose(&fs, &nodes, &scalar, &local_cost, d) {
+            Ok(x) => x,
+            Err(reason) => {
+                println!("FRONTIER_PLAN_REJECT reason={reason}");
+                return;
+            }
+        };
+        println!(
+            "FRONTIER_PLAN cuts={} leaves={} width={} work={} peak={}",
+            cuts.len(),
+            plans.len(),
+            cost.width,
+            cost.work,
+            cost.peak
+        );
+        let mut out = None;
+        for (m, plan) in plans.iter().enumerate() {
+            let (f, s) = match restrict(&fs, &scalar, &cuts, m) {
+                Ok(x) => x,
+                Err(reason) => {
+                    println!("FRONTIER_EXEC_REJECT reason={reason}");
+                    return;
+                }
+            };
+            let value = match execute(f, s, plan, bits, d) {
+                Ok(x) => x,
+                Err(reason) => {
+                    println!("FRONTIER_EXEC_REJECT reason={reason}");
+                    return;
+                }
+            };
+            out = cadd(out, value);
+        }
+        let (sat, count) = match out {
+            Some(count) => (true, count),
+            None => (false, Outcome::unsat(bits).count),
+        };
+        assert!(count.re.is_finite() && count.im.is_finite());
+        println!(
+            "FRONTIER_RESULT sat={} real={} imag={} diagnostic_ns={}",
+            sat,
+            count.re.to_string_radix(10, Some(134)),
+            count.im.to_string_radix(10, Some(134)),
+            start.elapsed().as_nanos()
+        );
+    }
     #[test]
     fn direct_binary_matches_ordered_products_and_support() {
         for bits in [100, 200, 333, 432] {
@@ -1575,6 +1863,60 @@ mod tests {
         assert_eq!(fill_count(&[0u64; 64], u64::MAX), 2016);
     }
     #[test]
+    fn common_denominator_matches_reference_and_final_bit_cap() {
+        let mut values = vec![
+            (Rational::from((2, 3)), Rational::from((3, 5))),
+            (Rational::from(1), Rational::from(-2)),
+        ];
+        for exp in [160u32, 200, 500, 1000, 2500, 4900] {
+            let den = Integer::from(10).pow(exp);
+            let smaller = Integer::from(10).pow(exp - 3);
+            for (r, i) in [(7, -11), (-13, 17), (19, 23), (7, 7)] {
+                values.push((
+                    Rational::from((Integer::from(r), den.clone())),
+                    Rational::from((Integer::from(i), smaller.clone())),
+                ));
+                values.push((
+                    Rational::from((Integer::from(i), smaller.clone())),
+                    Rational::from((Integer::from(r), den.clone())),
+                ));
+                values.push((
+                    Rational::from((Integer::from(r), den.clone())),
+                    Rational::from((Integer::from(i), den.clone())),
+                ));
+            }
+        }
+        let mut hits = 0;
+        let mut rejects = 0;
+        for a in &values {
+            for b in &values {
+                let reference = rmul_full_reference(a, b);
+                if let Some(got) = rmul_common_denominator(a, b) {
+                    hits += 1;
+                    if got.is_err() {
+                        rejects += 1;
+                    }
+                    assert_eq!(got, reference);
+                }
+                assert_eq!(rmul_full(a, b), reference);
+            }
+        }
+        assert!(hits > 1000 && rejects > 0);
+        let nonnested = (
+            Rational::from((Integer::from(1), Integer::from(2).pow(600))),
+            Rational::from((Integer::from(1), Integer::from(5).pow(600))),
+        );
+        assert!(rmul_common_denominator(&nonnested, &values[1]).is_none());
+        let a = (
+            Rational::from((Integer::from(1), Integer::from(10).pow(200))),
+            Rational::from((Integer::from(1), Integer::from(10).pow(200))),
+        );
+        let b = (a.0.clone(), -a.1.clone());
+        let got = rmul_common_denominator(&a, &b).unwrap().unwrap();
+        assert_eq!(got.1, 0);
+        assert_eq!(got, rmul_full_reference(&a, &b).unwrap());
+    }
+    #[test]
     fn exact_rational_identity_shortcuts_match_full_formula() {
         let values = [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1), (2, 3), (-3, 2)];
         let mut x: Vec<R> = values
@@ -1604,7 +1946,7 @@ mod tests {
         }
         for a in &x {
             for b in &x {
-                assert_eq!(rmul(a, b).unwrap(), rmul_full(a, b).unwrap());
+                assert_eq!(rmul(a, b).unwrap(), rmul_full_reference(a, b).unwrap());
             }
         }
         // A supported exact zero is still Some, not Boolean impossibility.

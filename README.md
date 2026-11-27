@@ -73,6 +73,47 @@ explicit small-case diagnostic, not the auto fallback. An external process
 resource supervisor is still required for hard RSS and whole-process time.
 The heap frame guard is not a bound on all allocations.
 
+### Experimental opt-in structural routes (v0.2.0 candidate)
+
+These options describe the unreleased candidate source, not the published
+v0.1.1 binary. The default remains `auto`; the QuPRS adapter does not
+select the experimental routes automatically.
+
+| Solver mode | Admission and fallback |
+| --- | --- |
+| `auto` (default) | Original bounded Prejoin; recognized admission rejection falls back to General. |
+| `auto-frontier` | Experimental transactional exact-local stop on the bit cap, followed by bounded Prejoin on the retained factors; recognized admission rejection falls back to General on the original problem. |
+| `auto-separator` | Original Prejoin; recognized admission rejection falls back to the experimental separator General route. |
+| `prejoin` | Explicit bounded Prejoin; admission rejection returns exit 6, without fallback. |
+| `general` | Explicit General search. |
+| `general-separator` | Explicit experimental separator General search. |
+| `reference` | Small exact-rational diagnostic; requires external timeout supervision. |
+
+Zero-variable auto inputs use the corresponding General route directly.
+Recognized admission rejection is distinct from timeout or internal error;
+those failures are not retried as a different solver. Auto fallbacks use
+the original problem and the remaining shared solver deadline.
+
+```sh
+rawmocs --digits 130 --solver auto-frontier --timeout-ms 20000 input.cnf
+rawmocs --digits 130 --solver general-separator --timeout-ms 20000 input.cnf
+```
+
+A successful Frontier stop is reported on stderr as
+`PREJOIN_FRONTIER_STOP`, and recognized fallback as `RAWMOCS_FALLBACK`.
+The successful route, working precision and solver time are reported in
+`RAWMOCS_COMPLETE`. The completion protocol is unchanged. The explicit
+large-input option remains restricted to `--solver general`.
+
+The candidate preserves the previously witnessed long-case performance
+within the specified regression gate. A genuine Frontier benefit has been
+observed on QAOA11 encodings; this is not a cross-family or long-case
+acceleration claim. Dense residuals may still reject the bounded plan
+(width 19, work 40,000,000, live cells 2,000,000). Neither experimental
+route is a new default. See the candidate's review and CI evidence in
+[PR #142](https://github.com/PhysicsQoo/RaWMoCS/pull/142).
+The release remains subject to its outstanding admission gates.
+
 ### Explicit large General mode
 
 The CLI supports bounded streaming admission when explicitly selecting
@@ -196,3 +237,16 @@ safety boundaries.
 ## License
 
 MIT. See LICENSE.
+
+## Version roadmap and v0.2.0 admission
+
+v0.2.0 is a scoped Structural WMC and Frontier feature candidate, not a universal GPMC speedup claim. Frontier and Separator remain explicit opt-in; Auto and the QuPRS GPMC default are unchanged. The new cross-family scalable WMC research gate (S4) is **deferred / not achieved** and moves to v0.3.0, with all negative evidence retained in [candidate review #142](https://github.com/PhysicsQoo/RaWMoCS/pull/142). All other correctness, independent witnesses, bounded resource/fallback safety, seven rotated four-arm native old-long regression (p50/p90 within 5%, RSS recorded), CodSpeed, exact-main science receipts, actual package and fixed-version QuPRS integration remain required before CI publication.
+
+| Planned version | Scope |
+| --- | --- |
+| v0.2.0 | Scoped structural WMC, transactional Frontier, exact arithmetic, release admission |
+| v0.2.1 | Shared Rust core and library API |
+| v0.3.0 | Scalable WMC (including deferred S4), Python binding and packaging |
+| v0.4.0 | Opt-in QuPRS native integration and batch WMC |
+
+Planned versions are not publication commitments. The S4 research targets remain at least two distinct original CNF families with successful GPMC runs >=10 seconds, genuine Frontier stops, independent counts and seven matched native trials; target 2x improvement over v0.1.1, QAOA11 gap <=2x, and non-benefiting p50 regression <=5%. No cap or precision relaxation. Only a distinct evidence-backed algorithm hypothesis should reopen the negative scout results.

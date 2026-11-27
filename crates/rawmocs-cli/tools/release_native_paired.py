@@ -111,7 +111,12 @@ def main():
         ap.add_argument("--" + name, type=Path, required=True)
     ap.add_argument("--case", required=True, choices=[c[0] for c in CASES])
     ap.add_argument("--baseline", type=Path, help="Frozen release binary for a third matched arm")
+    ap.add_argument("--baseline-revision", choices=["ef8d1ee606bed672ee9be62d189a2b3fbcc905a0", "b3d02b2720c2fae5231c0ed5cf44950164a5780d"], default="ef8d1ee606bed672ee9be62d189a2b3fbcc905a0")
+    ap.add_argument("--candidate-frontier", action="store_true", help="Also measure the opt-in candidate Frontier route")
+    ap.add_argument("--max-regression-pct", type=float, choices=[5.0], help="Require both candidate routes to preserve baseline p50 and p90")
     a = ap.parse_args()
+    if (a.candidate_frontier or a.max_regression_pct is not None) and a.baseline is None:
+        ap.error("candidate admission requires a frozen baseline")
     assert subprocess.check_output(["git", "-C", str(a.gpmc_source), "rev-parse", "HEAD"], text=True).strip() == GPMC_PIN
     label, _, _, expected, bits = next(c for c in CASES if c[0] == a.case)
     digits, target = DIGITS[bits]
@@ -141,7 +146,10 @@ def main():
     arms = ARMS if a.baseline is None else (*ARMS, "baseline")
     if a.baseline is not None:
         report["binary_sha256"]["baseline"] = digest(a.baseline)
-        report["baseline_revision"] = "ef8d1ee606bed672ee9be62d189a2b3fbcc905a0"
+        report["baseline_revision"] = a.baseline_revision
+    if a.candidate_frontier:
+        arms = (*arms, "frontier")
+        report["binary_sha256"]["frontier"] = report["binary_sha256"]["rawmocs"]
 
     def save():
         (a.out / "paired.json").write_text(json.dumps(report, indent=2) + "\n")
@@ -151,9 +159,14 @@ def main():
             "rawmocs": [str(a.bin.resolve()), "--digits", str(digits), "--timeout-ms", str(LIMIT * 1000), str(cnf)]}
     if a.baseline is not None:
         cmds["baseline"] = [str(a.baseline.resolve()), *cmds["rawmocs"][1:]]
-    orders = list(permutations(arms))
+    if a.candidate_frontier:
+        cmds["frontier"] = [*cmds["rawmocs"][:-1], "--solver", "auto-frontier", str(cnf)]
+        # Two opposite cyclic schedules; seven rounds retain near balance.
+        orders = [base[i:] + base[:i] for base in (arms, arms[::-1]) for i in range(len(arms))]
+    else:
+        orders = list(permutations(arms))
     for trial in range(7):
-        # Exhaust all six orders for a triple; the seventh is predeclared.
+        # Exhaust all six orders for a triple; for four arms use the cyclic schedule.
         # Offset by cohort precision, never by observed timings.
         order = orders[(trial + (bits == 432)) % len(orders)]
         sample = {"trial": trial, "order": order, "rows": {}}
@@ -178,6 +191,10 @@ def main():
             old, new = t["rows"]["baseline"], t["rows"]["rawmocs"]
             assert old["stdout_sha256"] == new["stdout_sha256"], "frozen release count drift"
             assert old["plan_signature"] == new["plan_signature"], "frozen release plan drift"
+            if a.candidate_frontier:
+                frontier = t["rows"]["frontier"]
+                assert old["stdout_sha256"] == frontier["stdout_sha256"], "Frontier count drift"
+                assert old["plan_signature"] == frontier["plan_signature"], "Frontier plan drift"
     vals = {arm: [t["rows"][arm]["wall_ns"] for t in report["trials"]] for arm in arms}
     report["summary"] = {
         arm: {"p50_s": statistics.median(vals[arm]) / 1e9,
@@ -191,7 +208,26 @@ def main():
         report["summary"]["baseline_over_rawmocs_p50"] = statistics.median(vals["baseline"]) / statistics.median(vals["rawmocs"])
         report["summary"]["baseline_paired_ratio_median"] = statistics.median(b / r for b, r in zip(vals["baseline"], vals["rawmocs"]))
         report["summary"]["candidate_paired_wins"] = sum(r < b for b, r in zip(vals["baseline"], vals["rawmocs"]))
-    report["status"] = "SEVEN_MATCHED_PAIRS_PASS" if a.baseline is None else "SEVEN_MATCHED_TRIPLES_PASS"
+    if a.candidate_frontier:
+        report["summary"]["baseline_over_frontier_p50"] = statistics.median(vals["baseline"]) / statistics.median(vals["frontier"])
+        report["summary"]["frontier_paired_wins"] = sum(f < b for f, b in zip(vals["frontier"], vals["baseline"]))
+    report["status"] = ("SEVEN_MATCHED_QUADRUPLES_PASS" if a.candidate_frontier else
+                        "SEVEN_MATCHED_PAIRS_PASS" if a.baseline is None else "SEVEN_MATCHED_TRIPLES_PASS")
+    if a.max_regression_pct is not None:
+        baseline = report["summary"]["baseline"]
+        routes = ("rawmocs", "frontier") if a.candidate_frontier else ("rawmocs",)
+        limit = 1 + a.max_regression_pct / 100
+        report["regression_gate"] = {
+            "max_regression_pct": a.max_regression_pct,
+            "ratios": {arm: {metric: report["summary"][arm][metric] / baseline[metric]
+                              for metric in ("p50_s", "p90_s")} for arm in routes},
+        }
+        passed = all(ratio <= limit for ratios in report["regression_gate"]["ratios"].values() for ratio in ratios.values())
+        report["regression_gate"]["status"] = "PASS" if passed else "NO_GO"
+        if not passed:
+            report["status"] = "PERFORMANCE_REGRESSION_NO_GO"
+            save()
+            raise SystemExit("candidate exceeds predeclared p50/p90 regression gate")
     save()
     print("RELEASE_NATIVE_FINAL", label, json.dumps(report["summary"], sort_keys=True), flush=True)
 

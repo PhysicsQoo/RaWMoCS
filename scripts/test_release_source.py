@@ -5,7 +5,7 @@ import json
 import tarfile
 import unittest
 
-from release_source import REPO, SCIENCE, STEPS, digest, verify_assets, verify_draft, verify_run
+from release_source import REPO, SCIENCE, STEPS, digest, native_policy, verify_assets, verify_draft, verify_run
 
 
 def fixture(version="0.1.1"):
@@ -21,7 +21,11 @@ def fixture(version="0.1.1"):
     for name in sorted(SCIENCE):
         required = STEPS.get(name, ())
         if version != "0.1.0" and name.startswith("Release matched native GPMC ("):
-            required = {"Seven order-rotated same-precision native triples"}
+            if tuple(map(int, version.split("."))) >= (0, 2, 0):
+                required = {"Select versioned native admission policy",
+                            "Seven order-rotated same-precision native quadruples"}
+            else:
+                required = {"Seven order-rotated same-precision native triples"}
         jobs.append({"name": name, "status": "completed", "conclusion": "success",
                      "steps": [{"name": s, "conclusion": "success"} for s in required]})
     return request, run, {"total_count": len(jobs), "jobs": jobs}
@@ -30,6 +34,40 @@ def fixture(version="0.1.1"):
 class ReleaseScienceTests(unittest.TestCase):
     def test_full_gate(self):
         verify_run(*fixture(), "science")
+
+    def test_versioned_native_policy(self):
+        for version in ("0.1.0", "0.1.1"):
+            self.assertEqual(native_policy(version), {
+                "quadruples": False, "baseline": "ef8d1ee606bed672ee9be62d189a2b3fbcc905a0"})
+        for version in ("0.2.0", "0.2.1", "0.3.0"):
+            self.assertEqual(native_policy(version), {
+                "quadruples": True, "baseline": "b3d02b2720c2fae5231c0ed5cf44950164a5780d"})
+        self.assertEqual(native_policy("0.1.1", True), native_policy("0.2.0"))
+        with self.assertRaises(ValueError):
+            native_policy("0.2.0-rc.1")
+
+    def test_v020_requires_quadruples_and_policy(self):
+        verify_run(*fixture("0.2.0"), "science")
+        for missing in ("Select versioned native admission policy",
+                        "Seven order-rotated same-precision native quadruples"):
+            req, run, jobs = fixture("0.2.0")
+            for j in jobs["jobs"]:
+                for step in j["steps"]:
+                    if step["name"] == missing:
+                        step["conclusion"] = "skipped"
+            with self.subTest(missing=missing), self.assertRaises(ValueError):
+                verify_run(req, run, jobs, "science")
+
+    def test_v020_rejects_legacy_and_untrusted_receipts(self):
+        req, run, jobs = fixture("0.2.0")
+        for overrides in ({"event": "pull_request"},
+                          {"head_branch": "candidate/v020-frontier-convergence"},
+                          {"head_sha": "b" * 40}):
+            with self.subTest(overrides=overrides), self.assertRaises(ValueError):
+                verify_run(req, {**run, **overrides}, jobs, "science")
+        _, _, old = fixture("0.1.1")
+        with self.assertRaises(ValueError):
+            verify_run(req, run, old, "science")
 
     def test_published_legacy_gate(self):
         verify_run(*fixture("0.1.0"), "science")

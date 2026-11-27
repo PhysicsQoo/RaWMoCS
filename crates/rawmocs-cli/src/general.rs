@@ -107,7 +107,113 @@ struct Engine<'a> {
     large: bool,
     frequency: Vec<usize>,
     parent: Vec<usize>,
+    separator: Option<Separator>,
 }
+
+struct Separator {
+    parent: Vec<usize>,
+    size: Vec<usize>,
+    checks: usize,
+    overrides: usize,
+}
+
+// Conservative graph after deletion of a pivot: keep all clauses, remove
+// only that variable. Each actual polarity residual is a subgraph, so
+// its largest connected component cannot exceed this upper bound.
+// No clauses are removed from the real solver by this scoring routine.
+fn separator_largest(
+    residual: &[Clause],
+    active: &[usize],
+    pivot: usize,
+    parent: &mut [usize],
+    size: &mut [usize],
+) -> usize {
+    for &v in active {
+        parent[v] = v;
+        size[v] = 0;
+    }
+    for c in residual {
+        let mut vars = c
+            .iter()
+            .map(|lit| lit.unsigned_abs() as usize)
+            .filter(|&v| v != pivot);
+        if let Some(first) = vars.next() {
+            for v in vars {
+                let a = root(parent, first);
+                let b = root(parent, v);
+                parent[b] = a;
+            }
+        }
+    }
+    let mut largest = 0;
+    for &v in active {
+        if v == pivot {
+            continue;
+        }
+        let r = root(parent, v);
+        size[r] += 1;
+        largest = largest.max(size[r]);
+    }
+    largest
+}
+
+fn separator_pivot(
+    residual: &[Clause],
+    active: &[usize],
+    frequency: &[usize],
+    baseline: usize,
+    research: &mut Separator,
+) -> usize {
+    // Deliberately bounded: no repeated global scans on huge components,
+    // no expensive lookahead for tiny ones. Fall back on weak evidence.
+    if !(8..=128).contains(&active.len())
+        || residual.len() > 512
+        || residual.iter().map(Vec::len).sum::<usize>() > 2048
+    {
+        return baseline;
+    }
+    research.checks += 1;
+    let mut shortlist = Vec::with_capacity(8);
+    for &v in active {
+        let key = (frequency[v], v);
+        let pos = shortlist.partition_point(|&u: &usize| (frequency[u], u) > key);
+        if pos < 8 {
+            if shortlist.len() == 8 {
+                shortlist.pop();
+            }
+            shortlist.insert(pos, v);
+        }
+    }
+    debug_assert_eq!(shortlist[0], baseline);
+    let mut score = |v| {
+        separator_largest(
+            residual,
+            active,
+            v,
+            &mut research.parent,
+            &mut research.size,
+        )
+    };
+    let base = score(baseline);
+    let mut best = (base, baseline);
+    for v in shortlist.into_iter().skip(1) {
+        let cost = score(v);
+        if cost < best.0 {
+            best = (cost, v);
+        }
+    }
+    // Require an actual balanced separation, not merely a tie or isolated
+    // leaf. Never alter the baseline on a graph with no useful separator.
+    if base.saturating_sub(best.0) >= (active.len() / 8).max(2)
+        && best.0 * 4 <= 3 * (active.len() - 1)
+    {
+        research.overrides += 1;
+        best.1
+    } else {
+        baseline
+    }
+}
+
 fn normalize(mut clauses: Vec<Clause>) -> Vec<Clause> {
     for clause in &mut clauses {
         clause.sort_unstable();
@@ -397,6 +503,10 @@ impl Engine<'_> {
             .iter()
             .max_by_key(|&&v| self.frequency[v])
             .ok_or("no active pivot")?;
+        let v = match &mut self.separator {
+            Some(r) => separator_pivot(&residual, &active, &self.frequency, v, r),
+            None => v,
+        };
         let child: Vec<_> = active.into_iter().filter(|&x| x != v).collect();
         // Queue a compact negative child; donate the owned buffers to the
         // positive child, which is visited immediately.
@@ -507,6 +617,15 @@ pub(crate) fn solve(p: &Problem, bits: u32, deadline: Instant) -> Result<Outcome
     solve_mode(p, bits, deadline, false, None)
 }
 
+/// Opt-in only: does not change auto, general, or streaming routes.
+pub(crate) fn solve_separator(
+    p: &Problem,
+    bits: u32,
+    deadline: Instant,
+) -> Result<Outcome, String> {
+    solve_policy(p, bits, deadline, false, None, true)
+}
+
 pub(crate) fn solve_large(mut p: Problem, bits: u32, deadline: Instant) -> Result<Outcome, String> {
     // The large route is terminal: the parser's clause vector is no
     // longer needed after solve. Weights and the declared scope remain
@@ -522,6 +641,17 @@ fn solve_mode(
     large: bool,
     root: Option<Vec<Clause>>,
 ) -> Result<Outcome, String> {
+    solve_policy(p, bits, deadline, large, root, false)
+}
+
+fn solve_policy(
+    p: &Problem,
+    bits: u32,
+    deadline: Instant,
+    large: bool,
+    root: Option<Vec<Clause>>,
+    separator: bool,
+) -> Result<Outcome, String> {
     let mut engine = Engine {
         p,
         bits,
@@ -531,9 +661,24 @@ fn solve_mode(
         large,
         frequency: vec![0; p.n + 1],
         parent: vec![0; p.n + 1],
+        separator: separator.then(|| Separator {
+            parent: vec![0; p.n + 1],
+            size: vec![0; p.n + 1],
+            checks: 0,
+            overrides: 0,
+        }),
     };
     let clauses = root.unwrap_or_else(|| p.clauses.clone());
-    engine.count(clauses, (1..=p.n).collect())
+    let result = engine.count(clauses, (1..=p.n).collect());
+    if result.is_ok() {
+        if let Some(r) = engine.separator {
+            eprintln!(
+                "RAWMOCS_SEPARATOR_COMPLETE checks={} overrides={}",
+                r.checks, r.overrides
+            );
+        }
+    }
+    result
 }
 
 #[cfg(test)]
@@ -546,6 +691,147 @@ mod tests {
     use super::*;
     use crate::parse_emitted;
     use std::time::Duration;
+
+    #[test]
+    fn separator_matches_independent_dyadic_counts() {
+        let mut seed = 0x4ac91e71u32;
+        let mut next = || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            seed >> 8
+        };
+        let weights = [
+            "0.5 0.25",
+            "-0.25 0.125",
+            "0 0",
+            "1 0",
+            "-1 0",
+            "0.125 -0.5",
+        ];
+        for _ in 0..256 {
+            let n = 8;
+            let m = 12;
+            let mut raw = format!("p cnf {n} {m}\nc t wmc\n");
+            for v in 1..=n {
+                for lit in [v, -v] {
+                    raw.push_str(&format!(
+                        "c p weight {lit} {} 0\n",
+                        weights[next() as usize % weights.len()]
+                    ));
+                }
+            }
+            for _ in 0..m {
+                let width = 1 + next() % 4;
+                for _ in 0..width {
+                    let v = 1 + (next() % n as u32) as i32;
+                    let lit = if next() % 2 == 0 { v } else { -v };
+                    raw.push_str(&format!("{lit} "));
+                }
+                raw.push_str("0\n");
+            }
+            for bits in [100, 200, 333, 432] {
+                let p = crate::parse_emitted(&raw, bits).unwrap();
+                let exact = crate::reference(&p, &raw, bits).unwrap();
+                for separator in [false, true] {
+                    let out = solve_policy(
+                        &p,
+                        bits,
+                        Instant::now() + Duration::from_secs(5),
+                        false,
+                        None,
+                        separator,
+                    )
+                    .unwrap();
+                    assert_eq!(out.sat, exact.sat);
+                    assert_eq!(out.count.re, exact.count.re);
+                    assert_eq!(out.count.im, exact.count.im);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn separator_scores_and_signed_wmc() {
+        // Two triangles connected through variable 4. Variable 3 is made
+        // the frequency winner by distinct extra clauses within its side.
+        let clauses: Vec<Clause> = vec![
+            vec![1, 2, 3],
+            vec![-1, 3],
+            vec![-2, 3],
+            vec![1, -3],
+            vec![2, -3],
+            vec![3, 4],
+            vec![4, 5],
+            vec![5, 6, 7, 8],
+            vec![-5, 6],
+            vec![7, 8],
+        ];
+        let active: Vec<_> = (1..=8).collect();
+        let mut freq = vec![0; 9];
+        for c in &clauses {
+            for &lit in c {
+                freq[lit.unsigned_abs() as usize] += 1;
+            }
+        }
+        let base = *active.iter().max_by_key(|&&v| freq[v]).unwrap();
+        assert_eq!(base, 3);
+        let mut r = Separator {
+            parent: vec![0; 9],
+            size: vec![0; 9],
+            checks: 0,
+            overrides: 0,
+        };
+        assert_eq!(
+            separator_largest(&clauses, &active, 3, &mut r.parent, &mut r.size),
+            5
+        );
+        assert_eq!(
+            separator_largest(&clauses, &active, 4, &mut r.parent, &mut r.size),
+            4
+        );
+        // A one-variable improvement is deliberately insufficient.
+        assert_eq!(
+            separator_pivot(&clauses, &active, &freq, base, &mut r),
+            base
+        );
+        let mut star: Vec<Clause> = (1..=3).map(|v| vec![v, 4]).collect();
+        star.extend((5..=8).map(|v| vec![4, v]));
+        // Force a different frequency winner without changing connectivity.
+        for mask in 0..7 {
+            star.push(
+                (1..=3)
+                    .map(|v| if mask & (1 << (v - 1)) == 0 { v } else { -v })
+                    .collect(),
+            );
+        }
+        let mut freq = vec![0; 9];
+        for c in &star {
+            for &lit in c {
+                freq[lit.unsigned_abs() as usize] += 1;
+            }
+        }
+        let base = *active.iter().max_by_key(|&&v| freq[v]).unwrap();
+        assert_eq!(base, 3);
+        assert_eq!(separator_pivot(&star, &active, &freq, base, &mut r), 4);
+        assert_eq!(r.overrides, 1);
+        let mut raw = format!(
+            "p cnf 8 {}\nc t wmc\nc p weight 4 -0.5 0.25 0\nc p weight -4 0.25 -0.125 0\n",
+            star.len()
+        );
+        for c in star {
+            for lit in c {
+                raw.push_str(&format!("{lit} "));
+            }
+            raw.push_str("0\n");
+        }
+        for bits in [100, 200, 333, 432] {
+            let p = crate::parse_emitted(&raw, bits).unwrap();
+            let exact = crate::reference(&p, &raw, bits).unwrap();
+            let out = solve_separator(&p, bits, Instant::now() + Duration::from_secs(5)).unwrap();
+            assert_eq!(out.sat, exact.sat);
+            assert_eq!(out.count.re, exact.count.re);
+            assert_eq!(out.count.im, exact.count.im);
+        }
+    }
 
     #[test]
     fn owned_large_root_matches_borrowed_root() {

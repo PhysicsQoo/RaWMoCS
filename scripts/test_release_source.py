@@ -354,6 +354,16 @@ class RationalizedCandidateTests(unittest.TestCase):
                         with self.assertRaises(ValueError):
                             verify_v022_rationalized_run(request, run_data, jobs, scope)
 
+    def test_duplicate_critical_step_rejected_but_setup_may_repeat(self):
+        from release_source import V022_SMALL_JOB, verify_v022_rationalized_run
+        request, run_data, jobs, scope = self.fixture()
+        job = next(j for j in jobs["jobs"] if j["name"] == V022_SMALL_JOB)
+        job["steps"] += [{"name": "Run actions/checkout@v4", "conclusion": "success"}] * 2
+        verify_v022_rationalized_run(request, run_data, jobs, scope)
+        job["steps"].append(copy.deepcopy(job["steps"][0]))
+        with self.assertRaises(ValueError):
+            verify_v022_rationalized_run(request, run_data, jobs, scope)
+
     def test_wrong_job_set_or_status(self):
         from release_source import V022_SMALL_JOB, V022_SKIPPED_JOB, verify_v022_rationalized_run
         for name, conclusion in ((V022_SMALL_JOB, "skipped"), (V022_SKIPPED_JOB, "failure"),

@@ -7,18 +7,18 @@ on:
   workflow_dispatch:
     inputs:
       suite:
-        description: 'fast: bounded same-family checks; full: explicit algorithm/native trials; rationalized: scoped v0.2.2 release rehearsal; memory-attribution: replay M0; memory-python-scout: explicit M2 research replay only'
+        description: 'fast: bounded checks (default); full: manual long scientific evaluation; rationalized: manual v0.2.2 rehearsal; memory modes: manual research'
         type: choice
         options: [fast, full, rationalized, memory-attribution, memory-rust-scout, memory-python-scout]
         default: fast
         required: true
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ ((github.event_name == 'workflow_dispatch' && inputs.suite == 'rationalized') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-rationalized]') && !contains(github.event.head_commit.message, '[release-science]'))) && 'rationalized' || (((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) || ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]')) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'maintenance/parallel-release-ci' && contains(github.event.pull_request.title, '[parallel-full]')))) && 'full' || 'fast' }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name == 'workflow_dispatch' && inputs.suite || 'routine' }}
   cancel-in-progress: true
 
 env:
-  SCIENCE_SUITE: ${{ ((github.event_name == 'workflow_dispatch' && inputs.suite == 'rationalized') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-rationalized]') && !contains(github.event.head_commit.message, '[release-science]'))) && 'rationalized' || (((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) || ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]')) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'maintenance/parallel-release-ci' && contains(github.event.pull_request.title, '[parallel-full]')))) && 'full' || 'fast' }}
+  SCIENCE_SUITE: ${{ github.event_name == 'workflow_dispatch' && (inputs.suite == 'full' || inputs.suite == 'rationalized') && inputs.suite || 'fast' }}
 
 permissions:
   contents: read
@@ -114,7 +114,7 @@ jobs:
         run: cargo test -p rawmocs-core --test a0_regressions -- --ignored --nocapture
 
   portability:
-    if: ((github.event_name == 'workflow_dispatch' && inputs.suite == 'rationalized') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-rationalized]') && !contains(github.event.head_commit.message, '[release-science]'))) || github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || (((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) || ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]')) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'maintenance/parallel-release-ci' && contains(github.event.pull_request.title, '[parallel-full]')))) || ((github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-package]')) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'maintenance/parallel-release-ci'))
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || ((github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-package]')) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'maintenance/parallel-release-ci'))
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -127,7 +127,7 @@ jobs:
       - run: cargo test --workspace
 
   python-portability:
-    if: (github.event_name == 'pull_request' && (github.head_ref == 'research/python-api' || github.head_ref == 'release/prepare-v030-source')) || (github.ref == 'refs/heads/main' && ((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[release-science]'))))
+    if: github.event_name == 'workflow_dispatch' && inputs.suite == 'full'
     timeout-minutes: 25
     strategy:
       fail-fast: false
@@ -168,7 +168,7 @@ jobs:
           if-no-files-found: error
 
   python-manylinux:
-    if: (github.event_name == 'pull_request' && (github.head_ref == 'research/python-api' || github.head_ref == 'release/prepare-v030-source')) || (github.ref == 'refs/heads/main' && ((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[release-science]'))))
+    if: github.event_name == 'workflow_dispatch' && inputs.suite == 'full'
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -436,7 +436,7 @@ jobs:
           retention-days: 30
 
   durable-source-rebuild:
-    name: ${{ (((github.event_name == 'workflow_dispatch' && inputs.suite == 'rationalized') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-rationalized]') && !contains(github.event.head_commit.message, '[release-science]'))) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/v022-ci-rationalization')) && 'Rationalized release small-family science' || (((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) || ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]')) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'maintenance/parallel-release-ci' && contains(github.event.pull_request.title, '[parallel-full]')))) && 'Regenerate original CNF and independent interval without artifacts' || 'Routine small-family science and R6-Light' }}
+    name: ${{ (github.event_name == 'workflow_dispatch' && inputs.suite == 'rationalized') && 'Rationalized release small-family science' || (github.event_name == 'workflow_dispatch' && inputs.suite == 'full') && 'Regenerate original CNF and independent interval without artifacts' || 'Routine small-family science and R6-Light' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -592,7 +592,7 @@ jobs:
           retention-days: 30
 
   release-native-transport:
-    if: (((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) || ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]')) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'maintenance/parallel-release-ci' && contains(github.event.pull_request.title, '[parallel-full]'))))
+    if: github.event_name == 'workflow_dispatch' && inputs.suite == 'full'
     name: Release shared-core native transport (parallel)
     needs: durable-source-rebuild
     runs-on: ubuntu-24.04
@@ -648,10 +648,10 @@ jobs:
           retention-days: 30
 
   release-native-paired:
-    if: (((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-science]'))) || ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]')) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'maintenance/parallel-release-ci' && contains(github.event.pull_request.title, '[parallel-full]'))))
+    if: github.event_name == 'workflow_dispatch' && inputs.suite == 'full'
     name: Release matched native GPMC (${{ matrix.case }})
     env:
-      FRONTIER_CANDIDATE: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'candidate/v020-frontier-convergence' && contains(github.event.pull_request.title, '[full-science]')) && 'true' || 'false' }}
+      FRONTIER_CANDIDATE: 'false'
     needs: durable-source-rebuild
     runs-on: ubuntu-24.04
     timeout-minutes: 45

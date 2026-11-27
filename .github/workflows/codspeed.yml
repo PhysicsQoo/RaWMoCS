@@ -18,12 +18,19 @@ on:
       - "crates/rawmocs-cli/**"
       - ".github/workflows/codspeed.yml"
   workflow_dispatch:
+    inputs:
+      suite:
+        description: 'fast: smoke and short proxy; full: manual 68-identity simulation'
+        type: choice
+        options: [fast, full]
+        default: fast
+        required: true
 
 permissions:
   contents: read
 
 concurrency:
-  group: codspeed-${{ github.event.pull_request.number || github.ref }}
+  group: codspeed-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name == 'workflow_dispatch' && inputs.suite || 'routine' }}
   cancel-in-progress: true
 
 jobs:
@@ -49,16 +56,7 @@ jobs:
   codspeed:
     name: CodSpeed simulation (opt in after repository connection)
     needs: bench-smoke
-    if: >-
-      vars.RAWMOCS_CODSPEED_ENABLED == 'true' &&
-      (github.event_name != 'pull_request' ||
-       github.event.pull_request.head.repo.full_name == github.repository) &&
-      (github.event_name == 'workflow_dispatch' ||
-       (github.event_name == 'push' && contains(github.event.head_commit.message, '[release-science]')) ||
-       (github.event_name == 'pull_request' &&
-        (contains(github.event.pull_request.title, '[full-science]') ||
-         contains(github.event.pull_request.title, '[parallel-full]') ||
-         contains(github.event.pull_request.title, '[performance]'))))
+    if: vars.RAWMOCS_CODSPEED_ENABLED == 'true' && github.event_name == 'workflow_dispatch' && inputs.suite == 'full'
     continue-on-error: true
     runs-on: ubuntu-24.04
     timeout-minutes: 30

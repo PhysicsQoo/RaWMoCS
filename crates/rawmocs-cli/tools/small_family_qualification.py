@@ -26,7 +26,23 @@ CASES = (
     ("wstate4", NEW + "wstate_nativegates_ibm_qiskit_opt0_4.qasm", "c06d0f50c9435a8c8c98f5390758173d7b950fe9"),
     ("gf2_4", "benchmarks/Feynman/gf2^4_mult.qasm", "ff3e384fd36cea71f4ca74b673cc570bac11a40f"),
 )
-QPE8_DIGEST = "00f15ebed71b50746e11ececde9915ec19a46af1fac203d23e27877d814b14f9"
+# Observed baseline, not a permanent solver plan contract. A later algorithm
+# change must explicitly requalify a changed signature, not silently skip it.
+# C1 run 45974883395, artifact 15187440596 (ZIP SHA256 verified).
+BASELINE = {
+    "qpeexact8": ("f778c73bf8f672319ad8df8f0b5b846b16856e87afaa8ff7062c1a12b75a6b61",
+        "00f15ebed71b50746e11ececde9915ec19a46af1fac203d23e27877d814b14f9", (11, 0, 1, 7, 6588, 1840, 21)),
+    "qpeinexact8": ("bfebcec3d3d9940276bf5f49c22e112c857cf1ddb1c156776bea501759885b55",
+        "e8cbf3f1061558060fe8f9fb551ab471d172ce650b15df4db8cef809d66355a4", (10, 0, 1, 7, 5626, 1608, 19)),
+    "qnn4": ("072e617672c170d77584c7985360b76e0c9b8f8946e6d05e68cd6c0ad79f2c66",
+        "3534213355e8a6afe162068a3f04c694bc5f134b463b120a2eb2f629feb10805", (18, 0, 1, 8, 14580, 2904, 22)),
+    "grover4": ("43557c87d1830c4bda99b956e2e16ade646310b0b89f8a4f9dc3b11e90935db2",
+        "73381a72b8b3c7f5f2c00c0ef44af75614605e45867863d6817c1e77f68fb7cf", (11, 0, 1, 6, 7066, 2454, 9)),
+    "wstate4": ("ddb60973eb84c7231f14cb2d3422134161122ff14c5ad02da9794b030462d0b3",
+        "6c9c881540cedc49512fda8496f3810f6ba54e4d2d98fcbc19b52da31f5d5b6e", (6, 0, 1, 5, 4664, 1710, 9)),
+    "gf2_4": ("f3a787e9044b62fa616f39a2520ec0661f7233b1d9aa21404eb1ce87200e81af",
+        "4224b0085d04055a0a3f54c8a8c4999c7f70a11f8da4f7ac330333b2af4e3810", (21, 0, 1, 11, 44678, 6680, 12)),
+}
 RUNS = ((60, 200, 30, "auto"), (130, 432, 100, "auto"),
         (60, 200, 30, "auto-frontier"), (60, 200, 30, "auto-separator"))
 
@@ -63,8 +79,8 @@ def qualify(args, label, rel, blob, row, save):
     assert qasm.read_bytes() == (args.quprs / rel).read_bytes()
     source = digest(cnf)
     row.update(qasm_sha256=digest(qasm), cnf_sha256=source, cnf_bytes=cnf.stat().st_size)
-    if label == "qpeexact8":
-        assert source == QPE8_DIGEST, "known QPE8 source drift"
+    expected_qasm, expected_cnf, expected_plan = BASELINE[label]
+    assert row["qasm_sha256"] == expected_qasm and source == expected_cnf, "qualified source drift"
     save()
     oracle = Path(__file__).resolve().parent / "repro" / "original_fixed_interval.py"
     result, elapsed = bounded([sys.executable, oracle, cnf, source], 25, root, "oracle")
@@ -101,9 +117,14 @@ def qualify(args, label, rel, blob, row, save):
             assert digest(cnf) == source
             traces = [line for line in result.stderr.splitlines()
                       if line.startswith(("PREJOIN_", "FRONTIER_", "SEPARATOR_", "GENERAL_"))]
-            if label == "qpeexact8" and mode == "auto" and bits == 200:
-                assert route == "prejoin", "known QPE8 route changed"
-            trial.update(status="PASS", route=route, count=count, witness_upper=upper, traces=traces)
+            plan, = re.findall(
+                r"^PREJOIN_COMPLETE residual=(\d+) cuts=(\d+) leaves=(\d+) width=(\d+) work=(\d+) peak=(\d+) joins=(\d+) plan_ns=\d+$",
+                result.stderr, re.M)
+            plan = tuple(map(int, plan))
+            assert route == "prejoin" and plan == expected_plan, "C1 baseline route/plan changed"
+            assert count["sat"], "C1 SAT support changed"
+            trial.update(status="PASS", route=route, count=count, witness_upper=upper,
+                         plan_signature=plan, traces=traces)
         except (AssertionError, ValueError) as exc:
             trial.update(status="NOT_ADMITTED", error=str(exc))
         save()

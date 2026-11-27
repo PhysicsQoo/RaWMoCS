@@ -51,3 +51,37 @@ detection before changing versioned release policy.
 
 This PR keeps all current required checks and uses one opt-in research step
 on its own branch in the existing science workflow. No production changes.
+
+## C1 evidence and C2 structural coverage audit
+
+[Science run 45974883395](https://github.com/PhysicsQoo/RaWMoCS/actions/runs/45974883395):
+8/8 non-skipped jobs, 24/24 numeric rows, artifact 15187440596,
+ZIP SHA256 `1e3d48f27deb06d7be465ddc8796f5d874e6784254303901e7e70897c4ea22fe`,
+checkout `cac908e5c5515e30620c33a1d08661167fb0e73f`.
+CodSpeed and metadata checks passed. All rows actually completed Prejoin:
+zero cuts, one leaf; width 5–11, work 4,664–44,678. All solver rows
+under 20 ms; total exporter + oracle + solver spans 5.884 s on this runner
+(excludes checkout/build; not total CI latency). Source and plan signatures
+are frozen for the unchanged-solver candidate; do not impose permanent
+identical plans on future algorithm changes without requalification.
+
+| Coverage obligation | Existing minimal control / evidence | C2 decision |
+| --- | --- | --- |
+| Six original families and numeric support | C1 24 rows, 550-bit witness, source digests | REUSE; routine matrix can be reduced after fault-detection review |
+| General/Prejoin/AutoSeparator fallback | lib tests auto_general_on_wide_clause_and_empty_scope, auto_separator_preserves_prejoin_and_fallback_contract | REUSE; 10-var wide clause |
+| SAT-zero vs UNSAT / four MPFR precisions | exact_reference_and_prejoin_agree, optimized_general_matches_independent_reference | REUSE |
+| General components | component_transfer_preserves_order_and_connected_residual, optimized_general_matches_independent_reference | REUSE |
+| Cache key/admission correctness | borrowed_key_matches_owned_exactly | REUSE; actual nontrivial hit benefit remains distinct research evidence |
+| Separator scoring and signed count | separator_scores_and_signed_wmc, separator_matches_independent_dyadic_counts | REUSE; scoring override tested directly, actual end-to-end override not yet proven by C1 |
+| Genuine Frontier transaction stop | shared_core::kernel_diagnostics_are_route_specific; native_stdio | REUSE existing 24 forced literal fixture; add independent analytic count check (10^6144, imaginary zero) |
+| Native file/text/CLI contract and stdio | shared_file_memory_cli_parity, native_stdio | REUSE; no new duplicate corpus |
+| Cancellation, timeout, reentry | cooperative_cancellation_is_distinct_and_call_local, in_flight_cancellation_at_real_checkpoints | REUSE deterministic controls; long uninstrumented cancellation research remains |
+| Prejoin multi-leaf cut execution | C1 has no nonzero cut | GAP: inspect historical receipts / smallest genuine cut before claiming coverage |
+| Long General / hard OOM / GPMC / R6 timing | distinct resource/performance claims | keep historical gates; conditional policy not yet admitted |
+
+No solver or release-policy changes in this slice. The C2 baseline check
+fails closed if source, route or observed plan drifts; only this research
+qualification uses the pinned plan signatures. The new analytic assertion
+must pass CI before its evidence is admitted. Remaining gap: measured
+fault-detection coverage, minimal true cut witness (if required by previous
+suite), and proof of equivalent routine scope; no blanket removal yet.

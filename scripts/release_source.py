@@ -70,6 +70,9 @@ def load_request():
               "artifact_id", "artifact_digest", "source_sha256", "notes"}
     if r.get("version") == "0.3.0":
         fields.add("python_source_sha256")
+        if "qualification" in r:
+            fields.add("qualification")
+            require(r["qualification"] == "v030-ci-only", "unknown v0.3.0 qualification")
         require(re.fullmatch(r"[0-9a-f]{64}", r.get("python_source_sha256", "")),
                 "invalid Python source digest")
     require(set(r) == fields, "unexpected request fields")
@@ -472,11 +475,18 @@ def prepare(r):
     manifest = run("git", "show", r["revision"] + ":crates/rawmocs-cli/Cargo.toml").decode()
     require(tomllib.loads(manifest)["package"]["version"] == r["version"], "target version mismatch")
     rationalized = False
+    ci_only = r.get("qualification") == "v030-ci-only"
+    if ci_only:
+        from release_ci_only_v030 import verify_baseline, verify_scope, verify_bounded_run
+        verify_scope(r["revision"])
+        verify_baseline(api, verify_run)
     for kind in ("science", "codspeed"):
         endpoint = f"repos/{REPO}/actions/runs/{r[kind + '_run']}"
         run_data = api(endpoint)
         jobs = api(f"{endpoint}/attempts/{run_data['run_attempt']}/jobs?per_page=100")
-        if kind == "science" and r["version"] == "0.2.2" and any(
+        if ci_only:
+            verify_bounded_run(r, run_data, jobs, kind)
+        elif kind == "science" and r["version"] == "0.2.2" and any(
                 j["name"] == V022_SMALL_JOB for j in jobs["jobs"]):
             verify_v022_admission(r, run_data, jobs)
             rationalized = True

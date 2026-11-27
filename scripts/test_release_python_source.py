@@ -172,5 +172,76 @@ class ParallelTransportGate(unittest.TestCase):
             verify_run(r, run, jobs, "science")
 
 
+
+class CIOnlyV030Gate(unittest.TestCase):
+    def test_scope(self):
+        from release_ci_only_v030 import check_diff
+        def row(path, status="M", before="100644", after="100644"):
+            return (f":{before} {after} {'a'*40} {'b'*40} {status}\0{path}\0").encode()
+        self.assertEqual(check_diff(row(".github/workflows/rust-science.yml")),
+                         [".github/workflows/rust-science.yml"])
+        for p in ("crates/rawmocs-cli/src/lib.rs", "crates/rawmocs-cli/Cargo.lock",
+                  "crates/rawmocs-python/src/lib.rs", "pyproject.toml",
+                  "crates/rawmocs-cli/tools/release_native_paired.py", "releases/request.json"):
+            with self.subTest(path=p), self.assertRaises(ValueError):
+                check_diff(row(p))
+        for raw in (b"\0", row(".github/workflows/rust-science.yml", "T", "100644", "120000"),
+                    row(".github/workflows/rust-science.yml")*2):
+            with self.assertRaises(ValueError):
+                check_diff(raw)
+
+    def bounded(self, kind):
+        from release_ci_only_v030 import SCIENCE, CODSPEED, SKIPS, SIM, REQUIRED
+        r, data, _ = fixture("0.3.0")
+        r["qualification"] = "v030-ci-only"
+        r["codspeed_run"] = 123
+        data.update(event="push", head_commit={"message":"candidate [release-package]"},
+                    path=".github/workflows/" + ("rust-science.yml" if kind == "science" else "codspeed.yml"))
+        passed, skipped = (SCIENCE, SKIPS) if kind == "science" else (CODSPEED, {SIM})
+        jobs = []
+        for name in sorted(passed | skipped):
+            needed = REQUIRED.get(name, set())
+            if name.startswith("portability ("):
+                needed = {"Run cargo test --workspace"}
+            jobs.append({"name":name,"status":"completed",
+                         "conclusion":"skipped" if name in skipped else "success",
+                         "steps":[{"name":x,"conclusion":"success"} for x in needed]})
+        return r, data, {"total_count":len(jobs),"jobs":jobs}, kind
+
+    def test_bounded(self):
+        from release_ci_only_v030 import verify_bounded_run
+        for kind in ("science", "codspeed"):
+            verify_bounded_run(*self.bounded(kind))
+
+    def test_wrong_intent_or_revision(self):
+        from release_ci_only_v030 import verify_bounded_run
+        for bad in ({"event":"pull_request"},{"head_sha":"b"*40},{"head_commit":{"message":"routine"}}):
+            r, data, jobs, kind = self.bounded("science")
+            data.update(bad)
+            with self.assertRaises(ValueError):
+                verify_bounded_run(r,data,jobs,kind)
+
+    def test_missing_source_install(self):
+        from release_ci_only_v030 import verify_bounded_run
+        r,data,jobs,kind=self.bounded("science")
+        job=next(j for j in jobs["jobs"] if j["name"]=="First release CLI and source-locked transfer gate")
+        job["steps"]=[s for s in job["steps"] if s["name"]!="Source archive and extracted-tree installation admission"]
+        with self.assertRaises(ValueError):
+            verify_bounded_run(r,data,jobs,kind)
+
+    def test_skipped_light(self):
+        from release_ci_only_v030 import verify_bounded_run, ROUTINE
+        r,data,jobs,kind=self.bounded("science")
+        next(j for j in jobs["jobs"] if j["name"]==ROUTINE)["conclusion"]="skipped"
+        with self.assertRaises(ValueError):
+            verify_bounded_run(r,data,jobs,kind)
+
+    def test_wrong_version(self):
+        from release_ci_only_v030 import verify_bounded_run
+        r,data,jobs,kind=self.bounded("science")
+        r["version"]="0.3.1"
+        with self.assertRaises(ValueError):
+            verify_bounded_run(r,data,jobs,kind)
+
 if __name__ == "__main__":
     unittest.main()

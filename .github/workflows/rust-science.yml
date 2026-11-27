@@ -133,6 +133,48 @@ jobs:
           path: ${{ runner.temp }}/rawmocs-platform/*.whl
           if-no-files-found: error
 
+  python-manylinux:
+    if: github.event_name == 'pull_request' && github.head_ref == 'research/python-api'
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: x86_64
+          - os: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build manylinux candidate and inspect dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/manylinux-evidence"
+          docker run --rm -v "$GITHUB_WORKSPACE:/io:ro" -v "$RUNNER_TEMP/manylinux-evidence:/out" quay.io/pypa/manylinux_2_28_${{ matrix.arch }} bash -euxc '
+            cp -a /io /tmp/source
+            cd /tmp/source
+            export PATH=/opt/python/cp312-cp312/bin:$HOME/.cargo/bin:$PATH
+            curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+            python -m pip install maturin==1.8.3 auditwheel
+            echo "17b67a9734a301b6ed6c726b585245f823f18d35a3904e4d0b56ac657aa90236  crates/rawmocs-python/Cargo.lock" | sha256sum -c -
+            maturin build --locked --release --interpreter python --compatibility manylinux_2_28 --out /out
+            auditwheel show /out/*.whl | tee /out/auditwheel.txt
+            cargo metadata --locked --manifest-path crates/rawmocs-python/Cargo.toml --format-version 1 > /out/cargo-metadata.json
+            python -m venv /tmp/installed
+            /tmp/installed/bin/python -m pip install --no-index /out/*.whl
+            cd /tmp
+            /tmp/installed/bin/python -I -m unittest discover -s /tmp/source/python/tests -v 2>&1 | tee /out/contract.log
+            sha256sum /out/*.whl > /out/wheel.sha256
+          '
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rawmocs-manylinux-${{ matrix.arch }}
+          path: ${{ runner.temp }}/manylinux-evidence/
+          if-no-files-found: error
+
   release-cli:
     name: First release CLI and source-locked transfer gate
     runs-on: ubuntu-24.04

@@ -28,8 +28,12 @@ ROUTINE = "Routine small-family science and R6-Light"
 SKIPS = RESEARCH_SKIPS | {"python-portability", "python-manylinux",
                          "Release shared-core native transport (parallel)",
                          "Release matched native GPMC ($"+ "{{ matrix.case }})"}
-SHORT = "Release short original QPE8 Simulation (same precision)"
-SIM = "CodSpeed simulation (opt in after repository connection)"
+COMBINED = "CodSpeed combined 68 identities and original QPE8 Simulation"
+COMBINED_STEPS = {"Compose one CodSpeed config for Rust harness and QPE8 pair", "CodSpeed unified Simulation (68 identities plus QPE8 pair)",
+                  "Build instrumented solver microbenchmarks",
+                  "Confirm instrumented build did not rewrite the lockfile",
+                  "Qualify short original proxy within one second per arm",
+                  "Verify simulated output, precision and plan signature"}
 REQUIRED = {
     "core": {"Classify exact change scope (ordinary CI, not release admission)",
              "Verify ordinary scope classifier", "Verify v0.3.0 CI-only release source scope",
@@ -49,11 +53,11 @@ REQUIRED = {
     ROUTINE: {"Qualify small source-locked family representatives (release)",
               "R6-Light small original-family native transport rehearsal",
               "Archive bounded routine science evidence"},
-    SHORT: {"CodSpeed bounded release Simulation", "Verify simulated output, precision and plan signature"},
+    COMBINED: COMBINED_STEPS,
 }
 SCIENCE = {"core", "a0-science", "First release CLI and source-locked transfer gate", ROUTINE,
            *("portability (" + x + ")" for x in ("ubuntu-24.04-arm","windows-latest","macos-15","macos-15-intel"))}
-CODSPEED = {"Compile and validate Rust benchmarks (not a timing report)", SHORT}
+CODSPEED = {"Compile and validate Rust benchmarks (not a timing report)", COMBINED}
 
 def require(ok, message):
     if not ok:
@@ -111,7 +115,7 @@ def verify_bounded_run(r, data, jobs, kind):
             and "[release-package]" in (data.get("head_commit") or {}).get("message","")
             and data["status"] == "completed" and data["conclusion"] == "success",
             "missing package intent or failed run")
-    passed, skipped = (SCIENCE, SKIPS) if kind == "science" else (CODSPEED, {SIM})
+    passed, skipped = (SCIENCE, SKIPS) if kind == "science" else (CODSPEED, set())
     expected = passed | skipped
     require(jobs["total_count"] == len(jobs["jobs"]) == len(expected)
             and {j["name"] for j in jobs["jobs"]} == expected, "wrong bounded job inventory")

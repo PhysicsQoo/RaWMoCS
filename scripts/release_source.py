@@ -126,6 +126,10 @@ def verify_run(r, run_data, jobs, kind):
                                  for j in jobs["jobs"])
         if parallel_transport:
             expected = expected | {"Release shared-core native transport (parallel)"}
+    if kind == "codspeed" and r["version"] == "0.3.0":
+        from release_ci_only_v030 import COMBINED, CODSPEED as COMBINED_JOBS
+        if any(j["name"] == COMBINED for j in jobs["jobs"]):
+            expected = COMBINED_JOBS
     workflow = "rust-science.yml" if kind == "science" else "codspeed.yml"
     require(run_data["id"] == r[kind + "_run"], "wrong run ID")
     require(run_data["repository"]["full_name"] == REPO
@@ -150,6 +154,10 @@ def verify_run(r, run_data, jobs, kind):
             continue
         steps = {s["name"]: s["conclusion"] for s in j["steps"]}
         required_steps = STEPS.get(j["name"], ())
+        if kind == "codspeed" and r["version"] == "0.3.0":
+            from release_ci_only_v030 import COMBINED, COMBINED_STEPS
+            if j["name"] == COMBINED:
+                required_steps = COMBINED_STEPS
         # Preserve the published v0.1.0 receipt, but never let a future
         # release claim a two-arm or skipped routine gate as full admission.
         if j["name"].startswith("Release matched native GPMC (") and r["version"] != "0.1.0":

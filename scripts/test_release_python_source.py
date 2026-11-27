@@ -191,13 +191,13 @@ class CIOnlyV030Gate(unittest.TestCase):
                 check_diff(raw)
 
     def bounded(self, kind):
-        from release_ci_only_v030 import SCIENCE, CODSPEED, SKIPS, SIM, REQUIRED
+        from release_ci_only_v030 import SCIENCE, CODSPEED, SKIPS, REQUIRED
         r, data, _ = fixture("0.3.0")
         r["qualification"] = "v030-ci-only"
         r["codspeed_run"] = 123
         data.update(event="push", head_commit={"message":"candidate [release-package]"},
                     path=".github/workflows/" + ("rust-science.yml" if kind == "science" else "codspeed.yml"))
-        passed, skipped = (SCIENCE, SKIPS) if kind == "science" else (CODSPEED, {SIM})
+        passed, skipped = (SCIENCE, SKIPS) if kind == "science" else (CODSPEED, set())
         jobs = []
         for name in sorted(passed | skipped):
             needed = REQUIRED.get(name, set())
@@ -242,6 +242,29 @@ class CIOnlyV030Gate(unittest.TestCase):
         r["version"]="0.3.1"
         with self.assertRaises(ValueError):
             verify_bounded_run(r,data,jobs,kind)
+
+
+    def test_combined_codspeed_both_targets_required(self):
+        from release_ci_only_v030 import verify_bounded_run, COMBINED
+        for missing in ("CodSpeed unified Simulation (68 identities plus QPE8 pair)",
+                        "Verify simulated output, precision and plan signature",
+                        "Compose one CodSpeed config for Rust harness and QPE8 pair"):
+            r, data, jobs, kind = self.bounded("codspeed")
+            job = next(j for j in jobs["jobs"] if j["name"] == COMBINED)
+            job["steps"] = [s for s in job["steps"] if s["name"] != missing]
+            with self.subTest(step=missing), self.assertRaises(ValueError):
+                verify_bounded_run(r, data, jobs, kind)
+
+    def test_combined_codspeed_not_skippable(self):
+        from release_ci_only_v030 import verify_bounded_run, COMBINED
+        r, data, jobs, kind = self.bounded("codspeed")
+        next(j for j in jobs["jobs"] if j["name"] == COMBINED)["conclusion"] = "skipped"
+        with self.assertRaises(ValueError):
+            verify_bounded_run(r, data, jobs, kind)
+
+    def test_full_policy_combined_codspeed(self):
+        r, data, jobs, kind = self.bounded("codspeed")
+        verify_run(r, data, jobs, kind)
 
 if __name__ == "__main__":
     unittest.main()

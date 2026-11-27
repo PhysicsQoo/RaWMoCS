@@ -61,17 +61,28 @@ class ManualLongCI(unittest.TestCase):
             source = (self.root / filename).read_text()
             for marker in ("[release-science]", "[parallel-full]", "[full-science]", "[performance]"):
                 self.assertNotIn(marker, source)
-            self.assertIn("default: fast", source)
+            if filename == "rust-science.yml":
+                self.assertIn("default: fast", source)
 
-    def test_codspeed_long_dispatch_only(self):
-        self.assertEqual(self.job_guard("codspeed.yml", "codspeed"),
-                         "if: vars.RAWMOCS_CODSPEED_ENABLED == 'true' && github.event_name == 'workflow_dispatch' && inputs.suite == 'full'")
+    def test_combined_codspeed_auto(self):
+        source = (self.root / "codspeed.yml").read_text()
+        self.assertNotIn("inputs.suite", source)
+        self.assertIn("  pull_request:", source)
+        self.assertIn("  push:", source)
+        self.assertIn("  workflow_dispatch:", source)
+        self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", source)
+        self.assertEqual(source.count("uses: CodSpeedHQ/action@v5"), 1)
+        self.assertIn("entrypoint:", source)
+        self.assertIn("cargo codspeed run --bench solver --bench quprs_direct_cnf", source)
+        self.assertIn("Verify simulated output, precision and plan signature", source)
+        self.assertNotIn("continue-on-error: true", source)
 
     def test_manual_separate_concurrency(self):
-        for filename in ("rust-science.yml", "codspeed.yml"):
+        for filename, suffix in (("rust-science.yml", "inputs.suite || 'routine'"),
+                                 ("codspeed.yml", "'manual' || 'routine'")):
             source = (self.root / filename).read_text()
             group = next(l for l in source.splitlines() if l.startswith("  group: "))
-            self.assertIn("github.event_name == 'workflow_dispatch' && inputs.suite || 'routine'", group)
+            self.assertIn("github.event_name == 'workflow_dispatch' && "+suffix, group)
 
 if __name__ == "__main__":
     unittest.main()

@@ -210,8 +210,11 @@ def verify_v022_rationalized_run(r, run_data, jobs, recomputed_scope):
             "wrong workflow")
     require(run_data["head_branch"] == "main" and run_data["head_sha"] == r["revision"],
             "wrong run revision")
-    require(run_data["event"] == "workflow_dispatch",
-            "explicit rationalized workflow dispatch required")
+    message = (run_data.get("head_commit") or {}).get("message", "")
+    require(run_data["event"] == "workflow_dispatch" or (
+        run_data["event"] == "push" and "[release-rationalized]" in message
+        and "[release-science]" not in message),
+        "explicit rationalized release intent required")
     require(run_data["status"] == "completed" and run_data["conclusion"] == "success",
             "run not successful")
     expected = V022_SCIENCE | {V022_SKIPPED_JOB}

@@ -15,8 +15,9 @@ import time
 
 from release_transfer import check_count
 
-CNF_SHA = "6fb69626195bee5b89ed3503ae8b1b4801d9267e7bd5ff3684af152afcd885e1"
-REF_SHA = "e59e2741a69dbb13b4f6d0b44562ac689541c4bcf7c43da476006ec8f1b87512"
+CNF_SHA = os.environ.get("M0_CNF_SHA", "6fb69626195bee5b89ed3503ae8b1b4801d9267e7bd5ff3684af152afcd885e1")
+REF_SHA = os.environ.get("M0_REF_SHA", "e59e2741a69dbb13b4f6d0b44562ac689541c4bcf7c43da476006ec8f1b87512")
+INPUT = Path(os.environ.get("M0_INPUT_DIR", ".m0-input"))
 ROOT = Path(os.environ.get("M0_EVIDENCE_DIR", ".m0-evidence")).resolve()
 BIN = Path(os.environ.get("M0_RUST_BIN", "crates/rawmocs-cli/target/release/examples/m0_repeat")).resolve()
 FIELDS = ("sat", "real", "imag", "route", "bits", "real_sig", "real_exp",
@@ -134,9 +135,9 @@ def launch(arm, path, ref, profile=False):
 
 def main(stage):
     ROOT.mkdir(exist_ok=True)
-    path, = Path(".m0-input").rglob("*-gpmc.cnf")
-    witness, = Path(".m0-input").rglob("prejoin-reference.json")
-    receipt, = Path(".m0-input").rglob("prejoin-native-pilot.json")
+    path, = INPUT.rglob("*-gpmc.cnf")
+    witness, = INPUT.rglob("prejoin-reference.json")
+    receipt, = INPUT.rglob("prejoin-native-pilot.json")
     assert sha(path) == CNF_SHA and sha(witness) == REF_SHA
     ref = json.loads(witness.read_text())
     prior = json.loads(receipt.read_text())
@@ -150,10 +151,10 @@ def main(stage):
     assert cohort["working_digits"] == 130 and cohort["target_digits"] == 100
     assert all(t["rows"][a]["status"] == "COMPLETED" and t["rows"][a]["witness"]["pass"]
                for t in cohort["trials"] for a in ("gpmc", "prejoin"))
-    if stage in ("repeat", "repeat-rust"):
-        arms = ("rust",) if stage == "repeat-rust" else ("rust", "python")
+    if stage in ("repeat", "repeat-rust", "repeat-python"):
+        arms = {"repeat": ("rust", "python"), "repeat-rust": ("rust",), "repeat-python": ("python",)}[stage]
         rows = {a: launch(a, path, ref) for a in arms}
-        expected = signature(rows["rust"][0])
+        expected = signature(rows[arms[0]][0])
         assert all(signature(row) == expected for rs in rows.values() for row in rs)
         summary = {}
         for a, rs in rows.items():
@@ -179,7 +180,7 @@ def main(stage):
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("stage", choices=("repeat", "profile", "repeat-rust", "profile-rust", "worker"))
+    p.add_argument("stage", choices=("repeat", "profile", "repeat-rust", "repeat-python", "profile-rust", "worker"))
     p.add_argument("path", nargs="?", type=Path)
     a = p.parse_args()
     if a.stage == "worker":

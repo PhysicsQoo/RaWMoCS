@@ -11,6 +11,10 @@ publish = false
 name = "_native"
 crate-type = ["cdylib"]
 
+[features]
+# Forward the research-only core feature; ordinary wheels remain unchanged.
+m1-last-use-reuse = ["rawmocs_mpfr/m1-last-use-reuse"]
+
 [dependencies]
 pyo3 = { version = "=0.23.5", features = ["extension-module"] }
 rawmocs_mpfr = { package = "rawmocs-cli", path = "../rawmocs-cli", version = "=0.2.2" }

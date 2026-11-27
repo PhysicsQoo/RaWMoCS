@@ -233,6 +233,81 @@ def verify_v022_rationalized_run(r, run_data, jobs, recomputed_scope):
                         for s in j["steps"]), f"failed step in {j['name']}")
 
 
+
+# The tested PR merge is immutable and must have precisely the qualified
+# candidate tree. Do not infer equivalence from PR labels or a mutable ref.
+V022_TESTED_MERGE = "c5b35ca7a98ff0d02d093caa48a88ea19be2d3e0"
+V022_QUALIFICATION_SCIENCE = 45995414221
+V022_QUALIFICATION_CODSPEED = 45995414082
+V022_FAMILIES = {"qpeexact8", "qpeinexact8", "qnn4", "grover4", "wstate4", "gf2_4"}
+V022_TRIALS = {(60, 200, 30, "auto"), (130, 432, 100, "auto"),
+               (60, 200, 30, "auto-frontier"), (60, 200, 30, "auto-separator")}
+V022_FAULTS = {"sat", "real", "imag", "digits", "bits", "route", "cut",
+               "missing_plan", "missing_completion"}
+
+
+def verify_v022_reference_tree():
+    from ci_scope_v022 import PUBLISHED, QUALIFIED
+    for sha in (PUBLISHED, QUALIFIED, V022_TESTED_MERGE):
+        require(run("git", "rev-parse", "--verify", sha + "^{commit}").decode().strip() == sha,
+                "qualification object mismatch")
+    require(run("git", "rev-parse", QUALIFIED + "^{tree}") ==
+            run("git", "rev-parse", V022_TESTED_MERGE + "^{tree}"),
+            "qualified tree differs from tested PR merge")
+    subprocess.run(["git", "merge-base", "--is-ancestor", PUBLISHED, QUALIFIED], check=True)
+
+
+def verify_v022_small_archive(revision, blob, scope):
+    """Check immutable ZIP data without extracting or executing its content."""
+    with zipfile.ZipFile(io.BytesIO(blob)) as z:
+        names = z.namelist()
+        require(len(names) == len(set(names)), "duplicate small-evidence ZIP member")
+        require(all(not name.startswith("/") and ".." not in Path(name).parts for name in names),
+                "unsafe small-evidence ZIP member")
+        require(json.loads(z.read("shadow-scope.json")) == scope, "scope receipt mismatch")
+        report = json.loads(z.read("small-family/qualification.json"))
+        require(report["checkout"] == revision and report["status"] == "NUMERIC_PASS",
+                "small-family identity or status mismatch")
+        require(report["quprs_revision"] == "0b28736651b3740ed3b201edd2efdef3da541e0d",
+                "wrong pinned encoder revision")
+        for name in ("binary_sha256", "exporter_sha256"):
+            require(re.fullmatch(r"[0-9a-f]{64}", report[name]), "invalid binary identity")
+        rows = report["cases"]
+        require(len(rows) == len(V022_FAMILIES) and {row["label"] for row in rows} == V022_FAMILIES,
+                "missing or duplicate family")
+        faults = []
+        for row in rows:
+            label = row["label"]
+            prefix = "small-family/" + label + "/"
+            require(row["status"] == "NUMERIC_PASS", "failed family")
+            for name, field in (
+                ("extended_v022_" + label + ".qasm", "qasm_sha256"),
+                ("extended_v022_" + label + "-gpmc.cnf", "cnf_sha256"),
+                ("independent-reference.json", "reference_sha256"),
+            ):
+                require(digest(z.read(prefix + name)) == row[field], "small-family source digest mismatch")
+            reference = json.loads(z.read(prefix + "independent-reference.json"))
+            require(reference["source_sha256"] == row["cnf_sha256"] and reference["bits"] == 550,
+                    "independent reference mismatch")
+            trials = row["trials"]
+            require(len(trials) == len(V022_TRIALS)
+                    and {(t["digits"], t["bits"], t["target_digits"], t["mode"]) for t in trials}
+                    == V022_TRIALS, "missing or duplicate trial")
+            for t in trials:
+                require(t["status"] == "PASS" and t["exit_code"] == 0
+                        and t["route"] == "prejoin" and t["count"]["sat"] is True,
+                        "failed numeric trial")
+                stem = prefix + t["mode"] + "-" + str(t["bits"])
+                require(bool(z.read(stem + ".stdout")) and bool(z.read(stem + ".stderr")),
+                        "missing raw trial receipt")
+                if "rejected_receipt_faults" in t:
+                    require(label == "qpeexact8" and t["mode"] == "auto" and t["bits"] == 200,
+                            "fault receipt at wrong trial")
+                    faults += t["rejected_receipt_faults"]
+        require(len(faults) == len(V022_FAULTS) and set(faults) == V022_FAULTS,
+                "missing or duplicate receipt fault evidence")
+
+
 def verify_assets(r, assets):
     v = r["version"]
     archive = f"rawmocs-{v}-source.tar.gz"

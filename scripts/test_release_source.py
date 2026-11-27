@@ -451,5 +451,32 @@ class RationalizedArchiveTests(unittest.TestCase):
                     verify_v022_small_archive(revision, self.archive(report, files), scope)
 
 
+
+class RationalizedMutationTests(unittest.TestCase):
+    def test_mutation_requires_assertion_failure_and_restoration(self):
+        import zipfile
+        from release_source import verify_v022_mutation
+        revision = "a" * 40
+        name = "factor_prejoin::tests::prejoin_cut_planner_width_boundary"
+        files = {
+            "status.txt": "SOLVER_MUTATION_REJECTED_AND_RESTORED " + revision,
+            "mutant.log": f"test {name} ... FAILED\ntest result: FAILED. 0 passed; 1 failed",
+            "restored.log": f"test {name} ... ok\ntest result: ok. 1 passed; 0 failed",
+        }
+        for defect in (None, "status.txt", "mutant.log", "restored.log"):
+            with self.subTest(defect=defect):
+                buf = io.BytesIO()
+                with zipfile.ZipFile(buf, "w") as z:
+                    for path, content in files.items():
+                        z.writestr(".release-evidence/mutation/" + path,
+                                   content if path != defect else "compile error or wrong receipt")
+                with zipfile.ZipFile(io.BytesIO(buf.getvalue())) as z:
+                    if defect is None:
+                        verify_v022_mutation(z, revision)
+                    else:
+                        with self.assertRaises(ValueError):
+                            verify_v022_mutation(z, revision)
+
+
 if __name__ == "__main__":
     unittest.main()

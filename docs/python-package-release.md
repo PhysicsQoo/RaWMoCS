@@ -4,11 +4,7 @@ Status: **candidate only / distribution not authorized**.
 
 ## Version and support contract
 
-The package and binding are 0.3.0a1 / 0.3.0-alpha.1; the shared CLI is
-explicitly pinned to 0.2.2 and the internal reference crate has its own
-version. This is an intentional development identity, not a stable 0.3.0
-release. A release must lock the intended version tuple and update the
-existing source-release gate rather than reuse a 0.2.2 receipt.
+The staged source-only candidate aligns Python, binding and shared CLI to 0.3.0. The internal reference crate retains its independent 0.1.0 version. Candidate version metadata is not publication. Initial Python metadata is restricted to the qualified 3.12 version range; broaden only with evidence.
 
 The current binary qualification is CPython 3.12, manylinux_2_28 x86_64
 and aarch64, and macOS x86_64 and arm64. No Windows Python or other
@@ -60,3 +56,7 @@ is the next consumer admission; GPMC remains default.
 ## Source-first candidate route
 
 Proposed initial distribution is sdist only, built from the exact locked source by the consumer. It does not grant clearance for binary distribution. The CI source inventory compares each regular sdist member (except generated PKG-INFO) with its tracked Git bytes, rejects compiled file suffixes and common native magic, and inventories the resolved dependency licenses. Ordinary candidate CI no longer uploads linked wheels; it retains their hashes, metadata and test evidence. Existing historical artifacts are not modified. This is a candidate policy pending review and exact-main publication admission. No change to existing full science requirements or S4 scope.
+
+## v0.3.0 source-only staging
+
+The first release is intended to contain source assets only; no linked wheel or executable. The Python sdist and inventory are staged in the existing source release evidence directory for exact-main admission. Existing full science is retained; the release request remains unchanged until the publisher gate and actual receipts are verified. S4 remains not achieved and is excluded from the proposed release scope, with separate research deferred. PyPI upload is not enabled.

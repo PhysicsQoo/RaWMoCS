@@ -2,7 +2,7 @@
 
 The optional PyO3 extension delegates to the same production MPFR library as
 the CLI. No Python solver, implicit GPMC substitution, or equivalence verdict.
-The 0.3.0a1 package is experimental, not a published PyPI release.
+The staged 0.3.0 source-only candidate is not yet a published release. CPython 3.12 is the initial qualified interpreter. No prebuilt wheel distribution is admitted.
 
 From a clean source checkout with Rust, GMP/MPFR build tools and Python:
 

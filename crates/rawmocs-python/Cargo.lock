@@ -200,7 +200,7 @@ dependencies = [
 
 [[package]]
 name = "rawmocs-cli"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "num-rational",
  "rawmocs-core",
@@ -217,7 +217,7 @@ dependencies = [
 
 [[package]]
 name = "rawmocs-python"
-version = "0.3.0-alpha.1"
+version = "0.3.0"
 dependencies = [
  "pyo3",
  "rawmocs-cli",

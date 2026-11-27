@@ -4,9 +4,9 @@ build-backend = "maturin"
 
 [project]
 name = "rawmocs"
-version = "0.3.0a1"
+version = "0.3.0"
 description = "Native signed-complex weighted model counting with RaWMoCS"
-requires-python = ">=3.10"
+requires-python = ">=3.12,<3.13"
 
 [tool.maturin]
 manifest-path = "crates/rawmocs-python/Cargo.toml"

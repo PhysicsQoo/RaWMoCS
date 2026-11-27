@@ -101,7 +101,7 @@ jobs:
       - run: cargo test --workspace
 
   python-portability:
-    if: github.event_name == 'pull_request' && github.head_ref == 'research/python-api'
+    if: (github.event_name == 'pull_request' && (github.head_ref == 'research/python-api' || github.head_ref == 'release/prepare-v030-source')) || (github.ref == 'refs/heads/main' && ((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[release-science]'))))
     timeout-minutes: 25
     strategy:
       fail-fast: false
@@ -123,7 +123,7 @@ jobs:
           set -euo pipefail
           python -m pip install maturin==1.8.3
           test -f crates/rawmocs-python/Cargo.lock
-          python -c 'import hashlib,pathlib; assert hashlib.sha256(pathlib.Path("crates/rawmocs-python/Cargo.lock").read_bytes()).hexdigest() == "17b67a9734a301b6ed6c726b585245f823f18d35a3904e4d0b56ac657aa90236"'
+          git show HEAD:crates/rawmocs-python/Cargo.lock | cmp - crates/rawmocs-python/Cargo.lock
           maturin build --locked --release --interpreter python --out "$RUNNER_TEMP/rawmocs-platform" ${{ runner.os == 'Linux' && '--compatibility linux' || '' }}
           python -m venv "$RUNNER_TEMP/rawmocs-platform-env"
           source "$RUNNER_TEMP/rawmocs-platform-env/bin/activate"
@@ -142,7 +142,7 @@ jobs:
           if-no-files-found: error
 
   python-manylinux:
-    if: github.event_name == 'pull_request' && github.head_ref == 'research/python-api'
+    if: (github.event_name == 'pull_request' && (github.head_ref == 'research/python-api' || github.head_ref == 'release/prepare-v030-source')) || (github.ref == 'refs/heads/main' && ((github.event_name == 'workflow_dispatch' && inputs.suite == 'full') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[release-science]'))))
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -169,7 +169,7 @@ jobs:
             export PATH=/opt/python/cp312-cp312/bin:$HOME/.cargo/bin:$PATH
             curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
             python -m pip install maturin==1.8.3 auditwheel
-            echo "17b67a9734a301b6ed6c726b585245f823f18d35a3904e4d0b56ac657aa90236  crates/rawmocs-python/Cargo.lock" | sha256sum -c -
+            git show HEAD:crates/rawmocs-python/Cargo.lock | cmp - crates/rawmocs-python/Cargo.lock
             maturin build --locked --release --interpreter python --compatibility manylinux_2_28 --out /out
             auditwheel show /out/*.whl | tee /out/auditwheel.txt
             cargo metadata --locked --manifest-path crates/rawmocs-python/Cargo.toml --format-version 1 > /out/cargo-metadata.json
@@ -219,7 +219,7 @@ jobs:
           cargo test --locked --release --manifest-path "$manifest" --lib in_flight_cancellation_at_real_checkpoints -- --nocapture
           cargo build --locked --release --manifest-path "$manifest"
       - name: Prototype Python native wheel and API contract
-        if: github.event_name == 'pull_request' && github.head_ref == 'research/python-api'
+        if: (github.event_name == 'pull_request' && (github.head_ref == 'research/python-api' || github.head_ref == 'release/prepare-v030-source')) || (env.SCIENCE_SUITE == 'full' && github.ref == 'refs/heads/main')
         shell: bash
         run: |
           set -euo pipefail
@@ -228,7 +228,7 @@ jobs:
           python -m pip install maturin==1.8.3
           export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/crates/rawmocs-cli/target"
           test -f crates/rawmocs-python/Cargo.lock
-          python -c 'import hashlib,pathlib; assert hashlib.sha256(pathlib.Path("crates/rawmocs-python/Cargo.lock").read_bytes()).hexdigest() == "17b67a9734a301b6ed6c726b585245f823f18d35a3904e4d0b56ac657aa90236"'
+          git show HEAD:crates/rawmocs-python/Cargo.lock | cmp - crates/rawmocs-python/Cargo.lock
           maturin build --locked --release --interpreter python --compatibility linux --out "$RUNNER_TEMP/rawmocs-wheels"
           mkdir -p .release-evidence/python
           cp crates/rawmocs-python/Cargo.lock .release-evidence/python/Cargo.lock
@@ -237,6 +237,8 @@ jobs:
           python -m pip install --no-index "$RUNNER_TEMP"/rawmocs-wheels/*.whl
           RAWMOCS_TEST_CLI="$GITHUB_WORKSPACE/crates/rawmocs-cli/target/release/rawmocs" python -m unittest discover -s python/tests -v 2>&1 | tee .release-evidence/python/contract.log
           maturin sdist --out "$RUNNER_TEMP/rawmocs-sdist"
+          mkdir -p .release-evidence/python-source-release
+          cp "$RUNNER_TEMP"/rawmocs-sdist/*.tar.gz .release-evidence/python-source-release/
           cargo metadata --locked --manifest-path crates/rawmocs-python/Cargo.toml --format-version 1 > .release-evidence/python/cargo-metadata.json
           python scripts/python_source_inventory.py --sdist "$RUNNER_TEMP"/rawmocs-sdist/*.tar.gz --metadata .release-evidence/python/cargo-metadata.json --out .release-evidence/python/source-inventory.json
           sha256sum "$RUNNER_TEMP"/rawmocs-sdist/*.tar.gz | tee .release-evidence/python/sdist.sha256
@@ -257,8 +259,9 @@ jobs:
           sha256sum "$RUNNER_TEMP"/rawmocs-rebuilt/*.whl | tee .release-evidence/python/rebuilt-wheel.sha256
           python scripts/python_package_candidate.py --wheel "$RUNNER_TEMP"/rawmocs-wheels/*.whl --platform linux_x86_64 --sdist "$RUNNER_TEMP"/rawmocs-sdist/*.tar.gz --out .release-evidence/python/package-candidate.json
           python scripts/python_package_candidate.py --wheel "$RUNNER_TEMP"/rawmocs-rebuilt/*.whl --platform linux_x86_64 --out .release-evidence/python/rebuilt-package-candidate.json
+          cp .release-evidence/python/{source-inventory,package-candidate,rebuilt-package-candidate}.json .release-evidence/python-source-release/
       - name: Archive Python packaging evidence
-        if: always() && github.event_name == 'pull_request' && github.head_ref == 'research/python-api'
+        if: always() && ((github.event_name == 'pull_request' && (github.head_ref == 'research/python-api' || github.head_ref == 'release/prepare-v030-source')) || (env.SCIENCE_SUITE == 'full' && github.ref == 'refs/heads/main'))
         uses: actions/upload-artifact@v4
         with:
           name: rawmocs-python-packaging

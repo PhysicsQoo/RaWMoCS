@@ -134,9 +134,14 @@ jobs:
           source "$RUNNER_TEMP/rawmocs-python/bin/activate"
           python -m pip install maturin==1.8.3
           export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/crates/rawmocs-cli/target"
-          maturin build --release --interpreter python --compatibility linux --out "$RUNNER_TEMP/rawmocs-wheels"
+          cargo generate-lockfile --manifest-path crates/rawmocs-python/Cargo.toml
+          maturin build --locked --release --interpreter python --compatibility linux --out "$RUNNER_TEMP/rawmocs-wheels"
+          mkdir -p .release-evidence/python
+          cp crates/rawmocs-python/Cargo.lock .release-evidence/python/Cargo.lock
+          sha256sum "$RUNNER_TEMP"/rawmocs-wheels/*.whl | tee .release-evidence/python/wheel.sha256
+          python -VV | tee .release-evidence/python/python-version.txt
           python -m pip install --no-index "$RUNNER_TEMP"/rawmocs-wheels/*.whl
-          RAWMOCS_TEST_CLI="$GITHUB_WORKSPACE/crates/rawmocs-cli/target/release/rawmocs" python -m unittest discover -s python/tests -v
+          RAWMOCS_TEST_CLI="$GITHUB_WORKSPACE/crates/rawmocs-cli/target/release/rawmocs" python -m unittest discover -s python/tests -v 2>&1 | tee .release-evidence/python/contract.log
       - name: Exercise executable success, SAT-zero and fail-closed contracts
         shell: bash
         run: |

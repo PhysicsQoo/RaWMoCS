@@ -1,0 +1,8 @@
+{
+  "status": "APPROVED_FOR_REDISTRIBUTION",
+  "version": "0.5.0",
+  "revision": "9e2d81587a5a07719512d2b1db1881acecdd86b9",
+  "candidate_digest": "sha256:b8fbf59e2da056da2d8a30fd9caf313a07eb909317ab88126df12f0c99ae36b8",
+  "review_reference": "Maintainer explicit approval in the release conversation on 2026-11-28: RaWMoCS v0.5.0, exact revision and WASM artifact 15264523444, corresponding source and third-party license redistribution; stable admission run 46147756423.",
+  "scope": "binary-corresponding-source-licenses"
+}

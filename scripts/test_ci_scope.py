@@ -1,6 +1,6 @@
 import unittest
 from pathlib import Path
-from ci_scope import classify
+from ci_scope import classify, wasm_recipe_changed
 
 def row(path, status="M", old="100644", new="100644"):
     return (f":{old} {new} {'a'*40} {'b'*40} {status}\0{path}\0").encode()
@@ -35,6 +35,13 @@ class ScopeTests(unittest.TestCase):
         for raw in (row("README.md")[:-1], row("README.md")*2, b"bad\0x\0"):
             with self.assertRaises(ValueError):
                 classify(raw)
+    def test_wasm_recipe_gate(self):
+        for p in ('scripts/wasm/build.py', '.github/actions/wasm-candidate/action.yml', 'scripts/stage_single_rust_crate.py', '.github/workflows/rust-science.yml'):
+            self.assertTrue(wasm_recipe_changed(classify(row(p))))
+        for p in ('crates/rawmocs-cli/src/general.rs', 'README.md', 'packaging/rawmocs/Cargo.lock'):
+            self.assertFalse(wasm_recipe_changed(classify(row(p))))
+        self.assertTrue(wasm_recipe_changed({'reason':'unknown diff','paths':{}}))
+
     def test_empty_no_authority(self):
         self.assertFalse(classify(b"")["release_authorized"])
 
@@ -52,9 +59,15 @@ class ManualLongCI(unittest.TestCase):
 
     def test_science_long_jobs_dispatch_only(self):
         for name in ("release-native-transport", "release-native-paired",
-                     "python-portability", "python-manylinux"):
+                     "python-portability", "python-manylinux", "a0-science"):
             self.assertEqual(self.job_guard("rust-science.yml", name),
                              "if: github.event_name == 'workflow_dispatch' && inputs.suite == 'full'")
+
+    def test_wasm_full_admission_not_routine_push(self):
+        guard = self.job_guard('rust-science.yml', 'wasm-contract')
+        self.assertIn("github.event_name == 'workflow_dispatch' && inputs.suite == 'wasm'", guard)
+        self.assertIn("github.event_name == 'pull_request' && needs.core.outputs.wasm_contract == 'true'", guard)
+        self.assertNotIn("github.event_name == 'push'", guard)
 
     def test_no_push_title_full_intent(self):
         for filename in ("rust-science.yml", "codspeed.yml"):

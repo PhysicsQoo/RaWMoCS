@@ -7,6 +7,10 @@ on:
       - 'packaging/rawmocs/**'
       - 'pyproject.toml'
       - 'scripts/*stable*'
+      - 'scripts/wasm_release.py'
+      - 'scripts/wasm/**'
+      - 'scripts/replay_unified_admission.py'
+      - '.github/actions/wasm-candidate/**'
       - 'scripts/release_source.py'
       - 'scripts/release_python_source.py'
       - 'scripts/stage_single_rust_crate.py'
@@ -68,3 +72,34 @@ jobs:
           name: rawmocs-stable-source-admission
           path: ${{ runner.temp }}/stable-source/
           if-no-files-found: warn
+
+  wasm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Stage canonical Rust package and build both targets
+        uses: ./.github/actions/wasm-candidate
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rawmocs-wasm-candidate
+          path: ${{ runner.temp }}/rawmocs-wasm/evidence/
+          include-hidden-files: true
+          if-no-files-found: error
+  assets:
+    needs: [crate, source, wasm]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/admission
+      - name: Replay exact unified publisher asset contract
+        run: python3 scripts/replay_unified_admission.py "$RUNNER_TEMP/admission"

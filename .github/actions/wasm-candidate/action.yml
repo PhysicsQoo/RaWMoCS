@@ -1,0 +1,22 @@
+name: Build canonical Rust WASM candidate
+description: Two independent vendored offline builds and real-browser qualification
+runs:
+  using: composite
+  steps:
+    - uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: '1.100.1'
+        targets: wasm32-unknown-emscripten
+    - uses: mymindstorm/setup-emsdk@v14
+      with:
+        version: '4.0.23'
+    - name: Install bounded build and browser prerequisites
+      shell: bash
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y --no-install-recommends m4 make gcc
+        python3 -m pip install playwright==1.65.2
+        python3 -m playwright install --with-deps chromium
+    - name: Stage canonical Rust package and build both targets
+      shell: bash
+      run: python3 scripts/wasm/build.py "$RUNNER_TEMP/rawmocs-wasm"

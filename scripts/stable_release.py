@@ -6,15 +6,21 @@ from release_source import REPO,api,digest,require,run,verify_assets,verify_rele
 from release_python_source import verify_python_assets, archive_files
 from urllib.request import Request, urlopen
 from stable_crate_assets import verify_crate
+from wasm_release import NAME as WASM_NAME, validate_pin, read_zip, release_assets as wasm_assets
 
 REQUEST=Path("releases/stable-request.json")
 BASE_VERSION="0.4.0"
 BASE_SHA="d3e9e6ccd4a146bac19f6bd2628038cf20ae331dd12f9dc0cbcd37a4e63e955d"
 NAMES={"crate":"rawmocs-stable-crate-admission","source":"rawmocs-stable-source-admission"}
 STEPS={"crate":{"Verify version and source scope","Stage and verify exact single stable crate"},
-       "source":{"Verify stable CLI and Python extracted sources"}}
+       "source":{"Verify stable CLI and Python extracted sources"},
+       "wasm":{"Stage canonical Rust package and build both targets"},
+       "assets":{"Replay exact unified publisher asset contract"}}
 def validate_request(r):
-    require(set(r)=={"version","revision","admission_run","artifacts","notes"},"request fields")
+    fields={"version","revision","admission_run","artifacts","notes"}
+    require(set(r)==fields|{"wasm"},"unified release request fields")
+    validate_pin(r["wasm"])
+    require(r["wasm"]["run"]==r["admission_run"],"WASM must share native package admission run")
     v=r["version"]
     require(re.fullmatch(r"\d+\.\d+\.\d+",v) and tuple(map(int,v.split(".")))>(0,4,0),"stable version after bootstrap required")
     require(re.fullmatch(r"[0-9a-f]{40}",r["revision"]) is not None,"full source revision")
@@ -45,30 +51,41 @@ def verify_run(r,d,jobs):
     require(d["id"]==r["admission_run"] and d["head_sha"]==r["revision"] and d["repository"]["full_name"]==d["head_repository"]["full_name"]==REPO,"admission identity")
     require(d["path"].split("@")[0]==".github/workflows/stable-package-admission.yml" and d["head_branch"] in ("main","release/v"+r["version"]) and d["event"] in ("push","workflow_dispatch"),"admission origin")
     require(d["status"]=="completed" and d["conclusion"]=="success","admission not successful")
-    require(jobs["total_count"]==len(jobs["jobs"])==2 and {j["name"] for j in jobs["jobs"]}==set(NAMES),"job set")
+    require(jobs["total_count"]==len(jobs["jobs"])==len(STEPS) and {j["name"] for j in jobs["jobs"]}==set(STEPS),"job set")
     for j in jobs["jobs"]:
         steps={s["name"]:s["conclusion"] for s in j["steps"]}
         require(j["status"]=="completed" and j["conclusion"]=="success" and all(steps.get(n)=="success" for n in STEPS[j["name"]]),"missing successful admission step")
         require(not any(x in ("failure","cancelled","timed_out") for x in steps.values()),"failed step")
 def artifact(r,key):
-    a=r["artifacts"][key];ep=f"repos/{REPO}/actions/artifacts/{a['id']}"
+    a=r["wasm"] if key=="wasm" else r["artifacts"][key]
+    name=WASM_NAME if key=="wasm" else NAMES[key]
+    ep=f"repos/{REPO}/actions/artifacts/{a['id']}"
     info=api(ep)
-    require(info["id"]==a["id"] and info["name"]==NAMES[key] and info["digest"]==a["digest"] and not info["expired"] and info["workflow_run"]["id"]==r["admission_run"] and info["workflow_run"]["head_sha"]==r["revision"],"artifact metadata")
+    require(info["id"]==a["id"] and info["name"]==name and info["digest"]==a["digest"] and not info["expired"] and info["workflow_run"]["id"]==r["admission_run"] and info["workflow_run"]["head_sha"]==r["revision"],"artifact metadata")
     b=run("gh","api",ep+"/zip");require("sha256:"+digest(b)==a["digest"],"ZIP digest")
-    with zipfile.ZipFile(io.BytesIO(b)) as z:
-        names=z.namelist();require(len(names)==len(set(names)) and z.testzip() is None,"invalid ZIP")
-        for n in names:
-            p=PurePosixPath(n);require(not p.is_absolute() and ".." not in p.parts and "\\" not in n,"unsafe ZIP path")
-        return {n:z.read(n) for n in names if not n.endswith("/")}
+    return read_zip(b)
 def prepare(r):
     h=head()
     subprocess.run(["git","merge-base","--is-ancestor",r["revision"],h],check=True)
     changed=run("git","diff","--name-only","--no-renames",r["revision"],h).decode().splitlines()
-    require(set(changed)<={str(REQUEST)},"unadmitted changes since package admission")
+    allowed={str(REQUEST)}
+    if "wasm" in r:allowed.add(f"releases/v{r['version']}-wasm-review.json")
+    require(set(changed)<=allowed,"unadmitted changes since package admission")
     require(not workflow_changes(r["revision"],h),"workflow changed since package admission")
     ep=f"repos/{REPO}/actions/runs/{r['admission_run']}"
     d=api(ep);verify_run(r,d,api(f"{ep}/attempts/{d['run_attempt']}/jobs?per_page=100"))
-    p=artifact(r,"crate");s=artifact(r,"source");v=r["version"]
+    p=artifact(r,"crate");s=artifact(r,"source");w=artifact(r,"wasm")
+    assets,src=verify_packages(r,p,s)
+    v=r["version"];crate=f"rawmocs-{v}.crate"
+    review=Path(f"releases/v{v}-wasm-review.json")
+    require(review.is_file() and not review.is_symlink(),"WASM redistribution review missing")
+    assets.update(wasm_assets(r,w,p[crate],src,p["source-map.json"],review.read_bytes()))
+    print("STABLE_WASM_ASSET_ADMISSION_PASS",r["revision"],flush=True)
+    print("STABLE_PACKAGE_ADMISSION_PASS",r["revision"],r["crate_sha256"],flush=True)
+    return assets
+
+def verify_packages(r,p,s):
+    v=r["version"]
     crate=f"rawmocs-{v}.crate";source=f"rawmocs-{v}-source.tar.gz";sdist=f"rawmocs-{v}.tar.gz"
     require(s["status.txt"].strip()==b"STABLE_SOURCE_VERSION_ADMISSION_PASS","source admission")
     scope=json.loads(s["version-scope.json"])
@@ -91,8 +108,8 @@ def prepare(r):
     verify_crate(r,p,src)
     require(b"STABLE_PUBLISHER" not in s["status.txt"],"unexpected status")
     assets[crate]=p[crate];assets["crate-SHA256SUMS"]=(r["crate_sha256"]+"  "+crate+"\n").encode();assets["crate-source-map.json"]=p["source-map.json"]
-    print("STABLE_PACKAGE_ADMISSION_PASS",r["revision"],r["crate_sha256"],flush=True)
-    return assets
+    return assets,src
+
 def index_state(rows,v,sha):
     require(len({x["vers"] for x in rows})==len(rows),"duplicate registry versions")
     base=[x for x in rows if x["vers"]==BASE_VERSION]

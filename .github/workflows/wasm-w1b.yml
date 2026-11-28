@@ -27,15 +27,21 @@ jobs:
           version: '4.0.23'
       - name: Install browser and build tools
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends m4 make gcc
-          python3 -m pip install playwright==1.51.1
-          python3 -m playwright install --with-deps chromium
+          set -o pipefail
+          (
+            set -e
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends m4 make gcc
+            python3 -m pip install playwright==1.65.2
+            python3 -m playwright install --with-deps chromium
+          ) 2>&1 | tee "$RUNNER_TEMP/wasm-w1b-setup.log"
       - name: Build and test exact released solver in browser worker
         run: python3 research/wasm_w1b/build.py "$RUNNER_TEMP/wasm-w1b"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: rawmocs-wasm-w1b-evidence
-          path: ${{ runner.temp }}/wasm-w1b/evidence/
+          path: |
+            ${{ runner.temp }}/wasm-w1b/evidence/
+            ${{ runner.temp }}/wasm-w1b-setup.log
           if-no-files-found: error

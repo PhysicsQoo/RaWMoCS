@@ -13,7 +13,10 @@ import subprocess
 SHA = re.compile(r"[0-9a-f]{40}")
 DOCS = {"README.md", "LICENSE", "docs/python-api.md", "docs/python-package-release.md",
         "docs/ci-parallel-release.md", "docs/ci-test-suite-rationalization.md",
-        "releases/README.md"}
+        "releases/README.md", "playground/README.md"}
+SITE = {"playground/release.json", "playground/index.html", "playground/app.js",
+        "playground/style.css", "scripts/playground/assemble.py",
+        "scripts/playground/smoke.py", "scripts/playground/test_assemble.py"}
 PACKAGE = {"pyproject.toml", "scripts/python_package_candidate.py",
            "scripts/python_source_inventory.py", "scripts/test_python_package_candidate.py"}
 BINDING = {"python/rawmocs/__init__.py", "python/tests/test_native_api.py",
@@ -40,6 +43,8 @@ def classify(raw):
             category = "CORE_OR_UNKNOWN"
         elif path in DOCS or re.fullmatch(r"releases/v\d+\.\d+\.\d+\.md", path):
             category = "DOCS"
+        elif path in SITE:
+            category = "SITE"
         elif path in PACKAGE:
             category = "PACKAGE"
         elif path in BINDING:
@@ -48,8 +53,9 @@ def classify(raw):
             category = "CORE_OR_UNKNOWN"
         paths[path] = category
     categories = set(paths.values())
-    scope = next((x for x in ("CORE_OR_UNKNOWN", "BINDING", "PACKAGE", "DOCS") if x in categories), "DOCS")
+    scope = next((x for x in ("CORE_OR_UNKNOWN", "BINDING", "PACKAGE", "SITE", "DOCS") if x in categories), "DOCS")
     return {"scope": scope, "paths": paths,
+            "native_contract": bool(categories & {"PACKAGE", "BINDING", "CORE_OR_UNKNOWN"}),
             "python_contract": bool(categories & {"PACKAGE", "BINDING", "CORE_OR_UNKNOWN"}),
             "full_science_required_before_release": scope in ("BINDING", "CORE_OR_UNKNOWN"),
             "release_authorized": False}
@@ -101,7 +107,7 @@ def main():
     except (ValueError, OSError, subprocess.SubprocessError) as exc:
         report = {"scope": "CORE_OR_UNKNOWN", "paths": {}, "base": a.base,
                   "revision": a.revision, "reason": str(exc),
-                  "python_contract": True, "full_science_required_before_release": True,
+                  "native_contract": True, "python_contract": True, "full_science_required_before_release": True,
                   "release_authorized": False}
     with open(a.out, "w") as f:
         json.dump(report, f, indent=2, sort_keys=True)
@@ -109,6 +115,7 @@ def main():
     if os.environ.get("GITHUB_OUTPUT"):
         with open(os.environ["GITHUB_OUTPUT"], "a") as f:
             print("scope=" + report["scope"], file=f)
+            print("native_contract=" + str(report["native_contract"]).lower(), file=f)
             print("python_contract=" + str(report["python_contract"]).lower(), file=f)
             print("wasm_contract=" + str(wasm_recipe_changed(report)).lower(), file=f)
             print("playground_contract=" + str(playground_changed(report)).lower(), file=f)

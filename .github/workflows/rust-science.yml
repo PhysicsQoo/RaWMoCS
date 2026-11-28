@@ -30,6 +30,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       scope: ${{ steps.scope.outputs.scope }}
+      native_required: ${{ steps.native-route.outputs.required }}
       python_contract: ${{ steps.scope.outputs.python_contract }}
       wasm_contract: ${{ steps.scope.outputs.wasm_contract }}
       playground_contract: ${{ steps.scope.outputs.playground_contract }}
@@ -46,6 +47,13 @@ jobs:
           python3 scripts/ci_scope.py --base "$CI_BASE" --revision "$GITHUB_SHA" --out "${RUNNER_TEMP}/ci-scope.json"
       - name: Verify ordinary scope classifier
         run: python3 scripts/test_ci_scope.py
+      - name: Route native contracts
+        id: native-route
+        env:
+          REQUIRED: ${{ (github.event_name == 'workflow_dispatch' && inputs.suite != 'playground' && inputs.suite != 'playground-deploy') || (github.event_name != 'workflow_dispatch' && (steps.scope.outputs.native_contract == 'true' || contains(github.event.head_commit.message, '[release-package]') || (github.event_name == 'pull_request' && (startsWith(github.head_ref, 'release/prepare-') || github.head_ref == 'maintenance/parallel-release-ci' || github.head_ref == 'research/v021-shared-rust-core' || github.head_ref == 'research/v022-ci-rationalization' || github.head_ref == 'research/python-api')))) }}
+        run: |
+          case "$REQUIRED" in true|false) ;; *) exit 1 ;; esac
+          echo "required=$REQUIRED" >> "$GITHUB_OUTPUT"
       - name: Verify v0.3.0 CI-only release source scope
         if: ((github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-package]')) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'maintenance/parallel-release-ci'))
         run: python3 scripts/release_ci_only_v030.py --revision "$GITHUB_SHA"
@@ -55,14 +63,19 @@ jobs:
           path: ${{ runner.temp }}/ci-scope.json
           retention-days: 30
       - uses: dtolnay/rust-toolchain@stable
+        if: steps.native-route.outputs.required == 'true'
         with:
           components: rustfmt, clippy
       - run: cargo fmt --all -- --check
+        if: steps.native-route.outputs.required == 'true'
       - run: cargo clippy --workspace --all-targets -- -D warnings
+        if: steps.native-route.outputs.required == 'true'
       - run: cargo test --workspace
+        if: steps.native-route.outputs.required == 'true'
       - name: Verify Python package integrity rejects malformed artifacts
         run: python3 scripts/test_python_package_candidate.py
       - name: Verify R6-Light parity controls
+        if: steps.native-route.outputs.required == 'true'
         run: python3 crates/rawmocs-cli/tools/test_native_transport_light.py
       - name: Verify release gate rejects incomplete science receipts
         run: |
@@ -117,7 +130,8 @@ jobs:
         run: cargo test -p rawmocs-core --test a0_regressions -- --ignored --nocapture
 
   portability:
-    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || ((github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-package]')) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'maintenance/parallel-release-ci'))
+    needs: core
+    if: needs.core.outputs.native_required == 'true' && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || ((github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-package]')) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'maintenance/parallel-release-ci')))
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -223,6 +237,7 @@ jobs:
   release-cli:
     name: First release CLI and source-locked transfer gate
     needs: core
+    if: needs.core.outputs.native_required == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:

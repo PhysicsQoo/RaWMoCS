@@ -10,10 +10,34 @@ class ScopeTests(unittest.TestCase):
         r = classify(row("README.md"))
         self.assertEqual(r["scope"], "DOCS")
         self.assertFalse(r["python_contract"])
+    def test_site_only_does_not_request_native(self):
+        for p in ("playground/release.json", "playground/index.html", "playground/app.js",
+                  "playground/style.css", "scripts/playground/assemble.py",
+                  "scripts/playground/smoke.py", "scripts/playground/test_assemble.py"):
+            r = classify(row(p))
+            self.assertEqual(r["scope"], "SITE")
+            self.assertFalse(r["native_contract"])
+            self.assertFalse(r["python_contract"])
+            self.assertTrue(playground_changed(r))
+        for p in ("README.md", "playground/README.md"):
+            self.assertFalse(classify(row(p))["native_contract"])
+
+    def test_mixed_or_nonregular_site_requires_native(self):
+        for raw in (row("playground/app.js") + row("crates/rawmocs-core/src/lib.rs"),
+                    row("playground/unknown.js"),
+                    row("playground/app.js", "T", "100644", "120000"),
+                    row("playground/app.js", "D", "100644", "000000"),
+                    row("scripts/playground/unknown.py")):
+            r = classify(raw)
+            self.assertTrue(r["native_contract"])
+            self.assertTrue(r["python_contract"])
+            self.assertEqual(r["scope"], "CORE_OR_UNKNOWN")
+
     def test_package(self):
         r = classify(row("pyproject.toml"))
         self.assertEqual(r["scope"], "PACKAGE")
         self.assertTrue(r["python_contract"])
+        self.assertTrue(r["native_contract"])
         self.assertFalse(r["release_authorized"])
     def test_binding(self):
         r = classify(row("crates/rawmocs-python/src/lib.rs"))
@@ -103,6 +127,18 @@ class ManualLongCI(unittest.TestCase):
         self.assertIn("actions/deploy-pages@v4", deployment)
         self.assertNotIn("pages: write", site)
         self.assertNotIn("id-token: write", site)
+
+    def test_native_jobs_share_exact_routing(self):
+        source = (self.root / "rust-science.yml").read_text()
+        self.assertIn("native_required: ${{ steps.native-route.outputs.required }}", source)
+        self.assertIn("steps.scope.outputs.native_contract == 'true'", source)
+        self.assertIn("inputs.suite != 'playground' && inputs.suite != 'playground-deploy'", source)
+        for job in ("release-cli", "portability"):
+            self.assertIn("needs.core.outputs.native_required == 'true'", self.job_guard("rust-science.yml", job))
+        core = source.split("\n  a0-science:\n", 1)[0]
+        self.assertEqual(core.count("if: steps.native-route.outputs.required == 'true'"), 5)
+        self.assertIn("python3 scripts/test_ci_scope.py", core)
+        self.assertIn("python3 scripts/test_release_source.py", core)
 
     def test_no_push_title_full_intent(self):
         for filename in ("rust-science.yml", "codspeed.yml"):

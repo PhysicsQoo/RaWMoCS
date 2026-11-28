@@ -3,6 +3,7 @@ import io,json,re,stat,tomllib,zipfile
 from pathlib import PurePosixPath
 from release_source import digest,require
 from release_python_source import archive_files
+from wasm.license_inventory import is_notice
 
 NAME="rawmocs-wasm-candidate"
 BINARY={"rawmocs.js","rawmocs.wasm","worker.js"}
@@ -71,8 +72,9 @@ def verify_receipt(r,p,crate,src,source_map):
     require({n[len("recipe/"):]:v for n,v in source.items() if n.startswith("recipe/")}==recipe,"WASM recipe source mismatch")
     config=json.loads(source["build-config.json"])
     require(config["target"]==q["target"] and config["link_flags"]==q["link_flags"],"WASM build configuration")
-    licenses=sorted(n for n in source if PurePosixPath(n).name.upper().startswith(("LICENSE","COPYING","NOTICE")))
+    licenses=sorted(n for n in source if is_notice(n))
     require(q["license_inventory"]==licenses and any("gmp-mpfr-sys" in n for n in licenses),"WASM license inventory")
+    verify_toolchain(source)
     vendored={}
     for n,v in source.items():
         if n.startswith("vendor/") and n.endswith("/.cargo-checksum.json"):
@@ -87,16 +89,63 @@ def verify_receipt(r,p,crate,src,source_map):
     require(len(rows)==36 and {(x["case"],x["digits"],x["mode"]) for x in rows if "digits" in x}==expected_cases and all(x["result"]["type"]=="count" for x in rows if "digits" in x),"WASM parity matrix")
     return binary,source,q
 
+def verify_toolchain(source):
+    info=json.loads(source["toolchain/inventory.json"])
+    require(re.fullmatch(r"[0-9a-f]{40}",info["rust_commit"]) and "release: 1.100.1" in info["rust_version"] and "4.0.23" in info["emscripten_version"],"toolchain notice identity")
+    expected={n[len("toolchain/"):]:digest(v) for n,v in source.items()
+              if n.startswith("toolchain/") and n not in ("toolchain/inventory.json","toolchain/link-map.txt")}
+    require(info["files"]==expected and all(is_notice(n) for n in expected),"toolchain notice inventory")
+    rust=[n for n in expected if n.startswith("rust/")]
+    require(any(PurePosixPath(n).name=="LICENSE-MIT" for n in rust) and
+            any(PurePosixPath(n).name=="LICENSE-APACHE" for n in rust) and
+            any(PurePosixPath(n).name.upper().startswith("COPYRIGHT") for n in rust) and
+            "emscripten/LICENSE" in expected and "emscripten/system/lib/libc/musl/COPYRIGHT" in expected,
+            "required runtime notices")
+    require(bool(source["toolchain/link-map.txt"].strip()),"link map missing")
+
+def distribution_payload(binary,source,version):
+    require(set(binary)==BINARY,"runtime binary contract")
+    verify_toolchain(source)
+    files={"licenses/"+n:v for n,v in source.items() if is_notice(n)}
+    require("licenses/rawmocs/LICENSE" in files and any("gmp-mpfr-sys" in n for n in files),"missing library notices")
+    files["licenses/toolchain/inventory.json"]=source["toolchain/inventory.json"]
+    files["REBUILD.md"]=source["recipe/REBUILD.md"]
+    names="\n".join(sorted(files))
+    files["THIRD-PARTY-NOTICES.txt"]=(
+        f"RaWMoCS {version} — MIT licensed application\n"
+        "This combined work uses Rug, gmp-mpfr-sys, GMP and MPFR under their applicable licenses, including the GNU LGPL. "
+        "See the included notices and GPL/LGPL license texts. Modification of these libraries and reverse engineering to debug modifications are permitted under the applicable licenses.\n"
+        "Rust and Emscripten runtime notices are included; see the toolchain inventory and corresponding source link map for review.\n"
+        f"Same-version corresponding source: https://github.com/PhysicsQoo/RaWMoCS/releases/tag/v{version}\n"
+        "See REBUILD.md for offline modification and relinking instructions.\n\n"
+        "Included documents:\n"+names+"\n").encode()
+    return {**binary,**files}
+
+def verify_distribution(m,files):
+    runtime={n:files[n] for n in BINARY if n in files}
+    notices={n:v for n,v in files.items() if n not in BINARY}
+    require(set(runtime)==BINARY and runtime["rawmocs.wasm"][:4]==b"\x00asm" and
+            m["distribution_sha256"]=={n:digest(v) for n,v in runtime.items()},"binary archive contract")
+    require({"THIRD-PARTY-NOTICES.txt","REBUILD.md","licenses/rawmocs/LICENSE",
+             "licenses/toolchain/inventory.json","licenses/toolchain/emscripten/LICENSE",
+             "licenses/toolchain/emscripten/system/lib/libc/musl/COPYRIGHT"}<=set(notices)
+            and all(v for v in notices.values()) and
+            all(n.startswith("licenses/") or n in ("THIRD-PARTY-NOTICES.txt","REBUILD.md") for n in notices)
+            and m["license_sha256"]=={n:digest(v) for n,v in notices.items()},"distribution notice contract")
+    require(f"https://github.com/PhysicsQoo/RaWMoCS/releases/tag/v{m['version']}".encode() in notices["THIRD-PARTY-NOTICES.txt"],"notice source version")
+
 def release_assets(r,p,crate,src,source_map,review):
     verify_review(r,review)
     binary,source,q=verify_receipt(r,p,crate,src,source_map)
     v=r["version"];dn=f"rawmocs-{v}-wasm.zip";sn=f"rawmocs-{v}-wasm-source.zip"
     source["admission-receipt.json"]=p["receipt.json"]
-    assets={dn:zip_bytes(binary),sn:zip_bytes(source),"wasm-review.json":review}
+    distribution=distribution_payload(binary,source,v)
+    assets={dn:zip_bytes(distribution),sn:zip_bytes(source),"wasm-review.json":review}
     manifest={"solver":"RaWMoCS","version":v,"revision":r["revision"],"status":"released",
-              "distribution_sha256":q["artifacts"],"distribution_archive":dn,"distribution_zip_sha256":digest(assets[dn]),
+              "distribution_sha256":q["artifacts"],"license_sha256":{n:digest(data) for n,data in distribution.items() if n not in BINARY},"distribution_archive":dn,"distribution_zip_sha256":digest(assets[dn]),
               "source_archive":sn,"source_zip_sha256":digest(assets[sn]),"crate_sha256":digest(crate),
               "candidate_digest":r["wasm"]["digest"],"review_sha256":digest(review),"license_inventory":q["license_inventory"]}
+    verify_distribution(manifest,distribution)
     assets["wasm-provenance.json"]=(json.dumps(manifest,sort_keys=True,indent=2)+"\n").encode()
     assets["wasm-SHA256SUMS"]="".join(f"{digest(data)}  {name}\n" for name,data in sorted(assets.items())).encode()
     return assets

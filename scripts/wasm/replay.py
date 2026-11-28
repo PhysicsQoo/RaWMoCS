@@ -10,6 +10,8 @@ def command(source,target,config):
          "--config","source.vendored-sources.directory="+json.dumps(str(source/"vendor"))]
     cmd+=["rustc","--offline","--locked","--release","--target",config["target"],"--bin","rawmocs","-j","2","--"]
     for flag in config["link_flags"]:cmd+=["-C","link-arg="+flag]
+    # Diagnostic output only; no additional build or solver option.
+    cmd+=["-C","link-arg=-Wl,-Map="+str(target/"rawmocs-link.map")]
     return cmd,env
 
 def main():

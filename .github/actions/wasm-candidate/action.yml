@@ -7,6 +7,7 @@ runs:
       with:
         toolchain: '1.100.1'
         targets: wasm32-unknown-emscripten
+        components: rust-src
     - uses: mymindstorm/setup-emsdk@v14
       with:
         version: '4.0.23'

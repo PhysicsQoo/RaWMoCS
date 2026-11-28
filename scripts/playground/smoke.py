@@ -18,6 +18,11 @@ try:
         browser=p.chromium.launch();page=browser.new_page()
         page.goto(f"http://127.0.0.1:{server.server_port}/")
         page.wait_for_function("document.querySelector('#state').textContent==='Ready'")
+        manifest=json.loads((W/"site/PROVENANCE.json").read_text())
+        assert page.locator('footer a[href="THIRD-PARTY-NOTICES.txt"]').count()==1
+        assert page.locator("footer").inner_text().find("LGPL")>=0
+        assert page.locator('footer a[href$="/releases/tag/v'+manifest["version"]+'"]').count()==1
+        assert page.request.get(f"http://127.0.0.1:{server.server_port}/THIRD-PARTY-NOTICES.txt").ok
         for name,cnf,sat,re,im in cases:
             for digits in (30,60,100,130):
                 page.locator("#cnf").fill(cnf);page.locator("#digits").select_option(str(digits));page.locator("#run").click()

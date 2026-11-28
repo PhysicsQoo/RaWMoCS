@@ -1,0 +1,39 @@
+name: WASM W1 released crate feasibility
+on:
+  push:
+    branches: [experiment/wasm-w1]
+    paths:
+      - '.github/workflows/wasm-w1.yml'
+      - 'research/wasm_w1/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: wasm-w1-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  w1:
+    if: github.repository == 'PhysicsQoo/RaWMoCS' && github.ref == 'refs/heads/experiment/wasm-w1'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.100.1'
+          targets: wasm32-unknown-emscripten
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: '4.0.23'
+      - name: Install bounded build tools
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends m4 make gcc
+      - name: Probe exact released MPFR crate (no source mutation)
+        run: python3 research/wasm_w1/probe.py "$RUNNER_TEMP/wasm-w1"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rawmocs-wasm-w1-evidence
+          path: ${{ runner.temp }}/wasm-w1/evidence/
+          if-no-files-found: warn

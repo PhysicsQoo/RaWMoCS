@@ -542,6 +542,40 @@ def releases(tag):
     return [r for page in pages for r in page if r["tag_name"] == tag]
 
 
+# One-time recovery of the immutable crate already published in run 46123201552.
+V040_RECOVERY_REVISION = "273f45b83c55b28871350c32ba5070bf77928688"
+V040_RECOVERY_CRATE = "d3e9e6ccd4a146bac19f6bd2628038cf20ae331dd12f9dc0cbcd37a4e63e955d"
+
+
+def workflow_changes(revision, head="HEAD"):
+    return run("git", "diff", "--name-only", "--no-renames", revision, head,
+               "--", ".github/workflows/").decode().splitlines()
+
+
+def verify_new_release_target(r, actual, changed, registry_matched=False):
+    """No implicit historical tag creation if workflow trees differ.
+    A maintainer-created exact v0.4.0 tag is the sole orphan-tag exception.
+    """
+    if actual is not None:
+        require(actual == r["revision"], "existing tag points elsewhere")
+        require(r["version"] == "0.4.0"
+                and r["revision"] == V040_RECOVERY_REVISION
+                and r.get("crate_sha256") == V040_RECOVERY_CRATE
+                and registry_matched is True,
+                "existing tag without release; inspect manually")
+        return True
+    require(not changed, "workflow tree changed since release admission; freeze/requalify before publication (v0.4.0 recovery requires exact maintainer tag)")
+    return False
+
+
+def preflight_new_registry_upload(r):
+    tag = "v" + r["version"]
+    require(not releases(tag), "GitHub release already exists before registry upload")
+    require(tag_commit(tag) is None, "GitHub tag already exists before registry upload")
+    verify_new_release_target(r, None, workflow_changes(r["revision"]))
+    print("RELEASE_WORKFLOW_CONSISTENCY_PASS", r["revision"], flush=True)
+
+
 def verify_release(release, r, assets, draft):
     require(release["tag_name"] == "v" + r["version"] and release["draft"] is draft
             and not release["prerelease"], "release state mismatch")
@@ -551,9 +585,12 @@ def verify_release(release, r, assets, draft):
             and all(a["state"] == "uploaded" for a in release["assets"]), "release asset digest mismatch")
 
 
-def verify_draft(draft, r, assets, actual, notes):
+def verify_draft(draft, r, assets, actual, notes, registry_matched=False):
     verify_release(draft, r, assets, True)
-    require(draft["target_commitish"] == r["revision"], "draft target mismatch")
+    target_matches = draft["target_commitish"] == r["revision"]
+    if not target_matches and draft["target_commitish"] == "main" and actual is not None:
+        target_matches = verify_new_release_target(r, actual, [], registry_matched)
+    require(target_matches, "draft target mismatch")
     require(draft["name"] == "RaWMoCS v" + r["version"], "draft title mismatch")
     require((draft.get("body") or "").strip() == notes.strip(), "draft notes mismatch")
     require(draft.get("author", {}).get("login") == "github-actions[bot]",
@@ -567,9 +604,11 @@ def publish(r, assets):
             and os.environ.get("GITHUB_EVENT_NAME") in ("push", "workflow_dispatch"), "publication must run on main")
     current = api(f"repos/{REPO}/git/ref/heads/main")["object"]["sha"]
     require(run("git", "rev-parse", "HEAD").decode().strip() == current, "stale release request checkout")
+    registry_matched = False
     if r["version"] == "0.4.0":
         from release_v040 import registry_state
-        require(registry_state(r) == "MATCH", "registry checksum must match before GitHub release")
+        registry_matched = registry_state(r) == "MATCH"
+        require(registry_matched, "registry checksum must match before GitHub release")
     tag = "v" + r["version"]
     notes = Path(r["notes"]).read_text()
     existing = releases(tag)
@@ -584,19 +623,26 @@ def publish(r, assets):
         # Resume only the exact CI-created draft with every asset already
         # uploaded. Never overwrite, delete, or repair an unmatched draft.
         draft = existing[0]
-        verify_draft(draft, r, assets, actual, notes)
+        verify_draft(draft, r, assets, actual, notes, registry_matched)
         print("RELEASE_VERIFIED_DRAFT_RESUME", draft["id"], r["revision"], flush=True)
     else:
-        require(actual is None, "existing tag without release; inspect manually")
+        recovery = verify_new_release_target(r, actual, workflow_changes(r["revision"]), registry_matched)
+        if recovery:
+            print("V040_EXACT_EXISTING_TAG_RECOVERY", actual, flush=True)
+        else:
+            print("RELEASE_WORKFLOW_CONSISTENCY_PASS", r["revision"], flush=True)
         with tempfile.TemporaryDirectory() as tmp:
             paths = []
             for name, data in assets.items():
                 path = Path(tmp) / name
                 path.write_bytes(data)
                 paths.append(str(path))
+            require(api(f"repos/{REPO}/git/ref/heads/main")["object"]["sha"] == current,
+                    "main advanced before draft creation")
+            require(tag_commit(tag) == actual and not releases(tag), "release state changed before draft creation")
             subprocess.run(["gh", "release", "create", tag, *paths, "-R", REPO, "--draft",
-                            "--target", r["revision"], "--title", f"RaWMoCS {tag}",
-                            "--notes-file", r["notes"]], check=True)
+                            "--title", f"RaWMoCS {tag}", "--notes-file", r["notes"],
+                            *(["--verify-tag"] if recovery else ["--target", r["revision"]])], check=True)
         # The list API may not expose a newly created draft immediately.
         # Retry reads only, with a bounded delay; never repeat creation.
         drafts = []
@@ -608,11 +654,11 @@ def publish(r, assets):
                 time.sleep(1)
         require(len(drafts) == 1, "draft missing or duplicate; inspect manually")
         draft = drafts[0]
-        verify_draft(draft, r, assets, tag_commit(tag), notes)
+        verify_draft(draft, r, assets, tag_commit(tag), notes, registry_matched)
     # Read the exact ID again immediately before promotion; no mutation
     # occurs unless all source, asset, notes and tag checks still agree.
     endpoint = f"repos/{REPO}/releases/{draft['id']}"
-    verify_draft(api(endpoint), r, assets, tag_commit(tag), notes)
+    verify_draft(api(endpoint), r, assets, tag_commit(tag), notes, registry_matched)
     require(api(f"repos/{REPO}/git/ref/heads/main")["object"]["sha"] == current,
             "main advanced before publication")
     subprocess.run(["gh", "api", "--method", "PATCH", endpoint, "-F", "draft=false"], check=True)

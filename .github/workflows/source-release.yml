@@ -6,6 +6,7 @@ on:
     paths:
       - 'releases/**'
       - 'scripts/release_source.py'
+      - 'scripts/test_release_source.py'
       - 'scripts/release_v040.py'
       - 'scripts/release_python_source.py'
       - 'scripts/test_release_v040.py'
@@ -16,6 +17,7 @@ on:
     paths:
       - 'releases/**'
       - 'scripts/release_source.py'
+      - 'scripts/test_release_source.py'
       - 'scripts/release_v040.py'
       - 'scripts/release_python_source.py'
       - 'scripts/test_release_v040.py'
@@ -46,6 +48,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       version: ${{ steps.admit.outputs.version }}
+      registry_state: ${{ steps.admit.outputs.registry_state }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -64,21 +67,26 @@ jobs:
         run: |
           python3 scripts/release_source.py validate
           python3 - <<'PY'
-          import sys
+          import os,sys
           sys.path.insert(0,"scripts")
-          from release_source import load_request
+          from release_source import load_request, preflight_new_registry_upload
           from release_v040 import verify_oidc_receipt, checked_state
           r=load_request()
           if r["version"]=="0.4.0":
               verify_oidc_receipt(r)
-              print("V040_REGISTRY_PREFLIGHT",checked_state(r))
+              state=checked_state(r)
+              print("V040_REGISTRY_PREFLIGHT",state)
+              if state=="READY":
+                  preflight_new_registry_upload(r)
+              with open(os.environ["GITHUB_OUTPUT"],"a") as out:
+                  print("registry_state="+state,file=out)
           PY
           python3 -c 'import json; print("version="+json.load(open("releases/request.json"))["version"])' >> "$GITHUB_OUTPUT"
 
   registry:
     name: Publish or verify the single rawmocs registry crate
     needs: validate
-    if: github.repository == 'PhysicsQoo/RaWMoCS' && github.ref == 'refs/heads/main' && needs.validate.outputs.version == '0.4.0' && ((github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-v040]')) || (github.event_name == 'workflow_dispatch' && inputs.registry_mode == 'trusted'))
+    if: github.repository == 'PhysicsQoo/RaWMoCS' && github.ref == 'refs/heads/main' && needs.validate.outputs.version == '0.4.0' && needs.validate.outputs.registry_state == 'READY' && ((github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-v040]')) || (github.event_name == 'workflow_dispatch' && inputs.registry_mode == 'trusted'))
     runs-on: ubuntu-24.04
     timeout-minutes: 8
     environment: crates-io
@@ -106,7 +114,7 @@ jobs:
   publish:
     name: Publish verified source assets
     needs: [validate, registry]
-    if: always() && (github.event_name != 'workflow_dispatch' || !startsWith(inputs.registry_mode, 'rc-')) && needs.validate.result == 'success' && github.repository == 'PhysicsQoo/RaWMoCS' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (needs.validate.outputs.version != '0.4.0' || needs.registry.result == 'success')
+    if: always() && (github.event_name != 'workflow_dispatch' || !startsWith(inputs.registry_mode, 'rc-')) && needs.validate.result == 'success' && github.repository == 'PhysicsQoo/RaWMoCS' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (needs.validate.outputs.version != '0.4.0' || (((github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-v040]')) || (github.event_name == 'workflow_dispatch' && inputs.registry_mode == 'trusted')) && (needs.registry.result == 'success' || (needs.registry.result == 'skipped' && needs.validate.outputs.registry_state == 'MATCH'))))
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:

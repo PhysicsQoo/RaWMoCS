@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       suite:
-        description: 'fast: bounded checks (default); full: manual long scientific evaluation; rationalized: manual v0.2.2 rehearsal; memory modes: manual research'
+        description: 'fast: bounded checks (default); wasm: explicit full WASM admission; full: manual long scientific evaluation; rationalized: manual v0.2.2 rehearsal; memory modes: manual research'
         type: choice
-        options: [fast, full, rationalized, memory-attribution, memory-rust-scout, memory-python-scout]
+        options: [fast, full, wasm, rationalized, memory-attribution, memory-rust-scout, memory-python-scout]
         default: fast
         required: true
 
@@ -31,6 +31,7 @@ jobs:
     outputs:
       scope: ${{ steps.scope.outputs.scope }}
       python_contract: ${{ steps.scope.outputs.python_contract }}
+      wasm_contract: ${{ steps.scope.outputs.wasm_contract }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -77,6 +78,7 @@ jobs:
           python3 scripts/ci_scope_v022.py --revision "$GITHUB_SHA"
 
   a0-science:
+    if: github.event_name == 'workflow_dispatch' && inputs.suite == 'full'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -358,6 +360,7 @@ jobs:
           set -euo pipefail
           python3 crates/rawmocs-cli/tools/general_resources.py --bin crates/rawmocs-cli/target/release/rawmocs --out .release-evidence/general-resources
       - name: Checkout pinned QuPRS integration source
+        if: github.event_name == 'workflow_dispatch' && inputs.suite == 'full'
         uses: actions/checkout@v4
         with:
           repository: PhysicsQoo/QuPRS
@@ -368,6 +371,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Scoped Python encoder and real solver process conformance
+        if: github.event_name == 'workflow_dispatch' && inputs.suite == 'full'
         shell: bash
         run: |
           set -euo pipefail
@@ -436,6 +440,7 @@ jobs:
           retention-days: 30
 
   durable-source-rebuild:
+    if: github.event_name == 'workflow_dispatch' && (inputs.suite == 'full' || inputs.suite == 'rationalized')
     name: ${{ (github.event_name == 'workflow_dispatch' && inputs.suite == 'rationalized') && 'Rationalized release small-family science' || (github.event_name == 'workflow_dispatch' && inputs.suite == 'full') && 'Regenerate original CNF and independent interval without artifacts' || 'Routine small-family science and R6-Light' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -970,3 +975,36 @@ jobs:
           path: .m1-python-evidence/
           include-hidden-files: true
           if-no-files-found: warn
+
+  wasm-contract:
+    name: Unified Rust WASM candidate
+    needs: core
+    if: (github.event_name == 'workflow_dispatch' && inputs.suite == 'wasm') || (github.event_name == 'pull_request' && needs.core.outputs.wasm_contract == 'true')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.100.1'
+          targets: wasm32-unknown-emscripten
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: '4.0.23'
+      - name: Install bounded build and browser prerequisites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends m4 make gcc
+          python3 -m pip install playwright==1.65.2
+          python3 -m playwright install --with-deps chromium
+      - name: Stage canonical Rust package and build both targets
+        run: python3 scripts/wasm/build.py "$RUNNER_TEMP/rawmocs-wasm"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rawmocs-wasm-candidate
+          path: ${{ runner.temp }}/rawmocs-wasm/evidence/
+          include-hidden-files: true
+          if-no-files-found: error

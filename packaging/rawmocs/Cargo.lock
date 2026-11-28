@@ -107,7 +107,7 @@ dependencies = [
 
 [[package]]
 name = "rawmocs"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "num-bigint",
  "num-integer",

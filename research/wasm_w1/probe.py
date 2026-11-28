@@ -60,6 +60,14 @@ def main():
     shutil.copy2(crate / "Cargo.toml", EVIDENCE / "released.Cargo.toml")
     (crate / "examples").mkdir(exist_ok=True)
     shutil.copy2(ROOT / "w1_probe.rs", crate / "examples/w1_probe.rs")
+    # Published manifest disables automatic example discovery. Register only
+    # the disposable harness, leaving all released solver sources intact.
+    manifest = crate / "Cargo.toml"
+    manifest.write_text(manifest.read_text() + '\n[[example]]\nname = "w1_probe"\npath = "examples/w1_probe.rs"\n')
+    shutil.copy2(manifest, EVIDENCE / "probe.Cargo.toml")
+    check("example-metadata", ["cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"], cwd=crate)
+    metadata = json.loads((EVIDENCE / "example-metadata.log").read_text())
+    assert any(t["name"] == "w1_probe" and "example" in t["kind"] for p in metadata["packages"] for t in p["targets"])
     # Toolchain/clock control, independent of GMP/Rug.
     clock = WORK / "clock.rs"
     clock.write_text('fn main(){let t=std::time::Instant::now(); assert!(std::time::Instant::now()>=t); println!("W1_CLOCK_PASS");}')

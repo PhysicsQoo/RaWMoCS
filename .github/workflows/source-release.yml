@@ -131,7 +131,9 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@1.100.1
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.100.1'
       - name: Native build dependencies
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends m4 make gcc libgmp-dev libmpfr-dev
       - name: Verify RC-only controls and package
@@ -162,7 +164,9 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@1.100.1
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.100.1'
       - uses: actions/download-artifact@v4
         with:
           name: rawmocs-rc-admission

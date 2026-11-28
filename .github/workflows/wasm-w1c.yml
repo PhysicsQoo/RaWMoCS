@@ -1,0 +1,40 @@
+name: WASM W1c distribution and resource closeout
+on:
+  push:
+    branches: [experiment/wasm-w1b]
+    paths: ['.github/workflows/wasm-w1c.yml','research/wasm_w1c/**']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  closeout:
+    if: github.repository == 'PhysicsQoo/RaWMoCS' && github.ref == 'refs/heads/experiment/wasm-w1b'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.100.1'
+      - name: Download immutable admitted browser artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/w1c/evidence"
+          gh api repos/PhysicsQoo/RaWMoCS/actions/artifacts/15256299864/zip > "$RUNNER_TEMP/w1c/w1b.zip"
+          echo 'd8ccbdb5a9ae50e2004da71eabdb91e37c19128cf149d863eb5f6c8e2c412454  '"$RUNNER_TEMP/w1c/w1b.zip" | sha256sum -c -
+      - name: Install browser
+        run: |
+          python3 -m pip install playwright==1.65.2
+          python3 -m playwright install --with-deps chromium
+      - name: Verify and extend the existing candidate without rebuilding
+        run: python3 research/wasm_w1c/closeout.py "$RUNNER_TEMP/w1c"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rawmocs-wasm-w1c-evidence
+          path: ${{ runner.temp }}/w1c/evidence/
+          if-no-files-found: error

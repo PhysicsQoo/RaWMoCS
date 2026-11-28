@@ -1,0 +1,3 @@
+# W1c — scoped resource and distribution evidence
+
+Reuse the exact W1b artifact ZIP and receipt, SHA256 verified. No compiler rebuild. Candidate Worker byte-identical; test-only Worker adds solve-entry marker, stops after 50ms only if no terminal result. This is scoped active-call cancellation evidence, not a proof of internal solver progress or a physical memory/RSS bound. Oversized input rejection and fresh worker control. Vendor exact dependency lock and retain source/license inventory, build recipe and original crate. Redistribution/legal review, actual OOM, cross-browser coverage and QuPRS W2 remain open. No publication.

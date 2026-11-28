@@ -1,10 +1,12 @@
 {
-  "version": "0.2.2",
-  "revision": "7ff6b1fdb772f16367fd1e094761a368d54f2ea7",
-  "science_run": 46003653379,
-  "codspeed_run": 46003653311,
-  "artifact_id": 15199342748,
-  "artifact_digest": "sha256:763bd9502bf729755c9310c3a590bbc67e43c5d7c0cfadc475ba7b9b387f1c50",
-  "source_sha256": "64fb1e7c2b9f84b755fb0154c4e1cfafe7b3dde2392a355e772fbddf0b40afc5",
-  "notes": "releases/v0.2.2.md"
+  "version": "0.3.0",
+  "revision": "05e650f46d60aed9d4fa5e6147709d12f8c3f6a9",
+  "science_run": 46094168147,
+  "codspeed_run": 46094168160,
+  "artifact_id": 15243080975,
+  "artifact_digest": "sha256:65b26e4626ab1f3bc3ada843f0c00f2d8f2b4a4bf4207f1dc48fd5b0c4679368",
+  "source_sha256": "66136ae861c926f66e684313f8d40b8984e469061309ed4ab763108bcf265ef7",
+  "python_source_sha256": "b965478c39e3d7377ca390bee583c6e8eb2305648bed926bd01465f8e97b0139",
+  "qualification": "v030-ci-only",
+  "notes": "releases/v0.3.0.md"
 }

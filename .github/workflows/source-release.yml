@@ -6,13 +6,25 @@ on:
     paths:
       - 'releases/**'
       - 'scripts/release_source.py'
+      - 'scripts/release_v040.py'
+      - 'scripts/release_python_source.py'
+      - 'scripts/test_release_v040.py'
       - '.github/workflows/source-release.yml'
   pull_request:
     paths:
       - 'releases/**'
       - 'scripts/release_source.py'
+      - 'scripts/release_v040.py'
+      - 'scripts/release_python_source.py'
+      - 'scripts/test_release_v040.py'
       - '.github/workflows/source-release.yml'
   workflow_dispatch:
+    inputs:
+      registry_mode:
+        description: 'v0.4.0 first token bootstrap or OIDC verification'
+        type: choice
+        options: [none, bootstrap, trusted]
+        default: none
 
 permissions:
   contents: read
@@ -27,6 +39,8 @@ jobs:
     name: Validate pinned source release request (read only)
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    outputs:
+      version: ${{ steps.admit.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,15 +50,53 @@ jobs:
         run: |
           python3 scripts/test_release_source.py
           python3 scripts/test_release_python_source.py
+          python3 scripts/test_release_v040.py
       - name: Verify workflow evidence and exact source archive
+        id: admit
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/release_source.py validate
+        run: |
+          python3 scripts/release_source.py validate
+          python3 -c 'import json; print("version="+json.load(open("releases/request.json"))["version"])' >> "$GITHUB_OUTPUT"
+
+  registry:
+    name: Publish or verify the single rawmocs registry crate
+    needs: validate
+    if: github.repository == 'PhysicsQoo/RaWMoCS' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && needs.validate.outputs.version == '0.4.0' && inputs.registry_mode != 'none'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    environment: crates-io
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Bootstrap only rawmocs with temporary maintainer token
+        if: inputs.registry_mode == 'bootstrap'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: python3 scripts/release_v040.py bootstrap
+      - name: Obtain short-lived OIDC token
+        if: inputs.registry_mode == 'trusted'
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+      - name: Verify OIDC authentication and published bytes (no republish)
+        if: inputs.registry_mode == 'trusted'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: python3 scripts/release_v040.py trusted
 
   publish:
     name: Publish verified source assets
-    needs: validate
-    if: github.repository == 'PhysicsQoo/RaWMoCS' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    needs: [validate, registry]
+    if: always() && needs.validate.result == 'success' && github.repository == 'PhysicsQoo/RaWMoCS' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (needs.validate.outputs.version != '0.4.0' || needs.registry.result == 'success')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:

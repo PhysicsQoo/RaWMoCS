@@ -66,6 +66,10 @@ def digest(data):
 
 def load_request():
     r = json.loads(REQUEST.read_text())
+    if r.get("version") == "0.4.0":
+        from release_v040 import validate_request
+        validate_request(r)
+        return r
     fields = {"version", "revision", "science_run", "codspeed_run",
               "artifact_id", "artifact_digest", "source_sha256", "notes"}
     if r.get("version") == "0.3.0":
@@ -477,6 +481,9 @@ def verify_assets(r, assets):
 
 
 def prepare(r):
+    if r["version"] == "0.4.0":
+        from release_v040 import prepare as prepare_v040
+        return prepare_v040(r)
     require(os.environ.get("GITHUB_REPOSITORY") == REPO, "unexpected repository")
     main = api(f"repos/{REPO}/git/ref/heads/main")["object"]["sha"]
     subprocess.run(["git", "merge-base", "--is-ancestor", r["revision"], main], check=True)
@@ -560,6 +567,9 @@ def publish(r, assets):
             and os.environ.get("GITHUB_EVENT_NAME") in ("push", "workflow_dispatch"), "publication must run on main")
     current = api(f"repos/{REPO}/git/ref/heads/main")["object"]["sha"]
     require(run("git", "rev-parse", "HEAD").decode().strip() == current, "stale release request checkout")
+    if r["version"] == "0.4.0":
+        from release_v040 import registry_state
+        require(registry_state(r) == "MATCH", "registry checksum must match before GitHub release")
     tag = "v" + r["version"]
     notes = Path(r["notes"]).read_text()
     existing = releases(tag)

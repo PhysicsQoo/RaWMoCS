@@ -29,7 +29,12 @@ tar -xzf "$out/rawmocs-0.4.0.tar.gz" -C "$tmp/rebuild"
  cd "$tmp/rebuild/rawmocs-0.4.0"
  maturin build --locked --release --interpreter python --compatibility linux --out "$tmp/rebuilt-wheels"
  python -m pip install --force-reinstall --no-deps "$tmp/rebuilt-wheels/"*.whl
- python -c 'import rawmocs; assert rawmocs.__version__=="0.4.0"; r=rawmocs.solve("p cnf 1 1\\nc t wmc\\n1 0\\n".replace("\\\\n","\\n")); assert r.sat and r.as_decimal()==(1,0)'
+ python - <<'PY'
+import rawmocs
+assert rawmocs.__version__ == "0.4.0"
+r = rawmocs.solve("p cnf 1 1\nc t wmc\n1 0\n")
+assert r.sat and r.as_decimal() == (1, 0)
+PY
  cd "$root"
  python -m unittest discover -s python/tests -v
 ) 2>&1 | tee "$out/clean-source-contract.log"

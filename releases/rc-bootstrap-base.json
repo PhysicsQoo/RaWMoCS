@@ -1,0 +1,24 @@
+{
+  "version": "0.4.0",
+  "revision": "273f45b83c55b28871350c32ba5070bf77928688",
+  "qualification": "v040-single-crate-source-only",
+  "admission_run": 46114420248,
+  "artifacts": {
+    "registry-name": {
+      "id": 15250684464,
+      "digest": "sha256:77f277f5ecc17599042012c0e228605c4149a67e33902c63f420f41b63f9e9b5"
+    },
+    "package-consumer": {
+      "id": 15250508405,
+      "digest": "sha256:289c75150301c1ee9d6f5bbb4a0454c9ae1578ee8a7b2b8acac3ac9c6463dae4"
+    },
+    "source-version-admission": {
+      "id": 15250684834,
+      "digest": "sha256:9f5dc956f08682b9dcee99c5fe21a90f26b09fe070cc671f2c9b6e3fe8f2c427"
+    }
+  },
+  "source_sha256": "24aa4b64664f093aee052130df6aaff9c7e13c85b7aeda9942062eb54b139116",
+  "python_source_sha256": "335a0de2ef59f08b56b00db8d6093ab5f38ad09f3bcd18a75383275312022790",
+  "crate_sha256": "d3e9e6ccd4a146bac19f6bd2628038cf20ae331dd12f9dc0cbcd37a4e63e955d",
+  "notes": "releases/v0.4.0.md"
+}

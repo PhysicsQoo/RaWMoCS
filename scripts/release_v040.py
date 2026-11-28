@@ -186,7 +186,7 @@ def verify_registry_intent(mode,repository,ref,event_name,event,sha):
         raise ValueError("untrusted registry publication event")
 
 def registry(mode):
-    from release_source import load_request
+    from release_source import load_request, preflight_new_registry_upload
     event=json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
     verify_registry_intent(mode,os.environ.get("GITHUB_REPOSITORY"),os.environ.get("GITHUB_REF"),os.environ.get("GITHUB_EVENT_NAME"),event,os.environ.get("GITHUB_SHA"))
     r=load_request();require(r["version"]==V,"wrong release")
@@ -201,6 +201,7 @@ def registry(mode):
     require(set(changed)<=allowed,"unadmitted changes after source base")
     if checked_state(r)=="MATCH":
         print("REGISTRY_ALREADY_MATCHES",r["crate_sha256"]);return
+    preflight_new_registry_upload(r)
     with tempfile.TemporaryDirectory() as tmp:
         p=Path(tmp);checkout=p/"source";stage=p/"stage"
         subprocess.run(["git","worktree","add","--detach",str(checkout),r["revision"]],check=True)
@@ -212,6 +213,7 @@ def registry(mode):
             require((p/"target/package"/CRATE).read_bytes()==assets[CRATE],"repackaged bytes differ; refuse upload")
             require(checked_state(r)=="READY","stable version no longer absent")
             current_main()
+            preflight_new_registry_upload(r)
             env["CARGO_REGISTRY_TOKEN"]=os.environ["CARGO_REGISTRY_TOKEN"]
             subprocess.run(["cargo","publish","--locked","--no-verify","--registry","crates-io","--manifest-path",str(stage/"Cargo.toml")],env=env,check=True)
             for n in range(20):

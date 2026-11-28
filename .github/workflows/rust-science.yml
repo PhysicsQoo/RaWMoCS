@@ -32,6 +32,7 @@ jobs:
       scope: ${{ steps.scope.outputs.scope }}
       python_contract: ${{ steps.scope.outputs.python_contract }}
       wasm_contract: ${{ steps.scope.outputs.wasm_contract }}
+      playground_contract: ${{ steps.scope.outputs.playground_contract }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -998,7 +999,8 @@ jobs:
 
   playground-site:
     name: Standalone Playground official release smoke
-    if: github.event_name == 'workflow_dispatch' && inputs.suite == 'playground'
+    needs: core
+    if: (github.event_name == 'workflow_dispatch' && inputs.suite == 'playground') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.core.outputs.playground_contract == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 8
     steps:

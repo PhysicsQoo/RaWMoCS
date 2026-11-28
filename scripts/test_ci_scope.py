@@ -1,6 +1,6 @@
 import unittest
 from pathlib import Path
-from ci_scope import classify, wasm_recipe_changed
+from ci_scope import classify, wasm_recipe_changed, playground_changed
 
 def row(path, status="M", old="100644", new="100644"):
     return (f":{old} {new} {'a'*40} {'b'*40} {status}\0{path}\0").encode()
@@ -42,6 +42,17 @@ class ScopeTests(unittest.TestCase):
             self.assertFalse(wasm_recipe_changed(classify(row(p))))
         self.assertTrue(wasm_recipe_changed({'reason':'unknown diff','paths':{}}))
 
+    def test_playground_change_gate(self):
+        for p in ("playground/release.json", "playground/index.html", "playground/style.css",
+                  "playground/app.js", "scripts/playground/assemble.py", "scripts/playground/smoke.py",
+                  "scripts/wasm_release.py", "scripts/release_source.py",
+                  "scripts/ci_scope.py", ".github/workflows/rust-science.yml"):
+            self.assertTrue(playground_changed(classify(row(p))), p)
+        for p in ("README.md", "playground/README.md", "crates/rawmocs-cli/src/general.rs",
+                  "packaging/rawmocs/Cargo.lock", "releases/stable-request.json"):
+            self.assertFalse(playground_changed(classify(row(p))), p)
+        self.assertTrue(playground_changed({"reason": "unknown diff", "paths": {}}))
+
     def test_empty_no_authority(self):
         self.assertFalse(classify(b"")["release_authorized"])
 
@@ -68,6 +79,12 @@ class ManualLongCI(unittest.TestCase):
         self.assertIn("github.event_name == 'workflow_dispatch' && inputs.suite == 'wasm'", guard)
         self.assertIn("github.event_name == 'pull_request' && needs.core.outputs.wasm_contract == 'true'", guard)
         self.assertNotIn("github.event_name == 'push'", guard)
+
+    def test_playground_smoke_is_scoped_main_or_manual(self):
+        guard = self.job_guard("rust-science.yml", "playground-site")
+        self.assertIn("github.event_name == 'workflow_dispatch' && inputs.suite == 'playground'", guard)
+        self.assertIn("github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.core.outputs.playground_contract == 'true'", guard)
+        self.assertNotIn("github.event_name == 'pull_request'", guard)
 
     def test_no_push_title_full_intent(self):
         for filename in ("rust-science.yml", "codspeed.yml"):

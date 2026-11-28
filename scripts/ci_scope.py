@@ -77,6 +77,19 @@ def wasm_recipe_changed(report):
         ) for p in report["paths"]
     )
 
+def playground_changed(report):
+    # A configured official site is validated on relevant main pushes.
+    # Unknown scope must not silently suppress the browser gate.
+    return bool(report.get("reason")) or any(
+        p.startswith("scripts/playground/") or p in (
+            "playground/release.json", "playground/index.html",
+            "playground/style.css", "playground/app.js",
+            "scripts/wasm_release.py", "scripts/release_source.py",
+            "scripts/release_python_source.py", "scripts/wasm/license_inventory.py",
+            "scripts/ci_scope.py", ".github/workflows/rust-science.yml",
+        ) for p in report["paths"]
+    )
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--base", default="")
@@ -98,6 +111,7 @@ def main():
             print("scope=" + report["scope"], file=f)
             print("python_contract=" + str(report["python_contract"]).lower(), file=f)
             print("wasm_contract=" + str(wasm_recipe_changed(report)).lower(), file=f)
+            print("playground_contract=" + str(playground_changed(report)).lower(), file=f)
 
 if __name__ == "__main__":
     main()

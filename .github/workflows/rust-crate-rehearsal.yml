@@ -5,6 +5,9 @@ on:
     paths:
       - 'crates/rawmocs-*/**'
       - 'packaging/rawmocs/**'
+      - 'pyproject.toml'
+      - 'scripts/verify_v040_version_scope.py'
+      - 'scripts/rehearse_v040_source.sh'
       - 'scripts/stage_single_rust_crate.py'
       - 'scripts/rehearse_single_rust_crate.sh'
       - 'scripts/check_rawmocs_registry_name.sh'
@@ -47,4 +50,26 @@ jobs:
         with:
           name: rawmocs-single-crate-rehearsal
           path: ${{ runner.temp }}/single/
+          if-no-files-found: warn
+  source-version-admission:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends m4 make gcc libgmp-dev libmpfr-dev
+      - name: Verify version parity and rebuild CLI and Python source archives
+        run: bash scripts/rehearse_v040_source.sh "$RUNNER_TEMP/v040-source"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rawmocs-v040-source-admission
+          path: ${{ runner.temp }}/v040-source/
           if-no-files-found: warn

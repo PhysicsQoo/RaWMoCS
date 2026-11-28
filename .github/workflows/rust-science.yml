@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       suite:
-        description: 'fast: bounded checks (default); wasm: manual WASM candidate check; full: manual long scientific evaluation; rationalized: manual v0.2.2 rehearsal; memory modes: manual research'
+        description: 'fast: bounded checks (default); wasm: manual WASM candidate check; full: manual long scientific evaluation; rationalized: manual v0.2.2 rehearsal; memory modes: manual research; playground-deploy: publish tested official site from main'
         type: choice
-        options: [fast, full, wasm, rationalized, memory-attribution, memory-rust-scout, memory-python-scout, playground]
+        options: [fast, full, wasm, rationalized, memory-attribution, memory-rust-scout, memory-python-scout, playground, playground-deploy]
         default: fast
         required: true
 
@@ -1000,7 +1000,7 @@ jobs:
   playground-site:
     name: Standalone Playground official release smoke
     needs: core
-    if: (github.event_name == 'workflow_dispatch' && inputs.suite == 'playground') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.core.outputs.playground_contract == 'true')
+    if: (github.event_name == 'workflow_dispatch' && inputs.suite == 'playground') || (github.event_name == 'workflow_dispatch' && inputs.suite == 'playground-deploy' && github.repository == 'PhysicsQoo/RaWMoCS' && github.ref == 'refs/heads/main') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.core.outputs.playground_contract == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 8
     steps:
@@ -1024,3 +1024,40 @@ jobs:
             ${{ runner.temp }}/playground/receipt.json
             ${{ runner.temp }}/playground/smoke.json
           if-no-files-found: error
+
+      - name: Package the exact browser-tested site for Pages
+        if: github.event_name == 'workflow_dispatch' && inputs.suite == 'playground-deploy' && github.repository == 'PhysicsQoo/RaWMoCS' && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ runner.temp }}/playground/site
+
+  playground-deploy:
+    name: Deploy admitted standalone Playground
+    needs: playground-site
+    if: github.event_name == 'workflow_dispatch' && inputs.suite == 'playground-deploy' && github.repository == 'PhysicsQoo/RaWMoCS' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: standalone-playground-pages
+      cancel-in-progress: false
+    steps:
+      - name: Require current main before deployment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(gh api repos/PhysicsQoo/RaWMoCS/git/ref/heads/main --jq .object.sha)" = "$GITHUB_SHA"
+      - name: Require configured GitHub Actions Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: false
+      - name: Deploy exact smoke-tested site
+        id: deployment
+        uses: actions/deploy-pages@v4

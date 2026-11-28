@@ -86,6 +86,24 @@ class ManualLongCI(unittest.TestCase):
         self.assertIn("github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.core.outputs.playground_contract == 'true'", guard)
         self.assertNotIn("github.event_name == 'pull_request'", guard)
 
+    def test_pages_deployment_explicit_main_and_smoke_only(self):
+        workflow = "rust-science.yml"
+        guard = self.job_guard(workflow, "playground-deploy")
+        self.assertIn("github.event_name == 'workflow_dispatch' && inputs.suite == 'playground-deploy'", guard)
+        self.assertIn("github.repository == 'PhysicsQoo/RaWMoCS' && github.ref == 'refs/heads/main'", guard)
+        self.assertNotIn("github.event_name == 'push'", guard)
+        self.assertNotIn("github.event_name == 'pull_request'", guard)
+        source = (self.root / workflow).read_text()
+        site, deployment = source.split("\n  playground-deploy:\n", 1)
+        self.assertIn("needs: playground-site", deployment)
+        self.assertIn("pages: write", deployment)
+        self.assertIn("id-token: write", deployment)
+        self.assertIn("enablement: false", deployment)
+        self.assertIn("actions/upload-pages-artifact@v3", site)
+        self.assertIn("actions/deploy-pages@v4", deployment)
+        self.assertNotIn("pages: write", site)
+        self.assertNotIn("id-token: write", site)
+
     def test_no_push_title_full_intent(self):
         for filename in ("rust-science.yml", "codspeed.yml"):
             source = (self.root / filename).read_text()

@@ -1,8 +1,5 @@
 name: WASM W2b QuPRS capture replay
 on:
-  push:
-    branches: [experiment/wasm-w2]
-    paths: ['.github/workflows/wasm-w2b.yml','research/wasm_w2b/**']
   workflow_dispatch:
 concurrency:
   group: wasm-w2b-${{ github.ref }}

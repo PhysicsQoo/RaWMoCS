@@ -70,6 +70,9 @@ def load_request():
               "artifact_id", "artifact_digest", "source_sha256", "notes"}
     if r.get("version") == "0.3.0":
         fields.add("python_source_sha256")
+        if "qualification" in r:
+            fields.add("qualification")
+            require(r["qualification"] == "v030-ci-only", "unknown v0.3.0 qualification")
         require(re.fullmatch(r"[0-9a-f]{64}", r.get("python_source_sha256", "")),
                 "invalid Python source digest")
     require(set(r) == fields, "unexpected request fields")
@@ -112,10 +115,21 @@ def shared_core_steps(version, name):
 def verify_run(r, run_data, jobs, kind):
     expected = SCIENCE if kind == "science" else CODSPEED
     skipped = set()
+    parallel_transport = False
     if kind == "science" and r["version"] == "0.3.0":
         from release_python_source import PYTHON_JOBS, RESEARCH_SKIPS
         expected = expected | PYTHON_JOBS | RESEARCH_SKIPS
         skipped = RESEARCH_SKIPS
+        # Both exact historical and split layouts require the same full science.
+        # The new topology must have the dedicated successful R6 job.
+        parallel_transport = any(j["name"] == "Release shared-core native transport (parallel)"
+                                 for j in jobs["jobs"])
+        if parallel_transport:
+            expected = expected | {"Release shared-core native transport (parallel)"}
+    if kind == "codspeed" and r["version"] == "0.3.0":
+        from release_ci_only_v030 import COMBINED, CODSPEED as COMBINED_JOBS
+        if any(j["name"] == COMBINED for j in jobs["jobs"]):
+            expected = COMBINED_JOBS
     workflow = "rust-science.yml" if kind == "science" else "codspeed.yml"
     require(run_data["id"] == r[kind + "_run"], "wrong run ID")
     require(run_data["repository"]["full_name"] == REPO
@@ -140,6 +154,10 @@ def verify_run(r, run_data, jobs, kind):
             continue
         steps = {s["name"]: s["conclusion"] for s in j["steps"]}
         required_steps = STEPS.get(j["name"], ())
+        if kind == "codspeed" and r["version"] == "0.3.0":
+            from release_ci_only_v030 import COMBINED, COMBINED_STEPS
+            if j["name"] == COMBINED:
+                required_steps = COMBINED_STEPS
         # Preserve the published v0.1.0 receipt, but never let a future
         # release claim a two-arm or skipped routine gate as full admission.
         if j["name"].startswith("Release matched native GPMC (") and r["version"] != "0.1.0":
@@ -153,6 +171,14 @@ def verify_run(r, run_data, jobs, kind):
             if r["version"] == "0.3.0":
                 from release_python_source import PYTHON_STEPS
                 required_steps |= PYTHON_STEPS.get(j["name"], set())
+                if parallel_transport:
+                    transport = {"R6 seven-round native transport regression against published v0.2.0",
+                                 "Archive shared-core full science evidence"}
+                    if j["name"] == "Regenerate original CNF and independent interval without artifacts":
+                        required_steps = (required_steps - transport) | {
+                            "Archive cancellation evidence for parallel transport", "Archive regeneration evidence"}
+                    elif j["name"] == "Release shared-core native transport (parallel)":
+                        required_steps |= transport | {"Prepare locked native dependencies"}
         require(all(steps.get(s) == "success" for s in required_steps),
                 f"missing or failed required step {j['name']}")
         require(not any(s["conclusion"] in ("failure", "cancelled", "timed_out") for s in j["steps"]),
@@ -457,11 +483,18 @@ def prepare(r):
     manifest = run("git", "show", r["revision"] + ":crates/rawmocs-cli/Cargo.toml").decode()
     require(tomllib.loads(manifest)["package"]["version"] == r["version"], "target version mismatch")
     rationalized = False
+    ci_only = r.get("qualification") == "v030-ci-only"
+    if ci_only:
+        from release_ci_only_v030 import verify_baseline, verify_scope, verify_bounded_run
+        verify_scope(r["revision"])
+        verify_baseline(api, verify_run)
     for kind in ("science", "codspeed"):
         endpoint = f"repos/{REPO}/actions/runs/{r[kind + '_run']}"
         run_data = api(endpoint)
         jobs = api(f"{endpoint}/attempts/{run_data['run_attempt']}/jobs?per_page=100")
-        if kind == "science" and r["version"] == "0.2.2" and any(
+        if ci_only:
+            verify_bounded_run(r, run_data, jobs, kind)
+        elif kind == "science" and r["version"] == "0.2.2" and any(
                 j["name"] == V022_SMALL_JOB for j in jobs["jobs"]):
             verify_v022_admission(r, run_data, jobs)
             rationalized = True

@@ -9,6 +9,11 @@ on:
       - "benchmarks/rust_core/**"
       - "crates/rawmocs-cli/**"
       - ".github/workflows/codspeed.yml"
+      - ".github/workflows/rust-science.yml"
+      - "scripts/release_ci_only_v030.py"
+      - "pyproject.toml"
+      - "crates/rawmocs-python/**"
+      - "python/**"
   push:
     branches: [main]
     paths:
@@ -17,13 +22,18 @@ on:
       - "benchmarks/rust_core/**"
       - "crates/rawmocs-cli/**"
       - ".github/workflows/codspeed.yml"
+      - ".github/workflows/rust-science.yml"
+      - "scripts/release_ci_only_v030.py"
+      - "pyproject.toml"
+      - "crates/rawmocs-python/**"
+      - "python/**"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: codspeed-${{ github.event.pull_request.number || github.ref }}
+  group: codspeed-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name == 'workflow_dispatch' && 'manual' || 'routine' }}
   cancel-in-progress: true
 
 jobs:
@@ -47,69 +57,14 @@ jobs:
       - run: cargo bench --locked --manifest-path benchmarks/rust_core/Cargo.toml --bench solver --no-run
 
   codspeed:
-    name: CodSpeed simulation (opt in after repository connection)
+    name: CodSpeed combined 68 identities and original QPE8 Simulation
     needs: bench-smoke
     if: >-
       vars.RAWMOCS_CODSPEED_ENABLED == 'true' &&
       (github.event_name != 'pull_request' ||
        github.event.pull_request.head.repo.full_name == github.repository)
-    continue-on-error: true
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Check out pinned original QuPRS test definitions
-        uses: actions/checkout@v4
-        with:
-          repository: PhysicsQoo/QuPRS
-          ref: 0b28736651b3740ed3b201edd2efdef3da541e0d
-          path: .upstream/quprs
-          persist-credentials: false
-      - name: Check out pinned same-source GPMC CNF generator
-        uses: actions/checkout@v4
-        with:
-          repository: PhysicsQoo/GPMC
-          ref: e3faa9c022bf93bc8ccebef7376e69d96367dd8e
-          path: .upstream/gpmc
-          persist-credentials: false
-      - name: Generate source-locked identical GPMC/Rust QuPRS CNFs
-        run: |
-          test "$(git -C .upstream/gpmc hash-object benchmarks/quprs/prepare_direct_cnf.py)" = "0a6859c583f34725e59983380cedf1030d7da15b"
-          python3 .upstream/gpmc/benchmarks/quprs/prepare_direct_cnf.py \
-            --quprs .upstream/quprs --output "${RUNNER_TEMP}/quprs-cnf"
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: benchmarks/rust_core -> target
-      - run: cargo install cargo-codspeed --version 6.0.0 --locked
-      - name: Verify committed benchmark lockfile
-        run: cargo metadata --locked --format-version 1 --manifest-path benchmarks/rust_core/Cargo.toml --no-deps > /dev/null
-      - name: Build instrumented solver microbenchmarks
-        working-directory: benchmarks/rust_core
-        run: cargo codspeed build -m simulation --locked --features quprs-gpmc-paired-research --bench solver --bench quprs_direct_cnf
-      - name: Confirm instrumented build did not rewrite the lockfile
-        run: git diff --exit-code -- benchmarks/rust_core/Cargo.lock
-      - name: Upload all 62 legacy and six new paired CodSpeed identities in ONE workflow
-        uses: CodSpeedHQ/action@v5
-        env:
-          GPMC_QU_PRS_CNF_DIR: ${{ runner.temp }}/quprs-cnf
-        with:
-          mode: simulation
-          run: cd benchmarks/rust_core && cargo codspeed run --bench solver --bench quprs_direct_cnf
-
-  release-short-simulation:
-    name: Release short original QPE8 Simulation (same precision)
-    if: >-
-      vars.RAWMOCS_CODSPEED_ENABLED == 'true' &&
-      (github.event_name != 'pull_request' ||
-       github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 20
     permissions:
       contents: read
       id-token: write
@@ -130,12 +85,35 @@ jobs:
           path: .upstream/gpmc
           submodules: recursive
           persist-credentials: false
+      - name: Check out pinned same-source GPMC CNF generator
+        uses: actions/checkout@v4
+        with:
+          repository: PhysicsQoo/GPMC
+          ref: e3faa9c022bf93bc8ccebef7376e69d96367dd8e
+          path: .upstream/gpmc-direct
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
+            benchmarks/rust_core -> target
             crates/rawmocs-cli -> target
             .upstream/quprs/rust -> target
+      - name: Generate source-locked identical GPMC/Rust QuPRS CNFs
+        run: |
+          set -euo pipefail
+          test "$(git -C .upstream/gpmc-direct rev-parse HEAD)" = e3faa9c022bf93bc8ccebef7376e69d96367dd8e
+          test "$(git -C .upstream/gpmc-direct hash-object benchmarks/quprs/prepare_direct_cnf.py)" = 0a6859c583f34725e59983380cedf1030d7da15b
+          python3 .upstream/gpmc-direct/benchmarks/quprs/prepare_direct_cnf.py \
+            --quprs .upstream/quprs --output "${RUNNER_TEMP}/quprs-cnf"
+      - run: cargo install cargo-codspeed --version 6.0.0 --locked
+      - name: Verify committed benchmark lockfile
+        run: cargo metadata --locked --format-version 1 --manifest-path benchmarks/rust_core/Cargo.toml --no-deps > /dev/null
+      - name: Build instrumented solver microbenchmarks
+        working-directory: benchmarks/rust_core
+        run: cargo codspeed build -m simulation --locked --features quprs-gpmc-paired-research --bench solver --bench quprs_direct_cnf
+      - name: Confirm instrumented build did not rewrite the lockfile
+        run: git diff --exit-code -- benchmarks/rust_core/Cargo.lock
       - name: Build source-locked encoder and both release executables
         run: |
           set -euo pipefail
@@ -151,11 +129,25 @@ jobs:
           cmake --build .upstream/gpmc/build --target gpmc-bin --parallel 2
       - name: Qualify short original proxy within one second per arm
         run: python3 crates/rawmocs-cli/tools/release_simulation.py prepare
-      - name: CodSpeed bounded release Simulation
-        timeout-minutes: 5
+      - name: Compose one CodSpeed config for Rust harness and QPE8 pair
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("codspeed-release.generated.yml")
+          original = path.read_text()
+          assert original.count("    exec: ") == 2
+          assert original.count("release_original/qpe8/") == 2
+          assert "entrypoint:" not in original
+          path.write_text(original + '  - entrypoint: "cd benchmarks/rust_core && cargo codspeed run --bench solver --bench quprs_direct_cnf"\n')
+          PY
+      - name: CodSpeed unified Simulation (68 identities plus QPE8 pair)
+        timeout-minutes: 8
         uses: CodSpeedHQ/action@v5
+        env:
+          GPMC_QU_PRS_CNF_DIR: ${{ runner.temp }}/quprs-cnf
         with:
           mode: simulation
+          runner-version: '5.8.0'
           config: codspeed-release.generated.yml
       - name: Verify simulated output, precision and plan signature
         run: python3 crates/rawmocs-cli/tools/release_simulation.py verify

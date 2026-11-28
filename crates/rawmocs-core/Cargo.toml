@@ -3,7 +3,10 @@ name = "rawmocs-core"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-publish = false
+publish = ["crates-io"]
+description = "Portable exact weighted model counting core"
+repository = "https://github.com/PhysicsQoo/RaWMoCS"
+include = ["src/**", "tests/**", "examples/**", "LICENSE", "Cargo.toml"]
 
 # Explicitly opt-in research profiling; never enabled for the default solver.
 [features]

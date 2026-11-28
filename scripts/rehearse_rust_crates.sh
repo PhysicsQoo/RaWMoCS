@@ -11,24 +11,21 @@ trap 'rm -rf "$stage"' EXIT
 mkdir -p "$stage/crates"
 cp -R "$root/crates/rawmocs-core" "$root/crates/rawmocs-cli" "$stage/crates/"
 rm -rf "$stage/crates/"*/target
-for p in rawmocs-core rawmocs-cli; do cp "$root/LICENSE" "$stage/crates/$p/LICENSE"; done
 python3 - "$stage" <<'PY'
 from pathlib import Path
-import sys
+import sys,tomllib
 p=Path(sys.argv[1])
-for name,description in (("rawmocs-core","Portable exact weighted model counting core"),
-                         ("rawmocs-cli","Native MPFR weighted model counting library and CLI")):
-    f=p/"crates"/name/"Cargo.toml"
+for name in ("rawmocs-core","rawmocs-cli"):
+    d=p/"crates"/name
+    f=d/"Cargo.toml"
     s=f.read_text()
-    assert s.count("publish = false")==1
-    s=s.replace("publish = false",'publish = ["crates-io"]\ndescription = "'+description+'"\nrepository = "https://github.com/PhysicsQoo/RaWMoCS"\ninclude = ["src/**", "tests/**", "examples/**", "LICENSE", "Cargo.toml"]')
+    meta=tomllib.loads(s)
+    assert meta["package"]["publish"]==["crates-io"]
+    assert (d/"LICENSE").is_file()
     if name=="rawmocs-cli":
         assert s.count("[workspace]")==1
-        s=s.replace("[workspace]","")
-        old='rawmocs-core = { path = "../rawmocs-core" }'
-        assert old in s
-        s=s.replace(old,'rawmocs-core = { path = "../rawmocs-core", version = "=0.1.0" }')
-    f.write_text(s)
+        f.write_text(s.replace("[workspace]",""))
+        assert meta["dependencies"]["rawmocs-core"]["version"]=="=0.1.0"
 (p/"Cargo.toml").write_text('[workspace]\nmembers = ["crates/rawmocs-core", "crates/rawmocs-cli"]\nresolver = "2"\n')
 PY
 git -C "$root" rev-parse HEAD > "$out/source-sha.txt"

@@ -3,8 +3,8 @@ import io,json,os,re,subprocess,sys,tempfile,time,tomllib,zipfile
 from pathlib import Path,PurePosixPath
 from urllib.error import HTTPError,URLError
 from release_source import REPO,api,digest,require,run,verify_assets,verify_release,releases,tag_commit,workflow_changes
-from release_python_source import verify_python_assets
-from release_v040 import get,files
+from release_python_source import verify_python_assets, archive_files
+from urllib.request import Request, urlopen
 from stable_crate_assets import verify_crate
 
 REQUEST=Path("releases/stable-request.json")
@@ -73,10 +73,12 @@ def prepare(r):
     require(s["status.txt"].strip()==b"STABLE_SOURCE_VERSION_ADMISSION_PASS","source admission")
     scope=json.loads(s["version-scope.json"])
     require(scope["status"]=="STABLE_RELEASE_VERSION_SCOPE_PASS" and scope["revision"]==r["revision"] and scope["version"]==v and scope["publication_authorized"] is False,"version scope receipt")
+    for path in ("crates/rawmocs-core/src","crates/rawmocs-cli/src","crates/rawmocs-python/src","python/rawmocs","python/tests"):
+        require(scope["source_trees"][path]==run("git","rev-parse",r["revision"]+":"+path).decode().strip(),"source tree receipt mismatch")
     r.update(crate_sha256=digest(p[crate]),source_sha256=digest(s["cli-source/"+source]),python_source_sha256=digest(s[sdist]))
     assets={k:s["cli-source/"+k] for k in (source,"SHA256SUMS","source-package.json")}
     verify_assets(r,assets)
-    src=files(assets[source],"rawmocs-"+v)
+    src=archive_files(assets[source],v)
     # Require exact tracked source archive identity for all files (including locks and workflows).
     tree=run("git","ls-tree","-r","--name-only",r["revision"]).decode().splitlines()
     # git archive may omit paths marked export-ignore. Reproduce the archive and compare bytes.
@@ -99,6 +101,13 @@ def index_state(rows,v,sha):
     if not targets:return "READY"
     require(len(targets)==1 and targets[0]["cksum"]==sha and targets[0]["yanked"] is False,"registry version conflict")
     return "MATCH"
+def get(url):
+    try:
+        with urlopen(Request(url,headers={"User-Agent":"RaWMoCS release (https://github.com/PhysicsQoo/RaWMoCS)"}),timeout=20) as r:return r.status,r.read()
+    except HTTPError as e:
+        if e.code==404:return 404,b""
+        raise
+
 def registry_state(r):
     code,_=get("https://crates.io/api/v1/crates/rawmocs");c,index=get("https://index.crates.io/ra/wm/rawmocs")
     require(code==c==200,"existing crate registry identity required")
@@ -138,7 +147,7 @@ def registry(r,assets):
         try:
             env=os.environ.copy();env.pop("CARGO_REGISTRY_TOKEN",None);env["CARGO_TARGET_DIR"]=str(p/"target")
             subprocess.run([sys.executable,"scripts/stage_single_rust_crate.py",str(checkout),str(stage)],env=env,check=True)
-            (stage/"Cargo.lock").write_bytes(files(assets[crate],"rawmocs-"+r["version"])["Cargo.lock"])
+            (stage/"Cargo.lock").write_bytes(archive_files(assets[crate],r["version"])["Cargo.lock"])
             args=["--locked","--no-verify","--manifest-path",str(stage/"Cargo.toml")]
             subprocess.run(["cargo","package",*args],env=env,check=True)
             require((p/"target/package"/crate).read_bytes()==assets[crate],"repackaged crate bytes differ")

@@ -1,12 +1,12 @@
 """Verify exact admitted parser source and consistent stable package versions; no publish."""
 from pathlib import Path
-import hashlib,json,subprocess,tomllib
+import json,re,subprocess,tomllib
 ROOT=Path(__file__).resolve().parents[1]
-BASE="eb9f970621f1f5477e1502f2ed1fa13a9fd66d38"
-V="0.4.1"
 def load(p): return tomllib.loads((ROOT/p).read_text())
 def git(*args):return subprocess.check_output(["git","-C",str(ROOT),*args])
 pub=load("packaging/rawmocs/Cargo.toml")
+V=pub["package"]["version"]
+assert re.fullmatch(r"\d+\.\d+\.\d+",V) and tuple(map(int,V.split(".")))>(0,4,0)
 cli=load("crates/rawmocs-cli/Cargo.toml")
 py=load("crates/rawmocs-python/Cargo.toml")
 core=load("crates/rawmocs-core/Cargo.toml")
@@ -20,8 +20,7 @@ assert all(not isinstance(d,dict) or not ({"path","git"} & d.keys()) for d in pu
 for p,names in (("crates/rawmocs-cli/Cargo.lock",["rawmocs-cli"]),("crates/rawmocs-python/Cargo.lock",["rawmocs-cli","rawmocs-python"]),("packaging/rawmocs/Cargo.lock",["rawmocs"])):
     packages={x["name"]:x for x in load(p)["package"]}
     assert all(packages[n]["version"]==V for n in names)
-# Compare canonical source directory trees, not a few sampled functions.
+# Record the exact source trees, allowing new admitted solver changes in future versions.
 dirs=["crates/rawmocs-core/src","crates/rawmocs-cli/src","crates/rawmocs-python/src","python/rawmocs","python/tests"]
-for d in dirs:
-    assert git("rev-parse",BASE+":"+d)==git("rev-parse","HEAD:"+d),d
-print(json.dumps({"status":"STABLE_RELEASE_VERSION_SCOPE_PASS","revision":git("rev-parse","HEAD").decode().strip(),"baseline":BASE,"version":V,"unchanged_source_trees":dirs,"publication_authorized":False},indent=2))
+trees={d:git("rev-parse","HEAD:"+d).decode().strip() for d in dirs}
+print(json.dumps({"status":"STABLE_RELEASE_VERSION_SCOPE_PASS","revision":git("rev-parse","HEAD").decode().strip(),"version":V,"source_trees":trees,"publication_authorized":False},indent=2))

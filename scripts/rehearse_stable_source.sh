@@ -8,30 +8,32 @@ out="$(realpath "$out")"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 python scripts/verify_stable_version_scope.py > "$out/version-scope.json"
+version="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' "$out/version-scope.json")"
+export RAWMOCS_ADMITTED_VERSION="$version"
 bash crates/rawmocs-cli/tools/package_source.sh "$out/cli-source"
 export RAWMOCS_TEST_CLI="$root/crates/rawmocs-cli/target/release/rawmocs"
 cargo build --locked --release --manifest-path crates/rawmocs-cli/Cargo.toml
 "$RAWMOCS_TEST_CLI" --version | tee "$out/cli-version.txt"
-grep -Fx 'rawmocs 0.4.1' "$out/cli-version.txt"
+grep -Fx "rawmocs $version" "$out/cli-version.txt"
 python -m pip install 'maturin==1.8.3'
 maturin build --locked --release --interpreter python --compatibility linux --out "$tmp/wheels"
 python -m pip install --force-reinstall --no-deps "$tmp/wheels/"*.whl
-python -c 'import rawmocs; assert rawmocs.__version__=="0.4.1"; print(rawmocs.__version__)' | tee "$out/python-version.txt"
+python -c 'import os,rawmocs; assert rawmocs.__version__==os.environ["RAWMOCS_ADMITTED_VERSION"]; print(rawmocs.__version__)' | tee "$out/python-version.txt"
 python -m unittest discover -s python/tests -v 2>&1 | tee "$out/python-contract.log"
 maturin sdist --out "$tmp/sdist"
-cp "$tmp/sdist/rawmocs-0.4.1.tar.gz" "$out/"
+cp "$tmp/sdist/rawmocs-$version.tar.gz" "$out/"
 cargo metadata --locked --manifest-path crates/rawmocs-python/Cargo.toml --format-version 1 > "$out/cargo-metadata.json"
-python scripts/python_source_inventory.py --sdist "$out/rawmocs-0.4.1.tar.gz" --metadata "$out/cargo-metadata.json" --out "$out/source-inventory.json"
-python scripts/python_package_candidate.py --wheel "$tmp/wheels/"*.whl --platform linux_x86_64 --sdist "$out/rawmocs-0.4.1.tar.gz" --out "$out/package-candidate.json"
+python scripts/python_source_inventory.py --sdist "$out/rawmocs-$version.tar.gz" --metadata "$out/cargo-metadata.json" --out "$out/source-inventory.json"
+python scripts/python_package_candidate.py --wheel "$tmp/wheels/"*.whl --platform linux_x86_64 --sdist "$out/rawmocs-$version.tar.gz" --out "$out/package-candidate.json"
 mkdir "$tmp/rebuild"
-tar -xzf "$out/rawmocs-0.4.1.tar.gz" -C "$tmp/rebuild"
+tar -xzf "$out/rawmocs-$version.tar.gz" -C "$tmp/rebuild"
 (
- cd "$tmp/rebuild/rawmocs-0.4.1"
+ cd "$tmp/rebuild/rawmocs-$version"
  maturin build --locked --release --interpreter python --compatibility linux --out "$tmp/rebuilt-wheels"
  python -m pip install --force-reinstall --no-deps "$tmp/rebuilt-wheels/"*.whl
  python - <<'PY'
-import rawmocs
-assert rawmocs.__version__ == "0.4.1"
+import os,rawmocs
+assert rawmocs.__version__ == os.environ["RAWMOCS_ADMITTED_VERSION"]
 r = rawmocs.solve("p cnf 1 1\nc t wmc\n1 0\n")
 assert r.sat and r.as_decimal() == (1, 0)
 PY
@@ -39,6 +41,6 @@ PY
  python -m unittest discover -s python/tests -v
 ) 2>&1 | tee "$out/clean-source-contract.log"
 python scripts/python_package_candidate.py --wheel "$tmp/rebuilt-wheels/"*.whl --platform linux_x86_64 --out "$out/rebuilt-package-candidate.json"
-(cd "$out"; sha256sum rawmocs-0.4.1.tar.gz cli-source/rawmocs-0.4.1-source.tar.gz > SHA256SUMS)
+(cd "$out"; sha256sum rawmocs-$version.tar.gz cli-source/rawmocs-$version-source.tar.gz > SHA256SUMS)
 python3 scripts/replay_stable_assets.py source "$out"
 echo STABLE_SOURCE_VERSION_ADMISSION_PASS | tee "$out/status.txt"

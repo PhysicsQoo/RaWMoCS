@@ -7,6 +7,9 @@ on:
       - 'packaging/rawmocs/**'
       - 'pyproject.toml'
       - 'scripts/*stable*'
+      - 'scripts/release_source.py'
+      - 'scripts/release_python_source.py'
+      - 'scripts/stage_single_rust_crate.py'
       - '.github/workflows/stable-package-admission.yml'
   workflow_dispatch:
 permissions:

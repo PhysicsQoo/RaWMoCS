@@ -1,6 +1,9 @@
 import unittest
 from stable_release import BASE_SHA,index_state,intent,validate_request,verify_run,NAMES,STEPS,REPO
 from copy import deepcopy
+from unittest.mock import patch
+from stable_release import verify_exact_draft, preflight
+from release_source import digest
 class StableReleaseTests(unittest.TestCase):
     def setUp(self):
         self.v="0.4.1";self.sha="a"*64;self.rev="b"*40
@@ -33,4 +36,19 @@ class StableReleaseTests(unittest.TestCase):
             with self.assertRaises(ValueError):verify_run(self.r,d|{k:v},jobs)
         j=deepcopy(jobs);j["jobs"][0]["steps"][0]["conclusion"]="skipped"
         with self.assertRaises(ValueError):verify_run(self.r,d,j)
+    def test_exact_draft_rejects_wrong_identity_or_bytes(self):
+        assets={"package":b"verified"}
+        d={"tag_name":"v"+self.v,"draft":True,"prerelease":False,"name":"RaWMoCS v"+self.v,
+           "author":{"login":"github-actions[bot]"},"target_commitish":"main","body":"notes",
+           "assets":[{"name":"package","digest":"sha256:"+digest(b"verified"),"state":"uploaded"}]}
+        with patch("stable_release.Path.read_text",return_value="notes"):
+            verify_exact_draft(d,self.r,assets)
+            for bad in ({"author":{"login":"other"}},{"target_commitish":"other"},{"body":"bad"},
+                        {"assets":[]},{"prerelease":True},{"draft":False}):
+                with self.assertRaises(ValueError):verify_exact_draft(d|bad,self.r,assets)
+    def test_registry_ready_forbids_existing_tag_or_release(self):
+        with patch("stable_release.checked_state",return_value="READY"), patch("stable_release.tag_commit",return_value=None), patch("stable_release.releases",return_value=[]):
+            self.assertEqual(preflight(self.r,{}),"READY")
+        with patch("stable_release.checked_state",return_value="READY"), patch("stable_release.tag_commit",return_value=self.rev), patch("stable_release.releases",return_value=[]):
+            with self.assertRaises(ValueError):preflight(self.r,{})
 if __name__=="__main__":unittest.main()

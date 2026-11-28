@@ -5,7 +5,7 @@ import json
 import tarfile
 import unittest
 
-from release_source import REPO, SCIENCE, STEPS, digest, native_policy, verify_assets, verify_draft, verify_run
+from release_source import REPO, SCIENCE, STEPS, digest, native_policy, verify_assets, verify_run
 
 
 def fixture(version="0.1.1"):
@@ -240,80 +240,6 @@ class ReleaseSourceTests(unittest.TestCase):
         assets["source-package.json"] = json.dumps(receipt).encode()
         with self.assertRaisesRegex(ValueError, "receipt mismatch: version"):
             verify_assets(request, assets)
-
-
-class ReleaseTargetTests(unittest.TestCase):
-    def test_new_tag_requires_workflow_consistency(self):
-        from release_source import verify_new_release_target
-        r = {"version": "0.4.1", "revision": "a" * 40}
-        self.assertFalse(verify_new_release_target(r, None, []))
-        for changed in ([".github/workflows/source-release.yml"],
-                        [".github/workflows/new.yml"], [".github/workflows/removed.yml"]):
-            with self.assertRaisesRegex(ValueError, "workflow tree changed"):
-                verify_new_release_target(r, None, changed)
-        with self.assertRaises(ValueError):
-            verify_new_release_target(r, r["revision"], [], True)
-
-    def test_recovery_is_exact_and_registry_matched(self):
-        from release_source import verify_new_release_target, V040_RECOVERY_REVISION, V040_RECOVERY_CRATE
-        r = {"version": "0.4.0", "revision": V040_RECOVERY_REVISION,
-             "crate_sha256": V040_RECOVERY_CRATE}
-        changed = [".github/workflows/source-release.yml"]
-        self.assertTrue(verify_new_release_target(r, r["revision"], changed, True))
-        for request, actual, matched in (
-            (r, None, True), (r, "b" * 40, True), (r, r["revision"], False),
-            (dict(r, version="0.4.1"), r["revision"], True),
-            (dict(r, revision="b" * 40), "b" * 40, True),
-            (dict(r, crate_sha256="0" * 64), r["revision"], True),
-        ):
-            with self.subTest(request=request, actual=actual, matched=matched), self.assertRaises(ValueError):
-                verify_new_release_target(request, actual, changed, matched)
-
-
-class ReleaseDraftTests(unittest.TestCase):
-    def test_exact_recovery_draft_may_record_default_branch_but_not_retarget(self):
-        from release_source import V040_RECOVERY_REVISION, V040_RECOVERY_CRATE
-        r = {"version": "0.4.0", "revision": V040_RECOVERY_REVISION,
-             "crate_sha256": V040_RECOVERY_CRATE}
-        assets = {"fixture": b"admitted"}; notes = "Recovery"
-        draft = {"id": 1, "tag_name": "v0.4.0", "draft": True, "prerelease": False,
-                 "target_commitish": "main", "name": "RaWMoCS v0.4.0",
-                 "body": notes, "author": {"login": "github-actions[bot]"},
-                 "assets": [{"name": "fixture", "digest": "sha256:" + digest(assets["fixture"]),
-                             "state": "uploaded"}]}
-        verify_draft(draft, r, assets, r["revision"], notes, True)
-        for actual, matched in ((None, True), ("b" * 40, True), (r["revision"], False)):
-            with self.assertRaises(ValueError):
-                verify_draft(draft, r, assets, actual, notes, matched)
-        with self.assertRaises(ValueError):
-            verify_draft(dict(draft, target_commitish="other"), r, assets, r["revision"], notes, True)
-
-    def test_exact_ci_draft_resume_and_wrong_identity_rejected(self):
-        request, assets = source_fixture("0.1.1")
-        notes = "# Release notes"
-        draft = {
-            "id": 42, "tag_name": "v0.1.1", "draft": True, "prerelease": False,
-            "target_commitish": request["revision"], "name": "RaWMoCS v0.1.1",
-            "body": notes, "author": {"login": "github-actions[bot]"},
-            "assets": [{"name": name, "digest": "sha256:" + digest(data),
-                        "state": "uploaded"} for name, data in assets.items()],
-        }
-        verify_draft(draft, request, assets, None, notes)
-        verify_draft(draft, request, assets, request["revision"], notes)
-        for field, value in (
-            ("target_commitish", "b" * 40), ("body", "other notes"),
-            ("name", "other title"), ("author", {"login": "other"}),
-            ("draft", False), ("assets", []), ("id", 0),
-        ):
-            with self.subTest(field=field), self.assertRaises(ValueError):
-                verify_draft({**draft, field: value}, request, assets, None, notes)
-        with self.assertRaises(ValueError):
-            verify_draft(draft, request, assets, "b" * 40, notes)
-        corrupted = copy.deepcopy(draft)
-        corrupted["assets"][0]["digest"] = "sha256:" + "0" * 64
-        with self.assertRaises(ValueError):
-            verify_draft(corrupted, request, assets, None, notes)
-
 
 
 class RationalizedCandidateTests(unittest.TestCase):

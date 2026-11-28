@@ -1,4 +1,4 @@
-"""Admit a version from exact main CI receipts; no downloaded code is executed."""
+"""Source artifact checks and retained manual science receipt validators; no publication entrypoint."""
 import hashlib
 import io
 import json
@@ -14,7 +14,6 @@ import tomllib
 import zipfile
 
 REPO = "PhysicsQoo/RaWMoCS"
-REQUEST = Path("releases/request.json")
 SCIENCE = {
     "core", "a0-science", "portability (ubuntu-24.04-arm)",
     "portability (windows-latest)", "portability (macos-15)",
@@ -62,34 +61,6 @@ def api(path):
 
 def digest(data):
     return hashlib.sha256(data).hexdigest()
-
-
-def load_request():
-    r = json.loads(REQUEST.read_text())
-    if r.get("version") == "0.4.0":
-        from release_v040 import validate_request
-        validate_request(r)
-        return r
-    fields = {"version", "revision", "science_run", "codspeed_run",
-              "artifact_id", "artifact_digest", "source_sha256", "notes"}
-    if r.get("version") == "0.3.0":
-        fields.add("python_source_sha256")
-        if "qualification" in r:
-            fields.add("qualification")
-            require(r["qualification"] == "v030-ci-only", "unknown v0.3.0 qualification")
-        require(re.fullmatch(r"[0-9a-f]{64}", r.get("python_source_sha256", "")),
-                "invalid Python source digest")
-    require(set(r) == fields, "unexpected request fields")
-    require(re.fullmatch(r"\d+\.\d+\.\d+", r["version"]), "stable version required")
-    require(re.fullmatch(r"[0-9a-f]{40}", r["revision"]), "full revision required")
-    for key in ("science_run", "codspeed_run", "artifact_id"):
-        require(type(r[key]) is int and r[key] > 0, f"invalid {key}")
-    require(re.fullmatch(r"sha256:[0-9a-f]{64}", r["artifact_digest"]), "invalid artifact digest")
-    require(re.fullmatch(r"[0-9a-f]{64}", r["source_sha256"]), "invalid source digest")
-    require(r["notes"] == f"releases/v{r['version']}.md", "invalid notes path")
-    notes = Path(r["notes"])
-    require(notes.is_file() and not notes.is_symlink() and notes.stat().st_size > 0, "missing notes")
-    return r
 
 
 def native_policy(version, candidate_frontier=False):
@@ -480,56 +451,6 @@ def verify_assets(r, assets):
                     "missing downstream consumer source")
 
 
-def prepare(r):
-    if r["version"] == "0.4.0":
-        from release_v040 import prepare as prepare_v040
-        return prepare_v040(r)
-    require(os.environ.get("GITHUB_REPOSITORY") == REPO, "unexpected repository")
-    main = api(f"repos/{REPO}/git/ref/heads/main")["object"]["sha"]
-    subprocess.run(["git", "merge-base", "--is-ancestor", r["revision"], main], check=True)
-    manifest = run("git", "show", r["revision"] + ":crates/rawmocs-cli/Cargo.toml").decode()
-    require(tomllib.loads(manifest)["package"]["version"] == r["version"], "target version mismatch")
-    rationalized = False
-    ci_only = r.get("qualification") == "v030-ci-only"
-    if ci_only:
-        from release_ci_only_v030 import verify_baseline, verify_scope, verify_bounded_run
-        verify_scope(r["revision"])
-        verify_baseline(api, verify_run)
-    for kind in ("science", "codspeed"):
-        endpoint = f"repos/{REPO}/actions/runs/{r[kind + '_run']}"
-        run_data = api(endpoint)
-        jobs = api(f"{endpoint}/attempts/{run_data['run_attempt']}/jobs?per_page=100")
-        if ci_only:
-            verify_bounded_run(r, run_data, jobs, kind)
-        elif kind == "science" and r["version"] == "0.2.2" and any(
-                j["name"] == V022_SMALL_JOB for j in jobs["jobs"]):
-            verify_v022_admission(r, run_data, jobs)
-            rationalized = True
-        else:
-            verify_run(r, run_data, jobs, kind)
-    endpoint = f"repos/{REPO}/actions/artifacts/{r['artifact_id']}"
-    artifact = api(endpoint)
-    require(artifact["id"] == r["artifact_id"] and artifact["name"] == "rawmocs-v010-candidate-evidence"
-            and not artifact["expired"] and artifact["digest"] == r["artifact_digest"]
-            and artifact["workflow_run"]["id"] == r["science_run"]
-            and artifact["workflow_run"]["head_sha"] == r["revision"], "artifact provenance mismatch")
-    blob = run("gh", "api", endpoint + "/zip")
-    require("sha256:" + digest(blob) == r["artifact_digest"], "artifact ZIP digest mismatch")
-    names = (f"rawmocs-{r['version']}-source.tar.gz", "SHA256SUMS", "source-package.json")
-    with zipfile.ZipFile(io.BytesIO(blob)) as z:
-        require(len(z.namelist()) == len(set(z.namelist())), "duplicate ZIP member")
-        assets = {name: z.read(".release-evidence/source-package/" + name) for name in names}
-        if r["version"] == "0.3.0":
-            from release_python_source import PYTHON_ASSETS
-            assets.update({name: z.read(".release-evidence/python-source-release/" + name)
-                           for name in PYTHON_ASSETS})
-        if rationalized:
-            verify_v022_mutation(z, r["revision"])
-    verify_assets(r, assets)
-    print("RELEASE_ADMISSION_PASS", r["revision"], r["version"], flush=True)
-    return assets
-
-
 def tag_commit(tag):
     rows = run("git", "ls-remote", f"https://github.com/{REPO}.git",
                f"refs/tags/{tag}", f"refs/tags/{tag}^{{}}").decode().splitlines()
@@ -542,38 +463,9 @@ def releases(tag):
     return [r for page in pages for r in page if r["tag_name"] == tag]
 
 
-# One-time recovery of the immutable crate already published in run 46123201552.
-V040_RECOVERY_REVISION = "273f45b83c55b28871350c32ba5070bf77928688"
-V040_RECOVERY_CRATE = "d3e9e6ccd4a146bac19f6bd2628038cf20ae331dd12f9dc0cbcd37a4e63e955d"
-
-
 def workflow_changes(revision, head="HEAD"):
     return run("git", "diff", "--name-only", "--no-renames", revision, head,
                "--", ".github/workflows/").decode().splitlines()
-
-
-def verify_new_release_target(r, actual, changed, registry_matched=False):
-    """No implicit historical tag creation if workflow trees differ.
-    A maintainer-created exact v0.4.0 tag is the sole orphan-tag exception.
-    """
-    if actual is not None:
-        require(actual == r["revision"], "existing tag points elsewhere")
-        require(r["version"] == "0.4.0"
-                and r["revision"] == V040_RECOVERY_REVISION
-                and r.get("crate_sha256") == V040_RECOVERY_CRATE
-                and registry_matched is True,
-                "existing tag without release; inspect manually")
-        return True
-    require(not changed, "workflow tree changed since release admission; freeze/requalify before publication (v0.4.0 recovery requires exact maintainer tag)")
-    return False
-
-
-def preflight_new_registry_upload(r):
-    tag = "v" + r["version"]
-    require(not releases(tag), "GitHub release already exists before registry upload")
-    require(tag_commit(tag) is None, "GitHub tag already exists before registry upload")
-    verify_new_release_target(r, None, workflow_changes(r["revision"]))
-    print("RELEASE_WORKFLOW_CONSISTENCY_PASS", r["revision"], flush=True)
 
 
 def verify_release(release, r, assets, draft):
@@ -583,99 +475,3 @@ def verify_release(release, r, assets, draft):
     require(len(release["assets"]) == len(expected)
             and {a["name"]: a["digest"] for a in release["assets"]} == expected
             and all(a["state"] == "uploaded" for a in release["assets"]), "release asset digest mismatch")
-
-
-def verify_draft(draft, r, assets, actual, notes, registry_matched=False):
-    verify_release(draft, r, assets, True)
-    target_matches = draft["target_commitish"] == r["revision"]
-    if not target_matches and draft["target_commitish"] == "main" and actual is not None:
-        target_matches = verify_new_release_target(r, actual, [], registry_matched)
-    require(target_matches, "draft target mismatch")
-    require(draft["name"] == "RaWMoCS v" + r["version"], "draft title mismatch")
-    require((draft.get("body") or "").strip() == notes.strip(), "draft notes mismatch")
-    require(draft.get("author", {}).get("login") == "github-actions[bot]",
-            "draft is not a CI-created release")
-    require(type(draft["id"]) is int and draft["id"] > 0, "invalid draft ID")
-    require(actual in (None, r["revision"]), "tag appeared at wrong revision")
-
-
-def publish(r, assets):
-    require(os.environ.get("GITHUB_REF") == "refs/heads/main"
-            and os.environ.get("GITHUB_EVENT_NAME") in ("push", "workflow_dispatch"), "publication must run on main")
-    current = api(f"repos/{REPO}/git/ref/heads/main")["object"]["sha"]
-    require(run("git", "rev-parse", "HEAD").decode().strip() == current, "stale release request checkout")
-    registry_matched = False
-    if r["version"] == "0.4.0":
-        from release_v040 import registry_state
-        registry_matched = registry_state(r) == "MATCH"
-        require(registry_matched, "registry checksum must match before GitHub release")
-    tag = "v" + r["version"]
-    notes = Path(r["notes"]).read_text()
-    existing = releases(tag)
-    actual = tag_commit(tag)
-    if existing:
-        require(len(existing) == 1, "duplicate release; inspect manually")
-        if not existing[0]["draft"]:
-            require(actual == r["revision"], "existing tag points elsewhere")
-            verify_release(existing[0], r, assets, False)
-            print("RELEASE_ALREADY_PUBLISHED", existing[0]["html_url"])
-            return
-        # Resume only the exact CI-created draft with every asset already
-        # uploaded. Never overwrite, delete, or repair an unmatched draft.
-        draft = existing[0]
-        verify_draft(draft, r, assets, actual, notes, registry_matched)
-        print("RELEASE_VERIFIED_DRAFT_RESUME", draft["id"], r["revision"], flush=True)
-    else:
-        recovery = verify_new_release_target(r, actual, workflow_changes(r["revision"]), registry_matched)
-        if recovery:
-            print("V040_EXACT_EXISTING_TAG_RECOVERY", actual, flush=True)
-        else:
-            print("RELEASE_WORKFLOW_CONSISTENCY_PASS", r["revision"], flush=True)
-        with tempfile.TemporaryDirectory() as tmp:
-            paths = []
-            for name, data in assets.items():
-                path = Path(tmp) / name
-                path.write_bytes(data)
-                paths.append(str(path))
-            require(api(f"repos/{REPO}/git/ref/heads/main")["object"]["sha"] == current,
-                    "main advanced before draft creation")
-            require(tag_commit(tag) == actual and not releases(tag), "release state changed before draft creation")
-            subprocess.run(["gh", "release", "create", tag, *paths, "-R", REPO, "--draft",
-                            "--title", f"RaWMoCS {tag}", "--notes-file", r["notes"],
-                            *(["--verify-tag"] if recovery else ["--target", r["revision"]])], check=True)
-        # The list API may not expose a newly created draft immediately.
-        # Retry reads only, with a bounded delay; never repeat creation.
-        drafts = []
-        for attempt in range(6):
-            drafts = releases(tag)
-            if drafts:
-                break
-            if attempt < 5:
-                time.sleep(1)
-        require(len(drafts) == 1, "draft missing or duplicate; inspect manually")
-        draft = drafts[0]
-        verify_draft(draft, r, assets, tag_commit(tag), notes, registry_matched)
-    # Read the exact ID again immediately before promotion; no mutation
-    # occurs unless all source, asset, notes and tag checks still agree.
-    endpoint = f"repos/{REPO}/releases/{draft['id']}"
-    verify_draft(api(endpoint), r, assets, tag_commit(tag), notes, registry_matched)
-    require(api(f"repos/{REPO}/git/ref/heads/main")["object"]["sha"] == current,
-            "main advanced before publication")
-    subprocess.run(["gh", "api", "--method", "PATCH", endpoint, "-F", "draft=false"], check=True)
-    published = releases(tag)
-    require(len(published) == 1 and published[0]["id"] == draft["id"]
-            and tag_commit(tag) == r["revision"], "published tag mismatch")
-    verify_release(published[0], r, assets, False)
-    print("RELEASE_PUBLISHED_AND_TAG_VERIFIED", published[0]["html_url"], r["revision"])
-
-
-def main():
-    require(len(sys.argv) == 2 and sys.argv[1] in ("validate", "publish"), "usage: release_source.py validate|publish")
-    r = load_request()
-    assets = prepare(r)
-    if sys.argv[1] == "publish":
-        publish(r, assets)
-
-
-if __name__ == "__main__":
-    main()

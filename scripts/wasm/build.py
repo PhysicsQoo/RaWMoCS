@@ -3,7 +3,6 @@ Read-only admission candidate; never publishes or downloads a previous solver.
 """
 import hashlib, json, os, re, shutil, subprocess, sys, tomllib
 from pathlib import Path
-from replay import command
 ROOT=Path(__file__).resolve().parent
 WORK=Path(sys.argv[1]).resolve()
 E=WORK/"evidence";E.mkdir(parents=True)
@@ -61,21 +60,40 @@ def main():
     shutil.copytree(ROOT,source_dir/"recipe",ignore=shutil.ignore_patterns("__pycache__"))
     shutil.copy2(REPO/"scripts/stage_single_rust_crate.py",source_dir/"recipe/stage_single_rust_crate.py")
     run("vendor",["cargo","vendor","--locked","--offline",str(source_dir/"vendor")],crate,timeout=120)
-    cmd,env=command(source_dir,target,config)
+    # Both builds use exactly the corresponding source and the same vendored
+    # source replacement, never compare registry-cache and vendor paths.
+    executable=sorted(str(p.relative_to(source_dir)) for p in source_dir.rglob("*") if p.is_file() and p.stat().st_mode&0o111)
+    (source_dir/"executable-files.json").write_text(json.dumps(executable,indent=2)+"\n")
+    source_inventory={str(p.relative_to(source_dir)):digest(p) for p in sorted(source_dir.rglob("*")) if p.is_file()}
     builds=[]
     for i in (1,2):
-        if i==1:
-            run("clean-build-1",cmd,crate,env,timeout=360)
-        else:
-            run("clean-build-2",[sys.executable,str(source_dir/"recipe/replay.py"),str(source_dir),str(target)],timeout=360)
-            assert "WASM_OFFLINE_VENDOR_REPLAY_PASS" in (E/"clean-build-2.log").read_text()
-            receipt["offline_vendor_replay"]=True
+        # Exercise the permissions of a ZIP-extracted source on replay.
+        if i==2:
+            for p in source_dir.rglob("*"):
+                if p.is_file():p.chmod(0o644)
+        run(f"clean-build-{i}",[sys.executable,str(source_dir/"recipe/replay.py"),str(source_dir),str(target)],timeout=360)
+        assert "WASM_OFFLINE_VENDOR_REPLAY_PASS" in (E/f"clean-build-{i}.log").read_text()
+        assert {str(p.relative_to(source_dir)):digest(p) for p in sorted(source_dir.rglob("*")) if p.is_file()}==source_inventory
+        receipt["offline_vendor_replay"]=i==2
+        receipt["offline_vendor_builds"]=i
         out=target/TARGET/"release"
         files={name:digest(out/name) for name in ("rawmocs.js","rawmocs.wasm")}
         assert (out/"rawmocs.wasm").read_bytes()[:4]==b"\x00asm"
         builds.append(files);receipt["builds"]=builds;save()
+        print("WASM_BUILD_DIGEST",i,json.dumps(files,sort_keys=True),flush=True)
         if i==1:
             for name in files:shutil.copy2(out/name,A/name)
+        else:
+            differences={}
+            for name in files:
+                if files[name]!=builds[0][name]:
+                    left=(A/name).read_bytes();right=(out/name).read_bytes()
+                    offset=next((j for j,(a,b) in enumerate(zip(left,right)) if a!=b),min(len(left),len(right)))
+                    differences[name]={"first_different_offset":offset,"first_size":len(left),"second_size":len(right)}
+                    hold=E/"reproducibility-hold";hold.mkdir(exist_ok=True)
+                    shutil.copy2(out/name,hold/name)
+            receipt["build_differences"]=differences
+            print("WASM_BUILD_DIFFERENCES",json.dumps(differences,sort_keys=True),flush=True)
         assert {str(p.relative_to(crate)):digest(p) for p in sorted((crate/"src").rglob("*.rs"))}==source_hash
         shutil.rmtree(target)
     receipt["reproducible_same_environment"]=builds[0]==builds[1];save()

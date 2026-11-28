@@ -61,13 +61,15 @@ def candidate(r):
 def verify_receipt(r,p,crate,src,source_map):
     q=json.loads(p["receipt.json"])
     require(q["status"]=="UNIFIED_WASM_CANDIDATE_PASS" and q["revision"]==r["revision"] and q["version"]==r["version"] and q["target"]=="wasm32-unknown-emscripten","WASM receipt identity")
-    require(q["steps"]==dict.fromkeys(STEPS,0) and q["reproducible_same_environment"] is True and q["offline_vendor_replay"] is True,"WASM offline replay or reproducibility missing")
+    require(q["steps"]==dict.fromkeys(STEPS,0) and q["reproducible_same_environment"] is True and q["offline_vendor_replay"] is True and q["offline_vendor_builds"]==2 and q["build_differences"]=={},"WASM offline replay or reproducibility missing")
     binary={k[len("candidate/"):]:v for k,v in p.items() if k.startswith("candidate/")}
     require(set(binary)==BINARY and q["artifacts"]=={n:digest(v) for n,v in binary.items()} and binary["rawmocs.wasm"][:4]==b"\x00asm","WASM binary identity")
     expected={n:q["artifacts"][n] for n in ("rawmocs.js","rawmocs.wasm")}
     require(q["builds"]==[expected,expected] and binary["worker.js"]==src["scripts/wasm/worker.js"],"WASM build/worker mismatch")
     source={k[len("source/"):]:v for k,v in p.items() if k.startswith("source/")}
     require(q["source_sha256"]=={n:digest(v) for n,v in source.items()},"WASM corresponding source digest")
+    executable=json.loads(source["executable-files.json"])
+    require(isinstance(executable,list) and len(executable)==len(set(executable)) and set(executable)<=set(source),"WASM executable source inventory")
     require(json.loads(source["source-map.json"])==json.loads(source_map),"WASM/native source map mismatch")
     staged=archive_files(crate,r["version"])
     for n in ("Cargo.toml","Cargo.lock"):
@@ -97,7 +99,7 @@ def verify_receipt(r,p,crate,src,source_map):
             checksum=json.loads(v);vendored[key]=checksum["package"]
             require(all(digest(source[folder+"/"+path])==sha for path,sha in checksum["files"].items()),"vendor file checksum mismatch")
     require(vendored=={(x["name"],x["version"]):x["checksum"] for x in lock["package"] if "checksum" in x},"incomplete vendor lock inventory")
-    require(b"WASM_BROWSER_WORKER_PASS cases=32 failures=2 stop=1 reentry=1" in p["real-browser.log"] and b"WASM_RESOURCE_SCOPED_PASS" in p["resource-browser.log"] and b"WASM_OFFLINE_VENDOR_REPLAY_PASS" in p["clean-build-2.log"],"missing WASM browser/replay evidence")
+    require(b"WASM_BROWSER_WORKER_PASS cases=32 failures=2 stop=1 reentry=1" in p["real-browser.log"] and b"WASM_RESOURCE_SCOPED_PASS" in p["resource-browser.log"] and all(b"WASM_OFFLINE_VENDOR_REPLAY_PASS" in p[f"clean-build-{i}.log"] for i in (1,2)),"missing WASM browser/replay evidence")
     rows=json.loads(p["browser-results.json"])["rows"]
     expected_cases={(name,d,m) for name in ("signed","sat_zero","unsat","tiny_nonzero") for d in (30,60,100,130) for m in ("auto","general")}
     require(len(rows)==36 and {(x["case"],x["digits"],x["mode"]) for x in rows if "digits" in x}==expected_cases and all(x["result"]["type"]=="count" for x in rows if "digits" in x),"WASM parity matrix")

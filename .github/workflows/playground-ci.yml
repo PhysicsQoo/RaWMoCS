@@ -1,0 +1,48 @@
+name: RaWMoCS standalone Playground
+on:
+  push:
+    branches: [experiment/standalone-playground]
+    paths: ['playground/**', 'scripts/playground/**', '.github/workflows/playground-ci.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: standalone-playground-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Syntax preflight
+        run: |
+          node --check playground/app.js
+          python3 -m py_compile scripts/playground/*.py
+      - name: Fetch exact admitted RaWMoCS artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/playground"
+          gh api repos/PhysicsQoo/RaWMoCS/actions/artifacts/15257956508/zip > "$RUNNER_TEMP/playground/solver.zip"
+          echo '9165b990cc77f7a625c27b66eda4cde6521509caaffabac48ad7a767f24feeef  '"$RUNNER_TEMP/playground/solver.zip" | sha256sum -c -
+      - name: Verify solver and stage static site
+        run: python3 scripts/playground/assemble.py "$RUNNER_TEMP/playground"
+      - name: Install browser test
+        run: |
+          python3 -m pip install playwright==1.65.2
+          python3 -m playwright install --with-deps chromium
+      - name: Standalone exact-count and lifecycle browser smoke
+        run: python3 scripts/playground/smoke.py "$RUNNER_TEMP/playground"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: standalone-playground-evidence
+          path: |
+            ${{ runner.temp }}/playground/site
+            ${{ runner.temp }}/playground/receipt.json
+            ${{ runner.temp }}/playground/smoke.json
+          if-no-files-found: error

@@ -1,0 +1,3 @@
+# Independent RaWMoCS Playground
+
+A static, local-only signed-complex WMC front end for the admitted RaWMoCS solver. Product CI verifies the existing same-repository WASM candidate and exercises analytical counts, SAT-zero/UNSAT, typed failures and stop/re-entry without any external solver, encoder or compiler build. Source/license redistribution review, fresh versioned release artifact, hard in-flight cancellation and memory qualification and Pages publishing remain separate gates. No public deployment in this experiment. Comparator benchmarks belong to explicitly scoped research CI, not this website or its release inputs.

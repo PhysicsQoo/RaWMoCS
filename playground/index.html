@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RaWMoCS Playground</title><link rel="stylesheet" href="style.css"></head>
+<body><main><header><p class="eyebrow">RAWMOCS / WEIGHTED MODEL COUNTING</p><h1>WMC Playground</h1><p>Run signed-complex weighted CNF locally in your browser. No file upload to a remote solver.</p><p id="version">Loading build identity…</p></header>
+<section><h2>Input</h2><label for="cnf">DIMACS weighted CNF</label><textarea id="cnf" spellcheck="false">p cnf 1 1
+c t wmc
+c p weight 1 -0.5 0.25 0
+1 0
+</textarea>
+<label for="file">Import CNF</label><input id="file" type="file" accept=".cnf,.txt">
+<div class="controls"><label>Precision <select id="digits"><option>30</option><option>60</option><option>100</option><option>130</option></select></label>
+<label>Solver mode <select id="mode"><option>auto</option><option>general</option><option>prejoin</option><option>auto-frontier</option><option>auto-separator</option><option>general-separator</option></select></label>
+<label>Timeout (ms) <input id="timeout" type="number" min="1" max="200000" step="1" value="10000"></label></div>
+<div class="controls"><button id="run" disabled>Count</button><button id="stop" disabled>Stop</button><button id="download" disabled>Export report</button></div>
+<p id="state" role="status">Initializing</p></section>
+<section><h2>Result</h2><p>MPFR numerical count, not a certified interval. SAT with zero weighted count is distinct from UNSAT.</p><pre id="result" aria-live="polite"></pre></section>
+<footer>Experimental distribution candidate. Not a published release. <a href="PROVENANCE.json">Build provenance</a></footer>
+</main><script type="module" src="app.js"></script></body></html>

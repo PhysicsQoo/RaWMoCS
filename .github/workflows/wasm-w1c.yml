@@ -37,4 +37,5 @@ jobs:
         with:
           name: rawmocs-wasm-w1c-evidence
           path: ${{ runner.temp }}/w1c/evidence/
+          include-hidden-files: true
           if-no-files-found: error

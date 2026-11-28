@@ -27,8 +27,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p "$RUNNER_TEMP/playground"
-          gh api repos/PhysicsQoo/RaWMoCS/actions/artifacts/15257956508/zip > "$RUNNER_TEMP/playground/solver.zip"
-          echo '9165b990cc77f7a625c27b66eda4cde6521509caaffabac48ad7a767f24feeef  '"$RUNNER_TEMP/playground/solver.zip" | sha256sum -c -
+          gh api repos/PhysicsQoo/RaWMoCS/actions/artifacts/15259949283/zip > "$RUNNER_TEMP/playground/solver.zip"
+          echo '3906df07dbfc46ee89a68270ec90521884beb0d98539c90e4089a8b7d5c7adb4  '"$RUNNER_TEMP/playground/solver.zip" | sha256sum -c -
       - name: Verify solver and stage static site
         run: python3 scripts/playground/assemble.py "$RUNNER_TEMP/playground"
       - name: Install browser test

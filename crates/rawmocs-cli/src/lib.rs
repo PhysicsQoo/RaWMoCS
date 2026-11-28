@@ -1226,6 +1226,65 @@ mod tests {
     use super::*;
 
     #[test]
+    fn source_phase_decimal_input_range() {
+        // A 1024-bit phase bridge emits up to 311 significant digits.
+        let long = format!("-0.{}", "1234567890".repeat(31));
+        let tiny = format!("2.{}e-400", "9876543210".repeat(31));
+        let raw = format!("p cnf 1 1\nc t wmc\nc p weight 1 {long} {tiny} 0\n1 0\n");
+        for bits in [100, 200, 333, 432] {
+            let p = parse_emitted(&raw, bits).unwrap();
+            let q = parse_large(
+                std::io::Cursor::new(&raw),
+                bits,
+                Instant::now() + Duration::from_secs(30),
+            )
+            .unwrap();
+            let expected_re = Float::with_val(bits, Float::parse(long.as_str()).unwrap());
+            let expected_im = Float::with_val(bits, Float::parse(tiny.as_str()).unwrap());
+            assert!(!expected_im.is_zero());
+            for problem in [&p, &q] {
+                assert_eq!(problem.weights[0].positive.re, expected_re);
+                assert_eq!(problem.weights[0].positive.im, expected_im);
+                for mode in ["general", "prejoin", "auto"] {
+                    let (answer, _) = solve(problem, &raw, bits, mode).unwrap();
+                    assert!(answer.sat);
+                    assert_eq!(answer.count.re, expected_re);
+                    assert_eq!(answer.count.im, expected_im);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn source_phase_decimal_input_caps_fail_closed() {
+        let at_cap = format!("0.{}", "1".repeat(510));
+        for value in [at_cap.as_str(), "1e4096", "-1e-4096"] {
+            let q = factor_prejoin::decimal(value).unwrap();
+            assert!(q.numer().significant_bits() <= 16_384);
+            assert!(q.denom().significant_bits() <= 16_384);
+        }
+        let too_long = format!("0.{}", "1".repeat(511));
+        for value in [
+            too_long.as_str(),
+            "1e4097",
+            "1e-4097",
+            "NaN",
+            "1/2",
+            "1e1e2",
+        ] {
+            let raw = format!("p cnf 1 1\nc t wmc\nc p weight 1 {value} 0 0\n1 0\n");
+            assert!(factor_prejoin::decimal(value).is_err());
+            assert!(parse_emitted(&raw, 100).is_err());
+            assert!(parse_large(
+                std::io::Cursor::new(&raw),
+                100,
+                Instant::now() + Duration::from_secs(30)
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
     fn cancellation_checkpoints_preempt_timeout() {
         let token = CancellationToken::new();
         let control = Control {

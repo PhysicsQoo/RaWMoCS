@@ -4,7 +4,10 @@ on:
     branches: [experiment/rust-crate-distribution]
     paths:
       - 'crates/rawmocs-*/**'
-      - 'scripts/rehearse_rust_crates.sh'
+      - 'packaging/rawmocs/**'
+      - 'scripts/stage_single_rust_crate.py'
+      - 'scripts/rehearse_single_rust_crate.sh'
+      - 'scripts/check_rawmocs_registry_name.sh'
       - '.github/workflows/rust-crate-rehearsal.yml'
   workflow_dispatch:
 permissions:
@@ -13,6 +16,20 @@ concurrency:
   group: rust-crate-rehearsal-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  registry-name:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check exact public registry name (no write)
+        run: bash scripts/check_rawmocs_registry_name.sh "$RUNNER_TEMP/name"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rawmocs-registry-name
+          path: ${{ runner.temp }}/name/
   package-consumer:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -23,12 +40,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Build dependencies
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends m4 make gcc libgmp-dev libmpfr-dev
-      - name: Rehearse package distribution from source archives
-        run: bash scripts/rehearse_rust_crates.sh "$GITHUB_WORKSPACE/.r2-evidence"
+      - name: Build and verify single publishable package
+        run: bash scripts/rehearse_single_rust_crate.sh "$RUNNER_TEMP/single"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: rust-crate-distribution-rehearsal
-          path: .r2-evidence/
-          include-hidden-files: true
+          name: rawmocs-single-crate-rehearsal
+          path: ${{ runner.temp }}/single/
           if-no-files-found: warn

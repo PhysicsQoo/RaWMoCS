@@ -3,10 +3,7 @@ name = "rawmocs-cli"
 version = "0.3.0"
 edition = "2021"
 license = "MIT"
-publish = ["crates-io"]
-description = "Native MPFR weighted model counting library and CLI"
-repository = "https://github.com/PhysicsQoo/RaWMoCS"
-include = ["src/**", "tests/**", "examples/**", "LICENSE", "Cargo.toml"]
+publish = false
 
 # Keep the MPFR/GMP executable independent of the portable reference workspace.
 [workspace]
@@ -32,4 +29,4 @@ m2-buffer-reuse = ["m1-last-use-reuse"]
 [dependencies]
 rug = { version = "=1.30.0", default-features = false, features = ["integer", "rational", "float", "std"] }
 num-rational = "0.4"
-rawmocs-core = { path = "../rawmocs-core", version = "=0.1.0" }
+rawmocs-core = { path = "../rawmocs-core" }

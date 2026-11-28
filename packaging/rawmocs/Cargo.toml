@@ -1,0 +1,42 @@
+[package]
+name = "rawmocs"
+version = "0.4.0"
+edition = "2021"
+license = "MIT"
+description = "Native full signed-complex weighted model counting"
+repository = "https://github.com/PhysicsQoo/RaWMoCS"
+publish = ["crates-io"]
+include = ["src/**", "tests/**", "LICENSE", "README.md", "Cargo.toml"]
+
+[workspace]
+
+[lib]
+name = "rawmocs"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rawmocs"
+path = "src/main.rs"
+
+[[test]]
+name = "native_stdio"
+path = "tests/native_stdio.rs"
+harness = false
+
+[features]
+m1-last-use-reuse = []
+m2-buffer-reuse = ["m1-last-use-reuse"]
+cache-cost-profile = []
+cache-admission-research = []
+branching-research = []
+canonical-mul-research = ["dep:num-integer"]
+
+[dependencies]
+rug = { version = "=1.30.0", default-features = false, features = ["integer", "rational", "float", "std"] }
+num-rational = "0.4"
+num-traits = "0.2"
+num-integer = { version = "0.1", optional = true }
+
+[dev-dependencies]
+serde_json = "1"
+num-bigint = "0.4"

@@ -1,1 +1,7 @@
-{"status":"UNCONFIGURED"}
+{
+  "version": "0.5.0",
+  "revision": "9e2d81587a5a07719512d2b1db1881acecdd86b9",
+  "release_id": 461581881,
+  "distribution_zip_sha256": "133c2e25aad450b27d4dfd06f2643cc01c7c404c3889f1bf0549b94df2783be5",
+  "provenance_sha256": "16df9f5b7f1ef533b76a2d9d92b7f135dcec39f30d7f407c226643b1c2867d5c"
+}

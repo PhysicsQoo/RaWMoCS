@@ -25,9 +25,9 @@ on:
   workflow_dispatch:
     inputs:
       registry_mode:
-        description: 'RC bootstrap/OIDC test or stable release (explicit admission required)'
+        description: 'RC OIDC readback or stable OIDC release (explicit admission required)'
         type: choice
-        options: [none, rc-preflight, rc-bootstrap, rc-trusted, bootstrap, trusted]
+        options: [none, rc-preflight, rc-trusted, trusted]
         default: none
 
 permissions:
@@ -68,7 +68,7 @@ jobs:
   registry:
     name: Publish or verify the single rawmocs registry crate
     needs: validate
-    if: github.repository == 'PhysicsQoo/RaWMoCS' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && needs.validate.outputs.version == '0.4.0' && (inputs.registry_mode == 'bootstrap' || inputs.registry_mode == 'trusted')
+    if: github.repository == 'PhysicsQoo/RaWMoCS' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && needs.validate.outputs.version == '0.4.0' && inputs.registry_mode == 'trusted'
     runs-on: ubuntu-24.04
     timeout-minutes: 8
     environment: crates-io
@@ -81,19 +81,13 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Bootstrap only rawmocs with temporary maintainer token
-        if: inputs.registry_mode == 'bootstrap'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: python3 scripts/release_v040.py bootstrap
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.100.1'
       - name: Obtain short-lived OIDC token
-        if: inputs.registry_mode == 'trusted'
         id: auth
         uses: rust-lang/crates-io-auth-action@v1
-      - name: Verify OIDC authentication and published bytes (no republish)
-        if: inputs.registry_mode == 'trusted'
+      - name: Publish admitted stable crate using OIDC or verify identical existing bytes
         env:
           GH_TOKEN: ${{ github.token }}
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
@@ -151,7 +145,7 @@ jobs:
   rc-registry:
     name: RC-only registry bootstrap or OIDC readback
     needs: rc-preflight
-    if: github.repository == 'PhysicsQoo/RaWMoCS' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && (inputs.registry_mode == 'rc-bootstrap' || inputs.registry_mode == 'rc-trusted')
+    if: github.repository == 'PhysicsQoo/RaWMoCS' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.registry_mode == 'rc-trusted'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: crates-io
@@ -175,11 +169,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 scripts/release_rc.py reproduce "$RUNNER_TEMP/rc" "$RUNNER_TEMP/admitted-rc"
-      - name: First upload of rawmocs 0.4.0-rc.1 only
-        if: inputs.registry_mode == 'rc-bootstrap'
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: python3 scripts/release_rc.py bootstrap "$RUNNER_TEMP/rc"
       - name: Obtain short-lived OIDC token
         if: inputs.registry_mode == 'rc-trusted'
         id: rc-auth

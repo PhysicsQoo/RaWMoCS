@@ -2,12 +2,18 @@
 import io,json,os,re,subprocess,sys,tarfile,tempfile,time,tomllib,zipfile
 from pathlib import Path,PurePosixPath
 from urllib.request import Request,urlopen
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from release_source import REPO,api,digest,require,run,verify_assets
 from release_python_source import verify_python_assets
 V="0.4.0"
 BASE="05e650f46d60aed9d4fa5e6147709d12f8c3f6a9"
 CRATE="rawmocs-0.4.0.crate"
+RC_VERSION="0.4.0-rc.1"
+RC_SHA="b61a1361b6a9578b3edc2d08a20cea9195ad403a18628aa9f95af365e7b503f5"
+OIDC_RUN=46118334064
+OIDC_ARTIFACT=15253012190
+OIDC_DIGEST="sha256:88d41f235ea45ce555f3975822cbcff2545eef3ef774497b48dcb176625110e1"
+OIDC_HEAD="4147b13709e6102d2bf554eed108015dc994902e"
 SOURCE="rawmocs-0.4.0-source.tar.gz"
 SDIST="rawmocs-0.4.0.tar.gz"
 NAMES={"registry-name":"rawmocs-registry-name","package-consumer":"rawmocs-single-crate-rehearsal","source-version-admission":"rawmocs-v040-source-admission"}
@@ -109,23 +115,80 @@ def get(url):
     except HTTPError as e:
         if e.code==404:return 404,b""
         raise
+def verify_oidc_receipt(r):
+    # Historical exact successful attempt, not an arbitrary artifact with the same name.
+    endpoint=f"repos/{REPO}/actions/runs/{OIDC_RUN}"
+    d=api(endpoint+"/attempts/2")
+    require(d["id"]==OIDC_RUN and d["run_attempt"]==2 and d["head_sha"]==OIDC_HEAD and d["head_branch"]=="main" and d["event"]=="workflow_dispatch" and d["conclusion"]=="success" and d["repository"]["full_name"]==REPO and d["path"].split("@")[0]==".github/workflows/source-release.yml","OIDC run identity")
+    jobs=api(endpoint+"/attempts/2/jobs?per_page=100")["jobs"]
+    j=[j for j in jobs if j["name"]=="RC-only registry bootstrap or OIDC readback"]
+    require(len(j)==1 and j[0]["conclusion"]=="success","OIDC job")
+    steps={s["name"]:s["conclusion"] for s in j[0]["steps"]}
+    for k in ("Obtain short-lived OIDC token","Verify OIDC token and exact RC registry bytes, no republish","Install the RC from crates.io as independent consumer"):
+        require(steps.get(k)=="success","missing OIDC evidence "+k)
+    require(steps.get("First upload of rawmocs 0.4.0-rc.1 only")=="skipped","unexpected RC upload")
+    ep=f"repos/{REPO}/actions/artifacts/{OIDC_ARTIFACT}"
+    a=api(ep)
+    require(a["id"]==OIDC_ARTIFACT and a["name"]=="rawmocs-rc-registry-receipt" and a["digest"]==OIDC_DIGEST and not a["expired"] and a["workflow_run"]["id"]==OIDC_RUN and a["workflow_run"]["head_sha"]==OIDC_HEAD,"OIDC artifact identity")
+    blob=run("gh","api",ep+"/zip")
+    require("sha256:"+digest(blob)==OIDC_DIGEST,"OIDC ZIP digest")
+    with zipfile.ZipFile(io.BytesIO(blob)) as z:
+        require(z.testzip() is None and len(z.namelist())==len(set(z.namelist())),"OIDC ZIP invalid")
+        receipt=json.loads(z.read("registry.json"))
+        require(receipt["mode"]=="trusted" and receipt["status"]=="RC_REGISTRY_VERIFIED" and receipt["version"]==RC_VERSION and receipt["name"]=="rawmocs" and receipt["source_revision"]==r["revision"] and receipt["base_admission_run"]==r["admission_run"] and receipt["base_crate_sha256"]==r["crate_sha256"] and receipt["rc_sha256"]==RC_SHA and receipt["tested"] is True,"OIDC receipt mismatch")
+        require(digest(z.read("rawmocs-"+RC_VERSION+".crate"))==RC_SHA,"RC archive mismatch")
+        lock=tomllib.loads(z.read("registry-consumer.Cargo.lock").decode())
+        p=[x for x in lock["package"] if x["name"]=="rawmocs"]
+        require(len(p)==1 and p[0]["version"]==RC_VERSION and p[0]["checksum"]==RC_SHA and p[0]["source"].startswith("registry+"),"RC consumer mismatch")
+    print("V040_OIDC_RECEIPT_PASS",flush=True)
+
+def registry_index_state(rows,expected):
+    rc=[x for x in rows if x["vers"]==RC_VERSION]
+    require(len(rc)==1 and rc[0]["cksum"]==RC_SHA and rc[0]["yanked"] is False,"RC identity conflict")
+    vs=[x for x in rows if x["vers"]==V]
+    require(len(rows)==len(rc)+len(vs) and len(vs)<=1,"unexpected registry version")
+    if not vs:return "READY"
+    require(vs[0]["cksum"]==expected and vs[0]["yanked"] is False,"stable version conflict")
+    return "MATCH"
+
 def registry_state(r):
     a,_=get("https://crates.io/api/v1/crates/rawmocs");i,index=get("https://index.crates.io/ra/wm/rawmocs")
-    if a==i==404:return "ABSENT"
-    require(a==i==200,"registry state inconclusive")
-    rows=[json.loads(x) for x in index.splitlines() if x];vs=[x for x in rows if x["vers"]==V]
-    require(len(vs)==1 and vs[0]["cksum"]==r["crate_sha256"] and vs[0]["yanked"] is False,"registry version conflict")
-    code,b=get("https://static.crates.io/crates/rawmocs/"+CRATE)
-    require(code==200 and digest(b)==r["crate_sha256"],"registry download mismatch")
-    return "MATCH"
+    require(a==i==200,"registered RC required")
+    state=registry_index_state([json.loads(x) for x in index.splitlines() if x],r["crate_sha256"])
+    code,b=get("https://static.crates.io/crates/rawmocs/rawmocs-"+RC_VERSION+".crate")
+    require(code==200 and digest(b)==RC_SHA,"registry RC download mismatch")
+    if state=="MATCH":
+        code,b=get("https://static.crates.io/crates/rawmocs/"+CRATE)
+        require(code==200 and digest(b)==r["crate_sha256"],"stable download mismatch")
+    return state
+
+def checked_state(r):
+    for n in range(6):
+        try:return registry_state(r)
+        except (HTTPError,URLError,TimeoutError):
+            if n==5:raise
+            time.sleep(5)
+
+def current_main():
+    current=run("git","rev-parse","HEAD").decode().strip()
+    require(api(f"repos/{REPO}/git/ref/heads/main")["object"]["sha"]==current,"main advanced before registry operation")
+    return current
+
 def registry(mode):
     from release_source import load_request
-    require(mode in ("bootstrap","trusted") and os.environ.get("GITHUB_REF")=="refs/heads/main" and os.environ.get("GITHUB_EVENT_NAME")=="workflow_dispatch","explicit main dispatch only")
+    require(mode=="trusted" and os.environ.get("GITHUB_REF")=="refs/heads/main" and os.environ.get("GITHUB_EVENT_NAME")=="workflow_dispatch","OIDC-only explicit main dispatch")
     r=load_request();require(r["version"]==V,"wrong release")
-    assets=prepare(r);require(os.environ.get("CARGO_REGISTRY_TOKEN"),"registry credential unavailable")
-    if registry_state(r)=="MATCH":
+    current_main()
+    assets=prepare(r);verify_oidc_receipt(r)
+    require(os.environ.get("CARGO_REGISTRY_TOKEN"),"OIDC credential unavailable")
+    require(run("cargo","--version").decode().split()[1]=="1.100.1","wrong Cargo version")
+    # Source base remains exactly the prior admitted release source. Only release
+    # engineering, notes and the request may have changed after that revision.
+    changed=run("git","diff","--name-only",r["revision"],"HEAD").decode().splitlines()
+    allowed={".github/workflows/source-release.yml","scripts/release_v040.py","scripts/test_release_v040.py","scripts/release_rc.py","scripts/test_release_rc.py","releases/rc-bootstrap-base.json","releases/request.json","releases/v0.4.0.md","docs/rc-bootstrap.md"}
+    require(set(changed)<=allowed,"unadmitted changes after source base")
+    if checked_state(r)=="MATCH":
         print("REGISTRY_ALREADY_MATCHES",r["crate_sha256"]);return
-    require(mode=="bootstrap","OIDC cannot bootstrap an absent crate")
     with tempfile.TemporaryDirectory() as tmp:
         p=Path(tmp);checkout=p/"source";stage=p/"stage"
         subprocess.run(["git","worktree","add","--detach",str(checkout),r["revision"]],check=True)
@@ -135,13 +198,14 @@ def registry(mode):
             (stage/"Cargo.lock").write_bytes(files(assets[CRATE],"rawmocs-"+V)["Cargo.lock"])
             subprocess.run(["cargo","package","--locked","--no-verify","--manifest-path",str(stage/"Cargo.toml")],env=env,check=True)
             require((p/"target/package"/CRATE).read_bytes()==assets[CRATE],"repackaged bytes differ; refuse upload")
-            require(registry_state(r)=="ABSENT","registry name no longer available")
+            require(checked_state(r)=="READY","stable version no longer absent")
+            current_main()
             env["CARGO_REGISTRY_TOKEN"]=os.environ["CARGO_REGISTRY_TOKEN"]
             subprocess.run(["cargo","publish","--locked","--no-verify","--registry","crates-io","--manifest-path",str(stage/"Cargo.toml")],env=env,check=True)
             for n in range(20):
                 try:
-                    if registry_state(r)=="MATCH":print("REGISTRY_PUBLICATION_VERIFIED",r["crate_sha256"]);return
-                except (ValueError,HTTPError):pass
+                    if registry_state(r)=="MATCH":print("REGISTRY_PUBLICATION_VERIFIED",r["crate_sha256"],flush=True);return
+                except (ValueError,HTTPError,URLError,TimeoutError):pass
                 if n<19:time.sleep(3)
             raise ValueError("upload may have succeeded; inspect registry before retry")
         finally:subprocess.run(["git","worktree","remove","--force",str(checkout)],check=True)

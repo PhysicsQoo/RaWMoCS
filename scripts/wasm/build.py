@@ -3,6 +3,7 @@ Read-only admission candidate; never publishes or downloads a previous solver.
 """
 import hashlib, json, os, re, shutil, subprocess, sys, tomllib
 from pathlib import Path
+from license_inventory import collect, is_notice
 ROOT=Path(__file__).resolve().parent
 WORK=Path(sys.argv[1]).resolve()
 E=WORK/"evidence";E.mkdir(parents=True)
@@ -60,6 +61,7 @@ def main():
     shutil.copytree(ROOT,source_dir/"recipe",ignore=shutil.ignore_patterns("__pycache__"))
     shutil.copy2(REPO/"scripts/stage_single_rust_crate.py",source_dir/"recipe/stage_single_rust_crate.py")
     run("vendor",["cargo","vendor","--locked","--offline",str(source_dir/"vendor")],crate,timeout=120)
+    collect(source_dir)
     # Both builds use exactly the corresponding source and the same vendored
     # source replacement, never compare registry-cache and vendor paths.
     executable=sorted(str(p.relative_to(source_dir)) for p in source_dir.rglob("*") if p.is_file() and p.stat().st_mode&0o111)
@@ -76,6 +78,9 @@ def main():
         assert {str(p.relative_to(source_dir)):digest(p) for p in sorted(source_dir.rglob("*")) if p.is_file()}==source_inventory
         receipt["offline_vendor_replay"]=i==2
         receipt["offline_vendor_builds"]=i
+        linkmap=target/"rawmocs-link.map"
+        assert linkmap.is_file() and linkmap.stat().st_size>0, "final link map missing"
+        if i==1:shutil.copy2(linkmap,E/"link-map.txt")
         out=target/TARGET/"release"
         files={name:digest(out/name) for name in ("rawmocs.js","rawmocs.wasm")}
         assert (out/"rawmocs.wasm").read_bytes()[:4]==b"\x00asm"
@@ -116,7 +121,8 @@ def main():
     shutil.copy2(resource/"resource-results.json",E/"resource-results.json")
     shutil.move(A/"browser-results.json",E/"browser-results.json")
     (A/"index.html").unlink()
-    licenses=sorted(str(p.relative_to(source_dir)) for p in source_dir.rglob("*") if p.is_file() and p.name.upper().startswith(("LICENSE","COPYING","NOTICE")))
+    shutil.copy2(E/"link-map.txt",source_dir/"toolchain/link-map.txt")
+    licenses=sorted(str(p.relative_to(source_dir)) for p in source_dir.rglob("*") if p.is_file() and is_notice(p.name))
     assert any("gmp-mpfr-sys" in p for p in licenses)
     receipt["license_inventory"]=licenses
     receipt["source_sha256"]={str(p.relative_to(source_dir)):digest(p) for p in sorted(source_dir.rglob("*")) if p.is_file()}

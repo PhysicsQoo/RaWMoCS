@@ -1,3 +1,5 @@
 # RaWMoCS Playground
 
 A local-only DIMACS signed-complex WMC front end. The site assembler requires a pin to an official non-draft stable release ID, Git revision, distribution archive and provenance SHA256. It refuses unconfigured or candidate input and does not read temporary Actions artifacts. After the first same-release WASM distribution passes corresponding-source/license review and is published, update release.json to pin that release, then run the explicit Playground suite in the existing Rust science workflow. The real Chromium gate checks 16 analytical counts and failure/stop/re-entry; Pages deployment remains gated on the resulting exact site and explicit deployment configuration. No GPMC, QuPRS or remote solver dependency.
+
+The existing footer provides the required third-party notice and a link to the exact official release containing corresponding source and rebuild instructions. No separate solver/source download UI is added. The report export remains an output-data feature, not software distribution.

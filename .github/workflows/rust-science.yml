@@ -9,7 +9,7 @@ on:
       suite:
         description: 'fast: bounded checks (default); wasm: explicit full WASM admission; full: manual long scientific evaluation; rationalized: manual v0.2.2 rehearsal; memory modes: manual research'
         type: choice
-        options: [fast, full, wasm, rationalized, memory-attribution, memory-rust-scout, memory-python-scout]
+        options: [fast, full, wasm, rationalized, memory-attribution, memory-rust-scout, memory-python-scout, playground]
         default: fast
         required: true
 
@@ -1007,4 +1007,31 @@ jobs:
           name: rawmocs-wasm-candidate
           path: ${{ runner.temp }}/rawmocs-wasm/evidence/
           include-hidden-files: true
+          if-no-files-found: error
+
+  playground-site:
+    name: Standalone Playground official release smoke
+    if: github.event_name == 'workflow_dispatch' && inputs.suite == 'playground'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Stage pinned official release, never Actions artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/playground/assemble.py "$RUNNER_TEMP/playground"
+      - run: |
+          python3 -m pip install playwright==1.65.2
+          python3 -m playwright install --with-deps chromium
+      - name: Standalone exact-count and lifecycle browser smoke
+        run: python3 scripts/playground/smoke.py "$RUNNER_TEMP/playground"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: standalone-playground-site
+          path: |
+            ${{ runner.temp }}/playground/site
+            ${{ runner.temp }}/playground/receipt.json
+            ${{ runner.temp }}/playground/smoke.json
           if-no-files-found: error

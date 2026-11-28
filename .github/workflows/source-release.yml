@@ -7,6 +7,10 @@ on:
       - 'releases/**'
       - 'scripts/release_source.py'
       - 'scripts/*stable*.py'
+      - 'scripts/wasm_release.py'
+      - 'scripts/test_wasm_release.py'
+      - 'scripts/playground/**'
+      - 'playground/**'
       - 'scripts/test_release_source.py'
       - 'scripts/release_python_source.py'
       - '.github/workflows/source-release.yml'
@@ -15,6 +19,10 @@ on:
       - 'releases/**'
       - 'scripts/release_source.py'
       - 'scripts/*stable*.py'
+      - 'scripts/wasm_release.py'
+      - 'scripts/test_wasm_release.py'
+      - 'scripts/playground/**'
+      - 'playground/**'
       - 'scripts/test_release_source.py'
       - 'scripts/release_python_source.py'
       - '.github/workflows/source-release.yml'
@@ -35,6 +43,21 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  contract:
+    name: Read-only release and Playground contract tests
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: |
+          python3 scripts/test_stable_release.py
+          python3 scripts/test_wasm_release.py
+          python3 scripts/playground/test_assemble.py
+          bash -n scripts/rehearse_stable_source.sh
+          node --check playground/app.js
   stable-validate:
     name: Validate immutable stable package request
     if: github.repository == 'PhysicsQoo/RaWMoCS' && github.ref == 'refs/heads/main' && ((github.event_name == 'workflow_dispatch' && startsWith(inputs.registry_mode, 'stable-')) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-stable]')))
@@ -48,7 +71,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Test stable release rejection controls
-        run: python3 scripts/test_stable_release.py
+        run: |
+          python3 scripts/test_stable_release.py
+          python3 scripts/test_wasm_release.py
       - name: Verify immutable package evidence and registry state
         id: admit
         env:

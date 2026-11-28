@@ -27,9 +27,9 @@ on:
   workflow_dispatch:
     inputs:
       registry_mode:
-        description: 'RC OIDC readback or stable OIDC release (explicit admission required)'
+        description: 'Historical recovery or admitted stable OIDC release (explicit intent required)'
         type: choice
-        options: [none, rc-preflight, rc-trusted, trusted]
+        options: [none, rc-preflight, rc-trusted, trusted, stable-preflight, stable-trusted]
         default: none
 
 permissions:
@@ -43,7 +43,7 @@ concurrency:
 jobs:
   validate:
     name: Validate pinned source release request (read only)
-    if: github.event_name != 'workflow_dispatch' || !startsWith(inputs.registry_mode, 'rc-')
+    if: (github.event_name == 'workflow_dispatch' && (inputs.registry_mode == 'none' || inputs.registry_mode == 'trusted')) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-v040]'))
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -204,3 +204,70 @@ jobs:
           name: rawmocs-rc-registry-receipt
           path: ${{ runner.temp }}/rc/evidence/
           if-no-files-found: warn
+
+  stable-validate:
+    name: Validate immutable stable package request
+    if: github.repository == 'PhysicsQoo/RaWMoCS' && github.ref == 'refs/heads/main' && ((github.event_name == 'workflow_dispatch' && startsWith(inputs.registry_mode, 'stable-')) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-stable]')))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      registry_state: ${{ steps.admit.outputs.registry_state }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Test stable release rejection controls
+        run: python3 scripts/test_stable_release.py
+      - name: Verify immutable package evidence and registry state
+        id: admit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/stable_release.py validate
+
+  stable-registry:
+    name: Publish exact stable crate using OIDC
+    needs: stable-validate
+    if: needs.stable-validate.outputs.registry_state == 'READY' && ((github.event_name == 'workflow_dispatch' && inputs.registry_mode == 'stable-trusted') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-stable]')))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    environment: crates-io
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.100.1'
+      - name: Obtain short-lived OIDC token
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+      - name: Reproduce admitted bytes and publish or verify registry
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: python3 scripts/stable_release.py registry
+
+  stable-publish:
+    name: Publish exact stable GitHub release
+    needs: [stable-validate, stable-registry]
+    if: always() && needs.stable-validate.result == 'success' && ((github.event_name == 'workflow_dispatch' && inputs.registry_mode == 'stable-trusted') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-stable]'))) && (needs.stable-registry.result == 'success' || (needs.stable-registry.result == 'skipped' && needs.stable-validate.outputs.registry_state == 'MATCH'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify registry and publish immutable release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/stable_release.py publish

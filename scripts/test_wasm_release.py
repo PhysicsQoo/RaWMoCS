@@ -1,5 +1,5 @@
 import json,unittest
-from wasm_release import read_zip,zip_bytes,validate_pin,verify_review,verify_distribution
+from wasm_release import read_zip,zip_bytes,validate_pin,verify_review,verify_distribution,verify_receipt
 from release_source import digest
 class Contract(unittest.TestCase):
     def setUp(self):
@@ -27,6 +27,14 @@ class Contract(unittest.TestCase):
             with self.assertRaises(ValueError):verify_distribution(m,bad)
         with self.assertRaises(ValueError):verify_distribution(m,files|{"REBUILD.md":b"wrong"})
         with self.assertRaises(ValueError):verify_distribution(m|{"version":"0.5.1"},files)
+    def test_routine_receipt_never_admitted(self):
+        q={"status":"WASM_ROUTINE_BROWSER_PASS","revision":self.r["revision"],"version":self.r["version"],"target":"wasm32-unknown-emscripten","offline_vendor_builds":1}
+        with self.assertRaisesRegex(ValueError,"WASM receipt identity"):
+            verify_receipt(self.r,{"receipt.json":json.dumps(q).encode()},b"",{},b"")
+        q["status"]="UNIFIED_WASM_CANDIDATE_PASS"
+        q.update(steps={},reproducible_same_environment=False,offline_vendor_replay=False,build_differences={})
+        with self.assertRaisesRegex(ValueError,"WASM offline replay or reproducibility missing"):
+            verify_receipt(self.r,{"receipt.json":json.dumps(q).encode()},b"",{},b"")
     def test_review_exact(self):
         review={"status":"APPROVED_FOR_REDISTRIBUTION","version":"0.5.0","revision":"a"*40,"candidate_digest":self.r["wasm"]["digest"],"review_reference":"test fixture","scope":"binary-corresponding-source-licenses"}
         raw=json.dumps(review).encode();self.r["wasm"]["review_sha256"]=digest(raw)

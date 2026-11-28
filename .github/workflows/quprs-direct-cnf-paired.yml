@@ -1,21 +1,6 @@
 name: QuPRS direct-CNF paired Rust research
 
 on:
-  pull_request:
-    paths:
-      - benchmarks/rust_core/benches/quprs_direct_cnf.rs
-      - benchmarks/rust_core/Cargo.toml
-      - .github/workflows/quprs-direct-cnf-paired.yml
-      - docs/qoo-227-gpmc-codspeed-paired.md
-      - benchmarks/rust_core/tools/quprs_paired_native.py
-      - benchmarks/rust_core/examples/quprs_native_cli.rs
-  push:
-    branches: [main]
-    paths:
-      - benchmarks/rust_core/benches/quprs_direct_cnf.rs
-      - benchmarks/rust_core/Cargo.toml
-      - .github/workflows/quprs-direct-cnf-paired.yml
-      - docs/qoo-227-gpmc-codspeed-paired.md
   workflow_dispatch:
 
 permissions:

@@ -64,18 +64,29 @@ class ManualLongCI(unittest.TestCase):
             if filename == "rust-science.yml":
                 self.assertIn("default: fast", source)
 
-    def test_combined_codspeed_auto(self):
+    def test_standalone_codspeed_auto_comparison_manual(self):
         source = (self.root / "codspeed.yml").read_text()
-        self.assertNotIn("inputs.suite", source)
-        self.assertIn("  pull_request:", source)
-        self.assertIn("  push:", source)
-        self.assertIn("  workflow_dispatch:", source)
-        self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", source)
-        self.assertEqual(source.count("uses: CodSpeedHQ/action@v5"), 1)
-        self.assertIn("entrypoint:", source)
-        self.assertIn("cargo codspeed run --bench solver --bench quprs_direct_cnf", source)
-        self.assertIn("Verify simulated output, precision and plan signature", source)
+        own, research = source.split("\n  codspeed:\n", 1)
+        self.assertIn("  pull_request:", own)
+        self.assertIn("  push:", own)
+        self.assertIn("  workflow_dispatch:", own)
+        self.assertIn("default: standalone", own)
+        self.assertIn("github.event_name != 'workflow_dispatch' || inputs.suite == 'standalone'", own)
+        self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", own)
+        self.assertIn("cargo codspeed run --bench solver", own)
+        self.assertNotIn("quprs_direct_cnf", own)
+        self.assertNotIn("repository: PhysicsQoo/", own)
+        self.assertIn("github.event_name == 'workflow_dispatch' && inputs.suite == 'comparison'", research)
+        self.assertIn("cargo codspeed run --bench solver --bench quprs_direct_cnf", research)
+        self.assertIn("Verify simulated output, precision and plan signature", research)
+        self.assertEqual(own.count("uses: CodSpeedHQ/action@v5"), 1)
+        self.assertEqual(research.count("uses: CodSpeedHQ/action@v5"), 1)
         self.assertNotIn("continue-on-error: true", source)
+
+    def test_direct_cnf_comparison_dispatch_only(self):
+        source = (self.root / "quprs-direct-cnf-paired.yml").read_text()
+        triggers = source.split("on:\n", 1)[1].split("\npermissions:", 1)[0]
+        self.assertEqual(triggers.strip(), "workflow_dispatch:")
 
     def test_manual_separate_concurrency(self):
         for filename, suffix in (("rust-science.yml", "inputs.suite || 'routine'"),

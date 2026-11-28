@@ -14,6 +14,11 @@ const WORK: usize = 40_000_000;
 const LIVE: usize = 2_000_000;
 const LOCAL_WORK: usize = 1_000_000;
 const EXACT_BITS: u32 = 16_384;
+// Match the existing source-phase bridge's 512-byte output buffer. Keep
+// exponent and token allocation bounded: even 512 + 4096 decimal digits
+// require fewer than EXACT_BITS binary bits before rational reduction.
+const DECIMAL_TOKEN_MAX: usize = 512;
+const DECIMAL_EXPONENT_MAX: i32 = 4096;
 type Scope = BTreeSet<usize>;
 type R = (Rational, Rational);
 type Cell<T> = Option<T>;
@@ -33,7 +38,7 @@ fn deadline(d: Control<'_>) -> Result<(), String> {
     d.check("prejoin deadline")
 }
 pub(crate) fn decimal(s: &str) -> Result<Rational, String> {
-    if s.len() > 128 {
+    if s.len() > DECIMAL_TOKEN_MAX {
         return Err("exact decimal length".into());
     }
     let mut p = s.split(['e', 'E']);
@@ -42,7 +47,7 @@ pub(crate) fn decimal(s: &str) -> Result<Rational, String> {
         .next()
         .map_or(Ok(0), str::parse::<i32>)
         .map_err(|_| "decimal exponent")?;
-    if p.next().is_some() || !(-256..=256).contains(&e) {
+    if p.next().is_some() || !(-DECIMAL_EXPONENT_MAX..=DECIMAL_EXPONENT_MAX).contains(&e) {
         return Err("decimal exponent".into());
     }
     let neg = a.starts_with('-');

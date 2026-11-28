@@ -28,6 +28,13 @@ on:
       - "crates/rawmocs-python/**"
       - "python/**"
   workflow_dispatch:
+    inputs:
+      suite:
+        description: 'standalone: ordinary RaWMoCS only; comparison: external paired research'
+        type: choice
+        options: [standalone, comparison]
+        default: standalone
+        required: true
 
 permissions:
   contents: read
@@ -56,13 +63,55 @@ jobs:
       - run: cargo test --locked --manifest-path benchmarks/rust_core/Cargo.toml
       - run: cargo bench --locked --manifest-path benchmarks/rust_core/Cargo.toml --bench solver --no-run
 
+  codspeed-own:
+    name: RaWMoCS standalone Simulation
+    needs: bench-smoke
+    if: >-
+      vars.RAWMOCS_CODSPEED_ENABLED == 'true' &&
+      (github.event_name != 'workflow_dispatch' || inputs.suite == 'standalone') &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/rust_core -> target
+      - run: cargo install cargo-codspeed --version 6.0.0 --locked
+      - name: Build independent solver benchmarks
+        working-directory: benchmarks/rust_core
+        run: cargo codspeed build -m simulation --locked --bench solver
+      - name: Confirm benchmark lockfile unchanged
+        run: git diff --exit-code -- benchmarks/rust_core/Cargo.lock
+      - name: Prepare standalone Simulation configuration
+        run: |
+          cat > codspeed-standalone.generated.yml <<'EOF'
+          options:
+            max-time: "5s"
+          benchmarks:
+            - entrypoint: "cd benchmarks/rust_core && cargo codspeed run --bench solver"
+          EOF
+      - name: Run standalone Simulation
+        uses: CodSpeedHQ/action@v5
+        timeout-minutes: 5
+        with:
+          mode: simulation
+          runner-version: '5.8.0'
+          config: codspeed-standalone.generated.yml
+
   codspeed:
     name: CodSpeed combined 68 identities and original QPE8 Simulation
     needs: bench-smoke
     if: >-
       vars.RAWMOCS_CODSPEED_ENABLED == 'true' &&
-      (github.event_name != 'pull_request' ||
-       github.event.pull_request.head.repo.full_name == github.repository)
+      github.event_name == 'workflow_dispatch' && inputs.suite == 'comparison'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:

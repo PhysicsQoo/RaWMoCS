@@ -63,6 +63,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 scripts/release_source.py validate
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,"scripts")
+          from release_source import load_request
+          from release_v040 import verify_oidc_receipt, checked_state
+          r=load_request()
+          if r["version"]=="0.4.0":
+              verify_oidc_receipt(r)
+              print("V040_REGISTRY_PREFLIGHT",checked_state(r))
+          PY
           python3 -c 'import json; print("version="+json.load(open("releases/request.json"))["version"])' >> "$GITHUB_OUTPUT"
 
   registry:

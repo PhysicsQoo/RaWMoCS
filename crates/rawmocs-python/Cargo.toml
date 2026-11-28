@@ -1,6 +1,6 @@
 [package]
 name = "rawmocs-python"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2021"
 license = "MIT"
 publish = false
@@ -18,4 +18,4 @@ m2-buffer-reuse = ["m1-last-use-reuse", "rawmocs_mpfr/m2-buffer-reuse"]
 
 [dependencies]
 pyo3 = { version = "=0.23.5", features = ["extension-module"] }
-rawmocs_mpfr = { package = "rawmocs-cli", path = "../rawmocs-cli", version = "=0.4.1" }
+rawmocs_mpfr = { package = "rawmocs-cli", path = "../rawmocs-cli", version = "=0.5.0" }

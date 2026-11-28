@@ -1,0 +1,3 @@
+# W1b browser candidate
+
+Reuses W1a exact released crate, force-cross and native generator compiler. No solver source mutation. Two clean target builds in identical environment, compare JS/WASM digests. Browser candidate is a disposable Worker that invokes the exact released CLI, not a new solver. Real headless Chromium checks 24 exact dyadic oracle cases, SAT-zero vs UNSAT, four precisions, two modes, invalid and timeout, termination before solve and fresh worker after stop. The latter does not prove in-flight cancellation; OOM, real browser hard stop during a solve, source-phase bridge, cross-browser coverage and release/source/license package admission remain separate. No publication or main changes. No benchmark expansion.

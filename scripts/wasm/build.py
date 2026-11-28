@@ -3,6 +3,7 @@ Read-only admission candidate; never publishes or downloads a previous solver.
 """
 import hashlib, json, os, re, shutil, subprocess, sys, tomllib
 from pathlib import Path
+from replay import command
 ROOT=Path(__file__).resolve().parent
 WORK=Path(sys.argv[1]).resolve()
 E=WORK/"evidence";E.mkdir(parents=True)
@@ -24,7 +25,8 @@ def run(name,cmd,cwd=None,env=None,timeout=60):
 def main():
     for name,cmd in [("rustc",["rustc","-vV"]),("emcc",["emcc","--version"]),("node",["node","--version"])]:
         run(name,cmd)
-    crate=WORK/"rawmocs"
+    source_dir=E/"source";source_dir.mkdir()
+    crate=source_dir/"rawmocs"
     run("stage",[sys.executable,str(REPO/"scripts/stage_single_rust_crate.py"),str(REPO),str(crate)])
     shutil.copy2(E/"stage.log",E/"source-map.json")
     source=json.loads((E/"source-map.json").read_text())
@@ -51,15 +53,23 @@ def main():
     shutil.copy2(manifest,E/"build.Cargo.toml");shutil.copy2(lock,E/"build.Cargo.lock")
     run("locked-fetch",["cargo","fetch","--locked"],crate,timeout=90)
     target=WORK/"target"
-    env=dict(os.environ,CC="emcc",CXX="em++",AR="emar",RANLIB="emranlib",CC_FOR_BUILD="gcc",CFLAGS_FOR_BUILD="-O2",
-      CC_wasm32_unknown_emscripten="emcc",AR_wasm32_unknown_emscripten="emar",CARGO_TARGET_WASM32_UNKNOWN_EMSCRIPTEN_LINKER="emcc",
-      GMP_MPFR_SYS_CACHE="_",CARGO_TARGET_DIR=str(target),SOURCE_DATE_EPOCH=subprocess.check_output(["git","-C",str(REPO),"show","-s","--format=%ct",receipt["revision"]],text=True).strip())
     flags=["-sMODULARIZE=1","-sEXPORT_NAME=createRawmocs","-sENVIRONMENT=worker","-sEXPORTED_RUNTIME_METHODS=FS,callMain","-sEXIT_RUNTIME=1","-sALLOW_MEMORY_GROWTH=1","-sMAXIMUM_MEMORY=536870912","-sSTACK_SIZE=16777216","-sINITIAL_MEMORY=33554432","-sSTACK_OVERFLOW_CHECK=2"]
-    cmd=["cargo","rustc","--offline","--locked","--release","--target",TARGET,"--bin","rawmocs","-j","2","--"]
-    for flag in flags:cmd+=["-C","link-arg="+flag]
+    config={"target":TARGET,"link_flags":flags,"source_date_epoch":subprocess.check_output(["git","-C",str(REPO),"show","-s","--format=%ct",receipt["revision"]],text=True).strip()}
+    (source_dir/"build-config.json").write_text(json.dumps(config,indent=2)+"\n")
+    for name in ("source.Cargo.toml","source.Cargo.lock","build.Cargo.toml","build.Cargo.lock","source-map.json"):
+        shutil.copy2(E/name,source_dir/name)
+    shutil.copytree(ROOT,source_dir/"recipe",ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copy2(REPO/"scripts/stage_single_rust_crate.py",source_dir/"recipe/stage_single_rust_crate.py")
+    run("vendor",["cargo","vendor","--locked","--offline",str(source_dir/"vendor")],crate,timeout=120)
+    cmd,env=command(source_dir,target,config)
     builds=[]
     for i in (1,2):
-        run(f"clean-build-{i}",cmd,crate,env,timeout=360)
+        if i==1:
+            run("clean-build-1",cmd,crate,env,timeout=360)
+        else:
+            run("clean-build-2",[sys.executable,str(source_dir/"recipe/replay.py"),str(source_dir),str(target)],timeout=360)
+            assert "WASM_OFFLINE_VENDOR_REPLAY_PASS" in (E/"clean-build-2.log").read_text()
+            receipt["offline_vendor_replay"]=True
         out=target/TARGET/"release"
         files={name:digest(out/name) for name in ("rawmocs.js","rawmocs.wasm")}
         assert (out/"rawmocs.wasm").read_bytes()[:4]==b"\x00asm"
@@ -72,7 +82,7 @@ def main():
     shutil.copy2(ROOT/"worker.js",A/"worker.js")
     (A/"index.html").write_text("<!doctype html><title>RaWMoCS worker gate</title>")
     receipt["source_hashes"]=source_hash
-    receipt["artifacts"]={p.name:digest(p) for p in sorted(A.iterdir())}
+    receipt["artifacts"]={n:digest(A/n) for n in ("rawmocs.js","rawmocs.wasm","worker.js")}
     receipt["link_flags"]=flags
     run("real-browser",[sys.executable,str(ROOT/"browser_test.py"),str(A),str(native)],timeout=180)
     assert "WASM_BROWSER_WORKER_PASS" in (E/"real-browser.log").read_text()
@@ -86,14 +96,8 @@ def main():
     run("resource-browser",[sys.executable,str(ROOT/"resources.py"),str(resource)],timeout=90)
     assert "WASM_RESOURCE_SCOPED_PASS" in (E/"resource-browser.log").read_text()
     shutil.copy2(resource/"resource-results.json",E/"resource-results.json")
-    # Corresponding source candidate, including the precise target overlay.
-    source_dir=E/"source"; source_dir.mkdir()
-    shutil.copytree(crate,source_dir/"rawmocs")
-    for name in ("source.Cargo.toml","source.Cargo.lock","build.Cargo.toml","build.Cargo.lock","source-map.json"):
-        shutil.copy2(E/name,source_dir/name)
-    shutil.copytree(ROOT,source_dir/"recipe",ignore=shutil.ignore_patterns("__pycache__"))
-    shutil.copy2(REPO/"scripts/stage_single_rust_crate.py",source_dir/"recipe/stage_single_rust_crate.py")
-    run("vendor",["cargo","vendor","--locked",str(source_dir/"vendor")],crate,timeout=120)
+    shutil.move(A/"browser-results.json",E/"browser-results.json")
+    (A/"index.html").unlink()
     licenses=sorted(str(p.relative_to(source_dir)) for p in source_dir.rglob("*") if p.is_file() and p.name.upper().startswith(("LICENSE","COPYING","NOTICE")))
     assert any("gmp-mpfr-sys" in p for p in licenses)
     receipt["license_inventory"]=licenses

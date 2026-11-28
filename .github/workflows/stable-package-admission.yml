@@ -7,6 +7,7 @@ on:
       - 'packaging/rawmocs/**'
       - 'pyproject.toml'
       - 'scripts/*stable*'
+      - 'scripts/wasm_release.py'
       - 'scripts/release_source.py'
       - 'scripts/release_python_source.py'
       - 'scripts/stage_single_rust_crate.py'
@@ -19,6 +20,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   crate:
+    name: rawmocs-stable-crate-admission
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     steps:
@@ -45,6 +47,7 @@ jobs:
           path: ${{ runner.temp }}/stable-crate/
           if-no-files-found: warn
   source:
+    name: rawmocs-stable-source-admission
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     steps:

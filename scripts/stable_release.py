@@ -6,6 +6,7 @@ from release_source import REPO,api,digest,require,run,verify_assets,verify_rele
 from release_python_source import verify_python_assets, archive_files
 from urllib.request import Request, urlopen
 from stable_crate_assets import verify_crate
+from wasm_release import validate_pin, candidate as wasm_candidate, release_assets as wasm_assets
 
 REQUEST=Path("releases/stable-request.json")
 BASE_VERSION="0.4.0"
@@ -14,7 +15,9 @@ NAMES={"crate":"rawmocs-stable-crate-admission","source":"rawmocs-stable-source-
 STEPS={"crate":{"Verify version and source scope","Stage and verify exact single stable crate"},
        "source":{"Verify stable CLI and Python extracted sources"}}
 def validate_request(r):
-    require(set(r)=={"version","revision","admission_run","artifacts","notes"},"request fields")
+    fields={"version","revision","admission_run","artifacts","notes"}
+    require(set(r) in (fields,fields|{"wasm"}),"request fields")
+    if "wasm" in r:validate_pin(r["wasm"])
     v=r["version"]
     require(re.fullmatch(r"\d+\.\d+\.\d+",v) and tuple(map(int,v.split(".")))>(0,4,0),"stable version after bootstrap required")
     require(re.fullmatch(r"[0-9a-f]{40}",r["revision"]) is not None,"full source revision")
@@ -64,7 +67,9 @@ def prepare(r):
     h=head()
     subprocess.run(["git","merge-base","--is-ancestor",r["revision"],h],check=True)
     changed=run("git","diff","--name-only","--no-renames",r["revision"],h).decode().splitlines()
-    require(set(changed)<={str(REQUEST)},"unadmitted changes since package admission")
+    allowed={str(REQUEST)}
+    if "wasm" in r:allowed.add(f"releases/v{r['version']}-wasm-review.json")
+    require(set(changed)<=allowed,"unadmitted changes since package admission")
     require(not workflow_changes(r["revision"],h),"workflow changed since package admission")
     ep=f"repos/{REPO}/actions/runs/{r['admission_run']}"
     d=api(ep);verify_run(r,d,api(f"{ep}/attempts/{d['run_attempt']}/jobs?per_page=100"))
@@ -91,6 +96,12 @@ def prepare(r):
     verify_crate(r,p,src)
     require(b"STABLE_PUBLISHER" not in s["status.txt"],"unexpected status")
     assets[crate]=p[crate];assets["crate-SHA256SUMS"]=(r["crate_sha256"]+"  "+crate+"\n").encode();assets["crate-source-map.json"]=p["source-map.json"]
+    require(("scripts/wasm/build.py" in src)==("wasm" in r),"WASM-bearing source requires same-release admission")
+    if "wasm" in r:
+        review=Path(f"releases/v{v}-wasm-review.json")
+        require(review.is_file() and not review.is_symlink(),"WASM redistribution review missing")
+        assets.update(wasm_assets(r,wasm_candidate(r),p[crate],src,p["source-map.json"],review.read_bytes()))
+        print("STABLE_WASM_ASSET_ADMISSION_PASS",r["revision"],flush=True)
     print("STABLE_PACKAGE_ADMISSION_PASS",r["revision"],r["crate_sha256"],flush=True)
     return assets
 def index_state(rows,v,sha):

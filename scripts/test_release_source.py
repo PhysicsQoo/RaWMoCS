@@ -271,6 +271,23 @@ class ReleaseTargetTests(unittest.TestCase):
 
 
 class ReleaseDraftTests(unittest.TestCase):
+    def test_exact_recovery_draft_may_record_default_branch_but_not_retarget(self):
+        from release_source import V040_RECOVERY_REVISION, V040_RECOVERY_CRATE
+        r = {"version": "0.4.0", "revision": V040_RECOVERY_REVISION,
+             "crate_sha256": V040_RECOVERY_CRATE}
+        assets = {"fixture": b"admitted"}; notes = "Recovery"
+        draft = {"id": 1, "tag_name": "v0.4.0", "draft": True, "prerelease": False,
+                 "target_commitish": "main", "name": "RaWMoCS v0.4.0",
+                 "body": notes, "author": {"login": "github-actions[bot]"},
+                 "assets": [{"name": "fixture", "digest": "sha256:" + digest(assets["fixture"]),
+                             "state": "uploaded"}]}
+        verify_draft(draft, r, assets, r["revision"], notes, True)
+        for actual, matched in ((None, True), ("b" * 40, True), (r["revision"], False)):
+            with self.assertRaises(ValueError):
+                verify_draft(draft, r, assets, actual, notes, matched)
+        with self.assertRaises(ValueError):
+            verify_draft(dict(draft, target_commitish="other"), r, assets, r["revision"], notes, True)
+
     def test_exact_ci_draft_resume_and_wrong_identity_rejected(self):
         request, assets = source_fixture("0.1.1")
         notes = "# Release notes"

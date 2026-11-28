@@ -585,9 +585,12 @@ def verify_release(release, r, assets, draft):
             and all(a["state"] == "uploaded" for a in release["assets"]), "release asset digest mismatch")
 
 
-def verify_draft(draft, r, assets, actual, notes):
+def verify_draft(draft, r, assets, actual, notes, registry_matched=False):
     verify_release(draft, r, assets, True)
-    require(draft["target_commitish"] == r["revision"], "draft target mismatch")
+    target_matches = draft["target_commitish"] == r["revision"]
+    if not target_matches and draft["target_commitish"] == "main" and actual is not None:
+        target_matches = verify_new_release_target(r, actual, [], registry_matched)
+    require(target_matches, "draft target mismatch")
     require(draft["name"] == "RaWMoCS v" + r["version"], "draft title mismatch")
     require((draft.get("body") or "").strip() == notes.strip(), "draft notes mismatch")
     require(draft.get("author", {}).get("login") == "github-actions[bot]",
@@ -620,7 +623,7 @@ def publish(r, assets):
         # Resume only the exact CI-created draft with every asset already
         # uploaded. Never overwrite, delete, or repair an unmatched draft.
         draft = existing[0]
-        verify_draft(draft, r, assets, actual, notes)
+        verify_draft(draft, r, assets, actual, notes, registry_matched)
         print("RELEASE_VERIFIED_DRAFT_RESUME", draft["id"], r["revision"], flush=True)
     else:
         recovery = verify_new_release_target(r, actual, workflow_changes(r["revision"]), registry_matched)
@@ -638,8 +641,8 @@ def publish(r, assets):
                     "main advanced before draft creation")
             require(tag_commit(tag) == actual and not releases(tag), "release state changed before draft creation")
             subprocess.run(["gh", "release", "create", tag, *paths, "-R", REPO, "--draft",
-                            "--target", r["revision"], "--title", f"RaWMoCS {tag}",
-                            "--notes-file", r["notes"], *(["--verify-tag"] if recovery else [])], check=True)
+                            "--title", f"RaWMoCS {tag}", "--notes-file", r["notes"],
+                            *(["--verify-tag"] if recovery else ["--target", r["revision"]])], check=True)
         # The list API may not expose a newly created draft immediately.
         # Retry reads only, with a bounded delay; never repeat creation.
         drafts = []
@@ -651,11 +654,11 @@ def publish(r, assets):
                 time.sleep(1)
         require(len(drafts) == 1, "draft missing or duplicate; inspect manually")
         draft = drafts[0]
-        verify_draft(draft, r, assets, tag_commit(tag), notes)
+        verify_draft(draft, r, assets, tag_commit(tag), notes, registry_matched)
     # Read the exact ID again immediately before promotion; no mutation
     # occurs unless all source, asset, notes and tag checks still agree.
     endpoint = f"repos/{REPO}/releases/{draft['id']}"
-    verify_draft(api(endpoint), r, assets, tag_commit(tag), notes)
+    verify_draft(api(endpoint), r, assets, tag_commit(tag), notes, registry_matched)
     require(api(f"repos/{REPO}/git/ref/heads/main")["object"]["sha"] == current,
             "main advanced before publication")
     subprocess.run(["gh", "api", "--method", "PATCH", endpoint, "-F", "draft=false"], check=True)

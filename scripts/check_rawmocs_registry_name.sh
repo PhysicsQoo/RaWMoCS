@@ -7,7 +7,7 @@ date -u +%FT%TZ > "$out/checked-at.txt"
 for item in api index; do
   if [ "$item" = api ]; then url=https://crates.io/api/v1/crates/rawmocs; else url=https://index.crates.io/ra/wm/rawmocs; fi
   rc=0
-  status="$(curl -sS -L --max-time 20 --retry 1 -A 'RaWMoCS registry name check (https://github.com/PhysicsQoo/RaWMoCS)' -o "$out/$item.body" -w '%{http_code}' "$url")" || rc=$?
+  status="$(curl -sS -L --max-time 20 --retry 3 --retry-max-time 65 -A 'RaWMoCS registry name check (https://github.com/PhysicsQoo/RaWMoCS)' -o "$out/$item.body" -w '%{http_code}' "$url")" || rc=$?
   printf '%s\n' "$status" > "$out/$item.http"
   printf '%s\n' "$rc" > "$out/$item.exit"
 done

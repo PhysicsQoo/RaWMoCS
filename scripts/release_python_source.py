@@ -96,8 +96,8 @@ def verify_python_assets(r, assets):
     require(len(rows) == len(files) and {x["path"]: x["sha256"] for x in rows}
             == {name: digest(data) for name, data in files.items()}, "source inventory mismatch")
     deps = inv["dependency_license_inventory"]
-    for name, version in (("rug", "1.30.0"), ("gmp-mpfr-sys", "1.7.1")):
-        require(any(x["name"] == name and x["version"] == version and x["license"] for x in deps),
+    for name, dependency_version in (("rug", "1.30.0"), ("gmp-mpfr-sys", "1.7.1")):
+        require(any(x["name"] == name and x["version"] == dependency_version and x["license"] for x in deps),
                 "missing native license inventory")
     for name in ("package-candidate.json", "rebuilt-package-candidate.json"):
         report = json.loads(assets[name])

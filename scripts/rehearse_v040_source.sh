@@ -40,4 +40,5 @@ PY
 ) 2>&1 | tee "$out/clean-source-contract.log"
 python scripts/python_package_candidate.py --wheel "$tmp/rebuilt-wheels/"*.whl --platform linux_x86_64 --out "$out/rebuilt-package-candidate.json"
 (cd "$out"; sha256sum rawmocs-0.4.0.tar.gz cli-source/rawmocs-0.4.0-source.tar.gz > SHA256SUMS)
+python3 scripts/replay_v040_assets.py source "$out"
 echo V040_SOURCE_VERSION_ADMISSION_PASS | tee "$out/status.txt"

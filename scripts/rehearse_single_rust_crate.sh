@@ -12,7 +12,7 @@ version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["vers
 rustc -Vv > "$out/rustc.txt"
 cargo -V > "$out/cargo.txt"
 export CARGO_TARGET_DIR="$tmp/target"
-cargo generate-lockfile --manifest-path "$stage/Cargo.toml"
+cp "$root/packaging/rawmocs/Cargo.lock" "$stage/Cargo.lock"
 cp "$stage/Cargo.lock" "$out/Cargo.lock"
 cargo package --locked --manifest-path "$stage/Cargo.toml" 2>&1 | tee "$out/package.log"
 cp "$CARGO_TARGET_DIR/package/rawmocs-$version.crate" "$out/"
@@ -60,4 +60,10 @@ grep -Fx EXTRACTED_RUST_CONSUMER_PASS "$out/consumer.log"
 cargo run --locked --release --manifest-path "$pkg/Cargo.toml" --bin rawmocs -- --version 2>&1 | tee "$out/cli-version.log"
 grep -Fx "rawmocs $version" "$out/cli-version.log"
 (cd "$out"; sha256sum ./*.crate > SHA256SUMS)
-echo SINGLE_RAWMOCS_CRATE_PASS | tee "$out/status.txt"
+echo SINGLE_RAWMOCS_CRATE_PASS > "$out/status.txt"
+# Verify the exact release-side crate parser against the canonical checkout.
+if ! python3 "$root/scripts/replay_v040_assets.py" crate "$out"; then
+  rm -f "$out/status.txt"
+  exit 1
+fi
+cat "$out/status.txt"

@@ -66,6 +66,8 @@ def verify_crate(r,pkg,src):
     for field in ("dependencies","dev-dependencies","build-dependencies"):
         for n,d in m.get(field,{}).items():
             require(n not in ("rawmocs-core","rawmocs-cli","rawmocs-python") and (not isinstance(d,dict) or not ({"path","git"}&d.keys())),"non-registry dependency")
+    if "packaging/rawmocs/Cargo.lock" in src:
+        require(f["Cargo.lock"]==src["packaging/rawmocs/Cargo.lock"],"committed crate lock mismatch")
     receipt=json.loads(pkg["source-map.json"])
     require(receipt["revision"]==r["revision"] and receipt["version"]==V and len(receipt["sources"])==10,"source map identity")
     for dst,path in mapping.items():
@@ -91,6 +93,10 @@ def prepare(r):
     verify_assets(r,base);src=files(base[SOURCE],"rawmocs-"+V)
     assets=base|{k:s[k] for k in (SDIST,"source-inventory.json","package-candidate.json","rebuilt-package-candidate.json")}
     verify_python_assets(r,assets);verify_crate(r,p,src)
+    # Verify every canonical source and lock, not only the mapped source digests.
+    for k in src:
+        if any(k.startswith(d+"/") for d in DIRS) or k.startswith("crates/rawmocs-cli/tests/") or k in ("LICENSE","packaging/rawmocs/README.md","packaging/rawmocs/Cargo.lock"):
+            require(src[k]==run("git","show",r["revision"]+":"+k),"immutable canonical source mismatch "+k)
     for k in ("crates/rawmocs-core/Cargo.toml","crates/rawmocs-cli/Cargo.toml","crates/rawmocs-python/Cargo.toml","crates/rawmocs-cli/Cargo.lock","crates/rawmocs-python/Cargo.lock","pyproject.toml","packaging/rawmocs/Cargo.toml"):
         require(src[k]==run("git","show",r["revision"]+":"+k),"immutable source mismatch")
         if k.startswith("crates/") and k.endswith(".toml"):require(tomllib.loads(src[k].decode())["package"]["publish"] is False,"internal crate enabled")

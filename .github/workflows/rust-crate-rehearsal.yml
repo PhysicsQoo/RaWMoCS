@@ -11,6 +11,8 @@ on:
       - 'scripts/release_v040.py'
       - 'scripts/test_release_v040.py'
       - 'scripts/release_python_source.py'
+      - 'scripts/replay_v040_assets.py'
+      - 'scripts/test_release_python_source.py'
       - 'scripts/release_source.py'
       - '.github/workflows/source-release.yml'
       - 'scripts/stage_single_rust_crate.py'
@@ -27,7 +29,7 @@ jobs:
   registry-name:
     if: github.ref != 'refs/heads/main' || github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[release-v040]')
     runs-on: ubuntu-24.04
-    timeout-minutes: 2
+    timeout-minutes: 3
     steps:
       - uses: actions/checkout@v4
         with:
@@ -74,7 +76,10 @@ jobs:
       - name: Build dependencies
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends m4 make gcc libgmp-dev libmpfr-dev
       - name: Test v0.4.0 release admission rejection controls
-        run: python3 scripts/test_release_v040.py
+        run: |
+          python3 scripts/test_release_source.py
+          python3 scripts/test_release_python_source.py
+          python3 scripts/test_release_v040.py
       - name: Verify version parity and rebuild CLI and Python source archives
         run: bash scripts/rehearse_v040_source.sh "$RUNNER_TEMP/v040-source"
       - uses: actions/upload-artifact@v4

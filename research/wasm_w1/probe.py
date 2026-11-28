@@ -75,7 +75,10 @@ def main():
     check("clock-run", ["node", str(WORK / "clock.js")], seconds=20)
     assert "W1_CLOCK_PASS" in (EVIDENCE / "clock-run.log").read_text()
     check("fetch-locked", ["cargo", "fetch", "--locked"], cwd=crate, seconds=90)
+    # GNU GMP builds table generators for the build machine, not the target.
+    # Separate the native compiler explicitly from the Emscripten compiler.
     env = dict(os.environ, CC="emcc", CXX="em++", AR="emar", RANLIB="emranlib",
+               CC_FOR_BUILD="gcc", CFLAGS_FOR_BUILD="-O2",
                CC_wasm32_unknown_emscripten="emcc", AR_wasm32_unknown_emscripten="emar",
                CARGO_TARGET_WASM32_UNKNOWN_EMSCRIPTEN_LINKER="emcc", GMP_MPFR_SYS_CACHE="_",
                CARGO_TARGET_DIR=str(WORK / "target"))
@@ -89,6 +92,7 @@ def main():
         # Documented experimental feature only, in a disposable manifest. Do
         # not modify released sources, override ABI bindings, or skip C tests.
         receipt["baseline"] = "CROSS_GUARD_CONFIRMED"
+        receipt["compiler_roles"] = {"target": "emcc", "build": "gcc"}
         manifest = crate / "Cargo.toml"
         manifest.write_text(manifest.read_text() + '\n[dependencies.gmp-mpfr-sys]\nversion = "=1.7.1"\ndefault-features = false\nfeatures = ["mpfr", "force-cross"]\n')
         lockfile = crate / "Cargo.lock"

@@ -11,7 +11,7 @@ jobs:
   phase:
     if: github.repository == 'PhysicsQoo/RaWMoCS' && github.ref == 'refs/heads/experiment/wasm-w2'
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -22,9 +22,15 @@ jobs:
           ref: 2a510a7bba0d5af612c84fc2822cc29bcea45daa
           path: quprs
           persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: 40b83fd2a70ce0608fece16bdfca7870db1cc7c3
+          path: parser-fix
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: '1.100.1'
+          targets: wasm32-unknown-emscripten
       - uses: mymindstorm/setup-emsdk@v14
         with:
           version: '4.0.23'
@@ -41,8 +47,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/w2/evidence"
           gh api repos/PhysicsQoo/RaWMoCS/actions/artifacts/15257956508/zip > "$RUNNER_TEMP/w2/w1c.zip"
           echo '9165b990cc77f7a625c27b66eda4cde6521509caaffabac48ad7a767f24feeef  '"$RUNNER_TEMP/w2/w1c.zip" | sha256sum -c -
-      - name: Original QuPRS MPFR bridge and immutable RaWMoCS browser parity
-        run: python3 research/wasm_w2/gate.py "$RUNNER_TEMP/w2" "$GITHUB_WORKSPACE/quprs"
+      - name: Original QuPRS MPFR bridge and fixed private candidate parity
+        run: python3 research/wasm_w2/gate.py "$RUNNER_TEMP/w2" "$GITHUB_WORKSPACE/quprs" "$GITHUB_WORKSPACE/parser-fix"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

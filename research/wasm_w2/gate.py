@@ -1,4 +1,4 @@
-"""W2a: exact W1c solver binary, original QuPRS phase transport, native/browser parity."""
+"""W2a: fixed private candidate, original QuPRS phase transport, native/browser parity."""
 import hashlib,json,os,re,shutil,subprocess,sys,tarfile,zipfile
 from pathlib import Path
 ROOT=Path(__file__).resolve().parent
@@ -24,7 +24,15 @@ def main():
     for name,digest in prior["distribution_sha256"].items():
         src=base/"distribution"/name;assert sha(src)==digest,name;shutil.copy2(src,D/name)
     assert subprocess.check_output(["git","rev-parse","HEAD"],cwd=Q,text=True).strip()==R["quprs"]
-    R["solver_sha256"]=prior["distribution_sha256"]
+    R["w1c_solver_sha256"]=prior["distribution_sha256"]
+    fix=Path(sys.argv[3]).resolve()
+    run("candidate-build",[sys.executable,str(ROOT/"candidate.py"),str(W),str(base),str(fix),str(D),str(E)],seconds=1500)
+    candidate=json.loads((E/"candidate-receipt.json").read_text())
+    assert candidate["status"]=="CANDIDATE_REPRODUCIBLE_BUILD_PASS"
+    R["candidate"]=candidate
+    (D/"index.html").write_text("<!doctype html><title>Candidate regression</title>")
+    run("candidate-w1b-regression",[sys.executable,str(ROOT.parent/"wasm_w1b/browser_test.py"),str(D)],seconds=180)
+    shutil.copy2(D/"browser-results.json",E/"candidate-w1b-results.json")
     R["original_phase_sha256"]={n:sha(Q/n) for n in ("scripts/web/PhaseWeights.hpp","rust/quprs/native/mpfr_weight_bridge.c")}
     # Existing QuPRS build recipe supplies pinned GMP/MPFR and original GPMC comparator.
     run("quprs-counter",["bash","scripts/web/build-counter.sh"],Q,seconds=800)
@@ -36,12 +44,7 @@ def main():
     shutil.copy2(ROOT/"phase-worker.js",D/"phase-worker.js")
     (D/"index.html").write_text("<!doctype html><title>W2 phase parity</title>")
     for n in ("gpmc.js","gpmc.wasm","runner.js","output.js"):shutil.copy2(Q/"web/engines"/n,D/n)
-    crate=base/"source/rawmocs-0.4.0.crate"
-    assert sha(crate)=="d3e9e6ccd4a146bac19f6bd2628038cf20ae331dd12f9dc0cbcd37a4e63e955d"
-    with tarfile.open(crate) as t:t.extractall(W,filter="data")
-    C=W/"rawmocs-0.4.0"
-    run("native-rawmocs",["cargo","build","--locked","--release","--bin","rawmocs","-j","2"],C,seconds=360)
-    run("browser-parity",[sys.executable,str(ROOT/"parity.py"),str(D),str(W/"phase-native"),str(Q/"web/engines/native-gpmc"),str(C/"target/release/rawmocs"),str(E)],seconds=160)
+    run("browser-parity",[sys.executable,str(ROOT/"parity.py"),str(D),str(W/"phase-native"),str(Q/"web/engines/native-gpmc"),str(W/"candidate-native"),str(E)],seconds=180)
     assert "W2A_PHASE_PARITY_PASS" in (E/"browser-parity.log").read_text()
     R["bridge_sha256"]={n:sha(D/n) for n in ("phase.js","phase.wasm","phase-worker.js")}
     for n in R["bridge_sha256"]:shutil.copy2(D/n,E/n)

@@ -55,11 +55,12 @@ try:
                 a=run([phase,f,m],t);assert a.returncode==0 and "c o quprs-phase-weights 1" in a.stdout,a.stderr
                 b=browser_call("phase-worker.js",dict(id=1,cnf=cnf));assert b["type"]=="materialized" and b["ack"]=="c o quprs-phase-weights 1",b
                 assert b["cnf"]==m.read_text(),label
+                print("W2_PHASE_CASE",label,flush=True)
                 g=run([gpmc,"-mode=1","-prec=30","-cs=64",f],t);assert g.returncode==0,g.stderr
                 gb=browser_call("runner.js",dict(engine="gpmc",cnf=cnf));assert "error" not in gb,gb
                 expected=gcount(g.stdout);close(gcount(gb["stdout"]),expected)
                 for digits in (30,60,100,130):
-                    n=run([raw,"--digits",digits,"--solver","auto","--timeout-ms",2000,m],t);assert n.returncode==0,n.stderr
+                    n=run([raw,"--digits",digits,"--solver","auto","--timeout-ms",2000,m],t);assert n.returncode==0,(label,digits,n.stderr)
                     wb=browser_call("worker.js",dict(type="prepare",id=2,cnf=b["cnf"],digits=digits,mode="auto",timeout=2000))
                     assert wb["type"]=="count",wb
                     nr=rawcount(n.stdout);wr=rawcount(wb["stdout"]);assert nr==wr,(label,digits,nr,wr)

@@ -60,9 +60,9 @@ class ScopeTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 classify(raw)
     def test_wasm_recipe_gate(self):
-        for p in ('scripts/wasm/build.py', '.github/actions/wasm-candidate/action.yml', 'scripts/stage_single_rust_crate.py', '.github/workflows/rust-science.yml'):
+        for p in ('scripts/wasm/build.py', '.github/actions/wasm-candidate/action.yml', 'scripts/stage_single_rust_crate.py', '.github/workflows/rust-science.yml', 'scripts/ci_scope.py', 'crates/rawmocs-cli/src/general.rs', 'crates/rawmocs-core/src/lib.rs', 'packaging/rawmocs/Cargo.lock'):
             self.assertTrue(wasm_recipe_changed(classify(row(p))))
-        for p in ('crates/rawmocs-cli/src/general.rs', 'README.md', 'packaging/rawmocs/Cargo.lock'):
+        for p in ('README.md', 'playground/app.js', 'crates/rawmocs-python/src/lib.rs'):
             self.assertFalse(wasm_recipe_changed(classify(row(p))))
         self.assertTrue(wasm_recipe_changed({'reason':'unknown diff','paths':{}}))
 
@@ -103,6 +103,19 @@ class ManualLongCI(unittest.TestCase):
         self.assertIn("github.event_name == 'workflow_dispatch' && inputs.suite == 'wasm'", guard)
         self.assertIn("github.event_name == 'pull_request' && needs.core.outputs.wasm_contract == 'true'", guard)
         self.assertNotIn("github.event_name == 'push'", guard)
+
+    def test_wasm_routine_and_admission_separation(self):
+        source = (self.root / "rust-science.yml").read_text()
+        self.assertIn("mode: ${{ github.event_name == 'pull_request' && 'routine' || 'admission' }}", source)
+        self.assertIn("'rawmocs-wasm-routine' || 'rawmocs-wasm-candidate'", source)
+        admission = (self.root / "stable-package-admission.yml").read_text()
+        self.assertNotIn("mode: routine", admission)
+        self.assertIn("name: rawmocs-wasm-candidate", admission)
+        action = (self.root.parent / "actions/wasm-candidate/action.yml").read_text()
+        self.assertIn("default: admission", action)
+        self.assertEqual(action.count("if: inputs.mode == 'routine'"), 2)
+        self.assertNotIn("restore-keys:", action)
+        self.assertIn("path: ${{ runner.temp }}/rawmocs-gmp-cache", action)
 
     def test_playground_smoke_is_scoped_main_or_manual(self):
         guard = self.job_guard("rust-science.yml", "playground-site")

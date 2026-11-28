@@ -174,7 +174,7 @@ Registration is scoped and no failure is converted to a count or silently
 retried with another solver. This is not a built-in QuPRS adapter, Rust FFI
 integration, or default-solver migration.
 
-See [release admission](docs/first-release-admission.md) for the source release evidence and limits.
+See [stable release admission](releases/README.md) for the source release evidence and limits.
 No claim of competition-wide performance, projected WMC, exact
 transcendental phase weights, certified rounding or equivalence checking.
 

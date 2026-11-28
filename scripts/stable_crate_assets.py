@@ -1,12 +1,12 @@
 """Stable single-crate artifact contract; derived from admitted v0.4.0 checks."""
 import json,tomllib
 from release_source import digest,require
-from release_v040 import files
+from release_python_source import archive_files
 def verify_crate(r,pkg,src):
     V=r['version']; CRATE=f'rawmocs-{V}.crate'
     require(pkg["status.txt"].strip()==b"SINGLE_RAWMOCS_CRATE_PASS" and digest(pkg[CRATE])==r["crate_sha256"],"crate admission")
     require(pkg["SHA256SUMS"].decode().split()==[r["crate_sha256"],"./"+CRATE],"crate checksum record")
-    f=files(pkg[CRATE],"rawmocs-"+V)
+    f=archive_files(pkg[CRATE],V)
     mapping={"src/lib.rs":"crates/rawmocs-cli/src/lib.rs","src/reference_core.rs":"crates/rawmocs-core/src/lib.rs","src/general.rs":"crates/rawmocs-cli/src/general.rs","src/factor_prejoin.rs":"crates/rawmocs-cli/src/factor_prejoin.rs","src/main.rs":"crates/rawmocs-cli/src/main.rs","tests/shared_core.rs":"crates/rawmocs-cli/tests/shared_core.rs","tests/native_stdio.rs":"crates/rawmocs-cli/tests/native_stdio.rs","LICENSE":"LICENSE","README.md":"packaging/rawmocs/README.md","Cargo.toml.orig":"packaging/rawmocs/Cargo.toml"}
     require(set(f)==set(mapping)|{"Cargo.toml","Cargo.lock"},"unexpected crate members")
     require(f["Cargo.toml"]==pkg["normalized-Cargo.toml"] and f["Cargo.lock"]==pkg["Cargo.lock"],"manifest/lock mismatch")

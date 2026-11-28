@@ -16,6 +16,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Fast syntax preflight before installing dependencies
+        run: |
+          python3 -m py_compile research/wasm_w2/*.py research/wasm_w1b/browser_test.py
+          node --check research/wasm_w2/phase-worker.js
+          node --check research/wasm_w1b/worker.js
+          echo W2_SYNTAX_PREFLIGHT_PASS
       - uses: actions/checkout@v4
         with:
           repository: PhysicsQoo/QuPRS

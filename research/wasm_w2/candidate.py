@@ -76,7 +76,7 @@ def main():
             for n in hashes:shutil.copy2(out/n,D/n)
         assert {p.name:sha(p) for p in sorted((C/"src").glob("*.rs"))}==R["source_hashes"]
         shutil.rmtree(target)
-    assert R["builds"][0]==R["builds"][1"],R["builds"]
+    assert R["builds"][0]==R["builds"][1],R["builds"]
     R["distribution_sha256"]={n:sha(D/n) for n in ("rawmocs.js","rawmocs.wasm","worker.js")}
     bundle=E/"candidate-distribution";bundle.mkdir()
     for n in R["distribution_sha256"]:shutil.copy2(D/n,bundle/n)

@@ -52,7 +52,7 @@ class ManualLongCI(unittest.TestCase):
 
     def test_science_long_jobs_dispatch_only(self):
         for name in ("release-native-transport", "release-native-paired",
-                     "python-portability", "python-manylinux"):
+                     "python-portability", "python-manylinux", "a0-science"):
             self.assertEqual(self.job_guard("rust-science.yml", name),
                              "if: github.event_name == 'workflow_dispatch' && inputs.suite == 'full'")
 

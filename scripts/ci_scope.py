@@ -88,6 +88,8 @@ def main():
         with open(os.environ["GITHUB_OUTPUT"], "a") as f:
             print("scope=" + report["scope"], file=f)
             print("python_contract=" + str(report["python_contract"]).lower(), file=f)
+            wasm = bool(report.get("reason")) or any(p.startswith(("crates/rawmocs-cli/", "crates/rawmocs-core/", "packaging/rawmocs/", "scripts/wasm/")) or p in ("scripts/stage_single_rust_crate.py", ".github/workflows/rust-science.yml") for p in report["paths"])
+            print("wasm_contract=" + str(wasm).lower(), file=f)
 
 if __name__ == "__main__":
     main()

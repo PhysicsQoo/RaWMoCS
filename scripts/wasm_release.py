@@ -1,7 +1,7 @@
 """Verify the same-revision WASM candidate and form deterministic release assets."""
 import io,json,re,stat,tomllib,zipfile
 from pathlib import PurePosixPath
-from release_source import REPO,api,digest,require,run
+from release_source import digest,require
 from release_python_source import archive_files
 
 NAME="rawmocs-wasm-candidate"
@@ -39,24 +39,6 @@ def verify_review(r,raw):
     require(set(review)=={"status","version","revision","candidate_digest","review_reference","scope"},"WASM review fields")
     require(review["status"]=="APPROVED_FOR_REDISTRIBUTION" and review["version"]==r["version"] and review["revision"]==r["revision"] and review["candidate_digest"]==w["digest"],"WASM review identity")
     require(review["scope"]=="binary-corresponding-source-licenses" and isinstance(review["review_reference"],str) and review["review_reference"].strip(),"WASM source/license review required")
-
-def verify_run(r,d,jobs):
-    w=r["wasm"]
-    require(d["id"]==w["run"] and d["head_sha"]==r["revision"] and d["repository"]["full_name"]==d["head_repository"]["full_name"]==REPO,"WASM run identity")
-    require(d["event"]=="workflow_dispatch" and d["head_branch"] in ("main","release/v"+r["version"]) and d["path"].split("@")[0]==".github/workflows/rust-science.yml","WASM release requires explicit same-source admission")
-    require(d["status"]=="completed" and d["conclusion"]=="success","WASM run failed")
-    j=[j for j in jobs["jobs"] if j["name"]=="Unified Rust WASM candidate"]
-    require(len(j)==1 and j[0]["status"]=="completed" and j[0]["conclusion"]=="success","WASM admission job missing")
-    steps={s["name"]:s["conclusion"] for s in j[0]["steps"]}
-    require(steps.get("Stage canonical Rust package and build both targets")=="success" and not any(v in ("failure","cancelled","timed_out") for v in steps.values()),"WASM admission step failed")
-
-def candidate(r):
-    w=r["wasm"];ep=f"repos/{REPO}/actions/runs/{w['run']}"
-    d=api(ep);verify_run(r,d,api(f"{ep}/attempts/{d['run_attempt']}/jobs?per_page=100"))
-    ep=f"repos/{REPO}/actions/artifacts/{w['id']}";a=api(ep)
-    require(a["id"]==w["id"] and a["name"]==NAME and a["digest"]==w["digest"] and not a["expired"] and a["workflow_run"]["id"]==w["run"] and a["workflow_run"]["head_sha"]==r["revision"],"WASM artifact metadata")
-    raw=run("gh","api",ep+"/zip");require("sha256:"+digest(raw)==w["digest"],"WASM artifact ZIP digest")
-    return read_zip(raw)
 
 def verify_receipt(r,p,crate,src,source_map):
     q=json.loads(p["receipt.json"])

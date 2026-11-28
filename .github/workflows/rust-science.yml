@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       suite:
-        description: 'fast: bounded checks (default); wasm: explicit full WASM admission; full: manual long scientific evaluation; rationalized: manual v0.2.2 rehearsal; memory modes: manual research'
+        description: 'fast: bounded checks (default); wasm: manual WASM candidate check; full: manual long scientific evaluation; rationalized: manual v0.2.2 rehearsal; memory modes: manual research'
         type: choice
         options: [fast, full, wasm, rationalized, memory-attribution, memory-rust-scout, memory-python-scout, playground]
         default: fast
@@ -986,21 +986,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: '1.100.1'
-          targets: wasm32-unknown-emscripten
-      - uses: mymindstorm/setup-emsdk@v14
-        with:
-          version: '4.0.23'
-      - name: Install bounded build and browser prerequisites
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends m4 make gcc
-          python3 -m pip install playwright==1.65.2
-          python3 -m playwright install --with-deps chromium
       - name: Stage canonical Rust package and build both targets
-        run: python3 scripts/wasm/build.py "$RUNNER_TEMP/rawmocs-wasm"
+        uses: ./.github/actions/wasm-candidate
       - uses: actions/upload-artifact@v4
         if: always()
         with:

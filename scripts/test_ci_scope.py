@@ -36,7 +36,7 @@ class ScopeTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 classify(raw)
     def test_wasm_recipe_gate(self):
-        for p in ('scripts/wasm/build.py', 'scripts/stage_single_rust_crate.py', '.github/workflows/rust-science.yml'):
+        for p in ('scripts/wasm/build.py', '.github/actions/wasm-candidate/action.yml', 'scripts/stage_single_rust_crate.py', '.github/workflows/rust-science.yml'):
             self.assertTrue(wasm_recipe_changed(classify(row(p))))
         for p in ('crates/rawmocs-cli/src/general.rs', 'README.md', 'packaging/rawmocs/Cargo.lock'):
             self.assertFalse(wasm_recipe_changed(classify(row(p))))

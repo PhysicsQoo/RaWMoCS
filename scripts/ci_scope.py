@@ -72,7 +72,7 @@ def wasm_recipe_changed(report):
     # Two clean cross-builds are a release/recipe gate, not routine solver CI.
     # An unreadable diff is conservative: require the recipe check.
     return bool(report.get("reason")) or any(
-        p.startswith("scripts/wasm/") or p in (
+        p.startswith(("scripts/wasm/",".github/actions/wasm-candidate/")) or p in (
             "scripts/stage_single_rust_crate.py", ".github/workflows/rust-science.yml",
         ) for p in report["paths"]
     )

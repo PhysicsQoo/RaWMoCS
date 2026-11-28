@@ -8,7 +8,7 @@ class StableReleaseTests(unittest.TestCase):
     def setUp(self):
         self.v="0.4.1";self.sha="a"*64;self.rev="b"*40
         self.base={"vers":"0.4.0","cksum":BASE_SHA,"yanked":False}
-        self.r={"version":self.v,"revision":self.rev,"admission_run":123,"notes":"releases/v0.4.1.md","artifacts":{k:{"id":i+1,"digest":"sha256:"+self.sha} for i,k in enumerate(NAMES)}}
+        self.r={"version":self.v,"revision":self.rev,"admission_run":123,"notes":"releases/v0.4.1.md","artifacts":{k:{"id":i+1,"digest":"sha256:"+self.sha} for i,k in enumerate(NAMES)},"wasm":{"run":123,"id":3,"digest":"sha256:"+self.sha,"review_sha256":self.sha}}
     def test_registry_new_and_resume(self):
         rows=[self.base,{"vers":"0.4.0-rc.1","cksum":"c"*64,"yanked":False}]
         self.assertEqual(index_state(rows,self.v,self.sha),"READY")
@@ -30,8 +30,13 @@ class StableReleaseTests(unittest.TestCase):
             with self.assertRaises(ValueError):validate_request(r)
     def test_admission_identity(self):
         d={"id":123,"head_sha":self.rev,"repository":{"full_name":REPO},"head_repository":{"full_name":REPO},"path":".github/workflows/stable-package-admission.yml","head_branch":"release/v0.4.1","event":"push","status":"completed","conclusion":"success"}
-        jobs={"total_count":2,"jobs":[{"name":k,"status":"completed","conclusion":"success","steps":[{"name":s,"conclusion":"success"} for s in STEPS[k]]} for k in NAMES]}
+        jobs={"total_count":len(STEPS),"jobs":[{"name":k,"status":"completed","conclusion":"success","steps":[{"name":s,"conclusion":"success"} for s in STEPS[k]]} for k in STEPS]}
         verify_run(self.r,d,jobs)
+        bad=deepcopy(jobs);bad["jobs"][-1]["conclusion"]="skipped"
+        with self.assertRaises(ValueError):verify_run(self.r,d,bad)
+        bad=deepcopy(jobs);bad["jobs"][0]["name"]=NAMES["crate"]
+        with self.assertRaises(ValueError):verify_run(self.r,d,bad)
+        with self.assertRaises(ValueError):validate_request(self.r|{"wasm":self.r["wasm"]|{"run":124}})
         for k,v in (("head_sha","c"*40),("conclusion","failure"),("head_branch","other"),("event","pull_request")):
             with self.assertRaises(ValueError):verify_run(self.r,d|{k:v},jobs)
         j=deepcopy(jobs);j["jobs"][0]["steps"][0]["conclusion"]="skipped"

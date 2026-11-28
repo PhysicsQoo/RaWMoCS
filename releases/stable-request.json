@@ -1,0 +1,16 @@
+{
+  "version": "0.4.1",
+  "revision": "c5ca20c06c84b57cdbc30e26f1bb09c2daa4d1b0",
+  "admission_run": 46139202880,
+  "artifacts": {
+    "crate": {
+      "id": 15261496095,
+      "digest": "sha256:0480883fe6210004612b4ae063d9bfb92a7d4c78a0e51886e83f531eb87ec608"
+    },
+    "source": {
+      "id": 15261330774,
+      "digest": "sha256:0cca9afc471cfe40455ce4f0faa63acc02725c51ede869116511f2367c863ae3"
+    }
+  },
+  "notes": "releases/v0.4.1.md"
+}

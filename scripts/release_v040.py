@@ -174,9 +174,21 @@ def current_main():
     require(api(f"repos/{REPO}/git/ref/heads/main")["object"]["sha"]==current,"main advanced before registry operation")
     return current
 
+def verify_registry_intent(mode,repository,ref,event_name,event,sha):
+    require(mode=="trusted" and repository==REPO and ref=="refs/heads/main","OIDC-only main publication")
+    if event_name=="workflow_dispatch":
+        require((event.get("inputs") or {}).get("registry_mode")=="trusted","explicit trusted dispatch required")
+    elif event_name=="push":
+        head=event.get("head_commit") or {}
+        require(event.get("ref")==ref and event.get("after")==sha and head.get("id")==sha and re.fullmatch("[0-9a-f]{40}",sha or "") is not None,"push identity mismatch")
+        require("[publish-v040]" in (head.get("message") or ""),"explicit stable publication intent required")
+    else:
+        raise ValueError("untrusted registry publication event")
+
 def registry(mode):
     from release_source import load_request
-    require(mode=="trusted" and os.environ.get("GITHUB_REF")=="refs/heads/main" and os.environ.get("GITHUB_EVENT_NAME")=="workflow_dispatch","OIDC-only explicit main dispatch")
+    event=json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+    verify_registry_intent(mode,os.environ.get("GITHUB_REPOSITORY"),os.environ.get("GITHUB_REF"),os.environ.get("GITHUB_EVENT_NAME"),event,os.environ.get("GITHUB_SHA"))
     r=load_request();require(r["version"]==V,"wrong release")
     current_main()
     assets=prepare(r);verify_oidc_receipt(r)

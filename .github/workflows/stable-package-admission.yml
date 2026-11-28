@@ -1,0 +1,67 @@
+name: Stable package admission (read only)
+on:
+  push:
+    branches: ['release/v*']
+    paths:
+      - 'crates/rawmocs-*/**'
+      - 'packaging/rawmocs/**'
+      - 'pyproject.toml'
+      - 'scripts/*stable*'
+      - '.github/workflows/stable-package-admission.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: stable-package-admission-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  crate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.100.1'
+      - name: Verify version and source scope
+        run: |
+          python3 -m py_compile scripts/stable_release.py scripts/test_stable_release.py
+          python3 scripts/test_stable_release.py
+          python3 scripts/verify_stable_version_scope.py
+      - name: Native build dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends m4 make gcc libgmp-dev libmpfr-dev
+      - name: Stage and verify exact single stable crate
+        run: bash scripts/rehearse_stable_crate.sh "$RUNNER_TEMP/stable-crate"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rawmocs-stable-crate-admission
+          path: ${{ runner.temp }}/stable-crate/
+          if-no-files-found: warn
+  source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.100.1'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Native build dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends m4 make gcc libgmp-dev libmpfr-dev
+      - name: Verify stable CLI and Python extracted sources
+        run: bash scripts/rehearse_stable_source.sh "$RUNNER_TEMP/stable-source"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rawmocs-stable-source-admission
+          path: ${{ runner.temp }}/stable-source/
+          if-no-files-found: warn

@@ -47,5 +47,5 @@ try:
     assert rows[1]["result"]["type"]=="error" and "INVALID_REQUEST" in rows[1]["result"]["message"],rows[1]
     assert rows[2]["result"]["type"]=="count",rows[2]
     b.close()
-    print("W1C_RESOURCE_SCOPED_PASS active_stop=1 oversize=1 reentry=1")
+    print("WASM_RESOURCE_SCOPED_PASS active_stop=1 oversize=1 reentry=1")
 finally:server.shutdown()

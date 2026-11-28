@@ -68,6 +68,15 @@ def inspect(base, revision):
     raw = git("diff", "--raw", "--no-renames", "--no-abbrev", "-z", base, revision, "--")
     return {**classify(raw), "base": base, "revision": revision}
 
+def wasm_recipe_changed(report):
+    # Two clean cross-builds are a release/recipe gate, not routine solver CI.
+    # An unreadable diff is conservative: require the recipe check.
+    return bool(report.get("reason")) or any(
+        p.startswith("scripts/wasm/") or p in (
+            "scripts/stage_single_rust_crate.py", ".github/workflows/rust-science.yml",
+        ) for p in report["paths"]
+    )
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--base", default="")
@@ -88,8 +97,7 @@ def main():
         with open(os.environ["GITHUB_OUTPUT"], "a") as f:
             print("scope=" + report["scope"], file=f)
             print("python_contract=" + str(report["python_contract"]).lower(), file=f)
-            wasm = bool(report.get("reason")) or any(p.startswith(("crates/rawmocs-cli/", "crates/rawmocs-core/", "packaging/rawmocs/", "scripts/wasm/")) or p in ("scripts/stage_single_rust_crate.py", ".github/workflows/rust-science.yml") for p in report["paths"])
-            print("wasm_contract=" + str(wasm).lower(), file=f)
+            print("wasm_contract=" + str(wasm_recipe_changed(report)).lower(), file=f)
 
 if __name__ == "__main__":
     main()

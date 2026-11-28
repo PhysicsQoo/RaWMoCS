@@ -73,6 +73,6 @@ try:
         rows.append(dict(case="fresh_worker_after_stop",result=r))
         (root/"browser-results.json").write_text(json.dumps({"browser":browser.version,"rows":rows},indent=2)+"\n")
         browser.close()
-        print("W1B_BROWSER_WORKER_PASS cases=32 failures=2 stop=1 reentry=1")
+        print("WASM_BROWSER_WORKER_PASS cases=32 failures=2 stop=1 reentry=1")
 finally:
     server.shutdown()

@@ -1,7 +1,7 @@
 """Build the current canonical public Rust package for native and WASM targets.
 Read-only admission candidate; never publishes or downloads a previous solver.
 """
-import hashlib, json, os, re, shutil, subprocess, sys, tarfile, tomllib
+import hashlib, json, os, re, shutil, subprocess, sys, tomllib
 from pathlib import Path
 ROOT=Path(__file__).resolve().parent
 WORK=Path(sys.argv[1]).resolve()
@@ -17,7 +17,7 @@ def run(name,cmd,cwd=None,env=None,timeout=60):
         try:r=subprocess.run(cmd,cwd=cwd,env=env,stdout=log,stderr=subprocess.STDOUT,timeout=timeout);rc=r.returncode
         except subprocess.TimeoutExpired:rc=124
     receipt["steps"][name]=rc;save()
-    print("W1B_STEP",name,rc,flush=True)
+    print("WASM_STEP",name,rc,flush=True)
     if rc:
         print((E/(name+".log")).read_text(errors="replace")[-8000:],flush=True)
         raise RuntimeError(name)
@@ -75,7 +75,7 @@ def main():
     receipt["artifacts"]={p.name:digest(p) for p in sorted(A.iterdir())}
     receipt["link_flags"]=flags
     run("real-browser",[sys.executable,str(ROOT/"browser_test.py"),str(A),str(native)],timeout=180)
-    assert "W1B_BROWSER_WORKER_PASS" in (E/"real-browser.log").read_text()
+    assert "WASM_BROWSER_WORKER_PASS" in (E/"real-browser.log").read_text()
     if not receipt["reproducible_same_environment"]:
         receipt["status"]="BROWSER_PASS_REPRODUCIBILITY_HOLD";return
     # Test-only instrumentation; never ship this variant.
@@ -84,7 +84,7 @@ def main():
     assert worker.count(anchor)==1
     (resource/"resource-test-worker.js").write_text(worker.replace(anchor,'self.postMessage({type:"started",id:request.id}); '+anchor))
     run("resource-browser",[sys.executable,str(ROOT/"resources.py"),str(resource)],timeout=90)
-    assert "W1C_RESOURCE_SCOPED_PASS" in (E/"resource-browser.log").read_text()
+    assert "WASM_RESOURCE_SCOPED_PASS" in (E/"resource-browser.log").read_text()
     shutil.copy2(resource/"resource-results.json",E/"resource-results.json")
     # Corresponding source candidate, including the precise target overlay.
     source_dir=E/"source"; source_dir.mkdir()
@@ -101,5 +101,5 @@ def main():
     receipt["status"]="UNIFIED_WASM_CANDIDATE_PASS"
 try:main()
 finally:
-    save();print("W1B_RESULT",receipt["status"],flush=True)
+    save();print("WASM_RESULT",receipt["status"],flush=True)
 sys.exit(0 if receipt["status"]=="UNIFIED_WASM_CANDIDATE_PASS" else 1)

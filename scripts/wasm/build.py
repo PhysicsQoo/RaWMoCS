@@ -1,23 +1,35 @@
 """Build the current canonical public Rust package for native and WASM targets.
 Read-only admission candidate; never publishes or downloads a previous solver.
 """
-import hashlib, json, os, re, shutil, subprocess, sys, tomllib
+import hashlib, json, os, re, shutil, subprocess, sys, time, tomllib
 from pathlib import Path
 from license_inventory import collect, is_notice
 ROOT=Path(__file__).resolve().parent
 WORK=Path(sys.argv[1]).resolve()
+args=sys.argv[2:]
+if args and (len(args)!=2 or args[0]!="--routine-cache"):
+    raise ValueError("expected optional --routine-cache PATH")
+ROUTINE_CACHE=Path(args[1]).resolve() if args else None
+if ROUTINE_CACHE is not None:
+    assert not ROUTINE_CACHE.is_relative_to(WORK), "dependency cache must be outside evidence/target tree"
+    ROUTINE_CACHE.mkdir(parents=True,exist_ok=True)
 E=WORK/"evidence";E.mkdir(parents=True)
 A=E/"candidate";A.mkdir()
 REPO=ROOT.parents[1]
 TARGET="wasm32-unknown-emscripten"
 receipt={"status":"HOLD","target":TARGET,"steps":{}}
+if ROUTINE_CACHE is not None:
+    receipt.update(mode="routine",timings_seconds={})
 def digest(p):return hashlib.sha256(p.read_bytes()).hexdigest()
 def save():(E/"receipt.json").write_text(json.dumps(receipt,indent=2)+"\n")
 def run(name,cmd,cwd=None,env=None,timeout=60):
+    start=time.monotonic()
     with (E/(name+".log")).open("wb") as log:
         try:r=subprocess.run(cmd,cwd=cwd,env=env,stdout=log,stderr=subprocess.STDOUT,timeout=timeout);rc=r.returncode
         except subprocess.TimeoutExpired:rc=124
-    receipt["steps"][name]=rc;save()
+    receipt["steps"][name]=rc
+    if ROUTINE_CACHE is not None:receipt["timings_seconds"][name]=round(time.monotonic()-start,3)
+    save()
     print("WASM_STEP",name,rc,flush=True)
     if rc:
         print((E/(name+".log")).read_text(errors="replace")[-8000:],flush=True)
@@ -35,6 +47,7 @@ def main():
     shutil.copy2(REPO/"packaging/rawmocs/Cargo.lock",crate/"Cargo.lock")
     native_target=WORK/"native-target"
     native_env=dict(os.environ,CARGO_TARGET_DIR=str(native_target))
+    if ROUTINE_CACHE is not None:native_env['GMP_MPFR_SYS_CACHE']=str(ROUTINE_CACHE)
     run("native-build",["cargo","build","--locked","--release","--bin","rawmocs","-j","2"],crate,native_env,timeout=360)
     native=native_target/"release/rawmocs"
     assert subprocess.check_output([str(native),"--version"],text=True).strip()=="rawmocs "+receipt["version"]
@@ -68,13 +81,16 @@ def main():
     (source_dir/"executable-files.json").write_text(json.dumps(executable,indent=2)+"\n")
     source_inventory={str(p.relative_to(source_dir)):digest(p) for p in sorted(source_dir.rglob("*")) if p.is_file()}
     builds=[]
-    for i in (1,2):
+    for i in ((1,) if ROUTINE_CACHE is not None else (1,2)):
         # Exercise the permissions of a ZIP-extracted source on replay.
         if i==2:
             for p in source_dir.rglob("*"):
                 if p.is_file():p.chmod(0o644)
-        run(f"clean-build-{i}",[sys.executable,str(source_dir/"recipe/replay.py"),str(source_dir),str(target)],timeout=360)
-        assert "WASM_OFFLINE_VENDOR_REPLAY_PASS" in (E/f"clean-build-{i}.log").read_text()
+        cmd=[sys.executable,str(source_dir/"recipe/replay.py"),str(source_dir),str(target)]
+        if ROUTINE_CACHE is not None:cmd+=["--routine-cache",str(ROUTINE_CACHE)]
+        run(f"clean-build-{i}",cmd,timeout=360)
+        marker="WASM_ROUTINE_DEPENDENCY_REPLAY_PASS" if ROUTINE_CACHE is not None else "WASM_OFFLINE_VENDOR_REPLAY_PASS"
+        assert marker in (E/f"clean-build-{i}.log").read_text()
         assert {str(p.relative_to(source_dir)):digest(p) for p in sorted(source_dir.rglob("*")) if p.is_file()}==source_inventory
         receipt["offline_vendor_replay"]=i==2
         receipt["offline_vendor_builds"]=i
@@ -101,7 +117,7 @@ def main():
             print("WASM_BUILD_DIFFERENCES",json.dumps(differences,sort_keys=True),flush=True)
         assert {str(p.relative_to(crate)):digest(p) for p in sorted((crate/"src").rglob("*.rs"))}==source_hash
         shutil.rmtree(target)
-    receipt["reproducible_same_environment"]=builds[0]==builds[1];save()
+    receipt["reproducible_same_environment"]=len(builds)==2 and builds[0]==builds[1];save()
     shutil.copy2(ROOT/"worker.js",A/"worker.js")
     (A/"index.html").write_text("<!doctype html><title>RaWMoCS worker gate</title>")
     receipt["source_hashes"]=source_hash
@@ -109,7 +125,7 @@ def main():
     receipt["link_flags"]=flags
     run("real-browser",[sys.executable,str(ROOT/"browser_test.py"),str(A),str(native)],timeout=180)
     assert "WASM_BROWSER_WORKER_PASS" in (E/"real-browser.log").read_text()
-    if not receipt["reproducible_same_environment"]:
+    if ROUTINE_CACHE is None and not receipt["reproducible_same_environment"]:
         receipt["status"]="BROWSER_PASS_REPRODUCIBILITY_HOLD";return
     # Test-only instrumentation; never ship this variant.
     resource=WORK/"resource-test"; shutil.copytree(A,resource)
@@ -126,8 +142,8 @@ def main():
     assert any("gmp-mpfr-sys" in p for p in licenses)
     receipt["license_inventory"]=licenses
     receipt["source_sha256"]={str(p.relative_to(source_dir)):digest(p) for p in sorted(source_dir.rglob("*")) if p.is_file()}
-    receipt["status"]="UNIFIED_WASM_CANDIDATE_PASS"
+    receipt["status"]="WASM_ROUTINE_BROWSER_PASS" if ROUTINE_CACHE is not None else "UNIFIED_WASM_CANDIDATE_PASS"
 try:main()
 finally:
     save();print("WASM_RESULT",receipt["status"],flush=True)
-sys.exit(0 if receipt["status"]=="UNIFIED_WASM_CANDIDATE_PASS" else 1)
+sys.exit(0 if receipt["status"]==("WASM_ROUTINE_BROWSER_PASS" if ROUTINE_CACHE is not None else "UNIFIED_WASM_CANDIDATE_PASS") else 1)

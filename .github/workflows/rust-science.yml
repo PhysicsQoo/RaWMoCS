@@ -993,7 +993,7 @@ jobs:
           if-no-files-found: warn
 
   wasm-contract:
-    name: Unified Rust WASM candidate
+    name: WASM browser qualification
     needs: core
     if: (github.event_name == 'workflow_dispatch' && inputs.suite == 'wasm') || (github.event_name == 'pull_request' && needs.core.outputs.wasm_contract == 'true')
     runs-on: ubuntu-24.04
@@ -1004,10 +1004,12 @@ jobs:
           persist-credentials: false
       - name: Stage canonical Rust package and build both targets
         uses: ./.github/actions/wasm-candidate
+        with:
+          mode: ${{ github.event_name == 'pull_request' && 'routine' || 'admission' }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: rawmocs-wasm-candidate
+          name: ${{ github.event_name == 'pull_request' && 'rawmocs-wasm-routine' || 'rawmocs-wasm-candidate' }}
           path: ${{ runner.temp }}/rawmocs-wasm/evidence/
           include-hidden-files: true
           if-no-files-found: error

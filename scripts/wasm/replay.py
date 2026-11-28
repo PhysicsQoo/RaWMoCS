@@ -15,7 +15,14 @@ def command(source,target,config):
     return cmd,env
 
 def main():
-    source,target=(Path(p).resolve() for p in sys.argv[1:])
+    source,target=(Path(p).resolve() for p in sys.argv[1:3])
+    args=sys.argv[3:]
+    if args and (len(args)!=2 or args[0]!="--routine-cache"):
+        raise ValueError("expected optional --routine-cache PATH")
+    cache=Path(args[1]).resolve() if args else None
+    if cache is not None:
+        assert not cache.is_relative_to(source) and not cache.is_relative_to(target)
+        assert cache.is_dir()
     if target.exists():raise ValueError("fresh target required")
     config=json.loads((source/"build-config.json").read_text())
     assert subprocess.check_output(["rustc","--version"],text=True).split()[1]=="1.100.1"
@@ -30,9 +37,10 @@ def main():
         assert path.is_file() and not path.is_symlink() and path.resolve().is_relative_to(source)
         path.chmod(0o755)
     cmd,env=command(source,target,config)
+    if cache is not None:env['GMP_MPFR_SYS_CACHE']=str(cache)
     with tempfile.TemporaryDirectory() as cargo_home:
         env["CARGO_HOME"]=cargo_home
         env["CARGO_NET_OFFLINE"]="true"
         subprocess.run(cmd,cwd=source/"rawmocs",env=env,check=True)
-    print("WASM_OFFLINE_VENDOR_REPLAY_PASS",flush=True)
+    print("WASM_ROUTINE_DEPENDENCY_REPLAY_PASS" if cache is not None else "WASM_OFFLINE_VENDOR_REPLAY_PASS",flush=True)
 if __name__=="__main__":main()

@@ -1,5 +1,9 @@
 name: Build canonical Rust WASM candidate
 description: Two independent vendored offline builds and real-browser qualification
+inputs:
+  mode:
+    description: 'admission: independent uncached offline witness; routine: one browser build with dependency-only cache'
+    default: admission
 runs:
   using: composite
   steps:
@@ -18,6 +22,36 @@ runs:
         sudo apt-get install -y --no-install-recommends m4 make gcc
         python3 -m pip install playwright==1.65.2
         python3 -m playwright install --with-deps chromium
+    - name: Fingerprint exact routine dependency cache inputs
+      if: inputs.mode == 'routine'
+      id: dependency-key
+      shell: bash
+      run: |
+        set -euo pipefail
+        fingerprint=$(
+          {
+            printf '%s\n' "${ImageOS:-unknown}" "${ImageVersion:-unknown}" "$(uname -m)"
+            rustc -vV
+            emcc --version
+            gcc --version
+            sha256sum packaging/rawmocs/Cargo.toml packaging/rawmocs/Cargo.lock scripts/wasm/replay.py scripts/wasm/build.py .github/actions/wasm-candidate/action.yml
+          } | sha256sum | cut -d' ' -f1
+        )
+        echo "key=rawmocs-routine-gmp-$fingerprint" >> "$GITHUB_OUTPUT"
+    - name: Restore exact routine GMP/MPFR dependency cache
+      if: inputs.mode == 'routine'
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/rawmocs-gmp-cache
+        key: ${{ steps.dependency-key.outputs.key }}
     - name: Stage canonical Rust package and build both targets
       shell: bash
-      run: python3 scripts/wasm/build.py "$RUNNER_TEMP/rawmocs-wasm"
+      env:
+        MODE: ${{ inputs.mode }}
+      run: |
+        set -euo pipefail
+        case "$MODE" in
+          admission) python3 scripts/wasm/build.py "$RUNNER_TEMP/rawmocs-wasm" ;;
+          routine) python3 scripts/wasm/build.py "$RUNNER_TEMP/rawmocs-wasm" --routine-cache "$RUNNER_TEMP/rawmocs-gmp-cache" ;;
+          *) echo "Unknown WASM qualification mode" >&2; exit 1 ;;
+        esac

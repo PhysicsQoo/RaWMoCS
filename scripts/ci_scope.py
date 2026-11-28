@@ -75,11 +75,14 @@ def inspect(base, revision):
     return {**classify(raw), "base": base, "revision": revision}
 
 def wasm_recipe_changed(report):
-    # Two clean cross-builds are a release/recipe gate, not routine solver CI.
-    # An unreadable diff is conservative: require the recipe check.
+    # One ordinary browser build for changes to the canonical solver or recipe.
+    # An unreadable diff is conservative. Full admission is separate.
     return bool(report.get("reason")) or any(
-        p.startswith(("scripts/wasm/",".github/actions/wasm-candidate/")) or p in (
-            "scripts/stage_single_rust_crate.py", ".github/workflows/rust-science.yml",
+        p.startswith(("scripts/wasm/",".github/actions/wasm-candidate/",
+                      "crates/rawmocs-cli/src/", "crates/rawmocs-core/src/", "packaging/rawmocs/")) or p in (
+            "crates/rawmocs-cli/Cargo.toml", "crates/rawmocs-cli/Cargo.lock",
+            "crates/rawmocs-core/Cargo.toml", "scripts/stage_single_rust_crate.py",
+            "scripts/ci_scope.py", ".github/workflows/rust-science.yml",
         ) for p in report["paths"]
     )
 
